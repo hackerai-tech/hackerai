@@ -301,6 +301,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       explanation: "x",
       is_background: false,
       interactive: true,
+      timeout: 0.2,
     })) as { result: { output?: string; session?: string; pid?: number } };
 
     expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
@@ -334,6 +335,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       explanation: "x",
       is_background: false,
       interactive: true,
+      timeout: 0.2,
     });
 
     // Centrifugo PTY sends the command in pty_create, so sendInput
@@ -349,15 +351,15 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const { context, ptySessionManager } = makeContext({ sandbox: e2b });
     const tool = createRunTerminalCmd(context);
 
-    // Emit some output shortly after the command is sent so waitForOutput
-    // idle timer resolves quickly.
+    // Emit some output shortly after the command is sent so the test
+    // captures it before the timeout fires.
     const p = runTool(tool, {
       action: "exec",
       command: "ls",
       explanation: "list",
       is_background: false,
       interactive: true,
-      wait_for: { idle_ms: 20, timeout_ms: 1000 },
+      timeout: 1,
     });
     // Let the `exec` path send the command, then emit output.
     await new Promise((r) => setTimeout(r, 0));

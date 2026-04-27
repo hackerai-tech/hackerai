@@ -6,187 +6,17 @@ import {
   cleanPtyForUI,
   getSessionSnapshots,
 } from "./utils/pty-output-formatter";
+import {
+  waitForOutput,
+  capOutput,
+  stripAnsi,
+  peekExited,
+} from "./utils/pty-wait-utils";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
-const MODEL_OUTPUT_CAP_BYTES = 8 * 1024;
-const DEFAULT_WAIT_IDLE_MS = 800;
-const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
-
-// Strip CSI + OSC ANSI escape sequences from model-facing output.
-const ANSI_REGEX =
-  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
-const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
-
-interface WaitPolicy {
-  pattern?: string;
-  idle_ms: number;
-  timeout_ms: number;
-}
-
-/**
- * Thrown when `policy.pattern` cannot be compiled to a RegExp.
- */
-class InvalidWaitPatternError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidWaitPatternError";
-  }
-}
-
-/** Upper bound on `wait_for.pattern` length to blunt ReDoS via pathological input. */
-const MAX_WAIT_PATTERN_LENGTH = 256;
-
-/**
- * Compile `policy.pattern` into a RegExp, returning `null` when no pattern is
- * configured. Throws `InvalidWaitPatternError` synchronously when the pattern
- * is too long or cannot be compiled.
- */
-function compileWaitPattern(policy: WaitPolicy): RegExp | null {
-  if (!policy.pattern) return null;
-  if (policy.pattern.length > MAX_WAIT_PATTERN_LENGTH) {
-    throw new InvalidWaitPatternError(
-      `pattern exceeds ${MAX_WAIT_PATTERN_LENGTH} characters`,
-    );
-  }
-  try {
-    return new RegExp(policy.pattern);
-  } catch (err) {
-    throw new InvalidWaitPatternError(
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-}
-
-/**
- * Resolve once any of:
- *   - `policy.pattern` matches the ANSI-stripped accumulated delta (if set)
- *   - `policy.idle_ms` of no new onData chunks (if pattern unset)
- *   - `policy.timeout_ms` absolute cap
- *   - `signal` aborts
- */
-async function waitForOutput(
-  session: PtySession,
-  policy: WaitPolicy,
-  signal: AbortSignal | undefined,
-  onChunk: (chunk: Uint8Array) => void,
-  consume: (s: PtySession) => Uint8Array,
-): Promise<Uint8Array> {
-  const regex = compileWaitPattern(policy);
-
-  return new Promise<Uint8Array>((resolve) => {
-    let settled = false;
-    let accumulated = "";
-    const decoder = new TextDecoder();
-
-    const preBuffered = consume(session);
-    if (preBuffered.byteLength > 0) {
-      try {
-        onChunk(preBuffered);
-      } catch (err) {
-        console.error("[interact-terminal-session] emitTerminal failed:", err);
-      }
-      if (regex) {
-        accumulated += stripAnsi(decoder.decode(preBuffered, { stream: true }));
-      }
-    }
-
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    const hardTimer = setTimeout(() => finish(), policy.timeout_ms);
-
-    const armIdle = () => {
-      if (regex) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => finish(), policy.idle_ms);
-    };
-
-    if (regex && regex.test(accumulated)) {
-      settled = true;
-      clearTimeout(hardTimer);
-      const finalDelta = consume(session);
-      const combined = new Uint8Array(
-        preBuffered.byteLength + finalDelta.byteLength,
-      );
-      combined.set(preBuffered, 0);
-      combined.set(finalDelta, preBuffered.byteLength);
-      resolve(combined);
-      return;
-    }
-
-    armIdle();
-
-    const unsubscribe = session.handle.onData((bytes) => {
-      if (settled) return;
-      try {
-        onChunk(bytes);
-      } catch (err) {
-        console.error("[interact-terminal-session] emitTerminal failed:", err);
-      }
-      if (regex) {
-        accumulated += stripAnsi(decoder.decode(bytes, { stream: true }));
-        if (regex.test(accumulated)) {
-          finish();
-          return;
-        }
-      } else {
-        armIdle();
-      }
-    });
-
-    const onAbort = () => finish();
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    function finish() {
-      if (settled) return;
-      settled = true;
-      if (idleTimer) clearTimeout(idleTimer);
-      clearTimeout(hardTimer);
-      try {
-        unsubscribe();
-      } catch (err) {
-        console.error("[interact-terminal-session] unsubscribe failed:", err);
-      }
-      signal?.removeEventListener("abort", onAbort);
-      const finalDelta = consume(session);
-      const combined = new Uint8Array(
-        preBuffered.byteLength + finalDelta.byteLength,
-      );
-      combined.set(preBuffered, 0);
-      combined.set(finalDelta, preBuffered.byteLength);
-      resolve(combined);
-    }
-  });
-}
-
-/** Truncate model-visible output with a head/tail marker. */
-function capOutput(text: string): string {
-  if (text.length <= MODEL_OUTPUT_CAP_BYTES) return text;
-  const head = Math.floor(MODEL_OUTPUT_CAP_BYTES * 0.7);
-  const tail = MODEL_OUTPUT_CAP_BYTES - head - 64;
-  return (
-    text.slice(0, head) +
-    `\n…[truncated ${text.length - head - tail} bytes]…\n` +
-    text.slice(-tail)
-  );
-}
-
-/**
- * Peek at `session.handle.exited` without blocking. Returns the resolved
- * value if already settled, otherwise `null`.
- */
-async function peekExited(
-  session: PtySession,
-): Promise<{ exitCode: number | null } | null> {
-  const sentinel: { exitCode: number | null } = { exitCode: -0xdeadbeef };
-  const result = await Promise.race([
-    session.handle.exited,
-    new Promise<typeof sentinel>((r) => {
-      Promise.resolve().then(() => r(sentinel));
-    }),
-  ]);
-  if (result === sentinel) return null;
-  return result;
-}
+const DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
+const MAX_WAIT_TIMEOUT_SECONDS = 300;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
@@ -228,38 +58,12 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
             "Send ONE command per call, observe output before the next. " +
             "Raw input BYPASSES command guardrails; never paste untrusted content.",
         ),
-      wait_for: z
-        .object({
-          pattern: z
-            .string()
-            .optional()
-            .describe(
-              "JS regex. Resolves as soon as accumulated (ANSI-stripped) output matches — use this when you know the shell prompt or marker you're waiting for (e.g. '>>> $' for python, '# $' for a root shell). Invalid regex returns a structured error rather than crashing the call.",
-            ),
-          idle_ms: z
-            .number()
-            .int()
-            .min(50)
-            .max(60_000)
-            .optional()
-            .default(DEFAULT_WAIT_IDLE_MS)
-            .describe(
-              "Resolve after N ms with no new output bytes. Good default for prompts that don't have a predictable marker. Range: [50, 60000].",
-            ),
-          timeout_ms: z
-            .number()
-            .int()
-            .min(100)
-            .max(300_000)
-            .optional()
-            .default(DEFAULT_WAIT_TIMEOUT_MS)
-            .describe(
-              "Hard cap on the wait. Fires even if neither pattern nor idle_ms triggered. Range: [100, 300000].",
-            ),
-        })
+      timeout: z
+        .number()
         .optional()
+        .default(DEFAULT_WAIT_TIMEOUT_SECONDS)
         .describe(
-          "Wait policy applied after action=send and action=wait. Resolves on the FIRST of: `pattern` match, `idle_ms` of silence, or `timeout_ms` elapsed. Default: {idle_ms: 800, timeout_ms: 10000}.",
+          `Timeout in seconds to wait for output before returning. Capped at ${MAX_WAIT_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_SECONDS} seconds.`,
         ),
     }),
     execute: async (
@@ -267,42 +71,20 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         session: sessionId,
         action,
         input,
-        wait_for,
+        timeout,
       }: {
         session: string;
         action: "send" | "wait" | "view" | "kill";
         input?: string;
-        wait_for?: {
-          pattern?: string;
-          idle_ms: number;
-          timeout_ms: number;
-        };
+        timeout?: number;
       },
       { toolCallId, abortSignal },
     ) => {
-      const waitPolicy: WaitPolicy = {
-        pattern: wait_for?.pattern,
-        idle_ms: wait_for?.idle_ms ?? DEFAULT_WAIT_IDLE_MS,
-        timeout_ms: wait_for?.timeout_ms ?? DEFAULT_WAIT_TIMEOUT_MS,
-      };
-
-      // Validate wait_for.pattern upfront for actions that consume it
-      const consumesWaitFor = action === "send" || action === "wait";
-      if (consumesWaitFor) {
-        try {
-          compileWaitPattern(waitPolicy);
-        } catch (err) {
-          if (err instanceof InvalidWaitPatternError) {
-            return {
-              result: {
-                output: "",
-                error: `Invalid wait_for.pattern: ${err.message}`,
-              },
-            };
-          }
-          throw err;
-        }
-      }
+      const timeoutMs =
+        Math.min(
+          timeout ?? DEFAULT_WAIT_TIMEOUT_SECONDS,
+          MAX_WAIT_TIMEOUT_SECONDS,
+        ) * 1000;
 
       // Emit raw bytes to UI terminal stream - no cleaning during streaming.
       // The sessionSnapshot in the final result is properly cleaned via xterm
@@ -365,11 +147,6 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         ptySessionManager.consumeDelta(session);
       };
 
-      const translateWaitError = (err: unknown): ActionResult | null =>
-        err instanceof InvalidWaitPatternError
-          ? errorResult(`Invalid wait_for.pattern: ${err.message}`)
-          : null;
-
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
@@ -413,32 +190,23 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         session.lastActivityAt = Date.now();
         // Brief delay for CLI readline to process input
         await new Promise((r) => setTimeout(r, 50));
-        try {
-          const delta = await waitForOutput(
-            session,
-            waitPolicy,
-            abortSignal,
-            emitTerminal,
-            (s) => ptySessionManager.consumeDelta(s),
-          );
-          await drainEmitQueue();
-          const snapshots = await getSessionSnapshots(
-            ptySessionManager,
-            session,
-          );
-          return {
-            result: {
-              output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: snapshots.cleaned,
-              rawSnapshot: snapshots.raw,
-              ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
-            },
-          };
-        } catch (err) {
-          const translated = translateWaitError(err);
-          if (translated) return translated;
-          throw err;
-        }
+        const delta = await waitForOutput(
+          session,
+          timeoutMs,
+          abortSignal,
+          emitTerminal,
+          (s) => ptySessionManager.consumeDelta(s),
+        );
+        await drainEmitQueue();
+        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        return {
+          result: {
+            output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+            sessionSnapshot: snapshots.cleaned,
+            rawSnapshot: snapshots.raw,
+            ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+          },
+        };
       };
 
       // ─── Handler: wait ─────────────────────────────────────────────────────
@@ -450,32 +218,23 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         emitPriorContext(session);
 
         const alreadyExited = await peekExited(session);
-        try {
-          const delta = await waitForOutput(
-            session,
-            waitPolicy,
-            abortSignal,
-            emitTerminal,
-            (s) => ptySessionManager.consumeDelta(s),
-          );
-          await drainEmitQueue();
-          const snapshots = await getSessionSnapshots(
-            ptySessionManager,
-            session,
-          );
-          const out: Record<string, unknown> = {
-            output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-            sessionSnapshot: snapshots.cleaned,
-            rawSnapshot: snapshots.raw,
-          };
-          if (session.bufferTruncated) out.bufferTruncated = true;
-          if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
-          return { result: out };
-        } catch (err) {
-          const translated = translateWaitError(err);
-          if (translated) return translated;
-          throw err;
-        }
+        const delta = await waitForOutput(
+          session,
+          timeoutMs,
+          abortSignal,
+          emitTerminal,
+          (s) => ptySessionManager.consumeDelta(s),
+        );
+        await drainEmitQueue();
+        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const out: Record<string, unknown> = {
+          output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+          sessionSnapshot: snapshots.cleaned,
+          rawSnapshot: snapshots.raw,
+        };
+        if (session.bufferTruncated) out.bufferTruncated = true;
+        if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
+        return { result: out };
       };
 
       // ─── Handler: view ─────────────────────────────────────────────────────

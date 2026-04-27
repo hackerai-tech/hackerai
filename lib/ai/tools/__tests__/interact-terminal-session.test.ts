@@ -6,7 +6,7 @@
  *  - the dispatch contract for {send, wait, view, kill}
  *  - input size cap
  *  - pty-keys decoding (Enter / C-c / plain text)
- *  - wait policy (pattern + idle)
+ *  - wait policy (timeout_ms)
  *  - ANSI stripping + bufferTruncated surfacing
  *  - structured errors for missing sessions
  */
@@ -214,7 +214,7 @@ async function createSession(
     explanation: "x",
     is_background: false,
     interactive: true,
-    wait_for: { idle_ms: 5, timeout_ms: 200 },
+    timeout: 1,
   });
   await new Promise((r) => setTimeout(r, 0));
   const created = (await execP) as { result: { session: string } };
@@ -274,7 +274,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
         action: "send",
         session: sessionId,
         input,
-        wait_for: { idle_ms: 10, timeout_ms: 200 },
+        timeout: 0.2,
       });
       // Yield so the tool's awaited sendInput runs.
       await new Promise((r) => setTimeout(r, 0));
@@ -306,27 +306,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(Array.from(ctrlCHex)).toEqual([0x03]);
   });
 
-  test("wait resolves early when wait_for.pattern matches", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const handle = makeFakeHandle();
-
-    const { context } = makeContext({ sandbox: e2b });
-    const sessionId = await createSession(context, handle);
-
-    const tool = createInteractTerminalSession(context);
-    const startedAt = Date.now();
-    const waitP = runTool(tool, {
-      action: "wait",
-      session: sessionId,
-      wait_for: { pattern: "READY", timeout_ms: 2000, idle_ms: 5 },
-    });
-    setTimeout(() => handle.emit(new TextEncoder().encode("hello READY\n")), 5);
-    const result = (await waitP) as { result: { output: string } };
-    expect(result.result.output).toContain("READY");
-    expect(Date.now() - startedAt).toBeLessThan(500);
-  });
-
-  test("wait resolves on idle after idle_ms with no new output", async () => {
+  test("wait collects output emitted during the timeout window", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
 
@@ -335,14 +315,16 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     const tool = createInteractTerminalSession(context);
     const started = Date.now();
-    const result = (await runTool(tool, {
+    const waitP = runTool(tool, {
       action: "wait",
       session: sessionId,
-      wait_for: { idle_ms: 30, timeout_ms: 1000 },
-    })) as { result: { output: string } };
-    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+      timeout: 0.1,
+    });
+    setTimeout(() => handle.emit(new TextEncoder().encode("hello READY\n")), 5);
+    const result = (await waitP) as { result: { output: string } };
+    expect(result.result.output).toContain("READY");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(95);
     expect(Date.now() - started).toBeLessThan(500);
-    expect(typeof result.result.output).toBe("string");
   });
 
   test("view returns snapshot without advancing readCursor", async () => {
@@ -368,7 +350,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const waitRes = (await runTool(tool, {
       action: "wait",
       session: sessionId,
-      wait_for: { idle_ms: 5, timeout_ms: 200 },
+      timeout: 0.05,
     })) as { result: { output: string; sessionSnapshot: string } };
 
     expect(view1.result.output).toContain("hello");
@@ -433,72 +415,6 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(result.result.output).not.toContain("\x1b[0m");
   });
 
-  // ── FIX 1 — invalid wait_for.pattern returns structured error ───────
-  test("wait with invalid regex returns structured error, does not crash", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const handle = makeFakeHandle();
-
-    const { context } = makeContext({ sandbox: e2b });
-    const sessionId = await createSession(context, handle);
-
-    const tool = createInteractTerminalSession(context);
-    const result = (await runTool(tool, {
-      action: "wait",
-      session: sessionId,
-      wait_for: { pattern: "[unclosed", idle_ms: 100, timeout_ms: 200 },
-    })) as { result: { error?: string } };
-
-    expect(result.result.error).toMatch(/Invalid wait_for\.pattern/);
-  });
-
-  // ── FIX 2 — zod caps on wait_for durations ──────────────────────────
-  test("wait_for.idle_ms above 60000 cap is rejected by zod", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const { context } = makeContext({ sandbox: e2b });
-    const tool = createInteractTerminalSession(context);
-
-    // zod validation happens inside the ai SDK's tool wrapper — calling
-    // execute() directly here bypasses zod, so instead we parse the schema
-    // manually via the tool's inputSchema.
-    const schema = (
-      tool as unknown as {
-        inputSchema: {
-          safeParse: (v: unknown) => { success: boolean; error?: unknown };
-        };
-      }
-    ).inputSchema;
-    const resultOver = schema.safeParse({
-      action: "wait",
-      session: "s",
-      wait_for: { idle_ms: 120_000, timeout_ms: 200 },
-    });
-    expect(resultOver.success).toBe(false);
-
-    const resultOk = schema.safeParse({
-      action: "wait",
-      session: "s",
-      wait_for: { idle_ms: 10_000, timeout_ms: 200 },
-    });
-    expect(resultOk.success).toBe(true);
-  });
-
-  test("wait_for.timeout_ms above 300000 cap is rejected by zod", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const { context } = makeContext({ sandbox: e2b });
-    const tool = createInteractTerminalSession(context);
-    const schema = (
-      tool as unknown as {
-        inputSchema: { safeParse: (v: unknown) => { success: boolean } };
-      }
-    ).inputSchema;
-    const over = schema.safeParse({
-      action: "wait",
-      session: "s",
-      wait_for: { idle_ms: 100, timeout_ms: 600_000 },
-    });
-    expect(over.success).toBe(false);
-  });
-
   // ── action=wait when process already exited ──────────────────────────
   test("action=wait returns exited with exitCode when process already exited", async () => {
     const e2b = makeFakeE2BSandbox();
@@ -517,7 +433,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const waitP = runTool(tool, {
       action: "wait",
       session: sessionId,
-      wait_for: { idle_ms: 10, timeout_ms: 500 },
+      timeout: 0.1,
     }) as Promise<{
       result: {
         exited?: { exitCode: number | null };

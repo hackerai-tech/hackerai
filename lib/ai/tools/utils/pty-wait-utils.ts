@@ -10,79 +10,21 @@ export const ANSI_REGEX =
 
 export const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 
-export interface WaitPolicy {
-  pattern?: string;
-  idle_ms: number;
-  timeout_ms: number;
-}
-
 /**
- * Thrown by `waitForOutput` when `policy.pattern` cannot be compiled to a
- * RegExp. Callers translate this into a structured tool error rather than
- * letting the JS SyntaxError bubble out of `execute()`.
- */
-export class InvalidWaitPatternError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidWaitPatternError";
-  }
-}
-
-/** Upper bound on `wait_for.pattern` length to blunt ReDoS via pathological input. */
-export const MAX_WAIT_PATTERN_LENGTH = 256;
-
-/**
- * Compile `policy.pattern` into a RegExp, returning `null` when no pattern is
- * configured. Throws `InvalidWaitPatternError` synchronously when the pattern
- * is too long or cannot be compiled - callers should invoke this BEFORE any
- * side-effects (PTY spawn, timers, listeners) so nothing leaks on the error
- * path.
- */
-export function compileWaitPattern(policy: WaitPolicy): RegExp | null {
-  if (!policy.pattern) return null;
-  if (policy.pattern.length > MAX_WAIT_PATTERN_LENGTH) {
-    throw new InvalidWaitPatternError(
-      `pattern exceeds ${MAX_WAIT_PATTERN_LENGTH} characters`,
-    );
-  }
-  try {
-    return new RegExp(policy.pattern);
-  } catch (err) {
-    throw new InvalidWaitPatternError(
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-}
-
-/**
- * Resolve once any of:
- *   - `policy.pattern` matches the ANSI-stripped accumulated delta (if set)
- *   - `policy.idle_ms` of no new onData chunks (if pattern unset)
- *   - `policy.timeout_ms` absolute cap
- *   - `signal` aborts
+ * Collect output for `timeoutMs`, then resolve. Aborts early on `signal`.
  *
  * Streams every raw chunk through `onChunk` for the UI writer before
  * consuming the session delta and returning.
- *
- * Throws `InvalidWaitPatternError` synchronously if `policy.pattern` is set
- * but cannot be compiled. We throw BEFORE any timers / listeners are armed
- * so nothing needs to be cleaned up on the error path.
  */
 export async function waitForOutput(
   session: PtySession,
-  policy: WaitPolicy,
+  timeoutMs: number,
   signal: AbortSignal | undefined,
   onChunk: (chunk: Uint8Array) => void,
   consume: (s: PtySession) => Uint8Array,
 ): Promise<Uint8Array> {
-  // Compile the regex FIRST so invalid patterns surface as a synchronous
-  // throw before any timers or listeners are armed - nothing to clean up.
-  const regex = compileWaitPattern(policy);
-
   return new Promise<Uint8Array>((resolve) => {
     let settled = false;
-    let accumulated = "";
-    const decoder = new TextDecoder();
 
     // Capture any bytes already buffered before subscription (e.g. data that
     // arrived during await sendInput's network RTT on E2B). Without this,
@@ -95,37 +37,9 @@ export async function waitForOutput(
       } catch (err) {
         console.error("[pty-wait-utils] onChunk failed:", err);
       }
-      if (regex) {
-        accumulated += stripAnsi(decoder.decode(preBuffered, { stream: true }));
-      }
     }
 
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    const hardTimer = setTimeout(() => finish(), policy.timeout_ms);
-
-    const armIdle = () => {
-      if (regex) return; // pattern mode doesn't use idle timer
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => finish(), policy.idle_ms);
-    };
-
-    // Pattern may already match from pre-buffered bytes
-    if (regex && regex.test(accumulated)) {
-      settled = true;
-      clearTimeout(hardTimer);
-      const finalDelta = consume(session);
-      const combined = new Uint8Array(
-        preBuffered.byteLength + finalDelta.byteLength,
-      );
-      combined.set(preBuffered, 0);
-      combined.set(finalDelta, preBuffered.byteLength);
-      resolve(combined);
-      return;
-    }
-
-    // If we already have pre-buffered data and no pattern, reset idle to
-    // give subsequent chunks time to arrive.
-    armIdle();
+    const hardTimer = setTimeout(() => finish(), timeoutMs);
 
     const unsubscribe = session.handle.onData((bytes) => {
       if (settled) return;
@@ -133,15 +47,6 @@ export async function waitForOutput(
         onChunk(bytes);
       } catch (err) {
         console.error("[pty-wait-utils] onChunk failed:", err);
-      }
-      if (regex) {
-        accumulated += stripAnsi(decoder.decode(bytes, { stream: true }));
-        if (regex.test(accumulated)) {
-          finish();
-          return;
-        }
-      } else {
-        armIdle();
       }
     });
 
@@ -151,7 +56,6 @@ export async function waitForOutput(
     function finish() {
       if (settled) return;
       settled = true;
-      if (idleTimer) clearTimeout(idleTimer);
       clearTimeout(hardTimer);
       try {
         unsubscribe();

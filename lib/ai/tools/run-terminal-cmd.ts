@@ -33,21 +33,10 @@ import {
   type PtySession,
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
-import {
-  waitForOutput,
-  capOutput,
-  stripAnsi,
-  compileWaitPattern,
-  InvalidWaitPatternError,
-  type WaitPolicy,
-} from "./utils/pty-wait-utils";
+import { waitForOutput, capOutput, stripAnsi } from "./utils/pty-wait-utils";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
-
-// Interactive PTY wait defaults (duplicated from pty-wait-utils for schema use)
-const DEFAULT_WAIT_IDLE_MS = 800;
-const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -144,7 +133,7 @@ If you are generating files:
         .optional()
         .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Seconds to wait for non-interactive command output before returning (the command keeps running in background on timeout). Capped at ${MAX_TIMEOUT_SECONDS}s; default ${DEFAULT_STREAM_TIMEOUT_SECONDS}s. Applies ONLY when interactive=false — interactive sessions use \`wait_for\` instead.`,
+          `Timeout in seconds to wait for command output before returning. For interactive=false, the command keeps running in background on timeout. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
@@ -153,39 +142,6 @@ If you are generating files:
         .describe(
           "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
         ),
-      wait_for: z
-        .object({
-          pattern: z
-            .string()
-            .optional()
-            .describe(
-              "JS regex. Resolves as soon as accumulated (ANSI-stripped) output matches — use this when you know the shell prompt or marker you're waiting for (e.g. '>>> $' for python, '# $' for a root shell). Invalid regex returns a structured error rather than crashing the call.",
-            ),
-          idle_ms: z
-            .number()
-            .int()
-            .min(50)
-            .max(60_000)
-            .optional()
-            .default(DEFAULT_WAIT_IDLE_MS)
-            .describe(
-              "Resolve after N ms with no new output bytes. Good default for prompts that don't have a predictable marker. Range: [50, 60000].",
-            ),
-          timeout_ms: z
-            .number()
-            .int()
-            .min(100)
-            .max(300_000)
-            .optional()
-            .default(DEFAULT_WAIT_TIMEOUT_MS)
-            .describe(
-              "Hard cap on the wait. Fires even if neither pattern nor idle_ms triggered. Range: [100, 300000].",
-            ),
-        })
-        .optional()
-        .describe(
-          "Wait policy applied after interactive=true exec. Resolves on the FIRST of: `pattern` match, `idle_ms` of silence, or `timeout_ms` elapsed. Default: {idle_ms: 800, timeout_ms: 10000}.",
-        ),
     }),
     execute: async (
       {
@@ -193,17 +149,11 @@ If you are generating files:
         is_background,
         timeout,
         interactive,
-        wait_for,
       }: {
         command: string;
         is_background: boolean;
         timeout?: number;
         interactive: boolean;
-        wait_for?: {
-          pattern?: string;
-          idle_ms: number;
-          timeout_ms: number;
-        };
       },
       { toolCallId, abortSignal },
     ) => {
@@ -213,31 +163,6 @@ If you are generating files:
       // PTY can call `PtyHandle.resize()` directly.
       const cols = DEFAULT_PTY_COLS;
       const rows = DEFAULT_PTY_ROWS;
-      // Default wait policy shared across interactive action branches.
-      const waitPolicy: WaitPolicy = {
-        pattern: wait_for?.pattern,
-        idle_ms: wait_for?.idle_ms ?? DEFAULT_WAIT_IDLE_MS,
-        timeout_ms: wait_for?.timeout_ms ?? DEFAULT_WAIT_TIMEOUT_MS,
-      };
-
-      // Validate the regex BEFORE any PTY session is spawned so an invalid
-      // pattern on interactive exec cannot leak a session that later errors
-      // out in waitForOutput.
-      if (interactive) {
-        try {
-          compileWaitPattern(waitPolicy);
-        } catch (err) {
-          if (err instanceof InvalidWaitPatternError) {
-            return {
-              result: {
-                output: "",
-                error: `Invalid wait_for.pattern: ${err.message}`,
-              },
-            };
-          }
-          throw err;
-        }
-      }
 
       // Helper: emit a raw-byte chunk to the UI terminal stream.
       // The `data-terminal` part shape in `UIMessageStreamWriter` only types
@@ -376,7 +301,7 @@ If you are generating files:
           // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
-            waitPolicy,
+            effectiveStreamTimeout * 1000,
             abortSignal,
             emitTerminal,
             (s) => ptySessionManager.consumeDelta(s),
@@ -397,14 +322,6 @@ If you are generating files:
             },
           };
         } catch (err) {
-          if (err instanceof InvalidWaitPatternError) {
-            return {
-              result: {
-                output: "",
-                error: `Invalid wait_for.pattern: ${err.message}`,
-              },
-            };
-          }
           return {
             result: {
               output: "",
