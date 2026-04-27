@@ -376,7 +376,7 @@ export function buildProviderOptions(
         ? {
             reasoning: {
               enabled: true,
-              ...(isDeepSeekV4 && { effort: "high" }),
+              ...(isDeepSeekV4 && { effort: "xhigh" }),
             },
           }
         : { reasoning: { enabled: false } }),
