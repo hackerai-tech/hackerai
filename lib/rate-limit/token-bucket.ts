@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 // =============================================================================
 // Configuration
@@ -282,7 +283,13 @@ export const checkTokenBucketLimit = async (
           ) {
             const reason =
               deductResult.autoReloadResult.reason ?? "payment_failed";
-            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            // Suspended customers (flagged by the fraud webhook) short-circuit
+            // before any charge attempt. Render the suspension message instead
+            // of the "update your payment method" copy — they can't fix it.
+            const msg =
+              reason === "customer_blocked"
+                ? getSuspensionMessage(null)
+                : `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,

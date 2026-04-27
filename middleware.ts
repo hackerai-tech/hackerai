@@ -10,6 +10,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/api/clear-auth-cookies",
   "/api/auth/desktop-callback",
   "/api/extra-usage/webhook",
+  "/api/fraud/webhook",
   "/api/subscription/webhook",
   "/callback",
   "/desktop-login",
