@@ -22,8 +22,17 @@ function isTerminalStripeError(err: unknown): boolean {
   );
 }
 
-/** Cancel all active Stripe subscriptions for a customer. */
-async function cancelAllSubscriptions(customerId: string): Promise<void> {
+/**
+ * Cancel Stripe subscriptions that existed at the time of the originating
+ * fraud event. Subs created after `asOfUnix` are skipped: they're a different
+ * customer action (e.g. a re-subscribe after a non-fraudulent dispute) and
+ * must not be affected by a webhook replay. This is what makes the handler
+ * safe to re-run against drifted Stripe state.
+ */
+async function cancelAllSubscriptions(
+  customerId: string,
+  asOfUnix: number,
+): Promise<void> {
   const subs = await stripe.subscriptions.list({
     customer: customerId,
     status: "all",
@@ -31,6 +40,12 @@ async function cancelAllSubscriptions(customerId: string): Promise<void> {
   });
 
   for (const sub of subs.data) {
+    if (sub.created > asOfUnix) {
+      console.log(
+        `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: created ${sub.created} > event ${asOfUnix} (post-event)`,
+      );
+      continue;
+    }
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
@@ -49,14 +64,27 @@ async function cancelAllSubscriptions(customerId: string): Promise<void> {
   }
 }
 
-/** Detach all payment methods from a customer to prevent future charges. */
-async function detachAllPaymentMethods(customerId: string): Promise<void> {
+/**
+ * Detach payment methods that existed at the time of the originating fraud
+ * event. Payment methods added after `asOfUnix` are skipped — same reasoning
+ * as cancelAllSubscriptions: a replay must not reach into post-event state.
+ */
+async function detachAllPaymentMethods(
+  customerId: string,
+  asOfUnix: number,
+): Promise<void> {
   const paymentMethods = await stripe.paymentMethods.list({
     customer: customerId,
     limit: 100,
   });
 
   for (const pm of paymentMethods.data) {
+    if (pm.created > asOfUnix) {
+      console.log(
+        `[Fraud Webhook] Detach skipped for payment method ${pm.id}: created ${pm.created} > event ${asOfUnix} (post-event)`,
+      );
+      continue;
+    }
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {
@@ -176,9 +204,10 @@ async function blockFraudulentUser(
   customerId: string,
   chargeId: string | null,
   reason: string,
+  asOfUnix: number,
 ): Promise<void> {
-  await cancelAllSubscriptions(customerId);
-  await detachAllPaymentMethods(customerId);
+  await cancelAllSubscriptions(customerId, asOfUnix);
+  await detachAllPaymentMethods(customerId, asOfUnix);
   await markCustomerBlocked(customerId, reason);
   if (chargeId) {
     await reportChargeFraudulent(chargeId);
@@ -230,6 +259,7 @@ async function handleEarlyFraudWarning(
       customerId,
       chargeId,
       `early_fraud_warning:${warning.fraud_type}`,
+      warning.created,
     );
   }
 }
@@ -274,6 +304,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       customerId,
       chargeId,
       `dispute_fraudulent:${dispute.id}`,
+      dispute.created,
     );
   } else {
     // Non-fraudulent dispute (unrecognized, duplicate, product issue, etc.).
@@ -282,8 +313,8 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // again. Stop all future charges on this card: cancel subscriptions
     // AND detach payment methods. Don't mark blocked — the customer can
     // still re-subscribe with a different card if they want to continue.
-    await cancelAllSubscriptions(customerId);
-    await detachAllPaymentMethods(customerId);
+    await cancelAllSubscriptions(customerId, dispute.created);
+    await detachAllPaymentMethods(customerId, dispute.created);
     console.log(
       `[Fraud Webhook] Cancelled subscriptions and detached payment methods for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
@@ -391,8 +422,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Finalize the claim. If this write itself fails, log and continue:
-  // a duplicate Stripe retry would re-run the (now individually idempotent)
-  // handler operations, so the missed finalize is recoverable.
+  // a duplicate Stripe retry would re-run the handler operations, but the
+  // handlers filter Stripe state by the originating event's `created`
+  // timestamp (see cancelAllSubscriptions / detachAllPaymentMethods), so a
+  // replay can only act on subs/payment methods that already existed when
+  // the fraud signal arrived. Replacement subs and new cards added after
+  // the event are skipped.
   try {
     await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
