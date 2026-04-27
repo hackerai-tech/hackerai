@@ -60,6 +60,12 @@ export interface Message {
   [key: string]: any;
 }
 
+// Tool types that intentionally render during input-streaming for progressive UI
+// (e.g. file write/append showing content as the LLM generates it). All other
+// tool types are held back until input-available — see the gate inside the
+// per-part forEach below.
+const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
+
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
@@ -95,14 +101,22 @@ export function extractSidebarContentFromMessage(
   });
 
   message.parts.forEach((part) => {
-    // Terminal (including Codex local commands)
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the command is finalized.
+    // Hold tool entries back until the LLM finishes generating tool input.
+    // The AI SDK populates `part.input` from partial JSON during input-streaming,
+    // which would otherwise push entries into contentList and trigger sidebar
+    // auto-follow mid-stream. Tools listed in STREAMS_DURING_INPUT opt out for
+    // progressive UI (e.g. file write/append showing content as it's generated).
     if (
-      part.type === "tool-run_terminal_cmd" &&
-      part.input?.command &&
-      part.state !== "input-streaming"
+      part.state === "input-streaming" &&
+      typeof part.type === "string" &&
+      part.type.startsWith("tool-") &&
+      !STREAMS_DURING_INPUT.has(part.type)
     ) {
+      return;
+    }
+
+    // Terminal (including Codex local commands)
+    if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
       const command = part.input.command;
 
       // Get streaming output from data-terminal parts
@@ -211,15 +225,10 @@ export function extractSidebarContentFromMessage(
     }
 
     // Shell tool (new interactive PTY-based shell)
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the command is finalized.
-    if (
-      part.type === "tool-shell" &&
-      part.input &&
-      part.state !== "input-streaming"
-    ) {
+    if (part.type === "tool-shell" && part.input) {
       const command = part.input.command || part.input.brief || "";
 
+      // Skip if no command/brief available yet
       if (!command) return;
 
       // Get streaming output from data-terminal parts
@@ -244,13 +253,7 @@ export function extractSidebarContentFromMessage(
     }
 
     // HTTP Request
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the request is finalized.
-    if (
-      part.type === "tool-http_request" &&
-      part.input?.url &&
-      part.state !== "input-streaming"
-    ) {
+    if (part.type === "tool-http_request" && part.input?.url) {
       const method = part.input.method || "GET";
       const url = part.input.url;
       const command = `${method} ${url}`;
@@ -557,12 +560,7 @@ export function extractSidebarContentFromMessage(
     }
 
     // Shared files (get_terminal_files)
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the file list is finalized.
-    if (
-      part.type === "tool-get_terminal_files" &&
-      part.state !== "input-streaming"
-    ) {
+    if (part.type === "tool-get_terminal_files") {
       const requestedPaths: string[] = part.input?.files || [];
 
       // Seed from persisted message.fileDetails so sidebar shows files after reload
@@ -594,12 +592,7 @@ export function extractSidebarContentFromMessage(
       "tool-view_sitemap_entry",
     ];
 
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the proxy action is finalized.
-    if (
-      proxyToolTypes.includes(part.type) &&
-      part.state !== "input-streaming"
-    ) {
+    if (proxyToolTypes.includes(part.type)) {
       const toolName = part.type.replace("tool-", "");
       const proxyInput = part.input || {};
       const cmdParts: string[] = [toolName];
@@ -643,12 +636,7 @@ export function extractSidebarContentFromMessage(
       "tool-delete_note",
     ];
 
-    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
-    // sidebar auto-follow before the notes action is finalized.
-    if (
-      notesToolTypes.includes(part.type) &&
-      part.state !== "input-streaming"
-    ) {
+    if (notesToolTypes.includes(part.type)) {
       const toolName = part.type.replace("tool-", "") as
         | "create_note"
         | "list_notes"
