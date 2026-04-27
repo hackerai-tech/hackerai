@@ -19,6 +19,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
   "model-opus-4.7": { input: 5.0, output: 25.0 },
+  "model-gpt-5.5": { input: 5.0, output: 30.0 },
   "model-gpt-5.4": { input: 2.5, output: 15.0 },
   // "agent-model", "agent-model-free", and "model-kimi-k2.6" all route to
   // moonshotai/kimi-k2.6:exacto via lib/ai/providers.ts. Rates from Moonshot AI
