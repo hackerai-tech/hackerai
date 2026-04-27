@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { ChatStatus } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -11,13 +11,17 @@ import {
 import { getTodoStats } from "@/lib/utils/todo-utils";
 
 interface TodoPanelProps {
-  status: ChatStatus;
+  status?: ChatStatus;
   placement?: "chat" | "sidebar";
 }
 
 export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const { todos, setIsTodoPanelExpanded, sidebarOpen } = useGlobalState();
+  const {
+    todos,
+    isTodoPanelExpanded: isExpanded,
+    setIsTodoPanelExpanded,
+    sidebarOpen,
+  } = useGlobalState();
 
   // Deduplicate todos by id (keep last occurrence, consistent with backend)
   const uniqueTodos = Array.from(
@@ -28,14 +32,6 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
 
   // Don't show panel if no todos exist
   const hasTodos = uniqueTodos.length > 0;
-
-  // Reflect expansion to global state
-  useEffect(() => {
-    setIsTodoPanelExpanded(isExpanded);
-    return () => {
-      setIsTodoPanelExpanded(false);
-    };
-  }, [isExpanded, setIsTodoPanelExpanded]);
 
   // Show panel only when there are active todos (hide when all are finished)
   const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
@@ -64,7 +60,7 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
   }
 
   const handleToggleExpand = () => {
-    setIsExpanded(!isExpanded);
+    setIsTodoPanelExpanded(!isExpanded);
   };
 
   // Find the "current" todo: prefer in-progress, otherwise the most recent
@@ -121,13 +117,6 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
         onClick={handleToggleExpand}
         className="flex items-center w-full gap-2 pl-3 pr-4 py-2 hover:opacity-80 transition-opacity cursor-pointer focus:outline-none"
         aria-label={isExpanded ? "Collapse todos" : "Expand todos"}
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleToggleExpand();
-          }
-        }}
       >
         {!isExpanded && currentTodo && currentTodoDisplayStatus ? (
           <span className="flex-shrink-0">

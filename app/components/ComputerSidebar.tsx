@@ -753,7 +753,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 <div></div>
               </div>
             </div>
-            <TodoPanel status={status ?? "ready"} placement="sidebar" />
+            <TodoPanel status={status} placement="sidebar" />
           </div>
         </div>
       </div>
