@@ -25,6 +25,7 @@ import {
 } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
 import { FilePartRenderer } from "./FilePartRenderer";
+import { TodoPanel } from "./TodoPanel";
 import {
   getCategoryColor,
   getLanguageFromPath,
@@ -752,6 +753,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 <div></div>
               </div>
             </div>
+            <TodoPanel status={status ?? "ready"} placement="sidebar" />
           </div>
         </div>
       </div>
