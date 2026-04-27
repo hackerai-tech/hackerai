@@ -101,6 +101,8 @@ export interface SidebarTerminal {
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
+  /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
+  isInteractive?: boolean;
   /** E2B process ID (only for E2B sandboxes). */
   pid?: number | null;
   /** Local session identifier (only for local sandboxes). */

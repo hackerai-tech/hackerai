@@ -50,8 +50,16 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   // Support both legacy run_terminal_cmd and new shell tool input shapes
   const isShellTool = part.type === "tool-shell" || input?.action !== undefined;
   const terminalInput = isShellTool
-    ? { command: getShellDisplayCommand(input), is_background: false }
-    : (input as { command: string; is_background: boolean });
+    ? {
+        command: getShellDisplayCommand(input),
+        is_background: false,
+        interactive: false,
+      }
+    : (input as {
+        command: string;
+        is_background: boolean;
+        interactive?: boolean;
+      });
   const terminalOutput = output as ShellToolOutput;
 
   // Memoize streaming output: use pre-computed value when passed, else derive from message.parts
@@ -98,13 +106,18 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const isExecuting = state === "input-available" && status === "streaming";
 
   const isInteractiveAction = isInteractiveShellAction(shellAction);
+  // For kill, the session id is already shown in the action label
+  // ("Killed [Session: ...]") — no useful target to display.
+  const isKillAction = shellAction === "kill";
   const displayCommand = isShellTool
     ? getShellDisplayCommand(input) ||
-      (isInteractiveAction ? shellAction || "" : "")
+      (isInteractiveAction && !isKillAction ? shellAction || "" : "")
     : terminalInput?.command || "";
-  const displayTarget = isShellTool
-    ? getShellDisplayTarget(input) || displayCommand
-    : displayCommand;
+  const displayTarget = isKillAction
+    ? ""
+    : isShellTool
+      ? getShellDisplayTarget(input) || displayCommand
+      : displayCommand;
 
   const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
   const shellSession =
@@ -116,6 +129,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       pid: shellPid,
       session: shellSession,
       isActive,
+      interactive: !isShellTool ? terminalInput?.interactive : undefined,
+      isBackground: !isShellTool ? terminalInput?.is_background : undefined,
     });
 
   // Prefer rawSnapshot when tool is complete (has final state), streaming during execution
@@ -132,6 +147,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       output: finalOutput,
       isExecuting,
       isBackground: terminalInput?.is_background,
+      isInteractive: !isShellTool ? terminalInput?.interactive : undefined,
       toolCallId,
       shellAction,
       pid: shellPid,
@@ -145,7 +161,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     finalOutput,
     isExecuting,
     isInteractiveAction,
+    isShellTool,
     terminalInput?.is_background,
+    terminalInput?.interactive,
     toolCallId,
     shellAction,
     shellPid,

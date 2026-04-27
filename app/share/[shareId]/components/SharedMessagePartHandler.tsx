@@ -212,7 +212,11 @@ function renderTerminalTool(
   const terminalInput = part.input as ShellToolInput;
   const terminalOutput = part.output as ShellToolOutput;
   const command = getShellDisplayCommand(terminalInput);
-  const target = getShellDisplayTarget(terminalInput);
+  // For kill, the session id is shown in the action label, so suppress target.
+  const target =
+    terminalInput?.action === "kill"
+      ? ""
+      : getShellDisplayTarget(terminalInput);
   const output = getShellOutput(terminalOutput);
 
   if (
@@ -237,10 +241,16 @@ function renderTerminalTool(
     };
 
     const isShellTool = part.type === "tool-shell";
+    const legacyInput = !isShellTool
+      ? (part.input as { interactive?: boolean; is_background?: boolean })
+      : undefined;
     const actionLabel = getShellActionLabel({
       isShellTool,
       action: terminalInput?.action,
       pid: terminalInput?.pid ?? terminalOutput?.pid,
+      session: terminalInput?.session ?? terminalOutput?.session,
+      interactive: legacyInput?.interactive,
+      isBackground: legacyInput?.is_background,
     });
 
     return (

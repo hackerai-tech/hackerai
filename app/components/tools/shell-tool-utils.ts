@@ -75,10 +75,34 @@ export function getShellActionLabel(opts: {
   pid?: number;
   session?: string;
   isActive?: boolean;
+  /** Legacy run_terminal_cmd: input.interactive — true opens a PTY session. */
+  interactive?: boolean;
+  /** Legacy run_terminal_cmd: input.is_background — true runs detached. */
+  isBackground?: boolean;
 }): string {
-  const { isShellTool, action, pid, session, isActive = false } = opts;
+  const {
+    isShellTool,
+    action,
+    pid,
+    session,
+    isActive = false,
+    interactive,
+    isBackground,
+  } = opts;
 
-  if (!isShellTool) return isActive ? "Executing" : "Executed";
+  if (!isShellTool) {
+    // For interactive / background, the verb is the action label and the
+    // command flows in as the target — e.g. "Started interactive" + `bash`
+    // reads as "Started interactive bash". PID/session aren't included here
+    // because they'd land between the verb and the command target.
+    if (interactive) {
+      return isActive ? "Starting interactive" : "Started interactive";
+    }
+    if (isBackground) {
+      return isActive ? "Starting background" : "Started background";
+    }
+    return isActive ? "Executing" : "Executed";
+  }
 
   const entry = LABELS[action as ShellAction];
   if (!entry) return isActive ? "Executing" : "Executed";
@@ -86,7 +110,16 @@ export function getShellActionLabel(opts: {
   const [active, done] = entry;
   const label = isActive ? active : done;
   if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
-    if (pid) return `${label} [PID: ${pid}]`;
+    // For kill, the session is gone — its PID is meaningless, so prefer
+    // the session id. Other session actions still prefer PID (E2B) and
+    // fall back to session id (Centrifugo / local sandboxes).
+    if (action === "kill") {
+      if (session) return `${label} [Session: ${session.slice(0, 8)}]`;
+      if (pid) return `${label} [PID: ${pid}]`;
+    } else {
+      if (pid) return `${label} [PID: ${pid}]`;
+      if (session) return `${label} [Session: ${session.slice(0, 8)}]`;
+    }
   }
   return label;
 }

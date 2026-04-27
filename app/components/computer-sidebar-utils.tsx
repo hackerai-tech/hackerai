@@ -133,6 +133,8 @@ export function getActionText(content: SidebarContent): string {
       pid: content.pid ?? undefined,
       session: content.session ?? undefined,
       isActive: content.isExecuting,
+      interactive: content.isInteractive,
+      isBackground: content.isBackground,
     });
   }
 
