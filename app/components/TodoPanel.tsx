@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect } from "react";
+import { useEffect } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { ChatStatus } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -115,7 +115,7 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
       {/* Header */}
       <button
         onClick={handleToggleExpand}
-        className="flex items-center w-full gap-2 pl-3 pr-4 py-2 hover:opacity-80 transition-opacity cursor-pointer focus:outline-none"
+        className="flex items-center w-full gap-2 pl-3 pr-4 py-2 hover:opacity-80 transition-opacity cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         aria-label={isExpanded ? "Collapse todos" : "Expand todos"}
       >
         {!isExpanded && currentTodo && currentTodoDisplayStatus ? (
