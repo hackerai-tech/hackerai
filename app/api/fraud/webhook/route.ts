@@ -266,14 +266,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Atomic idempotency claim — marks the event immediately to prevent
-  // concurrent deliveries from both passing the check (TOCTOU race).
-  // Stripe operations below are idempotent, so duplicate runs are safe
-  // if the claim write succeeds but processing partially fails.
+  // Idempotency check — check only, mark after successful handling.
+  // Marking before the handler runs would cause Stripe retries to be
+  // skipped if the handler partially fails (e.g., markCustomerBlocked
+  // throws), leaving the block flow permanently incomplete.
   try {
     const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
+      checkOnly: true,
     });
 
     if (result.alreadyProcessed) {
@@ -290,18 +291,42 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Handle events
-  switch (event.type) {
-    case "radar.early_fraud_warning.created": {
-      await handleEarlyFraudWarning(
-        event.data.object as Stripe.Radar.EarlyFraudWarning,
-      );
-      break;
+  // Handle events. If the handler throws, return 500 WITHOUT marking the
+  // event as processed so Stripe retries the delivery.
+  try {
+    switch (event.type) {
+      case "radar.early_fraud_warning.created": {
+        await handleEarlyFraudWarning(
+          event.data.object as Stripe.Radar.EarlyFraudWarning,
+        );
+        break;
+      }
+      case "charge.dispute.created": {
+        await handleDisputeCreated(event.data.object as Stripe.Dispute);
+        break;
+      }
     }
-    case "charge.dispute.created": {
-      await handleDisputeCreated(event.data.object as Stripe.Dispute);
-      break;
-    }
+  } catch (error) {
+    console.error(
+      `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
+      error,
+    );
+    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
+  }
+
+  // Mark as processed only after successful handling.
+  try {
+    await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      eventId: event.id,
+    });
+  } catch (error) {
+    // Log but don't fail — the event was already handled successfully.
+    // A duplicate retry would re-run idempotent Stripe operations.
+    console.error(
+      `[Fraud Webhook] Failed to mark event ${event.id} as processed:`,
+      error,
+    );
   }
 
   return NextResponse.json({ received: true });
