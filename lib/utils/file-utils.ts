@@ -16,6 +16,13 @@ export type UploadUrlResult = {
 /** Maximum file size allowed (10MB) */
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
+/**
+ * Maximum image size allowed (5MB).
+ * Anthropic's Vertex/API endpoints reject base64 images over 5 MiB of raw bytes,
+ * and OpenRouter re-encodes our S3 URLs as base64 before forwarding.
+ */
+export const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+
 /** Maximum number of files allowed to be uploaded at once */
 export const MAX_FILES_LIMIT = 5;
 
@@ -50,6 +57,12 @@ export function validateFile(file: File): { valid: boolean; error?: string } {
     return {
       valid: false,
       error: `File size must be less than ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+    };
+  }
+  if (isImageFile(file) && file.size > MAX_IMAGE_SIZE) {
+    return {
+      valid: false,
+      error: `Image size must be less than ${MAX_IMAGE_SIZE / (1024 * 1024)}MB`,
     };
   }
   return { valid: true };
