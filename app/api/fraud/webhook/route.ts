@@ -250,10 +250,16 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       `dispute_fraudulent:${dispute.id}`,
     );
   } else {
-    // Legitimate customer confused about the charge — just stop billing
+    // Non-fraudulent dispute (unrecognized, duplicate, product issue, etc.).
+    // The customer may be legitimate but a chargeback still costs us the
+    // dispute fee + ratio impact, and the disputed card is likely to file
+    // again. Stop all future charges on this card: cancel subscriptions
+    // AND detach payment methods. Don't mark blocked — the customer can
+    // still re-subscribe with a different card if they want to continue.
     await cancelAllSubscriptions(customerId);
+    await detachAllPaymentMethods(customerId);
     console.log(
-      `[Fraud Webhook] Cancelled subscriptions for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
+      `[Fraud Webhook] Cancelled subscriptions and detached payment methods for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
   }
 }

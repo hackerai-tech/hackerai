@@ -139,10 +139,12 @@ export const checkAndMarkWebhook = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
     const existing = await ctx.db
       .query("processed_webhooks")
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
-      .first();
+      .unique();
 
     if (existing) {
       return { alreadyProcessed: true };
@@ -205,10 +207,12 @@ export const claimWebhookProcessing = mutation({
     validateServiceKey(args.serviceKey);
 
     const now = Date.now();
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
     const existing = await ctx.db
       .query("processed_webhooks")
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
-      .first();
+      .unique();
 
     if (!existing) {
       await ctx.db.insert("processed_webhooks", {
@@ -258,10 +262,12 @@ export const finalizeWebhookProcessing = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
     const existing = await ctx.db
       .query("processed_webhooks")
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
-      .first();
+      .unique();
 
     if (existing) {
       await ctx.db.patch(existing._id, {

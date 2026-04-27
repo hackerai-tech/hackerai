@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -59,6 +66,16 @@ function makeMockCtx(initialRows: Row[] = []) {
 
   const queryChain = (eventId: string) => ({
     first: async () => rows.find((r) => r.event_id === eventId) ?? null,
+    unique: async () => {
+      const matches = rows.filter((r) => r.event_id === eventId);
+      if (matches.length === 0) return null;
+      if (matches.length > 1) {
+        throw new Error(
+          `Expected exactly one row for event_id=${eventId}, found ${matches.length}`,
+        );
+      }
+      return matches[0];
+    },
   });
 
   const ctx: any = {
@@ -111,6 +128,10 @@ describe("claimWebhookProcessing", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("inserts a pending row and acquires the claim when no row exists", async () => {
@@ -252,6 +273,10 @@ describe("finalizeWebhookProcessing", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(Date, "now").mockReturnValue(2_000_000);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("transitions a pending row to completed", async () => {
