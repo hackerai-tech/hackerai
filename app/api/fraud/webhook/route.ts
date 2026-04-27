@@ -77,6 +77,55 @@ async function reportChargeFraudulent(chargeId: string): Promise<void> {
   }
 }
 
+/**
+ * Refund a charge for an early fraud warning.
+ *
+ * Uses an idempotency key derived from the EFW ID so that webhook retries
+ * (or TOCTOU duplicate deliveries) collapse onto a single refund instead
+ * of erroring with `charge_already_refunded`.
+ *
+ * Terminal failures (`charge_already_refunded`, `charge_disputed`,
+ * `charge_pending`) are logged and treated as success: there is nothing
+ * to retry. All other errors bubble so the webhook returns 500 and Stripe
+ * retries the delivery — silently swallowing transient errors here would
+ * defeat the entire point of the EFW path (refund proactively to avoid
+ * the dispute fee + ratio impact).
+ */
+async function refundChargeForEFW(
+  chargeId: string,
+  efwId: string,
+): Promise<void> {
+  try {
+    await stripe.refunds.create(
+      { charge: chargeId, reason: "fraudulent" },
+      { idempotencyKey: `efw-refund:${efwId}` },
+    );
+    console.log(
+      `[Fraud Webhook] Refunded charge ${chargeId} (early fraud warning ${efwId})`,
+    );
+  } catch (err) {
+    if (err instanceof Stripe.errors.StripeError) {
+      const code = err.code;
+      if (
+        code === "charge_already_refunded" ||
+        code === "charge_disputed" ||
+        code === "charge_pending"
+      ) {
+        console.log(
+          `[Fraud Webhook] Refund skipped for ${chargeId} (EFW ${efwId}): ${code}`,
+        );
+        return;
+      }
+    }
+    // Transient or unexpected — bubble so Stripe retries the webhook.
+    console.error(
+      `[Fraud Webhook] Refund failed for ${chargeId} (EFW ${efwId}):`,
+      err,
+    );
+    throw err;
+  }
+}
+
 /** Resolve Stripe customer ID from a charge. */
 function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
   return typeof charge.customer === "string"
@@ -146,18 +195,8 @@ async function handleEarlyFraudWarning(
   const charge = await stripe.charges.retrieve(chargeId);
   const customerId = getCustomerIdFromCharge(charge);
 
-  // Refund the charge immediately
-  try {
-    await stripe.refunds.create({
-      charge: chargeId,
-      reason: "fraudulent",
-    });
-    console.log(
-      `[Fraud Webhook] Refunded charge ${chargeId} (early fraud warning)`,
-    );
-  } catch (err) {
-    console.warn(`[Fraud Webhook] Could not refund charge ${chargeId}:`, err);
-  }
+  // Refund first. Throws on transient errors so Stripe retries the webhook.
+  await refundChargeForEFW(chargeId, warning.id);
 
   // Block the user
   if (customerId) {
@@ -266,33 +305,38 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Idempotency check — check only, mark after successful handling.
-  // Marking before the handler runs would cause Stripe retries to be
-  // skipped if the handler partially fails (e.g., markCustomerBlocked
-  // throws), leaving the block flow permanently incomplete.
+  // Atomic claim — eliminates the TOCTOU window where two concurrent
+  // deliveries of the same event.id could both pass a read-then-write
+  // pre-check and both run side effects. claimWebhookProcessing inserts
+  // a `pending` row in a single transaction; only one caller wins.
+  // Stale `pending` claims (>10 min) are reclaimable so a crashed first
+  // attempt doesn't permanently block Stripe's retries.
+  let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
-      checkOnly: true,
-    });
-
-    if (result.alreadyProcessed) {
-      console.log(
-        `[Fraud Webhook] Event ${event.id} already processed, skipping`,
-      );
-      return NextResponse.json({ received: true });
-    }
+    const result = await convex.mutation(
+      api.extraUsage.claimWebhookProcessing,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+      },
+    );
+    claimState = result.state;
   } catch (error) {
-    console.error("[Fraud Webhook] Idempotency check failed:", error);
+    console.error("[Fraud Webhook] Claim failed:", error);
     return NextResponse.json(
-      { error: "Failed to check idempotency" },
+      { error: "Failed to claim webhook" },
       { status: 500 },
     );
   }
 
-  // Handle events. If the handler throws, return 500 WITHOUT marking the
-  // event as processed so Stripe retries the delivery.
+  if (claimState !== "acquired") {
+    console.log(`[Fraud Webhook] Event ${event.id} ${claimState}, skipping`);
+    return NextResponse.json({ received: true });
+  }
+
+  // Handle events. If the handler throws, return 500 WITHOUT finalizing —
+  // the `pending` claim will become reclaimable after STALE_CLAIM_MS so a
+  // future Stripe retry can drive completion.
   try {
     switch (event.type) {
       case "radar.early_fraud_warning.created": {
@@ -314,17 +358,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
 
-  // Mark as processed only after successful handling.
+  // Finalize the claim. If this write itself fails, log and continue:
+  // a duplicate Stripe retry would re-run the (now individually idempotent)
+  // handler operations, so the missed finalize is recoverable.
   try {
-    await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
+    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
     });
   } catch (error) {
-    // Log but don't fail — the event was already handled successfully.
-    // A duplicate retry would re-run idempotent Stripe operations.
     console.error(
-      `[Fraud Webhook] Failed to mark event ${event.id} as processed:`,
+      `[Fraud Webhook] Failed to finalize event ${event.id}:`,
       error,
     );
   }
