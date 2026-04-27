@@ -96,7 +96,13 @@ export function extractSidebarContentFromMessage(
 
   message.parts.forEach((part) => {
     // Terminal (including Codex local commands)
-    if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the command is finalized.
+    if (
+      part.type === "tool-run_terminal_cmd" &&
+      part.input?.command &&
+      part.state !== "input-streaming"
+    ) {
       const command = part.input.command;
 
       // Get streaming output from data-terminal parts
@@ -205,10 +211,15 @@ export function extractSidebarContentFromMessage(
     }
 
     // Shell tool (new interactive PTY-based shell)
-    if (part.type === "tool-shell" && part.input) {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the command is finalized.
+    if (
+      part.type === "tool-shell" &&
+      part.input &&
+      part.state !== "input-streaming"
+    ) {
       const command = part.input.command || part.input.brief || "";
 
-      // Skip if no command/brief available yet (input still streaming)
       if (!command) return;
 
       // Get streaming output from data-terminal parts
@@ -233,7 +244,13 @@ export function extractSidebarContentFromMessage(
     }
 
     // HTTP Request
-    if (part.type === "tool-http_request" && part.input?.url) {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the request is finalized.
+    if (
+      part.type === "tool-http_request" &&
+      part.input?.url &&
+      part.state !== "input-streaming"
+    ) {
       const method = part.input.method || "GET";
       const url = part.input.url;
       const command = `${method} ${url}`;
@@ -540,7 +557,12 @@ export function extractSidebarContentFromMessage(
     }
 
     // Shared files (get_terminal_files)
-    if (part.type === "tool-get_terminal_files") {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the file list is finalized.
+    if (
+      part.type === "tool-get_terminal_files" &&
+      part.state !== "input-streaming"
+    ) {
       const requestedPaths: string[] = part.input?.files || [];
 
       // Seed from persisted message.fileDetails so sidebar shows files after reload
@@ -572,7 +594,12 @@ export function extractSidebarContentFromMessage(
       "tool-view_sitemap_entry",
     ];
 
-    if (proxyToolTypes.includes(part.type)) {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the proxy action is finalized.
+    if (
+      proxyToolTypes.includes(part.type) &&
+      part.state !== "input-streaming"
+    ) {
       const toolName = part.type.replace("tool-", "");
       const proxyInput = part.input || {};
       const cmdParts: string[] = [toolName];
@@ -616,7 +643,12 @@ export function extractSidebarContentFromMessage(
       "tool-delete_note",
     ];
 
-    if (notesToolTypes.includes(part.type)) {
+    // Skip during input-streaming so partial JSON-parsed inputs don't trigger
+    // sidebar auto-follow before the notes action is finalized.
+    if (
+      notesToolTypes.includes(part.type) &&
+      part.state !== "input-streaming"
+    ) {
       const toolName = part.type.replace("tool-", "") as
         | "create_note"
         | "list_notes"
