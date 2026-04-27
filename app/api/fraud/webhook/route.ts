@@ -10,6 +10,18 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Helpers
 // =============================================================================
 
+/**
+ * True if a Stripe error means "the resource is already in the desired
+ * end-state" — already cancelled, already detached, or no longer exists.
+ * These are safe to swallow on retry; anything else (network, rate limit,
+ * 5xx) is transient and must bubble so Stripe retries the webhook.
+ */
+function isTerminalStripeError(err: unknown): boolean {
+  return (
+    err instanceof Stripe.errors.StripeError && err.code === "resource_missing"
+  );
+}
+
 /** Cancel all active Stripe subscriptions for a customer. */
 async function cancelAllSubscriptions(customerId: string): Promise<void> {
   const subs = await stripe.subscriptions.list({
@@ -22,10 +34,17 @@ async function cancelAllSubscriptions(customerId: string): Promise<void> {
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
-      console.warn(
+      if (isTerminalStripeError(err)) {
+        console.log(
+          `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: resource_missing`,
+        );
+        continue;
+      }
+      console.error(
         `[Fraud Webhook] Failed to cancel subscription ${sub.id}:`,
         err,
       );
+      throw err;
     }
   }
 }
@@ -41,10 +60,17 @@ async function detachAllPaymentMethods(customerId: string): Promise<void> {
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {
-      console.warn(
+      if (isTerminalStripeError(err)) {
+        console.log(
+          `[Fraud Webhook] Detach skipped for payment method ${pm.id}: resource_missing`,
+        );
+        continue;
+      }
+      console.error(
         `[Fraud Webhook] Failed to detach payment method ${pm.id}:`,
         err,
       );
+      throw err;
     }
   }
 }
