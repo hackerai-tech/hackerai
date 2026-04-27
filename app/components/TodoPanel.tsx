@@ -104,13 +104,18 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
     ? `${currentTodoIndex + 1} / ${stats.total}`
     : null;
 
-  const containerClassName =
+  const panelClassName =
     placement === "sidebar"
-      ? "mt-3 rounded-[16px] shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] border border-black/8 dark:border-border bg-input-chat"
+      ? "rounded-[16px] shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] border border-black/8 dark:border-border bg-input-chat overflow-hidden"
       : "mx-4 rounded-[22px_22px_0px_0px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0 bg-input-chat";
 
-  return (
-    <div className={containerClassName}>
+  const listMaxHeightClass =
+    placement === "sidebar"
+      ? "max-h-[min(calc(100vh-360px),400px)]"
+      : "max-h-[200px]";
+
+  const panel = (
+    <div className={panelClassName}>
       {/* Header */}
       <button
         onClick={handleToggleExpand}
@@ -149,7 +154,9 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
 
       {/* Todo List - Collapsible */}
       {isExpanded && (
-        <div className="border-t border-border px-4 py-3 space-y-2 max-h-[200px] overflow-y-auto">
+        <div
+          className={`border-t border-border px-4 py-3 space-y-2 overflow-y-auto ${listMaxHeightClass}`}
+        >
           {uniqueTodos.map((todo) => (
             <SharedTodoItem key={todo.id} todo={todo} isPaused={isPaused} />
           ))}
@@ -157,4 +164,17 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
       )}
     </div>
   );
+
+  // In the computer sidebar, anchor the panel to the bottom of a fixed-height
+  // placeholder so the expanded list overlays the timeline above it instead of
+  // pushing the timeline up.
+  if (placement === "sidebar") {
+    return (
+      <div className="relative z-50 mt-3 min-h-[40px]">
+        <div className="absolute bottom-0 left-0 right-0">{panel}</div>
+      </div>
+    );
+  }
+
+  return panel;
 };
