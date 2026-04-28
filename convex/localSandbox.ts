@@ -289,6 +289,8 @@ export const refreshCentrifugoToken = mutation({
       });
     }
 
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+
     const centrifugoToken = await generateCentrifugoToken(
       connection.user_id,
       connection.connection_id,
@@ -439,6 +441,8 @@ export const refreshCentrifugoTokenDesktop = mutation({
         message: "Connection is not active",
       });
     }
+
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { centrifugoToken };
