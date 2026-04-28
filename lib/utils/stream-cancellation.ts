@@ -7,7 +7,7 @@ import {
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
 import { createClient } from "redis";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 
 // Use the same type as redis-pubsub.ts
 type RedisClient = ReturnType<typeof createClient>;
@@ -228,7 +228,7 @@ export const createPreemptiveTimeout = ({
     triggerTime = Date.now();
     isPreemptive = true;
 
-    nextJsAxiomLogger.info("Preemptive timeout triggered", {
+    phLogger.info("Preemptive timeout triggered", {
       chatId,
       endpoint,
       maxDuration,

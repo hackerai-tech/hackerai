@@ -9,7 +9,7 @@ import {
   createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 
 export const maxDuration = 800;
 
@@ -187,7 +187,8 @@ export async function GET(
               const cleanupStart = Date.now();
 
               if (isPreemptive) {
-                nextJsAxiomLogger.info("Stream route preemptive abort caught", {
+                phLogger.info("Stream route preemptive abort caught", {
+                  userId,
                   chatId,
                   timeSinceTriggerMs: triggerTime
                     ? cleanupStart - triggerTime
@@ -202,14 +203,12 @@ export async function GET(
                 error.name === "AbortError"
               ) {
                 if (isPreemptive) {
-                  nextJsAxiomLogger.info(
-                    "Stream route closing controller after abort",
-                    {
-                      chatId,
-                      cleanupDurationMs: Date.now() - cleanupStart,
-                    },
-                  );
-                  await nextJsAxiomLogger.flush();
+                  phLogger.info("Stream route closing controller after abort", {
+                    userId,
+                    chatId,
+                    cleanupDurationMs: Date.now() - cleanupStart,
+                  });
+                  await phLogger.flush();
                 }
                 controller.close();
               } else {
@@ -217,16 +216,17 @@ export async function GET(
               }
             }
           },
-          cancel() {
+          async cancel() {
             const isPreemptive = preemptiveTimeout.isPreemptive();
             if (isPreemptive) {
-              nextJsAxiomLogger.info("Stream route cancel called", { chatId });
+              phLogger.info("Stream route cancel called", { userId, chatId });
             }
             preemptiveTimeout.clear();
             reader.cancel();
             cancellationSubscriber.stop();
             if (isPreemptive) {
-              nextJsAxiomLogger.flush();
+              // Await so the serverless runtime doesn't tear down before flush.
+              await phLogger.flush();
             }
           },
         });
