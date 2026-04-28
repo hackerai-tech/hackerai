@@ -241,6 +241,10 @@ export default defineSchema({
     cost_dollars: v.number(),
     // True when Max mode was active for this request (larger context window).
     max_mode: v.optional(v.boolean()),
+    // Legacy BYOK flag retained on historical rows. The feature was removed
+    // and nothing reads or writes this anymore — kept in the schema so old
+    // rows still pass validation.
+    byok: v.optional(v.boolean()),
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),
