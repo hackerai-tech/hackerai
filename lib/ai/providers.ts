@@ -141,20 +141,6 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-/**
- * Create an OpenRouter provider using a user-supplied API key (BYOK).
- * Routes through the same model map as the default provider, so existing
- * model selection logic works unchanged. LLM costs bill to the user's
- * OpenRouter account instead of HackerAI's.
- */
-export function createByokTrackedProvider(apiKey: string) {
-  const byokOpenRouter = createOpenRouter({
-    apiKey,
-    fetch: kimiReasoningPatchFetch,
-  });
-  return customProvider({ languageModels: buildProviderMap(byokOpenRouter) });
-}
-
 export const createTrackedProvider = () =>
   // userId?: string,
   // conversationId?: string,
