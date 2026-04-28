@@ -44,13 +44,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
-  // Caido proxy env vars — injected into every command on non-E2B sandboxes when enabled.
-  // Permanently disabled on first setup failure (e.g. Windows sandbox) to avoid
-  // retrying and logging warnings on every subsequent command.
+  // Caido proxy is set up eagerly only on E2B sandboxes (controlled image where
+  // capturing all agent HTTP traffic is the point). On local sandboxes the proxy
+  // is lazy: it spins up only when the agent reaches for a proxy tool, so plain
+  // terminal commands don't pay the install/start cost or route through Caido.
+  // Permanently disabled on first setup failure to avoid retrying every command.
   const caidoConfig = getCaidoConfig(caidoPort);
-  let caidoEnvVars = caidoEnabled
-    ? buildCaidoProxyEnvVars(caidoConfig)
-    : undefined;
+  let caidoSetupDisabled = false;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -256,17 +256,24 @@ If you are generating files:
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           // Ensure Caido proxy is running + authenticated before commands route through it.
+          // Only eager on E2B; local sandboxes defer setup to proxy tool invocations.
           // This is a no-op after the first successful call (cached per session).
           // If setup fails, permanently disable proxy env vars for all future commands.
-          if (caidoEnvVars) {
+          let caidoEnvVars: Record<string, string> | undefined;
+          if (
+            caidoEnabled &&
+            isE2BSandbox(sandboxInstance) &&
+            !caidoSetupDisabled
+          ) {
             try {
               await ensureCaido(context);
+              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
             } catch (e) {
               console.warn(
                 "[Terminal Command] Caido setup failed, disabling proxy env vars:",
                 e instanceof Error ? e.message : e,
               );
-              caidoEnvVars = undefined;
+              caidoSetupDisabled = true;
             }
           }
 
