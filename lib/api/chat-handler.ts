@@ -109,7 +109,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
   getUserFriendlyProviderError,
@@ -1011,8 +1011,9 @@ export const createChatHandler = (
                 if (!isXaiSafetyError(error)) {
                   console.error("Error:", error);
 
-                  // Log provider errors to Axiom with request context
-                  nextJsAxiomLogger.error("Provider streaming error", {
+                  // Capture provider errors with request context
+                  phLogger.error("Provider streaming error", {
+                    error,
                     chatId,
                     endpoint,
                     mode,
@@ -1044,22 +1045,20 @@ export const createChatHandler = (
               !isRetryWithFallback &&
               isAutoModel
             ) {
-              nextJsAxiomLogger.error(
-                "Provider API error, retrying with fallback",
-                {
-                  chatId,
-                  endpoint,
-                  mode,
-                  originalModel: selectedModel,
-                  fallbackModel,
-                  userId,
-                  subscription,
-                  isTemporary: temporary,
-                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
-                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
-                  ...extractErrorDetails(error),
-                },
-              );
+              phLogger.error("Provider API error, retrying with fallback", {
+                error,
+                chatId,
+                endpoint,
+                mode,
+                originalModel: selectedModel,
+                fallbackModel,
+                userId,
+                subscription,
+                isTemporary: temporary,
+                preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
+                ...extractErrorDetails(error),
+              });
 
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
@@ -1092,7 +1091,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  nextJsAxiomLogger.warn(
+                  phLogger.warn(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
@@ -1255,7 +1254,7 @@ export const createChatHandler = (
                               (p) => p.type,
                             ) ?? [];
 
-                          nextJsAxiomLogger.info("Fallback completed", {
+                          phLogger.info("Fallback completed", {
                             chatId,
                             originalModel: selectedModel,
                             originalAssistantMessageId: assistantMessageId,
@@ -1300,7 +1299,7 @@ export const createChatHandler = (
                     const stepDuration = Date.now() - stepStartTime;
                     const totalElapsed =
                       Date.now() - (triggerTime || onFinishStartTime);
-                    nextJsAxiomLogger.info("Preemptive timeout cleanup step", {
+                    phLogger.info("Preemptive timeout cleanup step", {
                       chatId,
                       step,
                       stepDurationMs: stepDuration,
@@ -1311,18 +1310,15 @@ export const createChatHandler = (
                 };
 
                 if (isPreemptiveAbort) {
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish started",
-                    {
-                      chatId,
-                      endpoint,
-                      timeSinceTriggerMs: triggerTime
-                        ? onFinishStartTime - triggerTime
-                        : null,
-                      messageCount: messages.length,
-                      isTemporary: temporary,
-                    },
-                  );
+                  phLogger.info("Preemptive timeout onFinish started", {
+                    chatId,
+                    endpoint,
+                    timeSinceTriggerMs: triggerTime
+                      ? onFinishStartTime - triggerTime
+                      : null,
+                    messageCount: messages.length,
+                    isTemporary: temporary,
+                  });
                 }
 
                 // Clear pre-emptive timeout
@@ -1519,18 +1515,15 @@ export const createChatHandler = (
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish completed",
-                    {
-                      chatId,
-                      endpoint,
-                      totalOnFinishDurationMs: totalDuration,
-                      totalSinceTriggerMs: triggerTime
-                        ? Date.now() - triggerTime
-                        : null,
-                    },
-                  );
-                  await nextJsAxiomLogger.flush();
+                  phLogger.info("Preemptive timeout onFinish completed", {
+                    chatId,
+                    endpoint,
+                    totalOnFinishDurationMs: totalDuration,
+                    totalSinceTriggerMs: triggerTime
+                      ? Date.now() - triggerTime
+                      : null,
+                  });
+                  await phLogger.flush();
                 }
 
                 // Send updated context usage with output tokens included
@@ -1582,7 +1575,7 @@ export const createChatHandler = (
             }
           } catch (error) {
             // Non-fatal: stream still works without resumability
-            nextJsAxiomLogger.warn("Stream resumption setup failed", {
+            phLogger.warn("Stream resumption setup failed", {
               chatId,
               error: error instanceof Error ? error.message : String(error),
             });

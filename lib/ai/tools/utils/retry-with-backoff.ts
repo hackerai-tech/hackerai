@@ -1,4 +1,4 @@
-import { createRetryLogger } from "@/lib/axiom/worker";
+import { createRetryLogger } from "@/lib/posthog/worker";
 import { isE2BPermanentError, isE2BRateLimitError } from "./e2b-errors";
 
 /** Logger used for retry/abort events; uses framework-agnostic logger (no @axiomhq/nextjs). */
