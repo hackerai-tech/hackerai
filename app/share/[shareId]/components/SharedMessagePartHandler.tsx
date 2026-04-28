@@ -253,15 +253,18 @@ function renderTerminalTool(
       isBackground: legacyInput?.is_background,
     });
 
+    // Kill has nothing useful to show in the sidebar — disable the click.
+    const isKillAction = terminalInput?.action === "kill";
+
     return (
       <ToolBlock
         key={idx}
         icon={<Terminal aria-hidden="true" />}
         action={actionLabel}
         target={target}
-        isClickable={true}
-        onClick={handleOpenInSidebar}
-        onKeyDown={handleKeyDown}
+        isClickable={!isKillAction}
+        onClick={isKillAction ? undefined : handleOpenInSidebar}
+        onKeyDown={isKillAction ? undefined : handleKeyDown}
       />
     );
   }

@@ -211,9 +211,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           action={getActionLabel(status === "streaming")}
           target={displayTarget}
           isShimmer={status === "streaming"}
-          isClickable={true}
-          onClick={handleOpenInSidebar}
-          onKeyDown={handleKeyDown}
+          isClickable={!isKillAction}
+          onClick={isKillAction ? undefined : handleOpenInSidebar}
+          onKeyDown={isKillAction ? undefined : handleKeyDown}
         />
       );
     case "output-available":
@@ -223,9 +223,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           icon={<Terminal />}
           action={getActionLabel(false)}
           target={displayTarget}
-          isClickable={true}
-          onClick={handleOpenInSidebar}
-          onKeyDown={handleKeyDown}
+          isClickable={!isKillAction}
+          onClick={isKillAction ? undefined : handleOpenInSidebar}
+          onKeyDown={isKillAction ? undefined : handleKeyDown}
         />
       );
     case "output-error":
@@ -235,9 +235,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           icon={<Terminal />}
           action={getActionLabel(false)}
           target={displayTarget}
-          isClickable={true}
-          onClick={handleOpenInSidebar}
-          onKeyDown={handleKeyDown}
+          isClickable={!isKillAction}
+          onClick={isKillAction ? undefined : handleOpenInSidebar}
+          onKeyDown={isKillAction ? undefined : handleKeyDown}
         />
       );
     default:
