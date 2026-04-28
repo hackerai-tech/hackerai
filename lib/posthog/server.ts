@@ -26,12 +26,16 @@ export const phLogger = {
       console.error(message, fields);
       return;
     }
-    const { userId, error, ...rest } = fields;
-    const exception = error instanceof Error ? error : new Error(message);
-    client.captureException(exception, distinctIdFor(userId), {
-      message,
-      ...rest,
-    });
+    try {
+      const { userId, error, ...rest } = fields;
+      const exception = error instanceof Error ? error : new Error(message);
+      client.captureException(exception, distinctIdFor(userId), {
+        message,
+        ...rest,
+      });
+    } catch (telemetryError) {
+      console.error(message, { ...fields, telemetryError });
+    }
   },
 
   warn(message: string, fields: LogFields = {}) {
@@ -40,12 +44,16 @@ export const phLogger = {
       console.warn(message, fields);
       return;
     }
-    const { userId, ...rest } = fields;
-    client.capture({
-      distinctId: distinctIdFor(userId),
-      event: "log_warn",
-      properties: { message, level: "warning", ...rest },
-    });
+    try {
+      const { userId, ...rest } = fields;
+      client.capture({
+        distinctId: distinctIdFor(userId),
+        event: "log_warn",
+        properties: { message, level: "warning", ...rest },
+      });
+    } catch (telemetryError) {
+      console.warn(message, { ...fields, telemetryError });
+    }
   },
 
   info(message: string, fields: LogFields = {}) {
@@ -54,12 +62,16 @@ export const phLogger = {
       console.log(message, fields);
       return;
     }
-    const { userId, ...rest } = fields;
-    client.capture({
-      distinctId: distinctIdFor(userId),
-      event: "log_info",
-      properties: { message, level: "info", ...rest },
-    });
+    try {
+      const { userId, ...rest } = fields;
+      client.capture({
+        distinctId: distinctIdFor(userId),
+        event: "log_info",
+        properties: { message, level: "info", ...rest },
+      });
+    } catch (telemetryError) {
+      console.log(message, { ...fields, telemetryError });
+    }
   },
 
   async flush(): Promise<void> {

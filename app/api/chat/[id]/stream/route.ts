@@ -216,7 +216,7 @@ export async function GET(
               }
             }
           },
-          cancel() {
+          async cancel() {
             const isPreemptive = preemptiveTimeout.isPreemptive();
             if (isPreemptive) {
               phLogger.info("Stream route cancel called", { userId, chatId });
@@ -225,7 +225,8 @@ export async function GET(
             reader.cancel();
             cancellationSubscriber.stop();
             if (isPreemptive) {
-              phLogger.flush();
+              // Await so the serverless runtime doesn't tear down before flush.
+              await phLogger.flush();
             }
           },
         });
