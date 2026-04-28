@@ -930,7 +930,6 @@ export async function logUsageRecord({
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
-  byok,
   maxMode,
 }: {
   userId: string;
@@ -942,7 +941,6 @@ export async function logUsageRecord({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
-  byok?: boolean;
   maxMode?: boolean;
 }) {
   try {
@@ -957,7 +955,6 @@ export async function logUsageRecord({
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
       cost_dollars: costDollars,
-      byok,
       max_mode: maxMode,
     });
   } catch (error) {

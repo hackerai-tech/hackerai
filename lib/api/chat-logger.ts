@@ -113,13 +113,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
-     * Set BYOK (Bring Your Own Key) flag
-     */
-    setByok(byok: boolean) {
-      builder.setByok(byok);
-    },
-
-    /**
      * Start stream timing
      */
     startStream() {

@@ -93,7 +93,6 @@ export const saveUserCustomization = mutation({
         .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
         .first();
 
-      // byok_enabled is managed via setByokEnabledForBackend (not this mutation).
       if (existing) {
         // Partial update: only overwrite fields that were explicitly passed
         const patch: Record<string, unknown> = { updated_at: Date.now() };
@@ -174,7 +173,6 @@ export const getUserCustomization = query({
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       max_mode_enabled: v.boolean(),
-      byok_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -206,7 +204,6 @@ export const getUserCustomization = query({
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         max_mode_enabled: customization.max_mode_enabled ?? false,
-        byok_enabled: customization.byok_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -238,7 +235,6 @@ export const getUserCustomizationForBackend = query({
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       max_mode_enabled: v.boolean(),
-      byok_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -267,51 +263,11 @@ export const getUserCustomizationForBackend = query({
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         max_mode_enabled: customization.max_mode_enabled ?? false,
-        byok_enabled: customization.byok_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
       console.error("Failed to get user customization:", error);
       return null;
     }
-  },
-});
-
-/**
- * Toggle byok_enabled flag (server-side only, via service key).
- * Called from /api/byok route after the WorkOS Vault write succeeds.
- */
-export const setByokEnabledForBackend = mutation({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    enabled: v.boolean(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    const existing = await ctx.db
-      .query("user_customization")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
-
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        byok_enabled: args.enabled,
-        updated_at: Date.now(),
-      });
-    } else {
-      await ctx.db.insert("user_customization", {
-        user_id: args.userId,
-        byok_enabled: args.enabled,
-        include_memory_entries: true,
-        extra_usage_enabled: false,
-        max_mode_enabled: false,
-        updated_at: Date.now(),
-      });
-    }
-
-    return null;
   },
 });

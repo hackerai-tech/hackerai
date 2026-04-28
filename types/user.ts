@@ -11,7 +11,6 @@ export interface UserCustomization {
   readonly updated_at: number;
   readonly extra_usage_enabled?: boolean;
   readonly max_mode_enabled?: boolean;
-  readonly byok_enabled?: boolean;
 }
 
 export type PersonalityType = "cynic" | "robot" | "listener" | "nerd";
