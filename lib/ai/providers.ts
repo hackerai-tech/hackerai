@@ -47,7 +47,6 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
     "model-opus-4.7": or("anthropic/claude-opus-4-7"),
     "model-gpt-5.5": or("openai/gpt-5.5"),
-    "model-gpt-5.4": or("openai/gpt-5.4"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
     "fallback-agent-model": or("x-ai/grok-4.1-fast"),
     "fallback-ask-model": or("x-ai/grok-4.1-fast"),
@@ -69,7 +68,6 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-gemini-3-flash": "January 2025",
   "model-opus-4.7": "January 2026",
   "model-gpt-5.5": "August 2025",
-  "model-gpt-5.4": "August 2025",
   "model-kimi-k2.6": "April 2024",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
@@ -88,7 +86,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-gemini-3-flash": "Google Gemini 3 Flash",
   "model-opus-4.7": "Anthropic Claude Opus 4.7",
   "model-gpt-5.5": "OpenAI GPT-5.5",
-  "model-gpt-5.4": "OpenAI GPT-5.4",
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
@@ -113,7 +110,6 @@ export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
   "model-gemini-3-flash": 1_048_576, // Gemini 3 Flash
   "model-opus-4.7": 1_000_000, // Claude Opus 4.7 with 1M context beta
   "model-gpt-5.5": 1_050_000, // GPT-5.5 (922k input + 128k output)
-  "model-gpt-5.4": 1_050_000, // GPT-5.4 (922k input + 128k output)
   "model-kimi-k2.6": 262_144, // Kimi K2.6
   "fallback-agent-model": 2_000_000,
   "fallback-ask-model": 2_000_000,

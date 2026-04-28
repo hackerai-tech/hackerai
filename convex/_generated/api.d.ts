@@ -23,7 +23,6 @@ import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
-import type * as migrations from "../migrations.js";
 import type * as notes from "../notes.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
 import type * as redisPubsub from "../redisPubsub.js";
@@ -58,7 +57,6 @@ declare const fullApi: ApiFromModules<{
   localSandbox: typeof localSandbox;
   memories: typeof memories;
   messages: typeof messages;
-  migrations: typeof migrations;
   notes: typeof notes;
   rateLimitStatus: typeof rateLimitStatus;
   redisPubsub: typeof redisPubsub;
