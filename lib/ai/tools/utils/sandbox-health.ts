@@ -143,7 +143,7 @@ export async function waitForSandboxReady(
         return false; // All other errors: keep retrying - sandbox might be starting
       },
       logger: (message, error) => {
-        // Only log final failure (when it gives up) - sends to Axiom when configured
+        // Only log final failure (when it gives up)
         if (message.includes("failed after")) {
           sandboxHealthLogger(message, error);
         }
