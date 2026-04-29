@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["GH5SMFDDB3.co.hackerai.ios"],
+        "components": [
+          { "/": "/c/*", "comment": "Chat conversation deep links" },
+          { "/": "/mobile-callback*", "comment": "Mobile auth callback" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["GH5SMFDDB3.co.hackerai.ios"]
+  }
+}

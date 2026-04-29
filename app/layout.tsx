@@ -9,6 +9,7 @@ import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
+import { NativeBridge } from "./components/NativeBridge";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -99,6 +100,7 @@ export default function RootLayout({
         <DataStreamProvider>
           <TodoBlockProvider>
             <TooltipProvider>
+              <NativeBridge />
               {children}
               <Toaster />
             </TooltipProvider>
