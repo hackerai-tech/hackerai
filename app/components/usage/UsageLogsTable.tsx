@@ -115,7 +115,7 @@ const UsageLogsTable = () => {
       "Date",
       "Type",
       "Model",
-      "Max Mode",
+      "MAX Mode",
       "Cache Read",
       "Cache Write",
       "Input",
