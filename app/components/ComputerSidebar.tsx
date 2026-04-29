@@ -355,6 +355,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     isWrapped={isWrapped}
                     onToggleWrap={handleToggleWrap}
                     variant="sidebar"
+                    // xterm manages its own wrapping; the toggle is a no-op
+                    // for interactive PTY output.
+                    showWrap={!(isTerminal && resolvedTerminal?.rawBytes)}
                   />
                 )}
               </div>
