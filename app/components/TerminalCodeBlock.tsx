@@ -284,14 +284,19 @@ export const TerminalCodeBlock = ({
     );
   }
 
-  // For sidebar variant, use file block style (no floating buttons since header handles them)
-  // Use XtermRenderer when rawBytes is available (interactive exec or session actions)
+  // For sidebar variant, use file block style (no floating buttons since header handles them).
+  // rawBytes is only populated for interactive PTY contexts (interact_terminal_session
+  // actions or run_terminal_cmd interactive=true) where cursor-movement / TUI rendering
+  // matters. Non-interactive exec falls through to AnsiCodeBlock (shiki).
   const useXterm = rawBytes !== undefined;
 
   return (
     <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
-      {/* Terminal content - takes full available space */}
-      <div className="h-full w-full overflow-auto bg-background">
+      {/* xterm manages its own viewport + scrollbar; AnsiCodeBlock needs the
+          wrapper to scroll. Avoid double scrollbars by toggling overflow. */}
+      <div
+        className={`h-full w-full bg-background ${useXterm ? "overflow-hidden" : "overflow-auto"}`}
+      >
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
             <Shimmer>

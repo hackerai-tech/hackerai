@@ -32,7 +32,7 @@ export function XtermRenderer({
       fontSize: 13,
       lineHeight: 1.2,
       theme: {
-        background: "transparent",
+        background: "#141414",
         foreground: "#e0e0e0",
         cursor: "#e0e0e0",
         cursorAccent: "#1a1a1a",
@@ -113,15 +113,24 @@ export function XtermRenderer({
     }
   }, [bytes, isStreaming]);
 
+  // Outer div paints the bg + padding (matches shiki's `[&_pre]:p-[1em]`),
+  // inner div is the xterm host — fitAddon measures it after padding.
   return (
     <div
-      ref={containerRef}
       className={className}
       style={{
         width: "100%",
         height: "100%",
+        padding: "1em",
+        backgroundColor: "#141414",
+        boxSizing: "border-box",
         overflow: "hidden",
       }}
-    />
+    >
+      <div
+        ref={containerRef}
+        style={{ width: "100%", height: "100%", overflow: "hidden" }}
+      />
+    </div>
   );
 }

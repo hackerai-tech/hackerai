@@ -158,13 +158,16 @@ export function extractSidebarContentFromMessage(
         part.output?.output ||
         "";
 
-      // Prefer rawSnapshot when tool is complete, streaming during execution
+      // Only feed rawBytes (→ xterm renderer) for interactive PTY contexts.
+      // Plain non-interactive exec output is line-oriented; the shiki ANSI
+      // renderer handles it without dragging in xterm.js.
       const rawSnapshot = result?.rawSnapshot || "";
       const isComplete = part.state === "output-available";
-      const effectiveRawBytes =
-        isComplete && rawSnapshot
+      const effectiveRawBytes = isInteractive
+        ? isComplete && rawSnapshot
           ? rawSnapshot
-          : streamingOutput || rawSnapshot || undefined;
+          : streamingOutput || rawSnapshot || undefined
+        : undefined;
 
       contentList.push({
         command,
@@ -270,13 +273,18 @@ export function extractSidebarContentFromMessage(
 
       const finalOutput = directOutput || streamingOutput || "";
 
-      // Prefer rawSnapshot when tool is complete, streaming during execution
+      // Only feed rawBytes (→ xterm renderer) for interactive PTY actions.
+      // Plain `exec` output is line-oriented and renders fine via shiki.
+      const isInteractiveShellPart = isInteractiveShellAction(
+        part.input.action,
+      );
       const rawSnapshot = part.output?.rawSnapshot || "";
       const isComplete = part.state === "output-available";
-      const effectiveRawBytes =
-        isComplete && rawSnapshot
+      const effectiveRawBytes = isInteractiveShellPart
+        ? isComplete && rawSnapshot
           ? rawSnapshot
-          : streamingOutput || rawSnapshot || undefined;
+          : streamingOutput || rawSnapshot || undefined
+        : undefined;
 
       contentList.push({
         command,

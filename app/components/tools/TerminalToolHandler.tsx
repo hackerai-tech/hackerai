@@ -137,12 +137,20 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       compact: true,
     });
 
-  // Prefer rawSnapshot when tool is complete (has final state), streaming during execution
+  // xterm.js is only worthwhile for contexts that may emit cursor movement
+  // (TUI apps, prompts, spinners): interactive PTY sessions and legacy
+  // run_terminal_cmd with interactive=true. Plain `exec` output goes through
+  // sandbox.commands.run — line-oriented, no cursor codes — so we leave
+  // rawBytes undefined and TerminalCodeBlock falls through to the shiki
+  // ANSI renderer (lighter, native text selection).
+  const isInteractiveContext =
+    isInteractive || (!isShellTool && !!terminalInput?.interactive);
   const rawSnapshot = terminalOutput?.result?.rawSnapshot;
-  const effectiveRawBytes =
-    hasResult && rawSnapshot
+  const effectiveRawBytes = isInteractiveContext
+    ? hasResult && rawSnapshot
       ? rawSnapshot
-      : streamingOutput || rawSnapshot || undefined;
+      : streamingOutput || rawSnapshot || undefined
+    : undefined;
 
   const sidebarContent = useMemo((): SidebarTerminal | null => {
     if (!displayCommand && !isInteractiveAction) return null;

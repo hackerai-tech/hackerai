@@ -115,11 +115,11 @@ If you are generating files:
 - If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
     - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
-      command: z.string().describe("Shell command to execute."),
+      command: z.string().describe("The shell command to execute"),
       explanation: z
         .string()
         .describe(
-          "One sentence on why this call is being made and how it advances the goal. Shown to the user.",
+          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
         ),
       is_background: z
         .boolean()
