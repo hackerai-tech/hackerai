@@ -93,7 +93,7 @@ export const modelDisplayNames: Record<ModelName, string> &
 
 /**
  * Maximum context window (in tokens) per model, as advertised by the provider.
- * Used when "Max Mode" is enabled to unlock the model's full native context.
+ * Used when "MAX Mode" is enabled to unlock the model's full native context.
  * Sourced from OpenRouter model pages.
  */
 export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &

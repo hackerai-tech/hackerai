@@ -235,7 +235,7 @@ export const createChatHandler = (
       // context truncation (before messages are fetched from DB).
       const userCustomization = await getUserCustomization({ userId });
 
-      // Max Mode only applies when a specific model is selected — not in Auto.
+      // MAX Mode only applies when a specific model is selected — not in Auto.
       const isAutoModelSelection =
         !selectedModelOverride || selectedModelOverride === "auto";
       const maxModeEnabled =

@@ -508,7 +508,7 @@ const ModelOptionList = ({
               <TooltipTrigger asChild>
                 <div>
                   <SwitchRow
-                    label="Max Mode"
+                    label="MAX Mode"
                     checked={isMaxMode}
                     onToggle={onMaxModeToggle}
                     ariaLabel="Toggle max mode"
@@ -522,7 +522,7 @@ const ModelOptionList = ({
                 className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] [&_svg]:!hidden"
               >
                 <p className="text-sm font-semibold text-foreground leading-snug">
-                  Max Mode
+                  MAX Mode
                 </p>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                   Use the selected model&apos;s full native context window (up
