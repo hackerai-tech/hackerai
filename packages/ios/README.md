@@ -47,12 +47,12 @@ that allows loopback to your dev machine.)
 
 ## Plugin map
 
-| Plugin | Why |
-|---|---|
-| `@capacitor/push-notifications` | Native APNs for new replies — required for 4.2 |
-| `@capacitor/share` | Native share sheet — required for 4.2 |
-| `@capacitor/browser` | In-app browser for WorkOS OAuth (cookie bridge) |
-| `@capacitor/app` | URL scheme + universal link handling |
-| `@capacitor/splash-screen` + `@capacitor/status-bar` | Native chrome |
-| `@aparajita/capacitor-biometric-auth` | Face ID / Touch ID gate |
-| `@capacitor/preferences` | Keychain-backed token fallback |
+| Plugin                                               | Why                                             |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| `@capacitor/push-notifications`                      | Native APNs for new replies — required for 4.2  |
+| `@capacitor/share`                                   | Native share sheet — required for 4.2           |
+| `@capacitor/browser`                                 | In-app browser for WorkOS OAuth (cookie bridge) |
+| `@capacitor/app`                                     | URL scheme + universal link handling            |
+| `@capacitor/splash-screen` + `@capacitor/status-bar` | Native chrome                                   |
+| `@aparajita/capacitor-biometric-auth`                | Face ID / Touch ID gate                         |
+| `@capacitor/preferences`                             | Keychain-backed token fallback                  |

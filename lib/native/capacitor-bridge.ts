@@ -58,9 +58,7 @@ export async function shareContent(opts: {
 export async function registerForPushNotifications(): Promise<string | null> {
   if (!detectCapacitor()) return null;
   try {
-    const { PushNotifications } = await import(
-      "@capacitor/push-notifications"
-    );
+    const { PushNotifications } = await import("@capacitor/push-notifications");
 
     const status = await PushNotifications.checkPermissions();
     if (status.receive !== "granted") {
