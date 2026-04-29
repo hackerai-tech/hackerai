@@ -12,6 +12,24 @@ interface StreamChunk {
   message?: string;
 }
 
+// A getToken refresh fails with one of these when the Convex row has been
+// authoritatively flipped to disconnected (token regenerated, multi-tab
+// connectDesktop kick, manual disconnectByBackend, or row purged after long
+// disconnect). Centrifuge would otherwise retry getToken on its backoff
+// schedule forever and flood Convex logs with identical errors.
+function isConnectionTerminatedByServer(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return false;
+  const code = (data as { code?: string }).code;
+  const message = (data as { message?: string }).message;
+  if (code === "BAD_REQUEST" && message === "Connection is not active")
+    return true;
+  if (code === "NOT_FOUND") return true;
+  if (code === "UNAUTHORIZED") return true;
+  return false;
+}
+
 interface DesktopBridgeConfig {
   connectDesktop: (args: {
     connectionName: string;
@@ -73,10 +91,32 @@ export class DesktopSandboxBridge {
           });
           return result.centrifugoToken;
         } catch (error) {
-          console.error(
-            "[DesktopSandboxBridge] Failed to refresh Centrifugo token:",
-            error,
-          );
+          if (isConnectionTerminatedByServer(error)) {
+            const data =
+              (error as { data?: { code?: string; message?: string } }).data ??
+              {};
+            console.warn(
+              "[DesktopSandboxBridge] Centrifugo refresh aborted — server reports connection terminated; stopping client to break retry loop",
+              {
+                connectionId: this.connectionId,
+                code: data.code,
+                message: data.message,
+              },
+            );
+            const client = this.client;
+            this.client = null;
+            this.connectionId = null;
+            try {
+              client?.disconnect();
+            } catch {
+              // already in a terminal state
+            }
+          } else {
+            console.error(
+              "[DesktopSandboxBridge] Failed to refresh Centrifugo token:",
+              error,
+            );
+          }
           throw error;
         }
       },

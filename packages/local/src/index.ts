@@ -224,6 +224,24 @@ interface RefreshTokenResult {
   centrifugoToken: string;
 }
 
+// A getToken refresh fails with one of these when the Convex row has been
+// authoritatively flipped to disconnected (token regenerated, multi-tab kick,
+// manual backend disconnect, or row purged after long disconnect). Centrifuge
+// would otherwise retry getToken on its backoff schedule forever and flood
+// Convex logs with identical errors.
+function isConnectionTerminatedByServer(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return false;
+  const code = (data as { code?: string }).code;
+  const message = (data as { message?: string }).message;
+  if (code === "BAD_REQUEST" && message === "Connection is not active")
+    return true;
+  if (code === "NOT_FOUND") return true;
+  if (code === "UNAUTHORIZED") return true;
+  return false;
+}
+
 class LocalSandboxClient {
   private convexHttp: ConvexHttpClient;
   private centrifuge?: Centrifuge;
@@ -323,10 +341,34 @@ class LocalSandboxClient {
           )) as RefreshTokenResult;
           return result.centrifugoToken;
         } catch (error) {
-          console.error(
-            chalk.red("Failed to refresh Centrifugo token:"),
-            error,
-          );
+          if (isConnectionTerminatedByServer(error)) {
+            const data =
+              (error as { data?: { code?: string; message?: string } }).data ??
+              {};
+            console.error(
+              chalk.red(
+                `\n❌ Connection terminated by server (${data.code ?? "unknown"}: ${data.message ?? "unknown"})`,
+              ),
+            );
+            console.error(
+              chalk.yellow(
+                "Likely causes: token was regenerated, or this connection was disconnected from another session.",
+              ),
+            );
+            console.error(
+              chalk.gray(`Connection ID: ${this.connectionId ?? "unknown"}`),
+            );
+            // Stop the Centrifuge retry loop and exit. cleanup() synchronously
+            // calls centrifuge.disconnect() before any awaits, so by the time
+            // we re-throw below Centrifuge is already in a terminal state and
+            // won't invoke getToken again.
+            this.cleanup().then(() => process.exit(1));
+          } else {
+            console.error(
+              chalk.red("Failed to refresh Centrifugo token:"),
+              error,
+            );
+          }
           throw error;
         }
       },
