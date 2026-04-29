@@ -131,7 +131,7 @@ export const saveUserCustomization = mutation({
           additional_info: args.additional_info?.trim() || undefined,
           include_memory_entries: args.include_memory_entries ?? true,
           guardrails_config: args.guardrails_config?.trim() || undefined,
-          caido_enabled: args.caido_enabled ?? false,
+          caido_enabled: args.caido_enabled,
           caido_port: args.caido_port ? args.caido_port : undefined,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
           max_mode_enabled: args.max_mode_enabled ?? false,

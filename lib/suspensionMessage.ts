@@ -5,8 +5,6 @@
  * The raw reason categories come from app/api/fraud/webhook/route.ts:
  *   - early_fraud_warning:<fraud_type>
  *   - dispute_fraudulent:<dispute_id>
- *   - immediate_block:stolen_card | immediate_block:fraudulent
- *   - card_testing_detected:<reason>
  *
  * Specific fraud signals are intentionally not exposed to avoid tipping
  * off bad actors about how detection works.
@@ -26,11 +24,6 @@ function mapBlockedReasonToLabel(blockedReason?: string | null): string {
       return "a fraud warning from your card issuer";
     case "dispute_fraudulent":
       return "a fraudulent payment dispute (chargeback)";
-    case "immediate_block":
-      // immediate_block:stolen_card or immediate_block:fraudulent
-      return "a reported fraudulent or stolen card";
-    case "card_testing_detected":
-      return "suspicious payment activity";
     default:
       return "suspicious activity";
   }

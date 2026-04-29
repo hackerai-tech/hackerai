@@ -1,5 +1,4 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
-import { unsealData } from "iron-session";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -8,6 +7,11 @@ const isValidLocalPath = (path: string): boolean => {
     path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/\\")
   );
 };
+
+const PKCE_COOKIE_PREFIX = "wos-auth-verifier";
+
+const hasPkceCookie = (request: NextRequest): boolean =>
+  request.cookies.getAll().some((c) => c.name.startsWith(PKCE_COOKIE_PREFIX));
 
 type RecoveryBucket =
   | "state_mismatch"
@@ -39,7 +43,7 @@ const buildRecoveryResponse = async (
 ): Promise<Response> => {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
-  const hasVerifierCookie = request.cookies.has("wos-auth-verifier");
+  const hasVerifierCookie = hasPkceCookie(request);
   if (redirectPath) {
     cookieStore.delete({ name: "post_login_redirect", path: "/" });
   }
@@ -62,12 +66,14 @@ const buildRecoveryResponse = async (
     secFetchSite: request.headers.get("sec-fetch-site"),
   };
 
+  // Distinct prefix from authkit's own `[AuthKit callback error]` so log
+  // aggregators don't double-count and so we can grep this wrapper separately.
   if (bucket === "unknown") {
-    console.error("[AuthKit callback error]", error, logPayload);
+    console.error("[callback] unrecoverable", error, logPayload);
     return NextResponse.redirect(new URL("/auth-error?code=500", request.url));
   }
 
-  console.warn("[AuthKit callback recovery]", logPayload);
+  console.warn("[callback] recovering", logPayload);
 
   // Only verifier_missing with the cookie still present indicates genuine
   // corruption/tampering worth surfacing as an error. Everything else →
@@ -95,90 +101,54 @@ const buildRecoveryResponse = async (
   return loginResponse;
 };
 
-// Authkit catches all callback errors and, by default, logs them via
-// console.error and returns a generic 500. Override that path via onError so
-// we can classify and redirect users to a recoverable flow instead.
 const authHandler = handleAuth({
   onError: async ({ error, request }) => {
     return buildRecoveryResponse(request as NextRequest, error);
   },
 });
 
-/**
- * Pre-flight check that mirrors authkit's own PKCE/state validation.
- * Running it before authHandler lets us short-circuit into recovery
- * *without* triggering authkit's unconditional console.error.
- */
-const PKCE_COOKIE_NAME = "wos-auth-verifier";
-
-async function preflightCallbackError(
-  request: NextRequest,
-): Promise<Error | null> {
-  const url = request.nextUrl;
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  if (!code || !state) {
-    return new Error("Missing required auth parameter");
-  }
-  const pkceCookie = request.cookies.get(PKCE_COOKIE_NAME)?.value;
-  if (!pkceCookie) {
-    return new Error(
-      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-    );
-  }
-  if (state !== pkceCookie) {
-    return new Error("OAuth state mismatch");
-  }
-
-  // Verify the sealed cookie can be decrypted and contains the required PKCE
-  // fields. If WORKOS_COOKIE_PASSWORD rotated between the login initiation and
-  // the callback (e.g. due to a redeployment), unseal will produce an empty
-  // object and AuthKit would throw a ValiError internally.
-  try {
-    const unsealed = await unsealData<Record<string, unknown>>(pkceCookie, {
-      password: process.env.WORKOS_COOKIE_PASSWORD ?? "",
-    });
-    if (!unsealed.nonce || !unsealed.codeVerifier) {
-      return new Error(
-        "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-      );
-    }
-  } catch {
-    return new Error(
-      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-    );
-  }
-
-  return null;
-}
-
 export async function GET(request: NextRequest) {
+  // Short-circuit the single most common recoverable case — no PKCE cookie
+  // at all (stale/abandoned flow, prefetch, ITP) — before authkit runs, so
+  // authkit's unconditional `[AuthKit callback error]` console.error doesn't
+  // fire. Kept intentionally minimal so it doesn't couple to authkit internals.
+  if (!hasPkceCookie(request)) {
+    return buildRecoveryResponse(
+      request,
+      new Error(
+        "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
+      ),
+    );
+  }
+
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
 
-  // Catch known failures before authkit so its internal console.error is avoided.
-  const preflightError = await preflightCallbackError(request);
-  if (preflightError) {
-    return buildRecoveryResponse(request, preflightError);
-  }
-
-  let response: Response;
+  let response: NextResponse;
   try {
-    response = await authHandler(request);
+    response = (await authHandler(request)) as NextResponse;
   } catch (error) {
     // Defensive: handleAuth shouldn't throw when onError is provided, but if
     // it ever does, fall back to the same recovery pipeline.
     return buildRecoveryResponse(request, error);
   }
 
-  // On success, honor post_login_redirect.
-  if (
-    redirectPath &&
-    isValidLocalPath(redirectPath) &&
-    [302, 307].includes(response.status)
-  ) {
+  // On a successful redirect response, always clear post_login_redirect so a
+  // stale/malformed value can't survive and re-trigger the check on every
+  // subsequent callback. Only rewrite the Location header if the value is a
+  // safe local path. MUTATE authkit's response rather than building a new one
+  // — rebuilding drops the Set-Cookie headers authkit attached to expire the
+  // PKCE verifier, which causes `invalid_grant` on any subsequent hit of the
+  // callback URL (refresh, back button, prefetcher).
+  if (redirectPath && [302, 307].includes(response.status)) {
     cookieStore.delete({ name: "post_login_redirect", path: "/" });
-    return NextResponse.redirect(new URL(redirectPath, request.url));
+    if (isValidLocalPath(redirectPath)) {
+      response.headers.set(
+        "location",
+        new URL(redirectPath, request.url).toString(),
+      );
+    }
+    return response;
   }
 
   if (response.status >= 400) {

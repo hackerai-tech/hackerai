@@ -32,6 +32,7 @@ import type {
   SandboxPreference,
   ExtraUsageConfig,
   SelectedModel,
+  RateLimitInfo,
 } from "@/types";
 import { isSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
@@ -50,7 +51,6 @@ import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
-  captureFreeAgentRequest,
   captureToolCalls,
   createChatLogger,
   shutdownPostHog,
@@ -106,7 +106,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
   getUserFriendlyProviderError,
@@ -237,7 +237,8 @@ export const createChatHandler = (
       // Fetch user customization early so max_mode_enabled can influence
       // context truncation (before messages are fetched from DB).
       const userCustomization = await getUserCustomization({ userId });
-      // Max Mode only applies when a specific model is selected — not in Auto.
+
+      // MAX Mode only applies when a specific model is selected — not in Auto.
       const isAutoModelSelection =
         !selectedModelOverride || selectedModelOverride === "auto";
       const maxModeEnabled =
@@ -308,7 +309,7 @@ export const createChatHandler = (
       }
 
       const memoryEnabled =
-        subscription !== "free" &&
+        (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_memory_entries ?? true);
 
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
@@ -390,7 +391,7 @@ export const createChatHandler = (
         }
       }
 
-      const rateLimitInfo =
+      const rateLimitInfo: RateLimitInfo =
         freeAskRateLimitInfo ??
         (await checkRateLimit(
           userId,
@@ -402,7 +403,6 @@ export const createChatHandler = (
           organizationId,
         ));
 
-      // Track deductions for potential refund on error
       usageRefundTracker.recordDeductions(rateLimitInfo);
 
       // Add rate limit and extra usage context to logger
@@ -449,6 +449,16 @@ export const createChatHandler = (
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
+        onError: (error) => {
+          // Surface ChatSDKError causes (e.g., upload failures) to the client
+          // so MessageErrorState renders the user-actionable message.
+          if (error instanceof ChatSDKError) {
+            return typeof error.cause === "string"
+              ? error.cause
+              : error.message;
+          }
+          return getUserFriendlyProviderError(error);
+        },
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
@@ -483,6 +493,8 @@ export const createChatHandler = (
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
             subscription,
+            (info) => chatLogger?.setSandboxBoot(info),
+            (info) => chatLogger?.setCaidoReady(info),
           );
 
           // Helper to send file metadata via stream for resumable stream clients
@@ -526,10 +538,29 @@ export const createChatHandler = (
 
           if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
+            let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
-              await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+              uploadResult = await uploadSandboxFiles(
+                sandboxFiles,
+                ensureSandbox,
+              );
             } finally {
               writeUploadCompleteStatus(writer);
+            }
+            if (uploadResult.failedCount > 0) {
+              const noun =
+                uploadResult.failedCount === 1 ? "attachment" : "attachments";
+              const uploadError = new ChatSDKError(
+                "bad_request:stream",
+                `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+              );
+              // Errors thrown from execute are caught by createUIMessageStream's
+              // onError and never reach the outer catch, so refund / timeout
+              // clear / error logging must happen here. refund() is idempotent.
+              preemptiveTimeout?.clear();
+              await usageRefundTracker.refund();
+              chatLogger?.emitChatError(uploadError);
+              throw uploadError;
             }
           }
 
@@ -638,7 +669,7 @@ export const createChatHandler = (
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
 
-          const deductAccumulatedUsage = async (streamSuccess = false) => {
+          const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
             // Add E2B sandbox session cost (duration-based)
             const sandboxCost = getSandboxSessionCost();
@@ -654,13 +685,16 @@ export const createChatHandler = (
             }
             hasDeductedUsage = true;
 
-            // On clean completion: trust OpenRouter's raw cost (includes cache discounts
-            // and sandbox/tool costs already accumulated in providerCost).
-            // On error/abort/timeout: the model's raw cost may be incomplete, so fall
-            // back to token-based calculation for model costs. Sandbox/tool costs are
-            // always accurate and passed separately so they're never dropped.
+            // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
+            // non-clean streams. Each completed step reports authoritative cost with
+            // cache discounts baked in, so summing them is more accurate than the
+            // token-based fallback (which ignores cache reads and overcharges).
+            // Gate on modelProviderCost (not providerCost) because providerCost also
+            // includes tool/sandbox spend — if the model never reported raw.cost,
+            // tool/sandbox cost alone would incorrectly suppress the token fallback
+            // and drop the model portion entirely.
             const providerCost =
-              streamSuccess && usageTracker.providerCost > 0
+              usageTracker.modelProviderCost > 0
                 ? usageTracker.providerCost
                 : undefined;
 
@@ -682,6 +716,7 @@ export const createChatHandler = (
               responseModel,
               configuredModelId,
               rateLimitInfo,
+              maxMode: maxModeEnabled,
             });
           };
 
@@ -736,8 +771,8 @@ export const createChatHandler = (
                       tools,
                       providerOptions: buildProviderOptions(
                         isReasoningModel,
-                        subscription,
                         userId,
+                        configuredModelId,
                       ),
                     });
 
@@ -832,8 +867,8 @@ export const createChatHandler = (
               abortSignal: userStopSignal.signal,
               providerOptions: buildProviderOptions(
                 isReasoningModel,
-                subscription,
                 userId,
+                configuredModelId,
               ),
               stopWhen: isAgentMode(mode)
                 ? [
@@ -926,8 +961,9 @@ export const createChatHandler = (
                 if (!isXaiSafetyError(error)) {
                   console.error("Error:", error);
 
-                  // Log provider errors to Axiom with request context
-                  nextJsAxiomLogger.error("Provider streaming error", {
+                  // Capture provider errors with request context
+                  phLogger.error("Provider streaming error", {
+                    error,
                     chatId,
                     endpoint,
                     mode,
@@ -938,7 +974,12 @@ export const createChatHandler = (
                     ...extractErrorDetails(error),
                   });
                 }
-                // No refund on streaming errors - usage is still charged.
+                // Refund the upfront deduction only when the provider errored
+                // before producing any tokens. If hasUsage is true, the real
+                // cost will still be reconciled by deductAccumulatedUsage().
+                if (!usageTracker.hasUsage) {
+                  await usageRefundTracker.refund();
+                }
 
                 // Tear down any PTY sessions left open — streamText.onFinish
                 // may not fire on error/abort paths. `closeAll` is idempotent;
@@ -972,28 +1013,26 @@ export const createChatHandler = (
           try {
             result = await createStream(selectedModel);
           } catch (error) {
-            // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
+            // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback.
             if (
               isProviderApiError(error) &&
               !isRetryWithFallback &&
               isAutoModel
             ) {
-              nextJsAxiomLogger.error(
-                "Provider API error, retrying with fallback",
-                {
-                  chatId,
-                  endpoint,
-                  mode,
-                  originalModel: selectedModel,
-                  fallbackModel,
-                  userId,
-                  subscription,
-                  isTemporary: temporary,
-                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
-                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
-                  ...extractErrorDetails(error),
-                },
-              );
+              phLogger.error("Provider API error, retrying with fallback", {
+                error,
+                chatId,
+                endpoint,
+                mode,
+                originalModel: selectedModel,
+                fallbackModel,
+                userId,
+                subscription,
+                isTemporary: temporary,
+                preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
+                ...extractErrorDetails(error),
+              });
 
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
@@ -1002,6 +1041,10 @@ export const createChatHandler = (
               stoppedDueToDoomLoop = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
+              // Discard the failed primary leg's model usage so the user is
+              // only billed for the fallback. Non-model spend (sandbox/tools)
+              // is preserved.
+              usageTracker.resetModelLeg();
               result = await createStream(fallbackModel);
             } else {
               throw error;
@@ -1022,7 +1065,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  nextJsAxiomLogger.warn(
+                  phLogger.warn(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
@@ -1047,6 +1090,11 @@ export const createChatHandler = (
                     stoppedDueToPreemptiveTimeout = false;
                     stoppedDueToDoomLoop = false;
                     const fallbackStartTime = Date.now();
+
+                    // Discard the failed primary leg's model usage so the
+                    // user is only billed for the fallback. Non-model spend
+                    // (sandbox/tools) is preserved.
+                    usageTracker.resetModelLeg();
 
                     const retryResult = await createStream(fallbackModel);
                     const retryMessageId = generateId();
@@ -1091,25 +1139,6 @@ export const createChatHandler = (
                             userId,
                             mode,
                           });
-                          if (mode === "agent" && subscription === "free") {
-                            captureFreeAgentRequest({
-                              posthog,
-                              chatLogger,
-                              userId,
-                              estimatedInputTokens,
-                              selectedModel,
-                              selectedModelOverride,
-                              configuredModelId,
-                              responseModel,
-                              usageTracker,
-                              finishReason: streamFinishReason,
-                              wasAborted: retryAborted,
-                              wasPreemptiveTimeout: false,
-                              hadSummarization: hasSummarized(),
-                              isTemporary: !!temporary,
-                              isRegenerate: !!regenerate,
-                            });
-                          }
                           shutdownPostHog(posthog);
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
@@ -1199,7 +1228,7 @@ export const createChatHandler = (
                               (p) => p.type,
                             ) ?? [];
 
-                          nextJsAxiomLogger.info("Fallback completed", {
+                          phLogger.info("Fallback completed", {
                             chatId,
                             originalModel: selectedModel,
                             originalAssistantMessageId: assistantMessageId,
@@ -1223,13 +1252,7 @@ export const createChatHandler = (
                           });
 
                           // Deduct accumulated usage (includes both original + retry streams)
-                          const isFallbackClean =
-                            !retryAborted &&
-                            !stoppedDueToPreemptiveTimeout &&
-                            !stoppedDueToTokenExhaustion &&
-                            !stoppedDueToDoomLoop &&
-                            streamFinishReason === "stop";
-                          await deductAccumulatedUsage(isFallbackClean);
+                          await deductAccumulatedUsage();
                         },
                         sendReasoning: true,
                       }),
@@ -1250,7 +1273,7 @@ export const createChatHandler = (
                     const stepDuration = Date.now() - stepStartTime;
                     const totalElapsed =
                       Date.now() - (triggerTime || onFinishStartTime);
-                    nextJsAxiomLogger.info("Preemptive timeout cleanup step", {
+                    phLogger.info("Preemptive timeout cleanup step", {
                       chatId,
                       step,
                       stepDurationMs: stepDuration,
@@ -1261,18 +1284,15 @@ export const createChatHandler = (
                 };
 
                 if (isPreemptiveAbort) {
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish started",
-                    {
-                      chatId,
-                      endpoint,
-                      timeSinceTriggerMs: triggerTime
-                        ? onFinishStartTime - triggerTime
-                        : null,
-                      messageCount: messages.length,
-                      isTemporary: temporary,
-                    },
-                  );
+                  phLogger.info("Preemptive timeout onFinish started", {
+                    chatId,
+                    endpoint,
+                    timeSinceTriggerMs: triggerTime
+                      ? onFinishStartTime - triggerTime
+                      : null,
+                    messageCount: messages.length,
+                    isTemporary: temporary,
+                  });
                 }
 
                 // Clear pre-emptive timeout
@@ -1301,25 +1321,6 @@ export const createChatHandler = (
                   cacheWriteTokens: usageTracker.cacheWriteTokens,
                 });
                 captureToolCalls({ posthog, chatLogger, userId, mode });
-                if (mode === "agent" && subscription === "free") {
-                  captureFreeAgentRequest({
-                    posthog,
-                    chatLogger,
-                    userId,
-                    estimatedInputTokens,
-                    selectedModel,
-                    selectedModelOverride,
-                    configuredModelId,
-                    responseModel,
-                    usageTracker,
-                    finishReason: streamFinishReason,
-                    wasAborted: isAborted,
-                    wasPreemptiveTimeout: isPreemptiveAbort,
-                    hadSummarization: hasSummarized(),
-                    isTemporary: !!temporary,
-                    isRegenerate: !!regenerate,
-                  });
-                }
                 shutdownPostHog(posthog);
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
@@ -1424,8 +1425,7 @@ export const createChatHandler = (
                         !hasIncompleteToolCalls &&
                         !hasUsageToRecord))
                   ) {
-                    // User aborted — use token-based cost (provider cost may be incomplete)
-                    await deductAccumulatedUsage(false);
+                    await deductAccumulatedUsage();
                     return;
                   }
 
@@ -1489,18 +1489,15 @@ export const createChatHandler = (
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish completed",
-                    {
-                      chatId,
-                      endpoint,
-                      totalOnFinishDurationMs: totalDuration,
-                      totalSinceTriggerMs: triggerTime
-                        ? Date.now() - triggerTime
-                        : null,
-                    },
-                  );
-                  await nextJsAxiomLogger.flush();
+                  phLogger.info("Preemptive timeout onFinish completed", {
+                    chatId,
+                    endpoint,
+                    totalOnFinishDurationMs: totalDuration,
+                    totalSinceTriggerMs: triggerTime
+                      ? Date.now() - triggerTime
+                      : null,
+                  });
+                  await phLogger.flush();
                 }
 
                 // Send updated context usage with output tokens included
@@ -1521,15 +1518,7 @@ export const createChatHandler = (
                   writeAutoContinue(writer);
                 }
 
-                // Trust provider cost only on clean completion;
-                // on timeout/abort/error use our own token-based calculation
-                const isCleanCompletion =
-                  !isAborted &&
-                  !stoppedDueToPreemptiveTimeout &&
-                  !stoppedDueToTokenExhaustion &&
-                  !stoppedDueToDoomLoop &&
-                  streamFinishReason === "stop";
-                await deductAccumulatedUsage(isCleanCompletion);
+                await deductAccumulatedUsage();
               },
               sendReasoning: true,
             }),
@@ -1560,7 +1549,7 @@ export const createChatHandler = (
             }
           } catch (error) {
             // Non-fatal: stream still works without resumability
-            nextJsAxiomLogger.warn("Stream resumption setup failed", {
+            phLogger.warn("Stream resumption setup failed", {
               chatId,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -1583,7 +1572,10 @@ export const createChatHandler = (
           );
       }
 
-      // No refund on errors - usage is still charged
+      // Refund the upfront deduction when the request fails before any tokens
+      // were consumed. refund() is idempotent and only fires if deductions were
+      // recorded and nothing has been refunded yet.
+      await usageRefundTracker.refund();
 
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {

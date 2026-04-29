@@ -67,7 +67,7 @@ const removeSensitiveData = (data: unknown): unknown => {
 };
 
 /**
- * Extracts structured error details for logging to Axiom or other services.
+ * Extracts structured error details for logging to PostHog or other services.
  * Handles both standard Error objects and provider-specific error formats (AI SDK, etc.)
  * Sensitive user data (prompts, messages) is removed from the output.
  */

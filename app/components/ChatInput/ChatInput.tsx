@@ -42,6 +42,8 @@ interface ChatInputProps {
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
   contextUsage?: ContextUsageData;
+  placeholder?: string;
+  autoFocus?: boolean;
 }
 
 export const ChatInput = ({
@@ -60,6 +62,8 @@ export const ChatInput = ({
   rateLimitWarning,
   onDismissRateLimitWarning,
   contextUsage,
+  placeholder,
+  autoFocus,
 }: ChatInputProps) => {
   const {
     input,
@@ -187,10 +191,13 @@ export const ChatInput = ({
         )}
 
         {/* Sandbox selector for new chats on mobile: shown above input & file upload.
+            Once the first message is sent, switches to below-input placement immediately
+            (isNewChat doesn't flip until the stream finishes, so we also check hasMessages).
             On desktop, it's shown below the input (order-3).
             Hidden when Codex is selected (it manages its own sandbox). */}
         {isMobile &&
           isNewChat &&
+          !hasMessages &&
           isAgentMode(chatMode) &&
           !isCodexLocal(selectedModel) && (
             <div className="flex px-1 pb-2 min-h-9">
@@ -226,6 +233,8 @@ export const ChatInput = ({
             chatMode={chatMode}
             onEnterSubmit={handleSubmit}
             minRows={isCentered ? 3 : 1}
+            placeholder={placeholder}
+            autoFocus={autoFocus}
           />
           <ChatInputToolbar
             onAttachClick={handleAttachClick}
@@ -244,15 +253,16 @@ export const ChatInput = ({
         </div>
 
         {/* Sandbox selector below input.
-            Desktop new chats: absolutely positioned to avoid shifting the centered layout.
-            Existing chats (all screens): normal flow.
-            Mobile new chats: hidden (uses above-input placement).
+            Desktop centered new chats (no messages yet): absolutely positioned to avoid
+            shifting the centered layout.
+            Existing chats / after first message sent (all screens): normal flow.
+            Mobile new chats with no messages: hidden (uses above-input placement).
             Hidden when Codex is selected (it manages its own sandbox). */}
         {isAgent &&
-          (!isMobile || !isNewChat) &&
+          (!isMobile || !isNewChat || hasMessages) &&
           !isCodexLocal(selectedModel) && (
             <div
-              className={`order-3 flex items-center px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
+              className={`order-3 flex items-center px-1 pt-2 ${isNewChat && !hasMessages ? "absolute left-4 right-4 top-full" : ""}`}
             >
               <SandboxSelector
                 value={sandboxPreference}

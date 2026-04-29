@@ -1,6 +1,8 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxContext } from "@/types";
+import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
+
+type SandboxReadyPath = SandboxBootInfo["path"];
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
 const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
@@ -43,13 +45,22 @@ export const ensureSandboxConnection = async (
     initialSandbox?: Sandbox | null;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
-  const { userID, setSandbox } = context;
+  const { userID, setSandbox, onBoot } = context;
   const { initialSandbox } = options;
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
     return { sandbox: initialSandbox };
   }
+  const startedAt = performance.now();
+  let createPath: SandboxReadyPath = "create_fresh";
+  const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
+    onBoot?.({
+      path,
+      duration_ms: Math.round(performance.now() - startedAt),
+      create_attempts: attempts,
+    });
+  };
   try {
     // Step 1: Look for existing sandbox for this user
     const paginator = Sandbox.list({
@@ -75,6 +86,7 @@ export const ensureSandboxConnection = async (
       } catch (killError) {
         console.warn(`[${userID}] Failed to kill old sandbox:`, killError);
       }
+      createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
     } else if (existingSandbox?.sandboxId) {
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
@@ -85,6 +97,7 @@ export const ensureSandboxConnection = async (
           timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
         });
         setSandbox(sandbox);
+        reportBoot("reuse_existing", 0);
         return { sandbox };
       } catch (e) {
         // Handle specific error cases
@@ -95,6 +108,7 @@ export const ensureSandboxConnection = async (
           console.error(
             `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
           );
+          createPath = "create_after_expired";
           // Clean up expired sandbox reference
           try {
             await Sandbox.kill(existingSandbox.sandboxId);
@@ -109,6 +123,7 @@ export const ensureSandboxConnection = async (
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
+          createPath = "create_after_broken";
           // Kill the broken sandbox so Sandbox.list() doesn't keep finding it
           try {
             await Sandbox.kill(existingSandbox.sandboxId);
@@ -146,6 +161,7 @@ export const ensureSandboxConnection = async (
         });
 
         setSandbox(sandbox);
+        reportBoot(createPath, attempt + 1);
         return { sandbox };
       } catch (createError) {
         lastError = createError;

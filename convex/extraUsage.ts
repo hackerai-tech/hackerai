@@ -93,6 +93,36 @@ export function computeExtraUsageCap(settings: {
 // =============================================================================
 
 /**
+ * Internal mutation: purge processed_webhooks rows older than cutoff.
+ * Stripe only retries within ~72h, so retention of a week is plenty.
+ * Iterates oldest-first via the implicit by_creation_time ordering.
+ */
+export const purgeOldProcessedWebhooks = internalMutation({
+  args: {
+    cutoffTimeMs: v.number(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+
+    const rows = await ctx.db
+      .query("processed_webhooks")
+      .order("asc")
+      .take(limit);
+
+    let deletedCount = 0;
+    for (const row of rows) {
+      if (row.processed_at < args.cutoffTimeMs) {
+        await ctx.db.delete(row._id);
+        deletedCount++;
+      }
+    }
+    return { deletedCount };
+  },
+});
+
+/**
  * Check-and-mark a webhook event as processed (idempotency guard).
  * Returns { alreadyProcessed: true } if the event was already recorded.
  * Pass checkOnly: true to only check without marking (mark after successful processing).
@@ -109,10 +139,12 @@ export const checkAndMarkWebhook = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
     const existing = await ctx.db
       .query("processed_webhooks")
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
-      .first();
+      .unique();
 
     if (existing) {
       return { alreadyProcessed: true };
@@ -122,10 +154,128 @@ export const checkAndMarkWebhook = mutation({
       await ctx.db.insert("processed_webhooks", {
         event_id: args.eventId,
         processed_at: Date.now(),
+        status: "completed",
       });
     }
 
     return { alreadyProcessed: false };
+  },
+});
+
+/**
+ * How long a `pending` claim is honored before it can be taken over by a
+ * retrying delivery. Sized larger than any reasonable handler runtime so a
+ * still-running first attempt is not pre-empted, but small enough that a
+ * crashed first attempt unblocks the next Stripe webhook retry within the
+ * same retry window (Stripe backs off exponentially over hours).
+ */
+const STALE_CLAIM_MS = 10 * 60 * 1000;
+
+/**
+ * Atomic claim for webhook processing.
+ *
+ * Replaces the read-then-write `checkAndMarkWebhook(checkOnly: true)` pattern,
+ * which was a TOCTOU pair: two concurrent deliveries of the same event could
+ * both pass the pre-check and both run side effects before either landed the
+ * mark.
+ *
+ * Returns one of three states atomically:
+ *   - "acquired"          : caller now owns the claim; run handler then call
+ *                           finalizeWebhookProcessing on success
+ *   - "already_processed" : event was finalized previously; skip with 200
+ *   - "claim_held"        : another worker is currently processing this event;
+ *                           skip with 200 (the holder will finalize, or its
+ *                           claim will expire and a future retry takes over)
+ *
+ * If a `pending` row's claim is older than STALE_CLAIM_MS, this mutation
+ * reclaims it and returns "acquired" — this is what allows Stripe webhook
+ * retries to recover after a handler crash.
+ */
+export const claimWebhookProcessing = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+  },
+  returns: v.object({
+    state: v.union(
+      v.literal("acquired"),
+      v.literal("already_processed"),
+      v.literal("claim_held"),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const now = Date.now();
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+
+    if (!existing) {
+      await ctx.db.insert("processed_webhooks", {
+        event_id: args.eventId,
+        processed_at: now,
+        status: "pending",
+        claimed_at: now,
+      });
+      return { state: "acquired" as const };
+    }
+
+    // Legacy rows without status were inserted under the older "mark on entry"
+    // semantics for events whose lifecycle has already concluded.
+    const status = existing.status ?? "completed";
+
+    if (status === "completed") {
+      return { state: "already_processed" as const };
+    }
+
+    const claimedAt = existing.claimed_at ?? existing.processed_at;
+    if (now - claimedAt < STALE_CLAIM_MS) {
+      return { state: "claim_held" as const };
+    }
+
+    // Stale claim — take it over so Stripe's retry can drive completion.
+    await ctx.db.patch(existing._id, {
+      status: "pending",
+      claimed_at: now,
+    });
+    return { state: "acquired" as const };
+  },
+});
+
+/**
+ * Mark a previously-claimed webhook as completed.
+ *
+ * Idempotent: re-finalizing an already-completed event is a no-op. Missing
+ * rows are also tolerated (the row should always exist when called immediately
+ * after a successful claim, but we don't fail the request if it doesn't).
+ */
+export const finalizeWebhookProcessing = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    // .unique() throws if duplicates exist, surfacing any state-machine
+    // invariant break instead of silently masking it.
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        status: "completed",
+        processed_at: Date.now(),
+      });
+    }
+    return null;
   },
 });
 
@@ -142,7 +292,8 @@ export const addCredits = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
-    idempotencyKey: v.optional(v.string()), // Stripe event ID for webhook deduplication
+    idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
+    legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -151,11 +302,15 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    // Idempotency: skip if already processed (prevents double-credit on webhook retries)
-    if (args.idempotencyKey) {
+    // Idempotency: skip if already processed (prevents double-credit on webhook retries
+    // and across both the post-checkout confirm path and the async webhook path)
+    const dedupKeys = [args.idempotencyKey, args.legacyIdempotencyKey].filter(
+      (k): k is string => typeof k === "string" && k.length > 0,
+    );
+    for (const key of dedupKeys) {
       const existing = await ctx.db
         .query("processed_webhooks")
-        .withIndex("by_event_id", (q) => q.eq("event_id", args.idempotencyKey!))
+        .withIndex("by_event_id", (q) => q.eq("event_id", key))
         .first();
 
       if (existing) {
@@ -684,7 +839,7 @@ export const updateExtraUsageSettings = mutation({
  * On failure: increment the counter, and after MAX_AUTO_RELOAD_FAILURES
  * consecutive failures auto-disable auto-reload and store a human-readable
  * reason. This prevents a broken saved card from retrying every overage
- * request and getting flagged as card-testing fraud.
+ * request.
  */
 const MAX_AUTO_RELOAD_FAILURES = 2;
 

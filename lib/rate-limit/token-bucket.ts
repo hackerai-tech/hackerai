@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 // =============================================================================
 // Configuration
@@ -18,8 +19,14 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  "model-opus-4.6": { input: 5.0, output: 25.0 },
-  "model-gpt-5.4": { input: 2.5, output: 15.0 },
+  "model-opus-4.7": { input: 5.0, output: 25.0 },
+  // "agent-model", "agent-model-free", and "model-kimi-k2.6" all route to
+  // moonshotai/kimi-k2.6:exacto via lib/ai/providers.ts. Rates from Moonshot AI
+  // direct provider (int4): $0.95 in / $4.00 out per 1M tokens. Cache-read
+  // discount ($0.16/M) applies when provider cost is available via usage.raw.cost.
+  "agent-model": { input: 0.95, output: 4.0 },
+  "agent-model-free": { input: 0.95, output: 4.0 },
+  "model-kimi-k2.6": { input: 0.95, output: 4.0 },
 };
 
 const getModelPricing = (modelName?: string) =>
@@ -274,7 +281,13 @@ export const checkTokenBucketLimit = async (
           ) {
             const reason =
               deductResult.autoReloadResult.reason ?? "payment_failed";
-            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            // Suspended customers (flagged by the fraud webhook) short-circuit
+            // before any charge attempt. Render the suspension message instead
+            // of the "update your payment method" copy — they can't fix it.
+            const msg =
+              reason === "customer_blocked"
+                ? getSuspensionMessage(null)
+                : `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,
@@ -472,6 +485,54 @@ export const resetRateLimitBuckets = async (
   await initProratedBucket(userId, subscription, 1.0, 0);
 };
 
+/**
+ * Delete Redis keys associated with a user across every rate-limit namespace
+ * written by this codebase. Called during account deletion so orphaned
+ * buckets, stashes, sliding-window counters, and seat-debt flags are purged
+ * immediately rather than waiting on the 30-day TTL. Best-effort — returns
+ * the number of keys deleted, never throws.
+ *
+ * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
+ *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
+ *   - upgrade:carryover:<userId>     — upgrade proration stash
+ *   - free_limit:<userId>:*          — free-tier ask sliding window
+ *   - free_agent_limit:<userId>:*    — free-tier agent sliding window
+ *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
+ *
+ * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
+ * user-scoped) and any extra-usage balance records (stored in Convex, not Redis).
+ */
+export const deleteUserRateLimitKeys = async (
+  userId: string,
+): Promise<number> => {
+  const redis = createRedisClient();
+  if (!redis) return 0;
+
+  const patterns = [
+    `usage:monthly:${userId}:*`,
+    `upgrade:carryover:${userId}`,
+    `free_limit:${userId}:*`,
+    `free_agent_limit:${userId}:*`,
+    `team:debt_applied:*:${userId}`,
+  ];
+
+  try {
+    const keyBatches = await Promise.all(
+      patterns.map((pattern) => redis.keys(pattern)),
+    );
+    const keys = Array.from(new Set(keyBatches.flat()));
+    if (keys.length === 0) return 0;
+    await Promise.all(keys.map((key) => redis.del(key)));
+    return keys.length;
+  } catch (error) {
+    console.error(
+      `[deleteUserRateLimitKeys] Failed for user ${userId}:`,
+      error,
+    );
+    return 0;
+  }
+};
+
 // =============================================================================
 // Upgrade Proration
 // =============================================================================
@@ -569,12 +630,18 @@ export const calculateProratedCredits = (
  *
  * @param consumedCredits - Credits already consumed from the old tier this cycle.
  *   Deducted from the prorated allocation so users can't "double-dip".
+ * @param periodEndSeconds - Optional Stripe `current_period_end` (unix seconds).
+ *   When supplied, the bucket's internal `refilledAt` is rewritten so Upstash's
+ *   reported reset (`refilledAt + 30 d`) lands on the actual invoice date
+ *   instead of 30 days from now. Matters for mid-cycle upgrades, where the
+ *   remaining cycle is shorter than 30 days.
  */
 export const initProratedBucket = async (
   userId: string,
   newTier: SubscriptionTier,
   proratedRatio: number,
   consumedCredits: number = 0,
+  periodEndSeconds?: number,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -600,6 +667,21 @@ export const initProratedBucket = async (
     // Burn excess to bring bucket down to prorated level
     if (burnAmount > 0) {
       await monthly.limiter.limit(monthly.key, { rate: burnAmount });
+    }
+
+    // Align the UI-facing reset time with Stripe's billing cycle. Upstash's
+    // token bucket computes reset as `refilledAt + interval`; our interval is
+    // hardcoded to 30 d, so setting `refilledAt = periodEnd - 30 d` makes the
+    // reported reset land exactly on the next invoice date. `refilledAt` is
+    // an internal field of @upstash/ratelimit — re-verify on SDK upgrades.
+    if (
+      periodEndSeconds &&
+      Number.isFinite(periodEndSeconds) &&
+      periodEndSeconds > 0
+    ) {
+      const targetRefilledAtMs =
+        (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
+      await redis.hset(monthlyKey, { refilledAt: targetRefilledAtMs });
     }
 
     // Align TTL to 30 days from now

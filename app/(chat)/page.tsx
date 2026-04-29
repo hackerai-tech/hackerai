@@ -10,10 +10,22 @@ import PricingDialog from "../components/PricingDialog";
 import TeamPricingDialog from "../components/TeamPricingDialog";
 import { TeamWelcomeDialog } from "../components/TeamDialogs";
 import MigratePentestgptDialog from "../components/MigratePentestgptDialog";
+import { ExtraUsagePurchaseToast } from "../components/extra-usage";
 import { usePricingDialog } from "../hooks/usePricingDialog";
 import { useGlobalState } from "../contexts/GlobalState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
+import { useTypingAnimation } from "../hooks/useTypingAnimation";
+
+const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
+const LOGIN_TYPING_TAILS = [
+  "find vulnerabilities in...",
+  "audit the security of...",
+  "test the defenses of...",
+  "review the code of...",
+  "write a pentest report for...",
+  "hunt for bugs in...",
+];
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -21,6 +33,12 @@ const UnauthenticatedContent = () => {
     e.preventDefault();
     navigateToAuth("/login");
   };
+
+  const animatedTail = useTypingAnimation({
+    phrases: LOGIN_TYPING_TAILS,
+    enabled: true,
+  });
+  const animatedPlaceholder = `${LOGIN_TYPING_PREFIX}${animatedTail}`;
 
   const handleStop = () => {
     // No-op for unauthenticated users
@@ -69,6 +87,8 @@ const UnauthenticatedContent = () => {
               isCentered={true}
               isNewChat={true}
               clearDraftOnSubmit={false}
+              placeholder={animatedPlaceholder}
+              autoFocus={false}
             />
           </div>
         </div>
@@ -130,6 +150,7 @@ export default function Page() {
     <>
       <Authenticated>
         <AuthenticatedContent />
+        <ExtraUsagePurchaseToast />
         <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
         <TeamPricingDialog
           isOpen={teamPricingDialogOpen}

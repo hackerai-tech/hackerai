@@ -64,6 +64,12 @@ export interface Message {
   [key: string]: any;
 }
 
+// Tool types that intentionally render during input-streaming for progressive UI
+// (e.g. file write/append showing content as the LLM generates it). All other
+// tool types are held back until input-available — see the gate inside the
+// per-part forEach below.
+const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
+
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
@@ -99,6 +105,20 @@ export function extractSidebarContentFromMessage(
   });
 
   message.parts.forEach((part) => {
+    // Hold tool entries back until the LLM finishes generating tool input.
+    // The AI SDK populates `part.input` from partial JSON during input-streaming,
+    // which would otherwise push entries into contentList and trigger sidebar
+    // auto-follow mid-stream. Tools listed in STREAMS_DURING_INPUT opt out for
+    // progressive UI (e.g. file write/append showing content as it's generated).
+    if (
+      part.state === "input-streaming" &&
+      typeof part.type === "string" &&
+      part.type.startsWith("tool-") &&
+      !STREAMS_DURING_INPUT.has(part.type)
+    ) {
+      return;
+    }
+
     // Terminal (including Codex local commands)
     if (
       (part.type === "tool-run_terminal_cmd" ||
@@ -261,7 +281,7 @@ export function extractSidebarContentFromMessage(
     if (part.type === "tool-shell" && part.input) {
       const command = part.input.command || part.input.brief || "";
 
-      // Skip if no command/brief available yet (input still streaming)
+      // Skip if no command/brief available yet
       if (!command) return;
 
       // Get streaming output from data-terminal parts

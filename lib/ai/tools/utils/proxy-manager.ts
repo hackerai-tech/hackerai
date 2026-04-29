@@ -6,7 +6,7 @@
  * This works identically for desktop and remote-connection sandboxes.
  */
 
-import type { ToolContext } from "@/types";
+import type { CaidoErrorKind, CaidoReadyInfo, ToolContext } from "@/types";
 import { CAIDO_DEFAULTS, getCaidoConfig } from "./caido-proxy";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { isCentrifugoSandbox } from "./sandbox-types";
@@ -25,8 +25,69 @@ let cachedCaidoToken: string | null = null;
  */
 const caidoLock = new WeakMap<object, Promise<void>>();
 
+/**
+ * Tracks which sandboxes currently have an *in-flight* setup (vs. a resolved
+ * cached Promise in caidoLock). Used only for telemetry — distinguishes a true
+ * concurrent wait (`locked_wait`) from hitting the post-success cache
+ * (`cached_ready`). Added on setup start, removed on setup settle.
+ */
+const caidoInFlight = new WeakSet<object>();
+
 /** Tracks sandboxes we've already warned about Windows incompatibility. */
 const windowsWarned = new WeakSet<object>();
+
+/** Mutable tracker — `doEnsureCaido` reports its path + sub-timings through this
+ *  so the wrapper in `ensureCaido` can emit a single `CaidoReadyInfo` at the end. */
+interface CaidoSetupTimings {
+  path?: CaidoReadyInfo["path"];
+  initial_script_ms?: number;
+  background_start_ms?: number;
+  health_poll_ms?: number;
+  reauth_script_ms?: number;
+}
+
+/**
+ * Classify a caido-setup error into a bounded kind for telemetry.
+ *
+ * Raw error messages can include local hostnames, ports, or caido-cli stderr
+ * — we never put those into the wide event. The message itself is still logged
+ * via console.warn at the catch site for debug purposes.
+ */
+function classifyCaidoError(error: unknown): CaidoErrorKind {
+  if (!(error instanceof Error)) return "unknown";
+  const msg = error.message;
+  if (msg.includes("could not be installed automatically"))
+    return "install_failed";
+  if (msg.includes("did not become ready")) return "start_timeout";
+  if (msg.includes("authentication failed")) return "auth_failed";
+  if (msg.includes("Could not connect to your Caido"))
+    return "external_unreachable";
+  if (msg.startsWith("Caido setup failed")) return "setup_failed";
+  return "unknown";
+}
+
+function reportCaidoReady(
+  context: ToolContext,
+  startedAt: number,
+  tracker: CaidoSetupTimings,
+  error?: unknown,
+): void {
+  if (!context.onCaidoReady) return;
+  const info: CaidoReadyInfo = {
+    path: tracker.path ?? "setup_error",
+    duration_ms: Math.round(performance.now() - startedAt),
+  };
+  if (tracker.initial_script_ms !== undefined)
+    info.initial_script_ms = tracker.initial_script_ms;
+  if (tracker.background_start_ms !== undefined)
+    info.background_start_ms = tracker.background_start_ms;
+  if (tracker.health_poll_ms !== undefined)
+    info.health_poll_ms = tracker.health_poll_ms;
+  if (tracker.reauth_script_ms !== undefined)
+    info.reauth_script_ms = tracker.reauth_script_ms;
+  if (error) info.error_kind = classifyCaidoError(error);
+  context.onCaidoReady(info);
+}
 
 /** Detects Caido's broken-database error in response content. */
 export function isCaidoBroken(text: string): boolean {
@@ -44,6 +105,7 @@ export function isCaidoBroken(text: string): boolean {
  */
 async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
   caidoLock.delete(context.sandboxManager);
+  caidoInFlight.delete(context.sandboxManager);
   cachedCaidoToken = null;
 
   // When using a custom port, the user manages their own Caido instance —
@@ -85,12 +147,15 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
  * Uses a Promise-based lock: parallel tool calls await the same setup instead of racing.
  */
 export async function ensureCaido(context: ToolContext): Promise<void> {
+  const startedAt = performance.now();
+  const tracker: CaidoSetupTimings = {};
+
   // Caido proxy requires a POSIX shell — not available on Windows sandboxes.
   // Cache the rejection so we throw once per session, not on every command.
   const { sandbox } = await context.sandboxManager.getSandbox();
   if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) {
     const cached = caidoLock.get(context.sandboxManager);
-    if (cached) return cached; // re-throws the cached rejection
+    if (cached) return cached; // re-throws the cached rejection (already logged on first call)
 
     const rejection = Promise.reject(
       new Error(
@@ -108,20 +173,42 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
         "[Caido] Skipping setup — Caido proxy is not supported on Windows sandboxes.",
       );
     }
+    tracker.path = "windows_unsupported";
+    reportCaidoReady(context, startedAt, tracker);
     return rejection;
   }
 
   const existing = caidoLock.get(context.sandboxManager);
-  if (existing) return existing;
+  if (existing) {
+    // Distinguish a true concurrent wait from hitting the post-success cache:
+    // in-flight at observation time → `locked_wait`; already settled → `cached_ready`.
+    const wasInFlight = caidoInFlight.has(context.sandboxManager);
+    try {
+      await existing;
+      tracker.path = wasInFlight ? "locked_wait" : "cached_ready";
+      reportCaidoReady(context, startedAt, tracker);
+    } catch (e) {
+      tracker.path = "locked_wait_error";
+      reportCaidoReady(context, startedAt, tracker, e);
+      throw e;
+    }
+    return;
+  }
 
-  const setup = doEnsureCaido(context);
+  caidoInFlight.add(context.sandboxManager);
+  const setup = doEnsureCaido(context, tracker);
   caidoLock.set(context.sandboxManager, setup);
 
   try {
     await setup;
+    caidoInFlight.delete(context.sandboxManager);
+    reportCaidoReady(context, startedAt, tracker);
   } catch (e) {
     console.warn("[Caido] Setup failed:", e);
+    caidoInFlight.delete(context.sandboxManager);
     caidoLock.delete(context.sandboxManager);
+    if (!tracker.path) tracker.path = "setup_error";
+    reportCaidoReady(context, startedAt, tracker, e);
     throw e;
   }
 }
@@ -195,7 +282,10 @@ async function doEnsureExternalCaido(
   );
 }
 
-async function doEnsureCaido(context: ToolContext): Promise<void> {
+async function doEnsureCaido(
+  context: ToolContext,
+  tracker: CaidoSetupTimings,
+): Promise<void> {
   const { sandbox } = await context.sandboxManager.getSandbox();
   const config = getCaidoConfig(context.caidoPort);
   const baseUrl = `http://${config.host}:${config.port}`;
@@ -204,6 +294,7 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   // External Caido fast path: when the user specified a custom port, they manage
   // their own Caido instance. Skip install/start — only health-check + authenticate.
   if (context.caidoPort) {
+    tracker.path = "external";
     return doEnsureExternalCaido(sandbox, config, options);
   }
 
@@ -227,13 +318,13 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   ).toString("base64");
 
   const healthCheck =
-    `curl -s --noproxy '*' -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
+    `curl -s --noproxy '*' --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
     ` -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' 2>/dev/null`;
 
   // Query that requires a valid token AND a selected project — if this returns
   // 200 with valid JSON, Caido is fully operational and we can skip setup.
   const projectCheck = [
-    `curl -s --noproxy '*' -X POST "$CAIDO_API/graphql"`,
+    `curl -s --noproxy '*' --connect-timeout 3 --max-time 10 -X POST "$CAIDO_API/graphql"`,
     `-H "Content-Type: application/json"`,
     `-H "Authorization: Bearer $(cat "$TOKEN_FILE" 2>/dev/null)"`,
     `-d '{"query":"{ requestsByOffset(limit:1) { count { value } } }"}'`,
@@ -297,34 +388,38 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     `fi`,
     ``,
     `# Authenticate as guest`,
-    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" --data @-)`,
     `TOKEN=$(echo "$AUTH" | grep -Eo '"accessToken":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$TOKEN" ]; then echo "needs_start" && exit 0; fi`,
     `printf '%s' "$TOKEN" > "$TOKEN_FILE"`,
     ``,
     `# Find or create the "hackerai" project`,
-    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `PROJECT_ID=$(echo "$PROJECTS" | grep -o '"id":"[^"]*","name":"hackerai"' | grep -Eo '"id":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$PROJECT_ID" ]; then`,
-    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" --connect-timeout 5 --max-time 20 \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `  PROJECT_ID=$(echo "$CREATE" | grep -Eo '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")`,
     `fi`,
     `if [ -n "$PROJECT_ID" ]; then`,
     `  SELECT_BODY='{"query":"mutation { selectProject(id: \\"'"$PROJECT_ID"'\\"){ currentProject { project { id } } } }"}'`,
-    `  echo "$SELECT_BODY" | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `  echo "$SELECT_BODY" | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \\`,
     `    --data @- >/dev/null 2>&1 || true`,
     `fi`,
     `echo "ok"`,
   ].join("\n");
 
+  const initialScriptStart = performance.now();
   const result = await sandbox.commands.run(script, {
     ...options,
     timeoutMs: 45000,
   });
+  tracker.initial_script_ms = Math.round(
+    performance.now() - initialScriptStart,
+  );
 
   // Status is on the last non-empty line
   const lastLine =
@@ -354,17 +449,21 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   // Script detected Caido needs to be started — launch it as a proper background
   // process via the sandbox API (not inside a shell script where it may get killed).
   if (lastLine === "needs_start") {
+    tracker.path = "needs_start";
     // On local sandboxes, set --ui-domain so the Caido UI is accessible.
     // On E2B, skip it — the sandbox URL is unstable and we don't want users accessing it.
     let uiDomainFlag = "";
 
     // Start caido-cli as a persistent background process
+    const bgStart = performance.now();
     await sandbox.commands.run(
       `caido-cli --listen 0.0.0.0:${config.port} --allow-guests --no-logging --no-open${uiDomainFlag} > ${CAIDO_LOG} 2>&1`,
       { ...options, background: true },
     );
+    tracker.background_start_ms = Math.round(performance.now() - bgStart);
 
     // Wait for Caido to become healthy
+    const pollStart = performance.now();
     const waitResult = await sandbox.commands.run(
       [
         `for i in $(seq 1 15); do`,
@@ -376,6 +475,7 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
       ].join("\n"),
       { ...options, timeoutMs: 35000 },
     );
+    tracker.health_poll_ms = Math.round(performance.now() - pollStart);
 
     if (!waitResult.stdout.includes("ready")) {
       throw new Error(
@@ -384,10 +484,12 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     }
 
     // Re-run the setup script — this time Caido is running, so it will auth + create project
+    const reauthStart = performance.now();
     const setupResult = await sandbox.commands.run(script, {
       ...options,
       timeoutMs: 45000,
     });
+    tracker.reauth_script_ms = Math.round(performance.now() - reauthStart);
 
     const setupLastLine =
       setupResult.stdout
@@ -413,6 +515,7 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     throw new Error(`Caido setup failed: ${result.stdout || result.stderr}`);
   }
 
+  tracker.path = "fast";
   await exportCaidoUiUrl(sandbox, config, options);
 }
 
@@ -543,6 +646,18 @@ async function runGql(
  * Avoids the curl-through-CentrifugoSandbox path that Caido's proxy dispatcher
  * misroutes on macOS (exit 56).
  */
+async function readCaidoTokenFromDisk(
+  context: ToolContext,
+): Promise<string | null> {
+  const { sandbox } = await context.sandboxManager.getSandbox();
+  const options = buildSandboxCommandOptions(sandbox);
+  const tokenResult = await sandbox.commands.run(
+    `cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo ""`,
+    options,
+  );
+  return tokenResult.stdout.trim() || null;
+}
+
 async function runGqlLocal(
   context: ToolContext,
   query: string,
@@ -552,43 +667,100 @@ async function runGqlLocal(
 
   // Read the token from disk if not cached (setup script writes it to /tmp/caido-token)
   if (!cachedCaidoToken) {
-    const { sandbox } = await context.sandboxManager.getSandbox();
-    const options = buildSandboxCommandOptions(sandbox);
-    const tokenResult = await sandbox.commands.run(
-      `cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo ""`,
-      options,
-    );
-    cachedCaidoToken = tokenResult.stdout.trim() || null;
+    cachedCaidoToken = await readCaidoTokenFromDisk(context);
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+  const body = JSON.stringify({ query, variables: variables ?? {} });
+  const doFetch = (token: string | null) => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(GRAPHQL_TIMEOUT),
+      keepalive: false,
+    });
   };
-  if (cachedCaidoToken) {
-    headers["Authorization"] = `Bearer ${cachedCaidoToken}`;
-  }
 
   let resp: Response;
   try {
-    resp = await fetch(`${baseUrl}/graphql`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query, variables: variables ?? {} }),
-      signal: AbortSignal.timeout(GRAPHQL_TIMEOUT),
-    });
+    resp = await doFetch(cachedCaidoToken);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("ECONNREFUSED")) {
+    const cause = (err as { cause?: { code?: string; message?: string } })
+      ?.cause;
+    const causeCode = cause?.code ?? "";
+    const causeMsg = cause?.message ?? "";
+    if (msg.includes("ECONNREFUSED") || causeCode === "ECONNREFUSED") {
       caidoLock.delete(context.sandboxManager);
       throw new Error(
         `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
       );
     }
-    throw new Error(`Caido GraphQL request failed: ${msg}`);
+    const isTransport =
+      msg === "fetch failed" ||
+      causeCode === "ECONNRESET" ||
+      causeCode === "UND_ERR_SOCKET" ||
+      /socket hang up|other side closed/i.test(causeMsg);
+    if (isTransport) {
+      try {
+        resp = await doFetch(cachedCaidoToken);
+      } catch (retryErr) {
+        const retryMsg =
+          retryErr instanceof Error ? retryErr.message : String(retryErr);
+        const retryCause = (
+          retryErr as { cause?: { code?: string; message?: string } }
+        )?.cause;
+        const detail =
+          retryCause?.code || retryCause?.message || retryMsg || "unknown";
+        throw new Error(`Caido GraphQL request failed: ${detail}`);
+      }
+    } else {
+      const detail = causeCode || causeMsg || msg;
+      throw new Error(`Caido GraphQL request failed: ${detail}`);
+    }
   }
-  const text = await resp.text();
+  let text = await resp.text();
   if (!text) {
     throw new Error(`No response from Caido (HTTP ${resp.status}): empty body`);
+  }
+
+  // Stale-token recovery: caido-cli may have been restarted between requests,
+  // invalidating our in-memory bearer. The setup script writes a fresh token to
+  // disk before this call returns — pick it up and retry once.
+  const isAuthError = (s: string) =>
+    /INVALID_TOKEN|"code":"AUTHORIZATION"/.test(s);
+  if (cachedCaidoToken && isAuthError(text)) {
+    const stale = cachedCaidoToken;
+    cachedCaidoToken = null;
+    const fresh = await readCaidoTokenFromDisk(context);
+    if (fresh && fresh !== stale) {
+      cachedCaidoToken = fresh;
+      try {
+        resp = await doFetch(fresh);
+        text = await resp.text();
+        if (!text) {
+          throw new Error(
+            `No response from Caido (HTTP ${resp.status}): empty body`,
+          );
+        }
+      } catch (retryErr) {
+        const detail =
+          retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(`Caido GraphQL retry failed: ${detail}`);
+      }
+    }
+    // Either we couldn't refresh (disk token absent / unchanged) or the retry
+    // came back with another auth error (caido-cli restarted again). Drop the
+    // setup lock and cached token so the next call re-runs ensureCaido against
+    // a fresh caido-cli instead of looping on a dead bearer.
+    if (cachedCaidoToken === null || isAuthError(text)) {
+      cachedCaidoToken = null;
+      caidoLock.delete(context.sandboxManager);
+    }
   }
 
   return parseGqlResponse(context, text);
@@ -1036,8 +1208,6 @@ export async function sendRequest(
       body_size: 0,
       response_time_ms: Math.round(curlMeta.time_ms * 1000),
       url: curlMeta.url_effective,
-      message:
-        "Caido proxy encountered a database error and will be restarted automatically",
     };
   }
 
@@ -1049,8 +1219,6 @@ export async function sendRequest(
     body_size: parsed.body_size,
     response_time_ms: Math.round(curlMeta.time_ms * 1000),
     url: curlMeta.url_effective,
-    message:
-      "Request sent through Caido proxy — check list_requests for captured traffic",
   };
 }
 

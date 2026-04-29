@@ -24,11 +24,34 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
+  /** Model-only cost from per-step usage.raw.cost (excludes tool/sandbox spend). Used to
+   * decide whether the provider reported an authoritative model cost; if zero, fall back
+   * to token-based model cost calculation. */
+  modelProviderCost = 0;
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
+
+  /**
+   * Discard the model leg's accumulated usage before a fallback retry runs.
+   * Keeps nonModelCost (sandbox/tool spend already incurred) and summarization
+   * output tokens, so the final deduction only bills the fallback model.
+   */
+  resetModelLeg() {
+    this.providerCost -= this.modelProviderCost;
+    this.modelProviderCost = 0;
+    this.inputTokens = 0;
+    // Preserve summarization's contribution to outputTokens so the
+    // streamOutputTokens getter (outputTokens - summarizationOutputTokens)
+    // never goes negative.
+    this.outputTokens = this.summarizationOutputTokens;
+    this.totalTokens = this.outputTokens;
+    this.lastStepInputTokens = 0;
+    this.cacheReadTokens = 0;
+    this.cacheWriteTokens = 0;
+  }
 
   accumulateStep(usage: StepUsage) {
     this.inputTokens += usage.inputTokens || 0;
@@ -40,6 +63,7 @@ export class UsageTracker {
     const stepCost = usage.raw?.cost;
     if (stepCost) {
       this.providerCost += stepCost;
+      this.modelProviderCost += stepCost;
     }
   }
 
@@ -67,7 +91,13 @@ export class UsageTracker {
   }
 
   computeModelCostDollars(selectedModel: string): number {
-    if (this.providerCost > 0) return this.providerCost;
+    // Use authoritative per-step provider cost only when the model itself
+    // reported one via raw.cost (tracked in modelProviderCost). providerCost
+    // also includes sandbox/tool spend and summarization cost, so subtract
+    // nonModelCost to isolate the model portion.
+    if (this.modelProviderCost > 0) {
+      return this.providerCost - this.nonModelCost;
+    }
     return (
       (calculateTokenCost(this.inputTokens, "input", selectedModel) +
         calculateTokenCost(this.outputTokens, "output", selectedModel)) /
@@ -76,7 +106,11 @@ export class UsageTracker {
   }
 
   computeCostDollars(selectedModel: string): number {
-    if (this.providerCost > 0) return this.providerCost;
+    // Mirror deductUsage's gate: providerCost is only authoritative for the
+    // total when modelProviderCost > 0. After resetModelLeg() (fallback retry)
+    // providerCost can be positive from nonModelCost alone, which would
+    // underreport the fallback's model tokens if we used it directly.
+    if (this.modelProviderCost > 0) return this.providerCost;
     return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
   }
 
@@ -111,6 +145,7 @@ export class UsageTracker {
     responseModel,
     configuredModelId,
     rateLimitInfo,
+    maxMode,
   }: {
     userId: string;
     selectedModel: string;
@@ -118,6 +153,7 @@ export class UsageTracker {
     responseModel?: string;
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
+    maxMode?: boolean;
   }) {
     logUsageRecord({
       userId,
@@ -134,6 +170,7 @@ export class UsageTracker {
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
       costDollars: this.computeCostDollars(selectedModel),
+      maxMode,
     });
   }
 }

@@ -293,7 +293,7 @@ export const MessageItem = memo(function MessageItem({
                 } overflow-hidden`}
               >
                 {isUser ? (
-                  <div className="whitespace-pre-wrap">
+                  <div className="whitespace-pre-wrap break-words">
                     {nonFileParts.map((part, partIndex) => (
                       <MessagePartHandler
                         key={`${message.id}-${partIndex}`}

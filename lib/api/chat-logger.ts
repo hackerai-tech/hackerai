@@ -11,9 +11,13 @@ import {
   type ChatWideEvent,
   type WideEventBuilder,
 } from "@/lib/logger";
-import type { ChatMode, ExtraUsageConfig } from "@/types";
+import type {
+  CaidoReadyInfo,
+  ChatMode,
+  ExtraUsageConfig,
+  SandboxBootInfo,
+} from "@/types";
 import type { ChatSDKError } from "@/lib/errors";
-import type { UsageTracker } from "@/lib/usage-tracker";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
 
@@ -122,6 +126,20 @@ export function createChatLogger(config: ChatLoggerConfig) {
       if (info) {
         builder.setSandbox(info);
       }
+    },
+
+    /**
+     * Record sandbox boot timing (first call wins within a request).
+     */
+    setSandboxBoot(info: SandboxBootInfo) {
+      builder.setSandboxBoot(info);
+    },
+
+    /**
+     * Record Caido proxy setup timing (first call wins within a request).
+     */
+    setCaidoReady(info: CaidoReadyInfo) {
+      builder.setCaidoReady(info);
     },
 
     /**
@@ -250,80 +268,6 @@ export function captureToolCalls({
       },
     });
   }
-}
-
-export function captureFreeAgentRequest({
-  posthog,
-  chatLogger,
-  userId,
-  estimatedInputTokens,
-  selectedModel,
-  selectedModelOverride,
-  configuredModelId,
-  responseModel,
-  usageTracker,
-  finishReason,
-  wasAborted,
-  wasPreemptiveTimeout,
-  hadSummarization,
-  isTemporary,
-  isRegenerate,
-}: {
-  posthog: PostHog | null;
-  chatLogger: ChatLogger | undefined;
-  userId: string;
-  estimatedInputTokens: number;
-  selectedModel: string;
-  selectedModelOverride?: string;
-  configuredModelId: string;
-  responseModel?: string;
-  usageTracker: UsageTracker;
-  finishReason?: string;
-  wasAborted: boolean;
-  wasPreemptiveTimeout: boolean;
-  hadSummarization: boolean;
-  isTemporary: boolean;
-  isRegenerate: boolean;
-}) {
-  if (!posthog) return;
-
-  const resolvedModel = usageTracker.resolveModelName({
-    selectedModelOverride,
-    responseModel,
-    configuredModelId,
-    selectedModel,
-  });
-
-  posthog.capture({
-    distinctId: userId,
-    event: "free_agent_request_completed",
-    properties: {
-      estimatedInputTokens,
-      inputTokens: usageTracker.inputTokens,
-      outputTokens: usageTracker.outputTokens,
-      totalTokens:
-        usageTracker.totalTokens ||
-        usageTracker.inputTokens + usageTracker.outputTokens,
-      cacheReadTokens: usageTracker.cacheReadTokens || undefined,
-      cacheWriteTokens: usageTracker.cacheWriteTokens || undefined,
-      providerCostDollars: usageTracker.providerCost || undefined,
-      modelCostDollars: usageTracker.computeModelCostDollars(selectedModel),
-      nonModelCostDollars: usageTracker.nonModelCost || undefined,
-      totalCostDollars: usageTracker.computeCostDollars(selectedModel),
-      selectedModel,
-      selectedModelOverride: selectedModelOverride ?? "auto",
-      configuredModelId,
-      responseModel,
-      resolvedModel,
-      toolCallCount: chatLogger?.getToolCalls().length ?? 0,
-      finishReason,
-      wasAborted,
-      wasPreemptiveTimeout,
-      hadSummarization,
-      isTemporary,
-      isRegenerate,
-    },
-  });
 }
 
 export function shutdownPostHog(posthog: PostHog | null) {

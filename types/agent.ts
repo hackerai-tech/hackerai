@@ -39,9 +39,54 @@ export interface SandboxManager {
   isSandboxUnavailable(): boolean;
 }
 
+export interface SandboxBootInfo {
+  path:
+    | "reuse_existing"
+    | "create_fresh"
+    | "create_after_version_mismatch"
+    | "create_after_expired"
+    | "create_after_broken";
+  duration_ms: number;
+  create_attempts: number;
+}
+
+export type CaidoErrorKind =
+  | "install_failed"
+  | "start_timeout"
+  | "auth_failed"
+  | "external_unreachable"
+  | "setup_failed"
+  | "unknown";
+
+export interface CaidoReadyInfo {
+  path:
+    | "fast"
+    | "needs_start"
+    | "external"
+    | "locked_wait"
+    | "locked_wait_error"
+    | "cached_ready"
+    | "windows_unsupported"
+    | "setup_error";
+  duration_ms: number;
+  initial_script_ms?: number;
+  background_start_ms?: number;
+  health_poll_ms?: number;
+  reauth_script_ms?: number;
+  /**
+   * Bounded error classification for telemetry. Raw error messages are never
+   * written to the wide event — they may contain local hostnames, ports, or
+   * stderr content from caido-cli. Full messages are available in console.warn
+   * for debugging only.
+   */
+  error_kind?: CaidoErrorKind;
+}
+
 export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
+  /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
+  onBoot?: (info: SandboxBootInfo) => void;
 }
 
 /** Optional: when set, terminal chunks are awaited so the run yields and stream delivery can happen in real time. */
@@ -73,4 +118,6 @@ export interface ToolContext {
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;
+  /** Called when Caido proxy setup completes (or fails). First call in a request captures the real cost; later calls measure lock-wait time. */
+  onCaidoReady?: (info: CaidoReadyInfo) => void;
 }

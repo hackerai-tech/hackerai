@@ -10,8 +10,29 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Helpers
 // =============================================================================
 
-/** Cancel all active Stripe subscriptions for a customer. */
-async function cancelAllSubscriptions(customerId: string): Promise<void> {
+/**
+ * True if a Stripe error means "the resource is already in the desired
+ * end-state" — already cancelled, already detached, or no longer exists.
+ * These are safe to swallow on retry; anything else (network, rate limit,
+ * 5xx) is transient and must bubble so Stripe retries the webhook.
+ */
+function isTerminalStripeError(err: unknown): boolean {
+  return (
+    err instanceof Stripe.errors.StripeError && err.code === "resource_missing"
+  );
+}
+
+/**
+ * Cancel Stripe subscriptions that existed at the time of the originating
+ * fraud event. Subs created after `asOfUnix` are skipped: they're a different
+ * customer action (e.g. a re-subscribe after a non-fraudulent dispute) and
+ * must not be affected by a webhook replay. This is what makes the handler
+ * safe to re-run against drifted Stripe state.
+ */
+async function cancelAllSubscriptions(
+  customerId: string,
+  asOfUnix: number,
+): Promise<void> {
   const subs = await stripe.subscriptions.list({
     customer: customerId,
     status: "all",
@@ -19,39 +40,70 @@ async function cancelAllSubscriptions(customerId: string): Promise<void> {
   });
 
   for (const sub of subs.data) {
+    if (sub.created > asOfUnix) {
+      console.log(
+        `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: created ${sub.created} > event ${asOfUnix} (post-event)`,
+      );
+      continue;
+    }
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
-      console.warn(
+      if (isTerminalStripeError(err)) {
+        console.log(
+          `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: resource_missing`,
+        );
+        continue;
+      }
+      console.error(
         `[Fraud Webhook] Failed to cancel subscription ${sub.id}:`,
         err,
       );
+      throw err;
     }
   }
 }
 
-/** Detach all payment methods from a customer to prevent future charges. */
-async function detachAllPaymentMethods(customerId: string): Promise<void> {
+/**
+ * Detach payment methods that existed at the time of the originating fraud
+ * event. Payment methods added after `asOfUnix` are skipped — same reasoning
+ * as cancelAllSubscriptions: a replay must not reach into post-event state.
+ */
+async function detachAllPaymentMethods(
+  customerId: string,
+  asOfUnix: number,
+): Promise<void> {
   const paymentMethods = await stripe.paymentMethods.list({
     customer: customerId,
     limit: 100,
   });
 
   for (const pm of paymentMethods.data) {
+    if (pm.created > asOfUnix) {
+      console.log(
+        `[Fraud Webhook] Detach skipped for payment method ${pm.id}: created ${pm.created} > event ${asOfUnix} (post-event)`,
+      );
+      continue;
+    }
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {
-      console.warn(
+      if (isTerminalStripeError(err)) {
+        console.log(
+          `[Fraud Webhook] Detach skipped for payment method ${pm.id}: resource_missing`,
+        );
+        continue;
+      }
+      console.error(
         `[Fraud Webhook] Failed to detach payment method ${pm.id}:`,
         err,
       );
+      throw err;
     }
   }
 }
 
-/** Mark the Stripe customer as blocked via metadata. Throws on failure
- *  so the webhook returns 500 and Stripe retries — without this flag the
- *  subscribe/upgrade routes cannot enforce the block. */
+/** Mark the Stripe customer as blocked via metadata. */
 async function markCustomerBlocked(
   customerId: string,
   reason: string,
@@ -79,6 +131,55 @@ async function reportChargeFraudulent(chargeId: string): Promise<void> {
   }
 }
 
+/**
+ * Refund a charge for an early fraud warning.
+ *
+ * Uses an idempotency key derived from the EFW ID so that webhook retries
+ * (or TOCTOU duplicate deliveries) collapse onto a single refund instead
+ * of erroring with `charge_already_refunded`.
+ *
+ * Terminal failures (`charge_already_refunded`, `charge_disputed`,
+ * `charge_pending`) are logged and treated as success: there is nothing
+ * to retry. All other errors bubble so the webhook returns 500 and Stripe
+ * retries the delivery — silently swallowing transient errors here would
+ * defeat the entire point of the EFW path (refund proactively to avoid
+ * the dispute fee + ratio impact).
+ */
+async function refundChargeForEFW(
+  chargeId: string,
+  efwId: string,
+): Promise<void> {
+  try {
+    await stripe.refunds.create(
+      { charge: chargeId, reason: "fraudulent" },
+      { idempotencyKey: `efw-refund:${efwId}` },
+    );
+    console.log(
+      `[Fraud Webhook] Refunded charge ${chargeId} (early fraud warning ${efwId})`,
+    );
+  } catch (err) {
+    if (err instanceof Stripe.errors.StripeError) {
+      const code = err.code;
+      if (
+        code === "charge_already_refunded" ||
+        code === "charge_disputed" ||
+        code === "charge_pending"
+      ) {
+        console.log(
+          `[Fraud Webhook] Refund skipped for ${chargeId} (EFW ${efwId}): ${code}`,
+        );
+        return;
+      }
+    }
+    // Transient or unexpected — bubble so Stripe retries the webhook.
+    console.error(
+      `[Fraud Webhook] Refund failed for ${chargeId} (EFW ${efwId}):`,
+      err,
+    );
+    throw err;
+  }
+}
+
 /** Resolve Stripe customer ID from a charge. */
 function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
   return typeof charge.customer === "string"
@@ -91,7 +192,7 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
  *
  * - Cancel all subscriptions (stops billing)
  * - Detach all payment methods (prevents future charges)
- * - Mark customer as blocked (metadata flag for app-layer checks)
+ * - Mark customer as blocked (metadata flag)
  * - Report charge as fraudulent (feeds Radar ML) — skipped when no charge
  *
  * The Stripe customer and WorkOS account are preserved for:
@@ -103,9 +204,10 @@ async function blockFraudulentUser(
   customerId: string,
   chargeId: string | null,
   reason: string,
+  asOfUnix: number,
 ): Promise<void> {
-  await cancelAllSubscriptions(customerId);
-  await detachAllPaymentMethods(customerId);
+  await cancelAllSubscriptions(customerId, asOfUnix);
+  await detachAllPaymentMethods(customerId, asOfUnix);
   await markCustomerBlocked(customerId, reason);
   if (chargeId) {
     await reportChargeFraudulent(chargeId);
@@ -148,18 +250,8 @@ async function handleEarlyFraudWarning(
   const charge = await stripe.charges.retrieve(chargeId);
   const customerId = getCustomerIdFromCharge(charge);
 
-  // Refund the charge immediately
-  try {
-    await stripe.refunds.create({
-      charge: chargeId,
-      reason: "fraudulent",
-    });
-    console.log(
-      `[Fraud Webhook] Refunded charge ${chargeId} (early fraud warning)`,
-    );
-  } catch (err) {
-    console.warn(`[Fraud Webhook] Could not refund charge ${chargeId}:`, err);
-  }
+  // Refund first. Throws on transient errors so Stripe retries the webhook.
+  await refundChargeForEFW(chargeId, warning.id);
 
   // Block the user
   if (customerId) {
@@ -167,6 +259,7 @@ async function handleEarlyFraudWarning(
       customerId,
       chargeId,
       `early_fraud_warning:${warning.fraud_type}`,
+      warning.created,
     );
   }
 }
@@ -177,6 +270,12 @@ async function handleEarlyFraudWarning(
  * Fraudulent disputes: block the user (cancel subs, detach cards, flag).
  * Non-fraudulent disputes (unrecognized, duplicate, etc.): cancel subscription
  * only — the customer may be legitimate and confused.
+ *
+ * No refund call: when a dispute is created, Stripe automatically debits the
+ * disputed amount (plus a non-refundable dispute fee) from the merchant
+ * balance. Calling stripe.refunds.create here would error with
+ * "charge_disputed" / double-refund. The disputed funds are returned to the
+ * cardholder by their issuer, not by us.
  */
 async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
   const chargeId =
@@ -205,193 +304,19 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       customerId,
       chargeId,
       `dispute_fraudulent:${dispute.id}`,
+      dispute.created,
     );
   } else {
-    // Legitimate customer confused about the charge — just stop billing
-    await cancelAllSubscriptions(customerId);
+    // Non-fraudulent dispute (unrecognized, duplicate, product issue, etc.).
+    // The customer may be legitimate but a chargeback still costs us the
+    // dispute fee + ratio impact, and the disputed card is likely to file
+    // again. Stop all future charges on this card: cancel subscriptions
+    // AND detach payment methods. Don't mark blocked — the customer can
+    // still re-subscribe with a different card if they want to continue.
+    await cancelAllSubscriptions(customerId, dispute.created);
+    await detachAllPaymentMethods(customerId, dispute.created);
     console.log(
-      `[Fraud Webhook] Cancelled subscriptions for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
-    );
-  }
-}
-
-// =============================================================================
-// Card-Testing Detection
-// =============================================================================
-
-/** Decline codes that warrant an immediate block — no threshold needed. */
-const IMMEDIATE_BLOCK_CODES = new Set(["stolen_card", "fraudulent"]);
-
-/** Decline codes from legitimate financial issues — don't count toward fraud. */
-const IGNORED_CODES = new Set([
-  "insufficient_funds",
-  "expired_card",
-  "processing_error",
-  "reenter_transaction",
-]);
-
-/** 24 hours in milliseconds — accounts newer than this get a lower block threshold. */
-const NEW_ACCOUNT_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Extract the card fingerprint from the payment intent's failed payment method.
- * Returns null if the payment method isn't a card or isn't expanded.
- */
-async function extractCardFingerprint(
-  paymentIntent: Stripe.PaymentIntent,
-): Promise<string | null> {
-  const pmRef = paymentIntent.last_payment_error?.payment_method;
-  if (!pmRef) return null;
-
-  // If already expanded as an object
-  if (typeof pmRef === "object" && pmRef.card?.fingerprint) {
-    return pmRef.card.fingerprint;
-  }
-
-  // If it's a string ID, fetch it
-  if (typeof pmRef === "string") {
-    try {
-      const pm = await stripe.paymentMethods.retrieve(pmRef);
-      return pm.card?.fingerprint ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Check whether the Stripe customer was created recently (< 24h)
- * with no prior successful charges.
- */
-async function isNewAccount(customerId: string): Promise<boolean> {
-  try {
-    const customer = await stripe.customers.retrieve(customerId);
-    if (customer.deleted) return false;
-    const createdMs = (customer as Stripe.Customer).created * 1000;
-    return Date.now() - createdMs < NEW_ACCOUNT_MS;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Handle payment_intent.payment_failed
- *
- * Detects card-testing attacks using multiple signals:
- * - Weighted scoring (incorrect_number = 2x)
- * - Distinct card fingerprints (3+ = instant block)
- * - Decline code diversity (4+ different codes = instant block)
- * - Account age factor (new accounts have lower threshold)
- */
-async function handlePaymentFailed(
-  paymentIntent: Stripe.PaymentIntent,
-): Promise<void> {
-  const customerId =
-    typeof paymentIntent.customer === "string"
-      ? paymentIntent.customer
-      : (paymentIntent.customer?.id ?? null);
-
-  if (!customerId) {
-    console.warn(
-      `[Fraud Webhook] payment_intent.payment_failed without customer: ${paymentIntent.id}`,
-    );
-    return;
-  }
-
-  const declineCode =
-    paymentIntent.last_payment_error?.decline_code ??
-    paymentIntent.last_payment_error?.code ??
-    "unknown";
-
-  // Auto-reload charges run against a single saved payment method the user
-  // already validated, so they cannot represent card-testing by construction.
-  // We must NOT feed these failures into the multi-signal fraud detector or a
-  // legitimate user with an expired card will get auto-blocked. The
-  // createAutoReloadPayment helper tags the invoice with metadata.type =
-  // "extra_usage_auto_reload"; skip recording when the PI is tied to one.
-  // Auto-disable + user notification of broken auto-reload is handled
-  // separately in convex/extraUsage.ts:recordAutoReloadOutcome.
-  const invoiceRef = (
-    paymentIntent as unknown as { invoice?: string | { id: string } | null }
-  ).invoice;
-  const invoiceId =
-    typeof invoiceRef === "string" ? invoiceRef : (invoiceRef?.id ?? null);
-  if (invoiceId) {
-    try {
-      const invoice = await stripe.invoices.retrieve(invoiceId);
-      if (invoice.metadata?.type === "extra_usage_auto_reload") {
-        console.log(
-          `[Fraud Webhook] Skipping fraud tracking for auto-reload payment failure ${paymentIntent.id} (customer ${customerId}, decline=${declineCode})`,
-        );
-        return;
-      }
-    } catch (err) {
-      console.warn(
-        `[Fraud Webhook] Failed to retrieve invoice ${invoiceId} while checking auto-reload metadata:`,
-        err,
-      );
-      // Fall through to normal fraud tracking on lookup failure.
-    }
-  }
-
-  const chargeId =
-    typeof paymentIntent.latest_charge === "string"
-      ? paymentIntent.latest_charge
-      : (paymentIntent.latest_charge?.id ?? null);
-
-  console.log(
-    `[Fraud Webhook] Payment failed for customer ${customerId}: decline_code=${declineCode}, charge=${chargeId ?? "none"}`,
-  );
-
-  // Immediate block for clearly fraudulent decline codes
-  if (IMMEDIATE_BLOCK_CODES.has(declineCode)) {
-    // Persist block to Convex FIRST so that isCustomerSuspicious pre-checks
-    // will see it even if the subsequent Stripe calls fail and the webhook
-    // retry is skipped (idempotency claim already written above).
-    await convex.mutation(api.fraudTracking.markCustomerAutoBlocked, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      stripeCustomerId: customerId,
-      reason: `immediate_block:${declineCode}`,
-    });
-    await blockFraudulentUser(
-      customerId,
-      chargeId,
-      `immediate_block:${declineCode}`,
-    );
-    return;
-  }
-
-  // Skip tracking for legitimate financial failures
-  if (IGNORED_CODES.has(declineCode)) {
-    return;
-  }
-
-  // Extract additional fraud signals in parallel
-  const [cardFingerprint, newAccount] = await Promise.all([
-    extractCardFingerprint(paymentIntent),
-    isNewAccount(customerId),
-  ]);
-
-  // Track suspicious failure in sliding window (multi-signal)
-  const result = await convex.mutation(api.fraudTracking.recordPaymentFailure, {
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    stripeCustomerId: customerId,
-    declineCode,
-    cardFingerprint: cardFingerprint ?? undefined,
-    isNewAccount: newAccount,
-  });
-
-  if (result.shouldBlock) {
-    const reason = result.blockReason ?? "threshold_reached";
-    console.log(
-      `[Fraud Webhook] Card-testing detected for customer ${customerId} (${result.failureCount} failures, reason: ${reason}) — blocking`,
-    );
-    await blockFraudulentUser(
-      customerId,
-      chargeId,
-      `card_testing_detected:${reason}`,
+      `[Fraud Webhook] Cancelled subscriptions and detached payment methods for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
   }
 }
@@ -406,7 +331,7 @@ async function handlePaymentFailed(
  *
  * Configure in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/fraud/webhook
- * - Events: radar.early_fraud_warning.created, charge.dispute.created, payment_intent.payment_failed
+ * - Events: radar.early_fraud_warning.created, charge.dispute.created
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -443,46 +368,76 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Atomic idempotency claim — marks the event immediately to prevent
-  // concurrent deliveries from both passing the check (TOCTOU race).
-  // Stripe operations below are idempotent, so duplicate runs are safe
-  // if the claim write succeeds but processing partially fails.
+  // Atomic claim — eliminates the TOCTOU window where two concurrent
+  // deliveries of the same event.id could both pass a read-then-write
+  // pre-check and both run side effects. claimWebhookProcessing inserts
+  // a `pending` row in a single transaction; only one caller wins.
+  // Stale `pending` claims (>10 min) are reclaimable so a crashed first
+  // attempt doesn't permanently block Stripe's retries.
+  let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
-    });
-
-    if (result.alreadyProcessed) {
-      console.log(
-        `[Fraud Webhook] Event ${event.id} already processed, skipping`,
-      );
-      return NextResponse.json({ received: true });
-    }
+    const result = await convex.mutation(
+      api.extraUsage.claimWebhookProcessing,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+      },
+    );
+    claimState = result.state;
   } catch (error) {
-    console.error("[Fraud Webhook] Idempotency check failed:", error);
+    console.error("[Fraud Webhook] Claim failed:", error);
     return NextResponse.json(
-      { error: "Failed to check idempotency" },
+      { error: "Failed to claim webhook" },
       { status: 500 },
     );
   }
 
-  // Handle events
-  switch (event.type) {
-    case "radar.early_fraud_warning.created": {
-      await handleEarlyFraudWarning(
-        event.data.object as Stripe.Radar.EarlyFraudWarning,
-      );
-      break;
+  if (claimState !== "acquired") {
+    console.log(`[Fraud Webhook] Event ${event.id} ${claimState}, skipping`);
+    return NextResponse.json({ received: true });
+  }
+
+  // Handle events. If the handler throws, return 500 WITHOUT finalizing —
+  // the `pending` claim will become reclaimable after STALE_CLAIM_MS so a
+  // future Stripe retry can drive completion.
+  try {
+    switch (event.type) {
+      case "radar.early_fraud_warning.created": {
+        await handleEarlyFraudWarning(
+          event.data.object as Stripe.Radar.EarlyFraudWarning,
+        );
+        break;
+      }
+      case "charge.dispute.created": {
+        await handleDisputeCreated(event.data.object as Stripe.Dispute);
+        break;
+      }
     }
-    case "charge.dispute.created": {
-      await handleDisputeCreated(event.data.object as Stripe.Dispute);
-      break;
-    }
-    case "payment_intent.payment_failed": {
-      await handlePaymentFailed(event.data.object as Stripe.PaymentIntent);
-      break;
-    }
+  } catch (error) {
+    console.error(
+      `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
+      error,
+    );
+    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
+  }
+
+  // Finalize the claim. If this write itself fails, log and continue:
+  // a duplicate Stripe retry would re-run the handler operations, but the
+  // handlers filter Stripe state by the originating event's `created`
+  // timestamp (see cancelAllSubscriptions / detachAllPaymentMethods), so a
+  // replay can only act on subs/payment methods that already existed when
+  // the fraud signal arrived. Replacement subs and new cards added after
+  // the event are skipped.
+  try {
+    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      eventId: event.id,
+    });
+  } catch (error) {
+    console.error(
+      `[Fraud Webhook] Failed to finalize event ${event.id}:`,
+      error,
+    );
   }
 
   return NextResponse.json({ received: true });

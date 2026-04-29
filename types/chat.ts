@@ -16,8 +16,8 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "grok-4.1"
   | "gemini-3-flash"
-  | "opus-4.6"
-  | "kimi-k2.5";
+  | "opus-4.7"
+  | "kimi-k2.6";
 // | "codex-local"
 // | `codex-local:${string}`;
 
@@ -26,8 +26,8 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "sonnet-4.6",
   "grok-4.1",
   "gemini-3-flash",
-  "opus-4.6",
-  "kimi-k2.5",
+  "opus-4.7",
+  "kimi-k2.6",
   // "codex-local",
 ];
 
@@ -38,7 +38,7 @@ export function isCodexLocal(model: string | null): boolean {
   );
 }
 
-/** Extract the Codex sub-model (e.g., "gpt-5.4" from "codex-local:gpt-5.4") */
+/** Extract the Codex sub-model (e.g., "gpt-5.3" from "codex-local:gpt-5.3") */
 export function getCodexSubModel(model: string): string | undefined {
   if (model.startsWith("codex-local:")) {
     return model.slice("codex-local:".length);

@@ -1,5 +1,5 @@
 import type { AnySandbox } from "@/types";
-import { createRetryLogger } from "@/lib/axiom/worker";
+import { createRetryLogger } from "@/lib/posthog/worker";
 import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
 import {
@@ -143,7 +143,7 @@ export async function waitForSandboxReady(
         return false; // All other errors: keep retrying - sandbox might be starting
       },
       logger: (message, error) => {
-        // Only log final failure (when it gives up) - sends to Axiom when configured
+        // Only log final failure (when it gives up)
         if (message.includes("failed after")) {
           sandboxHealthLogger(message, error);
         }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
+import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
 
 export const POST = async (req: NextRequest) => {
@@ -92,6 +93,15 @@ export const POST = async (req: NextRequest) => {
         }
       }),
     );
+
+    // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
+    // even if this fails so the account is not left in a half-deleted state.
+    await deleteUserRateLimitKeys(userId).catch((err) => {
+      console.warn(
+        "Failed to clear Redis rate-limit keys during account deletion:",
+        err,
+      );
+    });
 
     // Finally, delete the WorkOS user
     await workos.userManagement.deleteUser(userId);

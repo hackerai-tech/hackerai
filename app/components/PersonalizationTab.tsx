@@ -50,8 +50,8 @@ const PersonalizationTab = ({
         </div>
       </div>
 
-      {/* Notes Section (formerly Memory Section) - hidden for free users */}
-      {subscription && subscription !== "free" && (
+      {/* Notes Section (formerly Memory Section) */}
+      {subscription && (
         <div>
           <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
           <div className="space-y-4">

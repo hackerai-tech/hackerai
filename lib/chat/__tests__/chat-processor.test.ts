@@ -192,10 +192,6 @@ describe("selectModel", () => {
       );
     });
 
-    it("should block Opus 4.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "opus-4.6")).toBe("agent-model");
-    });
-
     it("should default to agent-model when no model selected", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
       expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
