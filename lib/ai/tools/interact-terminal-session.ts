@@ -12,58 +12,82 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
+import { translateInput } from "./utils/pty-keys";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
 const MAX_WAIT_TIMEOUT_SECONDS = 300;
+// Brief window to capture the immediate response to a `send` (e.g. a prompt
+// echoing "Hello, X!"). Too short and we miss instant CLI replies; too long
+// and we block the agent on long-running processes that need explicit `wait`.
+const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
 
   return tool({
-    description: `Interact with an existing PTY session created by run_terminal_cmd with interactive=true.
+    description: `Interact with persistent shell sessions in the sandbox environment.
 
-Use this tool to:
-- Send keystrokes to REPLs, SSH sessions, or interactive prompts
-- Wait for command output to complete
-- View the current terminal state
-- Kill finished sessions
+<supported_actions>
+- \`view\`: View the content of a shell session
+- \`wait\`: Wait for the running process in a shell session to return
+- \`send\`: Send input to the active process (stdin) in a shell session
+- \`kill\`: Terminate the running process in a shell session
+</supported_actions>
 
-IMPORTANT: You must first create a session using run_terminal_cmd with interactive=true, which returns a session ID. Pass that session ID here.`,
+<instructions>
+- Sessions are created by \`run_terminal_cmd\` with \`interactive=true\`; pass the returned \`session\` id here
+- When using \`view\` action, ensure command has completed execution before using its output
+- Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
+- Processes are NEVER killed on timeout — they keep running in the session; \`timeout\` only controls how long to wait for output before returning
+- Use \`wait\` action when a process needs additional time to complete and return
+- Only use \`wait\` after \`send\` (or after \`run_terminal_cmd\` returned without finishing); decide whether to wait based on the prior output
+- DO NOT use \`wait\` for long-running daemon processes
+- \`send\` writes input and captures only the immediate response chunk; if the process needs more time before it replies, follow up with \`action=wait\`
+- When using \`send\`, end the \`input\` with a newline character (\\n) to simulate pressing Enter
+- For special keys, use official tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Home, End, Escape, Tab, Enter, Space, F1-F12, PageUp, PageDown
+- For modifier combinations: M-key (Alt), C-S-key (Ctrl+Shift)
+- Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
+- For non-key strings in \`input\`, DO NOT perform any escaping; send the raw string directly
+- Raw input BYPASSES command guardrails; never forward untrusted content
+</instructions>
+
+<recommended_usage>
+- Use \`view\` to check shell session history and latest status
+- Use \`wait\` to wait for the completion of long-running commands
+- Use \`send\` to interact with processes that require user input (e.g., responding to prompts)
+- Use \`send\` with special keys like C-c to interrupt, C-d to send EOF
+- Use \`kill\` to stop background processes that are no longer needed
+- Use \`kill\` to clean up dead or unresponsive processes
+</recommended_usage>`,
     inputSchema: z.object({
-      session: z
+      action: z
+        .enum(["view", "wait", "send", "kill"])
+        .describe("The action to perform"),
+      brief: z
         .string()
         .describe(
-          "Session ID returned by run_terminal_cmd with interactive=true. REQUIRED.",
-        ),
-      action: z
-        .enum(["send", "wait", "view", "kill"])
-        .describe(
-          "Action to perform:\n" +
-            "  - send: Feed input to the session and wait for reply. REQUIRES `input`.\n" +
-            "  - wait: Wait for more output (only if you need MORE output after send already returned).\n" +
-            "  - view: Snapshot the full session buffer without consuming.\n" +
-            "  - kill: Terminate the session.",
+          "A one-sentence preamble describing the purpose of this operation",
         ),
       input: z
         .string()
         .optional()
         .describe(
-          "ONLY for action=send. Raw input to send to terminal stdin. " +
-            "Use \\n for Enter (auto-converted to \\r), \\t for Tab, " +
-            "\\x03 for Ctrl+C (SIGINT), \\x04 for Ctrl+D (EOF), " +
-            "\\x1b[A/B/C/D for Up/Down/Right/Left arrows. " +
-            "Example: 'echo hello\\n' sends command and presses Enter. " +
-            "Send ONE command per call, observe output before the next. " +
-            "Raw input BYPASSES command guardrails; never paste untrusted content.",
+          "Input text to send to the interactive session. End with a newline character (\\n) to simulate pressing Enter if needed. Required for `send` action.",
+        ),
+      session: z
+        .string()
+        .describe(
+          "The unique identifier of the target shell session (returned by `run_terminal_cmd` with `interactive=true`)",
         ),
       timeout: z
         .number()
+        .int()
         .optional()
         .default(DEFAULT_WAIT_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for output before returning. Capped at ${MAX_WAIT_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for output. Only used for \`wait\` action. Defaults to ${DEFAULT_WAIT_TIMEOUT_SECONDS} seconds. Max ${MAX_WAIT_TIMEOUT_SECONDS} seconds.`,
         ),
     }),
     execute: async (
@@ -158,23 +182,10 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
 
         emitPriorContext(session);
 
-        // Parse escape sequences: model sends raw strings like "echo\n" or "\x03"
-        // Convert literal escape sequences to actual bytes
-        const parsed = input
-          // Handle \xNN hex escapes (e.g., \x03 for Ctrl+C, \x1b for Escape)
-          .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
-            String.fromCharCode(parseInt(hex, 16)),
-          )
-          // Handle common escape sequences
-          .replace(/\\n/g, "\r") // \n → CR (Enter for terminal)
-          .replace(/\\r/g, "\r") // \r → CR
-          .replace(/\\t/g, "\t") // \t → Tab
-          .replace(/\\e/g, "\x1b") // \e → Escape
-          .replace(/\\\\/g, "\\") // \\ → literal backslash
-          // Also normalize actual newlines if present
-          .replace(/\r\n/g, "\r")
-          .replace(/\n/g, "\r");
-        const bytes = new TextEncoder().encode(parsed);
+        // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
+        // raw text passes through unchanged with trailing newline normalized
+        // to CR so "echo hi\n" submits the line as a real Enter.
+        const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
@@ -188,11 +199,12 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
           );
         }
         session.lastActivityAt = Date.now();
-        // Brief delay for CLI readline to process input
-        await new Promise((r) => setTimeout(r, 50));
+        // Capture the immediate response chunk — prompts that echo a reply
+        // ("Hello, X!") show up here. Use action=wait for processes that
+        // take longer to respond.
         const delta = await waitForOutput(
           session,
-          timeoutMs,
+          SEND_IMMEDIATE_OUTPUT_WINDOW_MS,
           abortSignal,
           emitTerminal,
           (s) => ptySessionManager.consumeDelta(s),

@@ -259,7 +259,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls.length).toBe(before);
   });
 
-  test("send passes raw escape sequences directly: \\x03 for Ctrl+C, \\n for Enter, plain text verbatim", async () => {
+  test("send translates tmux key names and passes raw text verbatim", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
 
@@ -270,40 +270,44 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     const sendAndGet = async (input: string) => {
       const beforeLen = handle.sendInputCalls.length;
+      // send awaits a short capture window before resolving; we don't need
+      // its return value here, only that handle.sendInput was called.
       void runTool(tool, {
         action: "send",
         session: sessionId,
         input,
-        timeout: 0.2,
       });
-      // Yield so the tool's awaited sendInput runs.
+      // Yield so the tool's awaited sendInput runs before we read the bytes.
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
       return handle.sendInputCalls[beforeLen];
     };
 
-    // Model sends literal \x03 string, parsed to Ctrl+C byte
-    const ctrlC = await sendAndGet("\\x03");
+    // Tmux key names → escape sequences
+    const ctrlC = await sendAndGet("C-c");
     expect(Array.from(ctrlC)).toEqual([0x03]);
 
-    // Literal \n parsed to \r (Enter for terminal)
-    const enter = await sendAndGet("\\n");
+    const enter = await sendAndGet("Enter");
     expect(Array.from(enter)).toEqual([0x0d]);
 
+    const tab = await sendAndGet("Tab");
+    expect(Array.from(tab)).toEqual([0x09]);
+
+    // Arrow keys produce CSI sequences
+    const up = await sendAndGet("Up");
+    expect(new TextDecoder().decode(up)).toBe("\x1b[A");
+
+    // Modifier prefix: M-x → ESC x
+    const altX = await sendAndGet("M-x");
+    expect(new TextDecoder().decode(altX)).toBe("\x1bx");
+
+    // Plain text passes through verbatim
     const plain = await sendAndGet("hello");
     expect(new TextDecoder().decode(plain)).toBe("hello");
 
-    // Command with literal \n
-    const commandWithEnter = await sendAndGet("echo hello\\n");
+    // A real trailing newline is normalized to CR so the line submits as Enter
+    const commandWithEnter = await sendAndGet("echo hello\n");
     expect(new TextDecoder().decode(commandWithEnter)).toBe("echo hello\r");
-
-    // Literal \t parsed to Tab
-    const tab = await sendAndGet("\\t");
-    expect(Array.from(tab)).toEqual([0x09]);
-
-    // Literal \x03 parsed to Ctrl+C
-    const ctrlCHex = await sendAndGet("\\x03");
-    expect(Array.from(ctrlCHex)).toEqual([0x03]);
   });
 
   test("wait collects output emitted during the timeout window", async () => {
