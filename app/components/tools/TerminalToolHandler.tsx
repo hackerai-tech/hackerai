@@ -117,9 +117,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const shellSessionForTarget =
     (input as { session?: string })?.session ?? terminalOutput?.session;
   const displayTarget = isKillAction
-    ? shellSessionForTarget
-      ? shellSessionForTarget.slice(0, 8)
-      : ""
+    ? shellSessionForTarget || ""
     : isShellTool
       ? getShellDisplayTarget(input) || displayCommand
       : displayCommand;

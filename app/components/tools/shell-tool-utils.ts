@@ -121,11 +121,11 @@ export function getShellActionLabel(opts: {
     // the session id. Other session actions still prefer PID (E2B) and
     // fall back to session id (Centrifugo / local sandboxes).
     if (action === "kill") {
-      if (session) return `${label} [Session: ${session.slice(0, 8)}]`;
+      if (session) return `${label} [Session: ${session}]`;
       if (pid) return `${label} [PID: ${pid}]`;
     } else {
       if (pid) return `${label} [PID: ${pid}]`;
-      if (session) return `${label} [Session: ${session.slice(0, 8)}]`;
+      if (session) return `${label} [Session: ${session}]`;
     }
   }
   return label;

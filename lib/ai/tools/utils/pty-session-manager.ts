@@ -74,6 +74,25 @@ interface InternalSession extends PtySession {
   exitedNaturally: { exitCode: number | null } | null;
 }
 
+/**
+ * 8 hex chars = 32 bits of entropy. With MAX_CONCURRENT_PTYS_PER_CHAT
+ * collisions are negligible (~10^-8 per chat at the cap), but we still
+ * retry a handful of times on the off chance.
+ *
+ * Short ids matter because the agent has to copy this value into every
+ * `interact_terminal_session` call — full UUIDs cost tokens and make
+ * tool args more error-prone.
+ */
+function shortSessionId(
+  taken: ReadonlyMap<string, unknown> | undefined,
+): string {
+  for (let i = 0; i < 5; i++) {
+    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+    if (!taken || !taken.has(id)) return id;
+  }
+  throw new Error("Failed to generate unique session id after 5 attempts");
+}
+
 export class PtySessionManager {
   private chats = new Map<string, Map<string, InternalSession>>();
 
@@ -92,7 +111,7 @@ export class PtySessionManager {
     // *after* it's spawned throws, we best-effort kill the orphan so it
     // doesn't leak in the sandbox.
     const handle = await opts.createHandle();
-    const sessionId = crypto.randomUUID();
+    const sessionId = shortSessionId(chat);
     const now = Date.now();
 
     try {
