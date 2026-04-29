@@ -471,8 +471,8 @@ const ModelOptionList = ({
                   Access the top AI models
                 </p>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Access the latest AI models from OpenAI, Anthropic (Claude)
-                  and more by{" "}
+                  Access the latest AI models from Anthropic (Claude), Google
+                  (Gemini), xAI (Grok) and more by{" "}
                   <a
                     href="#pricing"
                     onClick={() => onClose()}
