@@ -256,4 +256,14 @@ export default defineSchema({
     status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
     claimed_at: v.optional(v.number()),
   }).index("by_event_id", ["event_id"]),
+
+  push_tokens: defineTable({
+    user_id: v.string(),
+    token: v.string(),
+    platform: v.union(v.literal("ios"), v.literal("android")),
+    created_at: v.number(),
+    last_seen_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_token", ["token"]),
 });

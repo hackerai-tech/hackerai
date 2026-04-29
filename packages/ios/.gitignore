@@ -1,0 +1,7 @@
+node_modules/
+ios/App/build/
+ios/App/output/
+ios/App/App/public/
+DerivedData/
+xcuserdata/
+*.xcuserstate

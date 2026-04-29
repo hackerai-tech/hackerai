@@ -1,0 +1,31 @@
+{
+  "name": "@hackerai/ios",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HackerAI iOS Application (Capacitor)",
+  "scripts": {
+    "dev": "npx cap run ios",
+    "build": "npx cap sync ios && npx cap open ios",
+    "sync": "npx cap sync ios",
+    "open": "npx cap open ios",
+    "add:ios": "npx cap add ios",
+    "assets:generate": "node scripts/generate-assets.mjs"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/browser": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/ios": "^8.0.0",
+    "@capacitor/preferences": "^8.0.0",
+    "@capacitor/push-notifications": "^8.0.0",
+    "@capacitor/share": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0",
+    "@aparajita/capacitor-biometric-auth": "^9.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0",
+    "sharp": "^0.34.5",
+    "typescript": "^5.0.0"
+  }
+}

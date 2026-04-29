@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <title>HackerAI</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0a0a0a;
+        color: #fafafa;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+          env(safe-area-inset-bottom) env(safe-area-inset-left);
+      }
+      .loader {
+        text-align: center;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid #333;
+        border-top-color: #10b981;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 16px;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .error-state {
+        display: none;
+        text-align: center;
+      }
+      .error-state.visible {
+        display: block;
+      }
+      .error-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .error-message {
+        color: #888;
+        margin-bottom: 24px;
+        font-size: 0.875rem;
+      }
+      .retry-btn {
+        background: #10b981;
+        color: #fff;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .retry-btn:active {
+        background: #059669;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="loader" id="loader">
+      <div class="spinner"></div>
+      <p id="status-text">Loading HackerAI...</p>
+    </div>
+    <div class="error-state" id="error-state">
+      <p class="error-title">Connection Failed</p>
+      <p class="error-message" id="error-message">
+        Unable to connect to HackerAI servers.
+      </p>
+      <button class="retry-btn" onclick="retry()">Retry</button>
+    </div>
+    <script>
+      const APP_URL = "https://hackerai.co";
+
+      function showError(message) {
+        document.getElementById("loader").style.display = "none";
+        const err = document.getElementById("error-state");
+        err.classList.add("visible");
+        document.getElementById("error-message").textContent = message;
+      }
+
+      function showLoader() {
+        document.getElementById("loader").style.display = "block";
+        document.getElementById("error-state").classList.remove("visible");
+      }
+
+      async function retry() {
+        showLoader();
+        if (navigator.onLine) {
+          window.location.href = APP_URL;
+        } else {
+          showError("You appear to be offline. Check your connection.");
+        }
+      }
+
+      window.addEventListener("online", retry);
+      retry();
+    </script>
+  </body>
+</html>
