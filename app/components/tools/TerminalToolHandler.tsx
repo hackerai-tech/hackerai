@@ -106,15 +106,20 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const isExecuting = state === "input-available" && status === "streaming";
 
   const isInteractiveAction = isInteractiveShellAction(shellAction);
-  // For kill, the session id is already shown in the action label
-  // ("Killed [Session: ...]") — no useful target to display.
   const isKillAction = shellAction === "kill";
   const displayCommand = isShellTool
     ? getShellDisplayCommand(input) ||
       (isInteractiveAction && !isKillAction ? shellAction || "" : "")
     : terminalInput?.command || "";
+  // For kill, the session id flows into the target slot so the inline
+  // block reads "Killed 7ed0b48d" — matches the action+target pattern of
+  // other shell ToolBlocks instead of leaving an empty target.
+  const shellSessionForTarget =
+    (input as { session?: string })?.session ?? terminalOutput?.session;
   const displayTarget = isKillAction
-    ? ""
+    ? shellSessionForTarget
+      ? shellSessionForTarget.slice(0, 8)
+      : ""
     : isShellTool
       ? getShellDisplayTarget(input) || displayCommand
       : displayCommand;
@@ -131,6 +136,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       isActive,
       interactive: !isShellTool ? terminalInput?.interactive : undefined,
       isBackground: !isShellTool ? terminalInput?.is_background : undefined,
+      compact: true,
     });
 
   // Prefer rawSnapshot when tool is complete (has final state), streaming during execution

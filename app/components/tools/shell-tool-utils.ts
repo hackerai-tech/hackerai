@@ -79,6 +79,12 @@ export function getShellActionLabel(opts: {
   interactive?: boolean;
   /** Legacy run_terminal_cmd: input.is_background — true runs detached. */
   isBackground?: boolean;
+  /**
+   * Inline ToolBlock view — drops the `[PID: …]` / `[Session: …]` bracket
+   * suffix. Those identifiers are noise in the chat scroll; the sidebar
+   * (default, non-compact) keeps them for inspection.
+   */
+  compact?: boolean;
 }): string {
   const {
     isShellTool,
@@ -88,6 +94,7 @@ export function getShellActionLabel(opts: {
     isActive = false,
     interactive,
     isBackground,
+    compact = false,
   } = opts;
 
   if (!isShellTool) {
@@ -109,7 +116,7 @@ export function getShellActionLabel(opts: {
 
   const [active, done] = entry;
   const label = isActive ? active : done;
-  if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
+  if (!compact && action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
     // For kill, the session is gone — its PID is meaningless, so prefer
     // the session id. Other session actions still prefer PID (E2B) and
     // fall back to session id (Centrifugo / local sandboxes).

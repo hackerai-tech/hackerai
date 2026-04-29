@@ -212,10 +212,14 @@ function renderTerminalTool(
   const terminalInput = part.input as ShellToolInput;
   const terminalOutput = part.output as ShellToolOutput;
   const command = getShellDisplayCommand(terminalInput);
-  // For kill, the session id is shown in the action label, so suppress target.
+  // For kill, route the short session id into the target slot — gives the
+  // inline block an identifier ("Killed 7ed0b48d") without bracket noise.
+  const killSession = terminalInput?.session ?? terminalOutput?.session;
   const target =
     terminalInput?.action === "kill"
-      ? ""
+      ? killSession
+        ? killSession.slice(0, 8)
+        : ""
       : getShellDisplayTarget(terminalInput);
   const output = getShellOutput(terminalOutput);
 
@@ -251,6 +255,7 @@ function renderTerminalTool(
       session: terminalInput?.session ?? terminalOutput?.session,
       interactive: legacyInput?.interactive,
       isBackground: legacyInput?.is_background,
+      compact: true,
     });
 
     // Kill has nothing useful to show in the sidebar — disable the click.
