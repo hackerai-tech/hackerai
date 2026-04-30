@@ -150,6 +150,18 @@ export interface ChatWideEvent {
     message: string;
     retriable: boolean;
   };
+
+  // True when the provider stream errored (e.g., AI_RetryError) but the
+  // request still resolved end-to-end — distinguishes a clean success from
+  // one where the model leg died and we recovered (fallback, partial output).
+  had_provider_error?: boolean;
+  provider_error?: {
+    status_code?: number;
+    url?: string;
+    reason?: string;
+    message?: string;
+    retriable?: boolean;
+  };
 }
 
 /**
@@ -447,6 +459,28 @@ export class WideEventBuilder {
   setAborted(): this {
     this.event.outcome = "aborted";
     this.event.status_code = 200;
+    return this;
+  }
+
+  /**
+   * Mark that a provider error fired during the stream. Does not change
+   * outcome — call setSuccess/setError separately based on overall result.
+   */
+  markProviderError(details: {
+    statusCode?: number;
+    url?: string;
+    reason?: string;
+    message?: string;
+    retriable?: boolean;
+  }): this {
+    this.event.had_provider_error = true;
+    this.event.provider_error = {
+      status_code: details.statusCode,
+      url: details.url,
+      reason: details.reason,
+      message: details.message,
+      retriable: details.retriable,
+    };
     return this;
   }
 

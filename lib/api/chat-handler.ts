@@ -947,19 +947,12 @@ export const createChatHandler = (
               onError: async (error) => {
                 // Suppress xAI safety check errors from logging (they're expected for certain content)
                 if (!isXaiSafetyError(error)) {
-                  console.error("Error:", error);
-
-                  // Capture provider errors with request context
-                  phLogger.error("Provider streaming error", {
-                    error,
-                    chatId,
-                    endpoint,
+                  chatLogger?.recordProviderError(error, {
                     mode,
                     model: selectedModel,
                     userId,
                     subscription,
                     isTemporary: temporary,
-                    ...extractErrorDetails(error),
                   });
                 }
                 // Refund the upfront deduction only when the provider errored
