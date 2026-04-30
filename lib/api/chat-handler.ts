@@ -944,8 +944,11 @@ export const createChatHandler = (
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
               },
-              onError: async (error) => {
-                // Suppress xAI safety check errors from logging (they're expected for certain content)
+              onError: async ({ error }) => {
+                // streamText wraps errors in `{ error }` events. Without this
+                // destructure, the wrapper object reaches getErrorMessage which
+                // JSON.stringifies it and leaks requestBodyValues (system prompt,
+                // user messages) into logs.
                 if (!isXaiSafetyError(error)) {
                   chatLogger?.recordProviderError(error, {
                     mode,
