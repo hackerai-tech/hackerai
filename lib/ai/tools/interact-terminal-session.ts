@@ -171,6 +171,30 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         ptySessionManager.consumeDelta(session);
       };
 
+      // Reads the (internal) `exitedNaturally` field. The session stays
+      // around after natural exit so `view`/`wait` can read final output,
+      // but `send` has no live process to write to.
+      const peekSessionExit = (
+        s: PtySession,
+      ): { exitCode: number | null } | null => {
+        const internal = s as {
+          exitedNaturally?: { exitCode: number | null } | null;
+        };
+        return internal.exitedNaturally ?? null;
+      };
+
+      const exitedSendError = (
+        sid: string,
+        exited: { exitCode: number | null },
+        during: boolean,
+      ): ActionResult => ({
+        result: {
+          output: "",
+          error: `Session ${sid} ${during ? "exited during send" : "has exited"} (exitCode=${exited.exitCode}). Use action=view to read final output, or start a new session via run_terminal_cmd.`,
+          exited,
+        },
+      });
+
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
@@ -179,6 +203,12 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
+
+        // Fast-fail if the PTY already exited — otherwise sendInput on E2B
+        // rejects with an opaque `[not_found] process with pid N not found`
+        // that doesn't tell the model the session is dead.
+        const priorExit = peekSessionExit(session);
+        if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
         emitPriorContext(session);
 
@@ -194,6 +224,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         try {
           await session.handle.sendInput(bytes);
         } catch (err) {
+          // sendInput may have raced with a natural exit between the
+          // pre-check and now — surface that explicitly when it's the cause.
+          const raceExit = peekSessionExit(session);
+          if (raceExit) return exitedSendError(sessionId, raceExit, true);
           return errorResult(
             `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
           );

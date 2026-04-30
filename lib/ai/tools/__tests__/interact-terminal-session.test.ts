@@ -485,4 +485,46 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     expect(result.result.error).toMatch(/Failed to send input: pipe broken/);
   });
+
+  // ── send on a session whose PTY has already exited ───────────────────
+  // Regression: previously, send would call into E2B's pty.sendInput with a
+  // dead PID and bubble up the opaque `[not_found] process with pid N not
+  // found` error. The model couldn't tell the session was dead from that.
+  test("send on an exited session returns clear `exited` error without calling sendInput", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+
+    const { context, ptySessionManager } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+
+    // Simulate a natural exit — the manager's .then() handler sets
+    // `exitedNaturally` on the internal session record.
+    handle.resolveExit(7);
+    // Yield twice so handle.exited's .then() (which sets exitedNaturally)
+    // runs before we invoke send.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Sanity: the session should still be reachable in the manager (we
+    // intentionally keep exited sessions around so `view` works).
+    expect(ptySessionManager.get("chat-1", sessionId)).toBeDefined();
+
+    const before = handle.sendInputCalls.length;
+
+    const tool = createInteractTerminalSession(context);
+    const result = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "pwd\n",
+    })) as {
+      result: { error?: string; exited?: { exitCode: number | null } };
+    };
+
+    expect(result.result.error).toMatch(/has exited/);
+    expect(result.result.error).toMatch(/exitCode=7/);
+    expect(result.result.error).toMatch(/action=view/);
+    expect(result.result.exited).toEqual({ exitCode: 7 });
+    // Critically — we did NOT attempt to write to the dead PID.
+    expect(handle.sendInputCalls.length).toBe(before);
+  });
 });
