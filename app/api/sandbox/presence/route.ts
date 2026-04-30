@@ -4,6 +4,7 @@ import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { phLogger } from "@/lib/posthog/server";
 
 interface CentrifugoPresenceClient {
   client: string;
@@ -128,11 +129,22 @@ export async function GET(request: NextRequest) {
         ),
       );
       results.forEach((result, i) => {
+        const conn = stale[i];
         if (result.status === "rejected") {
-          console.error(
-            `Failed to disconnect stale connection ${stale[i].connectionId}:`,
-            result.reason,
-          );
+          phLogger.error("sandbox_presence_sweep_disconnect_failed", {
+            userId,
+            connectionId: conn.connectionId,
+            isDesktop: conn.isDesktop,
+            msSinceLastSeen: now - conn.lastSeen,
+            error: result.reason,
+          });
+        } else {
+          phLogger.warn("sandbox_presence_sweep_disconnect", {
+            userId,
+            connectionId: conn.connectionId,
+            isDesktop: conn.isDesktop,
+            msSinceLastSeen: now - conn.lastSeen,
+          });
         }
       });
     }

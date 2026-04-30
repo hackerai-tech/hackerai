@@ -343,20 +343,45 @@ class LocalSandboxClient {
         } catch (error) {
           if (isConnectionTerminatedByServer(error)) {
             const data =
-              (error as { data?: { code?: string; message?: string } }).data ??
-              {};
+              (
+                error as {
+                  data?: {
+                    code?: string;
+                    message?: string;
+                    disconnectReason?: string | null;
+                    msSinceDisconnected?: number | null;
+                    msSinceLastHeartbeat?: number;
+                    msSinceCreated?: number;
+                  };
+                }
+              ).data ?? {};
             console.error(
               chalk.red(
                 `\n❌ Connection terminated by server (${data.code ?? "unknown"}: ${data.message ?? "unknown"})`,
               ),
             );
+            const reasonHint =
+              data.disconnectReason === "token_regenerated"
+                ? "Your token was regenerated; rerun with the new token."
+                : data.disconnectReason === "presence_sweep"
+                  ? "Server presence sweep marked this connection stale."
+                  : data.disconnectReason === "desktop_kicked_by_new_session"
+                    ? "A new desktop session took over."
+                    : data.disconnectReason === "client_disconnect" ||
+                        data.disconnectReason === "desktop_disconnect"
+                      ? "This connection was explicitly disconnected."
+                      : "Likely causes: token regenerated, or disconnected from another session.";
+            console.error(chalk.yellow(reasonHint));
             console.error(
-              chalk.yellow(
-                "Likely causes: token was regenerated, or this connection was disconnected from another session.",
+              chalk.gray(
+                JSON.stringify({
+                  connectionId: this.connectionId ?? "unknown",
+                  disconnectReason: data.disconnectReason ?? null,
+                  msSinceDisconnected: data.msSinceDisconnected ?? null,
+                  msSinceLastHeartbeat: data.msSinceLastHeartbeat ?? null,
+                  msSinceCreated: data.msSinceCreated ?? null,
+                }),
               ),
-            );
-            console.error(
-              chalk.gray(`Connection ID: ${this.connectionId ?? "unknown"}`),
             );
             // Stop the Centrifuge retry loop and exit. cleanup() synchronously
             // calls centrifuge.disconnect() before any awaits, so by the time
