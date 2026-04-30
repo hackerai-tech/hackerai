@@ -160,10 +160,14 @@ export const regenerateToken = mutation({
       });
     }
 
-    // Disconnect all existing connections for this user
+    // Disconnect existing *connected* rows. Skip already-disconnected rows so
+    // we don't clobber their original disconnect_reason/disconnected_at —
+    // those are the diagnostic signal we're trying to preserve.
     const connections = await ctx.db
       .query("local_sandbox_connections")
-      .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("user_id", userId).eq("status", "connected"),
+      )
       .collect();
 
     const now = Date.now();
@@ -331,7 +335,11 @@ export const disconnect = mutation({
       .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
       .first();
 
-    if (connection && connection.user_id === tokenResult.userId) {
+    if (
+      connection &&
+      connection.user_id === tokenResult.userId &&
+      connection.status === "connected"
+    ) {
       await ctx.db.patch(connection._id, {
         status: "disconnected",
         disconnected_at: Date.now(),
@@ -506,11 +514,13 @@ export const disconnectDesktop = mutation({
       return { success: false };
     }
 
-    await ctx.db.patch(connection._id, {
-      status: "disconnected",
-      disconnected_at: Date.now(),
-      disconnect_reason: "desktop_disconnect",
-    });
+    if (connection.status === "connected") {
+      await ctx.db.patch(connection._id, {
+        status: "disconnected",
+        disconnected_at: Date.now(),
+        disconnect_reason: "desktop_disconnect",
+      });
+    }
 
     return { success: true };
   },
