@@ -222,6 +222,19 @@ export default defineSchema({
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
+    // Set whenever status flips to "disconnected" so refresh-time errors can
+    // report the cause (presence sweep, token regen, desktop kick, etc.) and
+    // the lag between disconnect and the failed refresh attempt.
+    disconnected_at: v.optional(v.number()),
+    disconnect_reason: v.optional(
+      v.union(
+        v.literal("client_disconnect"),
+        v.literal("desktop_disconnect"),
+        v.literal("desktop_kicked_by_new_session"),
+        v.literal("token_regenerated"),
+        v.literal("presence_sweep"),
+      ),
+    ),
   })
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])

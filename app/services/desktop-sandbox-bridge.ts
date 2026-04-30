@@ -1,9 +1,29 @@
 import { Centrifuge, type Subscription } from "centrifuge";
+import posthog from "posthog-js";
 import {
   sandboxChannel,
   type SandboxMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
+
+interface ConnectionTerminatedDetails {
+  code?: string;
+  message?: string;
+  connectionId?: string;
+  clientVersion?: string;
+  status?: string;
+  disconnectReason?: string | null;
+  msSinceDisconnected?: number | null;
+  msSinceLastHeartbeat?: number;
+  msSinceCreated?: number;
+}
+
+function readErrorData(error: unknown): ConnectionTerminatedDetails {
+  if (!error || typeof error !== "object") return {};
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return {};
+  return data as ConnectionTerminatedDetails;
+}
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -92,17 +112,29 @@ export class DesktopSandboxBridge {
           return result.centrifugoToken;
         } catch (error) {
           if (isConnectionTerminatedByServer(error)) {
-            const data =
-              (error as { data?: { code?: string; message?: string } }).data ??
-              {};
+            const data = readErrorData(error);
+            const eventProps = {
+              connectionId: this.connectionId,
+              clientSurface: "desktop_bridge",
+              code: data.code ?? null,
+              message: data.message ?? null,
+              serverConnectionId: data.connectionId ?? null,
+              serverClientVersion: data.clientVersion ?? null,
+              serverStatus: data.status ?? null,
+              disconnectReason: data.disconnectReason ?? null,
+              msSinceDisconnected: data.msSinceDisconnected ?? null,
+              msSinceLastHeartbeat: data.msSinceLastHeartbeat ?? null,
+              msSinceCreated: data.msSinceCreated ?? null,
+            };
             console.warn(
               "[DesktopSandboxBridge] Centrifugo refresh aborted — server reports connection terminated; stopping client to break retry loop",
-              {
-                connectionId: this.connectionId,
-                code: data.code,
-                message: data.message,
-              },
+              eventProps,
             );
+            try {
+              posthog.capture("sandbox_connection_terminated", eventProps);
+            } catch {
+              // posthog not initialized for this user
+            }
             const client = this.client;
             this.client = null;
             this.connectionId = null;
