@@ -44,10 +44,11 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
+    "model-grok-4.3": or("x-ai/grok-4.3"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
     "model-opus-4.7": or("anthropic/claude-opus-4-7"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
-    "fallback-agent-model": or("x-ai/grok-4.1-fast"),
+    "fallback-agent-model": or("x-ai/grok-4.3"),
     "fallback-ask-model": or("x-ai/grok-4.1-fast"),
     "title-generator-model": or("x-ai/grok-4.1-fast"),
   }) as Record<string, any>;
@@ -64,6 +65,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.1": "November 2024",
+  "model-grok-4.3": "November 2024",
   "model-gemini-3-flash": "January 2025",
   "model-opus-4.7": "January 2026",
   "model-kimi-k2.6": "April 2024",
@@ -81,6 +83,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.1": "xAI Grok 4.1 Fast",
+  "model-grok-4.3": "xAI Grok 4.3",
   "model-gemini-3-flash": "Google Gemini 3 Flash",
   "model-opus-4.7": "Anthropic Claude Opus 4.7",
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
@@ -104,12 +107,13 @@ export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
   "agent-model-free": 262_144, // resolves to Kimi K2.6
   "model-sonnet-4.6": 1_000_000, // Claude Sonnet 4.6 with 1M context beta
   "model-grok-4.1": 2_000_000, // Grok 4.1 Fast
+  "model-grok-4.3": 1_000_000, // Grok 4.3
   "model-gemini-3-flash": 1_048_576, // Gemini 3 Flash
   "model-opus-4.7": 1_000_000, // Claude Opus 4.7 with 1M context beta
   "model-kimi-k2.6": 262_144, // Kimi K2.6
-  "fallback-agent-model": 2_000_000,
-  "fallback-ask-model": 2_000_000,
-  "title-generator-model": 2_000_000,
+  "fallback-agent-model": 1_000_000, // Grok 4.3
+  "fallback-ask-model": 2_000_000, // Grok 4.1 Fast
+  "title-generator-model": 2_000_000, // Grok 4.1 Fast
   "model-codex-local": 400_000,
 };
 
