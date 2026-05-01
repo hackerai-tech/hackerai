@@ -16,7 +16,7 @@ interface TerminalFilesPart {
     | "input-available"
     | "output-available"
     | "output-error";
-  input?: { files: string[] };
+  input?: { files: string[]; brief?: string };
   output?: {
     result: string;
     files?: Array<{ path: string }>;
@@ -87,13 +87,22 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
 
   const isClickable = !!sidebarContent && sidebarContent.files.length > 0;
 
+  // Mirror the shell/file pattern: when the model supplies a `brief` and the
+  // call didn't error, the brief stands alone as the block label.
+  const briefText = input?.brief?.trim() || "";
+  const useBriefOnly = !!briefText && state !== "output-error";
+  const briefLabel = (fallback: string) =>
+    useBriefOnly ? briefText : fallback;
+  const briefTarget = (fallback: string | undefined) =>
+    useBriefOnly ? undefined : fallback;
+
   switch (state) {
     case "input-streaming":
       return status === "streaming" ? (
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action="Preparing"
+          action={briefLabel("Preparing")}
           isShimmer={true}
         />
       ) : null;
@@ -103,8 +112,8 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action={status === "streaming" ? "Sharing" : "Shared"}
-          target={getFileNames(requestedPaths)}
+          action={briefLabel(status === "streaming" ? "Sharing" : "Shared")}
+          target={briefTarget(getFileNames(requestedPaths))}
           isShimmer={status === "streaming"}
           isClickable={isClickable}
           onClick={handleOpenInSidebar}
@@ -120,8 +129,10 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action={`Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`}
-          target={fileNames}
+          action={briefLabel(
+            `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`,
+          )}
+          target={briefTarget(fileNames)}
           isClickable={isClickable}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}

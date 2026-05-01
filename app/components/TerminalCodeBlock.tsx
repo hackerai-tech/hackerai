@@ -1,9 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
+
+const XtermRenderer = dynamic(
+  () => import("./XtermRenderer").then((m) => m.XtermRenderer),
+  { ssr: false },
+);
 
 interface TerminalCodeBlockProps {
   command: string;
@@ -13,6 +20,8 @@ interface TerminalCodeBlockProps {
   isBackground?: boolean;
   variant?: "default" | "sidebar";
   wrap?: boolean;
+  shellAction?: string;
+  rawBytes?: string; // Raw PTY bytes for xterm rendering
 }
 
 interface AnsiCodeBlockProps {
@@ -200,6 +209,8 @@ export const TerminalCodeBlock = ({
   isBackground = false,
   variant = "default",
   wrap = false,
+  shellAction,
+  rawBytes,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -208,8 +219,19 @@ export const TerminalCodeBlock = ({
     setIsWrapped(wrap);
   }, [wrap]);
 
-  // Combine command and output for full terminal session
-  const terminalContent = output ? `$ ${command}\n${output}` : `$ ${command}`;
+  const isInteractiveAction = isInteractiveShellAction(shellAction);
+  const commandPrefix = shellAction === "send" ? ">" : "$";
+
+  // For interactive actions the output already contains the full session
+  // snapshot (with the PTY echo of the model's input inline). The ToolBlock
+  // chip shows "Sent input X" so no prefix/append needed here. Use `??` so
+  // an intentionally empty snapshot (e.g. a fresh session that hasn't echoed
+  // yet) renders as a blank terminal instead of falling back to the command.
+  const terminalContent = isInteractiveAction
+    ? (output ?? command)
+    : output
+      ? `${commandPrefix} ${command}\n${output}`
+      : `${commandPrefix} ${command}`;
   const displayContent = output || "";
 
   // For non-sidebar variant, keep the original terminal look
@@ -241,7 +263,11 @@ export const TerminalCodeBlock = ({
           <div className="flex-1 min-h-0 overflow-hidden">
             {isExecuting && !output && status === "streaming" ? (
               <div className="px-4 py-4 text-muted-foreground">
-                <Shimmer>Executing command</Shimmer>
+                <Shimmer>
+                  {isInteractiveAction
+                    ? "Waiting for output"
+                    : "Executing command"}
+                </Shimmer>
               </div>
             ) : (
               <AnsiCodeBlock
@@ -258,15 +284,31 @@ export const TerminalCodeBlock = ({
     );
   }
 
-  // For sidebar variant, use file block style (no floating buttons since header handles them)
+  // For sidebar variant, use file block style (no floating buttons since header handles them).
+  // rawBytes is only populated for interactive PTY contexts (interact_terminal_session
+  // actions or run_terminal_cmd interactive=true) where cursor-movement / TUI rendering
+  // matters. Non-interactive exec falls through to AnsiCodeBlock (shiki).
+  const useXterm = rawBytes !== undefined;
+
   return (
     <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
-      {/* Terminal content - takes full available space */}
-      <div className="h-full w-full overflow-auto bg-background">
+      {/* xterm manages its own viewport + scrollbar; AnsiCodeBlock needs the
+          wrapper to scroll. Avoid double scrollbars by toggling overflow. */}
+      <div
+        className={`h-full w-full bg-background ${useXterm ? "overflow-hidden" : "overflow-auto"}`}
+      >
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
-            <Shimmer>Executing command</Shimmer>
+            <Shimmer>
+              {isInteractiveAction ? "Waiting for output" : "Executing command"}
+            </Shimmer>
           </div>
+        ) : useXterm ? (
+          <XtermRenderer
+            bytes={rawBytes}
+            isStreaming={status === "streaming" || isExecuting}
+            className="h-full w-full"
+          />
         ) : (
           <AnsiCodeBlock
             code={terminalContent}

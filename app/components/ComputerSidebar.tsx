@@ -278,16 +278,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       Proxy
                     </div>
                   ) : isTerminal ? (
-                    sidebarContent.session || sidebarContent.pid ? (
-                      <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                        {sidebarContent.session ?? `PID ${sidebarContent.pid}`}
-                      </div>
-                    ) : (
-                      <Terminal
-                        size={14}
-                        className="text-muted-foreground flex-shrink-0"
-                      />
-                    )
+                    <Terminal
+                      size={14}
+                      className="text-muted-foreground flex-shrink-0"
+                    />
                   ) : isWebSearch ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
                       Search
@@ -345,6 +339,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     isWrapped={isWrapped}
                     onToggleWrap={handleToggleWrap}
                     variant="sidebar"
+                    // xterm manages its own wrapping; the toggle is a no-op
+                    // for interactive PTY output.
+                    showWrap={!(isTerminal && resolvedTerminal?.rawBytes)}
                   />
                 )}
               </div>
@@ -404,6 +401,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           }
                           variant="sidebar"
                           wrap={isWrapped}
+                          shellAction={resolvedTerminal.shellAction}
+                          rawBytes={resolvedTerminal.rawBytes}
                         />
                       )}
                       {isProxy && resolvedProxy && (

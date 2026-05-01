@@ -18,10 +18,10 @@ export const createOpenUrlTool = () => {
 </instructions>`,
     inputSchema: z.object({
       url: z.string().describe("The URL to open and retrieve content from"),
-      explanation: z
+      brief: z
         .string()
         .describe(
-          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+          "A one-sentence preamble describing the purpose of this operation",
         ),
     }),
     execute: async ({ url }: { url: string }, { abortSignal }) => {

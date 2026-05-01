@@ -4,7 +4,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxChannel,
-  type SandboxMessage,
+  type CommandResponseMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
@@ -19,7 +19,7 @@ const VALID_MESSAGE_TYPES = new Set([
   "error",
 ]);
 
-function parseSandboxMessage(data: unknown): SandboxMessage | null {
+function parseSandboxMessage(data: unknown): CommandResponseMessage | null {
   if (typeof data !== "object" || data === null) {
     console.warn("Invalid sandbox message: not an object", data);
     return null;
@@ -65,7 +65,7 @@ function parseSandboxMessage(data: unknown): SandboxMessage | null {
       break;
   }
 
-  return data as SandboxMessage;
+  return data as CommandResponseMessage;
 }
 
 interface CommandResult {
@@ -102,6 +102,22 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getConnectionName(): string {
     return this.connectionInfo.name;
+  }
+
+  getUserId(): string {
+    return this.userId;
+  }
+
+  getWsUrl(): string {
+    return this.config.wsUrl;
+  }
+
+  /**
+   * Mint a short-lived Centrifugo JWT for this sandbox's user. Keeps the
+   * signing secret encapsulated — callers never see `tokenSecret`.
+   */
+  async issueToken(ttlSeconds: number): Promise<string> {
+    return generateCentrifugoToken(this.userId, ttlSeconds);
   }
 
   /**

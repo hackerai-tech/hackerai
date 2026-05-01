@@ -49,6 +49,22 @@ export const FileHandler = memo(function FileHandler({
     return ` L${start}-${end}`;
   };
 
+  // Mirror the interactive-shell pattern: when the model supplies a `brief`
+  // and the call didn't error, the brief stands alone as the block label
+  // (no target path). Errors and pre-input states keep the verb + path so
+  // failures still read clearly.
+  const briefText = input?.brief?.trim() || "";
+  const isOutputError =
+    part.state === "output-available" &&
+    typeof part.output === "object" &&
+    part.output !== null &&
+    "error" in part.output;
+  const useBriefOnly = !!briefText && !isOutputError;
+  const briefLabel = (fallback: string) =>
+    useBriefOnly ? briefText : fallback;
+  const briefTarget = (fallback: string | undefined) =>
+    useBriefOnly ? undefined : fallback;
+
   // Compute sidebar content based on action and state
   const sidebarContent = useMemo((): SidebarFile | null => {
     if (!input?.path) return null;
@@ -199,26 +215,22 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FileText />}
-            action="Reading"
-            target={input ? `${input.path}${getFileRange()}` : undefined}
+            action={briefLabel("Reading")}
+            target={briefTarget(
+              input ? `${input.path}${getFileRange()}` : undefined,
+            )}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
         if (!input) return null;
 
-        const readOutput = part.output;
-        const isError =
-          typeof readOutput === "object" &&
-          readOutput !== null &&
-          "error" in readOutput;
-
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FileText />}
-            action={isError ? `Failed to read` : "Read"}
-            target={`${input.path}${getFileRange()}`}
+            action={briefLabel(isOutputError ? `Failed to read` : "Read")}
+            target={briefTarget(`${input.path}${getFileRange()}`)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
@@ -244,8 +256,8 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action={hasContent ? "Creating" : "Creating file"}
-            target={hasFilePath ? input.path : undefined}
+            action={briefLabel(hasContent ? "Creating" : "Creating file")}
+            target={briefTarget(hasFilePath ? input.path : undefined)}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -259,8 +271,8 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action="Writing to"
-            target={input?.path}
+            action={briefLabel("Writing to")}
+            target={briefTarget(input?.path)}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -270,18 +282,14 @@ export const FileHandler = memo(function FileHandler({
       case "output-available": {
         if (!input) return null;
 
-        const writeOutput = part.output;
-        const isError =
-          typeof writeOutput === "object" &&
-          writeOutput !== null &&
-          "error" in writeOutput;
-
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action={isError ? "Failed to write" : "Successfully wrote"}
-            target={input.path}
+            action={briefLabel(
+              isOutputError ? "Failed to write" : "Successfully wrote",
+            )}
+            target={briefTarget(input.path)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
@@ -307,8 +315,8 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FileOutput />}
-            action={hasContent ? "Appending to" : "Appending"}
-            target={hasFilePath ? input.path : undefined}
+            action={briefLabel(hasContent ? "Appending to" : "Appending")}
+            target={briefTarget(hasFilePath ? input.path : undefined)}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -322,8 +330,8 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FileOutput />}
-            action="Appending to"
-            target={input?.path}
+            action={briefLabel("Appending to")}
+            target={briefTarget(input?.path)}
             isShimmer={true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -333,20 +341,16 @@ export const FileHandler = memo(function FileHandler({
       case "output-available": {
         if (!input) return null;
 
-        const appendOutput = part.output;
-        const isError =
-          typeof appendOutput === "object" &&
-          appendOutput !== null &&
-          "error" in appendOutput;
-
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FileOutput />}
-            action={
-              isError ? "Failed to append to" : "Successfully appended to"
-            }
-            target={input.path}
+            action={briefLabel(
+              isOutputError
+                ? "Failed to append to"
+                : "Successfully appended to",
+            )}
+            target={briefTarget(input.path)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
@@ -376,30 +380,24 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={
+            action={briefLabel(
               input?.edits
                 ? `Making ${input.edits.length} edit${input.edits.length > 1 ? "s" : ""} to`
-                : "Editing"
-            }
-            target={input?.path}
+                : "Editing",
+            )}
+            target={briefTarget(input?.path)}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
         if (!input) return null;
 
-        const editOutput = part.output;
-        const isError =
-          typeof editOutput === "object" &&
-          editOutput !== null &&
-          "error" in editOutput;
-
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={isError ? "Failed to edit" : "Edited"}
-            target={input.path}
+            action={briefLabel(isOutputError ? "Failed to edit" : "Edited")}
+            target={briefTarget(input.path)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}

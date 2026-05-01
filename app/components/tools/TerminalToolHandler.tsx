@@ -2,14 +2,14 @@ import React, { memo, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
-import type { ChatStatus, SidebarTerminal } from "@/types/chat";
+import type { ChatStatus } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import {
-  getShellActionLabel,
+  computeShellTerminalBlock,
   getShellDisplayCommand,
-  getShellDisplayTarget,
-  getShellOutput,
+  getStreamingTerminalOutput,
+  type ShellToolInput,
   type ShellToolOutput,
 } from "./shell-tool-utils";
 
@@ -48,8 +48,16 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   // Support both legacy run_terminal_cmd and new shell tool input shapes
   const isShellTool = part.type === "tool-shell" || input?.action !== undefined;
   const terminalInput = isShellTool
-    ? { command: getShellDisplayCommand(input), is_background: false }
-    : (input as { command: string; is_background: boolean });
+    ? {
+        command: getShellDisplayCommand(input),
+        is_background: false,
+        interactive: false,
+      }
+    : (input as {
+        command: string;
+        is_background: boolean;
+        interactive?: boolean;
+      });
   const terminalOutput = output as ShellToolOutput;
 
   // Memoize streaming output: use pre-computed value when passed, else derive from message.parts
@@ -57,76 +65,53 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const streamingOutput = useMemo(() => {
     if (precomputedStreamingOutput !== undefined)
       return precomputedStreamingOutput;
-    const terminalDataParts = message.parts.filter(
-      (p) =>
-        p.type === "data-terminal" &&
-        (p as any).data?.toolCallId === effectiveToolCallId,
-    );
-    return terminalDataParts
-      .map((p) => (p as any).data?.terminal || "")
-      .join("");
+    return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
-  // Memoize final output computation
-  const finalOutput = useMemo(
-    () => getShellOutput(terminalOutput, { streamingOutput, errorText }),
-    [terminalOutput, streamingOutput, errorText],
-  );
-
   const isExecuting = state === "input-available" && status === "streaming";
+  const hasResult = state === "output-available";
 
-  const displayCommand = isShellTool
-    ? getShellDisplayCommand(input)
-    : terminalInput?.command || "";
-  const displayTarget = isShellTool
-    ? getShellDisplayTarget(input)
-    : displayCommand;
-
-  const shellAction = isShellTool
-    ? (input as { action?: string })?.action
-    : undefined;
-  const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
-  const shellSession =
-    (input as { session?: string })?.session ?? terminalOutput?.session;
-  const getActionLabel = (isActive: boolean) =>
-    getShellActionLabel({
+  const { blockAction, blockTarget, sidebarContent } = useMemo(
+    () =>
+      computeShellTerminalBlock({
+        isShellTool,
+        shellInput: input as ShellToolInput | undefined,
+        shellOutput: terminalOutput,
+        errorText,
+        streamingOutput,
+        isExecuting,
+        hasResult,
+        toolCallId,
+        legacyInteractive: !isShellTool
+          ? terminalInput?.interactive
+          : undefined,
+        legacyIsBackground: !isShellTool
+          ? terminalInput?.is_background
+          : undefined,
+        legacyCommand: !isShellTool ? terminalInput?.command : undefined,
+      }),
+    [
       isShellTool,
-      action: shellAction,
-      pid: shellPid,
-      session: shellSession,
-      isActive,
-    });
-
-  const sidebarContent = useMemo((): SidebarTerminal | null => {
-    if (!displayCommand) return null;
-    return {
-      command: displayCommand,
-      output: finalOutput,
+      input,
+      terminalOutput,
+      errorText,
+      streamingOutput,
       isExecuting,
-      isBackground: terminalInput?.is_background,
+      hasResult,
       toolCallId,
-      shellAction,
-      pid: shellPid,
-      session: shellSession,
-      input: (input as { input?: string })?.input,
-    };
-  }, [
-    displayCommand,
-    finalOutput,
-    isExecuting,
-    terminalInput?.is_background,
-    toolCallId,
-    shellAction,
-    shellPid,
-    shellSession,
-    input,
-  ]);
+      terminalInput?.interactive,
+      terminalInput?.is_background,
+      terminalInput?.command,
+    ],
+  );
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId,
     content: sidebarContent,
     typeGuard: isSidebarTerminal,
   });
+
+  const shellAction = (input as { action?: string })?.action;
 
   switch (state) {
     case "input-streaming": {
@@ -138,8 +123,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           <ToolBlock
             key={toolCallId}
             icon={<Terminal />}
-            action={getActionLabel(true)}
-            target={displayTarget || undefined}
+            action={blockAction(true)}
+            target={blockTarget || undefined}
             isShimmer={true}
           />
         );
@@ -158,10 +143,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={getActionLabel(status === "streaming")}
-          target={displayTarget}
+          action={blockAction(status === "streaming")}
+          target={blockTarget}
           isShimmer={status === "streaming"}
-          isClickable={true}
+          isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
@@ -171,9 +156,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={getActionLabel(false)}
-          target={displayTarget}
-          isClickable={true}
+          action={blockAction(false)}
+          target={blockTarget}
+          isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
@@ -183,9 +168,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={getActionLabel(false)}
-          target={displayTarget}
-          isClickable={true}
+          action={blockAction(false)}
+          target={blockTarget}
+          isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />

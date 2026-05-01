@@ -101,14 +101,18 @@ export interface SidebarTerminal {
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
+  /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
+  isInteractive?: boolean;
   /** E2B process ID (only for E2B sandboxes). */
   pid?: number | null;
   /** Local session identifier (only for local sandboxes). */
   session?: string | null;
   toolCallId: string;
   shellAction?: string;
-  /** The raw input text sent via the `send` action. */
-  input?: string;
+  /** The raw input sent via the `send` action — string or array of tokens. */
+  input?: string | string[];
+  /** Raw PTY bytes for xterm.js rendering (preserves colors and cursor sequences). */
+  rawBytes?: string;
 }
 
 export interface SidebarProxy {

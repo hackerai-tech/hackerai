@@ -44,7 +44,10 @@ interface BaseToolPart {
 
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
-  type: "tool-run_terminal_cmd" | "tool-shell";
+  type:
+    | "tool-run_terminal_cmd"
+    | "tool-interact_terminal_session"
+    | "tool-shell";
   input?: {
     command?: string;
     explanation?: string;
@@ -164,6 +167,7 @@ export const normalizeMessages = (
       // Other incomplete tools are handled by backend (chat-processor.ts)
       const isTerminalTool =
         toolPart.type === "tool-run_terminal_cmd" ||
+        toolPart.type === "tool-interact_terminal_session" ||
         toolPart.type === "tool-shell";
       const isIncomplete =
         toolPart.state === "input-available" ||
