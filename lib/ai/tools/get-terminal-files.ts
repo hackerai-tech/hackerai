@@ -16,6 +16,11 @@ Usage:
 - Use this after generating reports, saving scan results, or creating any files the user needs to access
 - Multiple files can be shared in a single call`,
     inputSchema: z.object({
+      brief: z
+        .string()
+        .describe(
+          "A one-sentence preamble describing the purpose of this operation",
+        ),
       files: z
         .array(z.string())
         .describe(

@@ -372,6 +372,7 @@ function renderFileTool(
     path?: string;
     text?: string;
     range?: [number, number];
+    brief?: string;
   };
   const fileOutput = part.output as {
     originalContent?: string;
@@ -380,6 +381,7 @@ function renderFileTool(
   };
   const filePath = fileInput?.path || "";
   const fileAction = fileInput?.action || "read";
+  const brief = fileInput?.brief?.trim() || "";
 
   const getFileRange = () => {
     if (!fileInput?.range) return "";
@@ -419,6 +421,10 @@ function renderFileTool(
     action = `Failed to ${fileAction}`;
   }
 
+  // Mirror the live FileHandler: when the model supplies a `brief` and the
+  // call didn't error, the brief stands alone as the block label.
+  const useBriefOnly = !!brief && !fileOutput?.error;
+
   if (part.state === "output-available") {
     const handleOpenInSidebar = () => {
       let content = "";
@@ -456,8 +462,8 @@ function renderFileTool(
       <ToolBlock
         key={idx}
         icon={icon}
-        action={action}
-        target={`${filePath}${getFileRange()}`}
+        action={useBriefOnly ? brief : action}
+        target={useBriefOnly ? undefined : `${filePath}${getFileRange()}`}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}
@@ -473,6 +479,7 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
     queries?: string[];
     query?: string;
     url?: string;
+    brief?: string;
   };
 
   let target: string | undefined;
@@ -484,13 +491,15 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
     target = webInput.url;
   }
 
+  const brief = webInput?.brief?.trim() || "";
+
   if (part.state === "output-available") {
     return (
       <ToolBlock
         key={idx}
         icon={<Search aria-hidden="true" />}
-        action="Searched web"
-        target={target}
+        action={brief || "Searched web"}
+        target={brief ? undefined : target}
       />
     );
   }
@@ -499,15 +508,16 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
 
 // Open URL tool renderer
 function renderOpenUrlTool(part: MessagePart, idx: number) {
-  const urlInput = part.input as { url?: string };
+  const urlInput = part.input as { url?: string; brief?: string };
+  const brief = urlInput?.brief?.trim() || "";
 
   if (part.state === "output-available") {
     return (
       <ToolBlock
         key={idx}
         icon={<ExternalLink aria-hidden="true" />}
-        action="Opened URL"
-        target={urlInput?.url}
+        action={brief || "Opened URL"}
+        target={brief ? undefined : urlInput?.url}
       />
     );
   }
@@ -516,7 +526,7 @@ function renderOpenUrlTool(part: MessagePart, idx: number) {
 
 // Get terminal files tool renderer
 function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
-  const filesInput = part.input as { files?: string[] };
+  const filesInput = part.input as { files?: string[]; brief?: string };
   const filesOutput = part.output as {
     files?: Array<{ path: string }>;
     fileUrls?: Array<{ path: string }>;
@@ -530,13 +540,16 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
     const fileCount =
       filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
     const fileNames = getFileNames(filesInput?.files || []);
+    const brief = filesInput?.brief?.trim() || "";
 
     return (
       <ToolBlock
         key={idx}
         icon={<FileDown aria-hidden="true" />}
-        action={`Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`}
-        target={fileNames}
+        action={
+          brief || `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`
+        }
+        target={brief ? undefined : fileNames}
       />
     );
   }

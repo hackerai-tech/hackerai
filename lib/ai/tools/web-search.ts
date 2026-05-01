@@ -48,10 +48,10 @@ export const createWebSearch = (context: ToolContext) => {
         .describe(
           "Optional time filter to limit results to a recent time range",
         ),
-      explanation: z
+      brief: z
         .string()
         .describe(
-          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+          "A one-sentence preamble describing the purpose of this operation",
         ),
     }),
     execute: async (
@@ -59,7 +59,7 @@ export const createWebSearch = (context: ToolContext) => {
         queries: rawQueries,
         time,
       }: {
-        explanation: string;
+        brief: string;
         queries: string[];
         time?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
       },
