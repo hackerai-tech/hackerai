@@ -50,7 +50,6 @@ interface TerminalToolPart extends BaseToolPart {
     | "tool-shell";
   input?: {
     command?: string;
-    explanation?: string;
     is_background?: boolean;
     // Shell tool fields
     action?: string;

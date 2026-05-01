@@ -325,10 +325,16 @@ export function computeShellTerminalBlock(
     ? getShellDisplayTarget(shellInput) || displayCommand
     : displayCommand;
 
-  // Brief-only label for interactive actions: drop the verb prefix
-  // ("Sent input", "Viewed", "Killed") and let the model's brief stand alone.
+  // Brief-only label: drop the verb prefix ("Sent input", "Viewed", "Killed",
+  // "Executed") and let the model's brief stand alone. Applied to:
+  //   - interactive PTY actions (always — the verb is too generic without it)
+  //   - exec / legacy run_terminal_cmd, but only AFTER the command has fully
+  //     run, so the user still sees the live command while it's executing.
   const briefText = shellInput?.brief || "";
-  const useBriefOnly = isShellTool && isInteractiveAction && !!briefText;
+  const useBriefOnly =
+    !!briefText &&
+    ((isShellTool && isInteractiveAction) ||
+      (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
     useBriefOnly
       ? briefText

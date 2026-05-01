@@ -126,10 +126,10 @@ If you are generating files:
     - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
       command: z.string().describe("The shell command to execute"),
-      explanation: z
+      brief: z
         .string()
         .describe(
-          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+          "A one-sentence preamble describing the purpose of this operation",
         ),
       is_background: z
         .boolean()

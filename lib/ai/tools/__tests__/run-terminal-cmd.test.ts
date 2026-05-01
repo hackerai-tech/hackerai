@@ -5,7 +5,7 @@
  * covered by higher-level integration tests. Here we verify:
  *  - the dispatch contract for {exec, exec+interactive}
  *  - structured errors for non-E2B sandboxes and missing sessions
- *  - that the legacy schema ({command, explanation, is_background, timeout})
+ *  - that the legacy schema ({command, brief, is_background, timeout})
  *    still flows through and produces a shaped result.
  *
  * PTY session action tests (send, wait, view, kill) are in
@@ -200,7 +200,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     mockCreateCentrifugoPtyHandle.mockReset();
   });
 
-  test("regression: legacy schema {command, explanation, is_background, timeout} still works", async () => {
+  test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after
     // the isE2BSandbox hardening — a sandbox with sandboxKind: "centrifugo" is
     // explicitly non-E2B and bypasses the E2B health check entirely).
@@ -224,7 +224,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     const result = (await runTool(tool, {
       command: "echo hi",
-      explanation: "say hi",
+      brief: "say hi",
       is_background: false,
       timeout: 5,
     })) as {
@@ -253,7 +253,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {
-    // A bare `{command, explanation}` must flow through the legacy path
+    // A bare `{command, brief}` must flow through the legacy path
     // (action defaults to "exec", interactive to false) — no session/pid.
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
@@ -268,7 +268,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const tool = createRunTerminalCmd(context);
     const result = (await runTool(tool, {
       command: "true",
-      explanation: "default dispatch",
+      brief: "default dispatch",
     })) as { result: { session?: string; exitCode: number | null } };
     expect(result.result.session).toBeUndefined();
     expect(result.result.exitCode).toBe(0);
@@ -298,7 +298,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const result = (await runTool(tool, {
       action: "exec",
       command: "top",
-      explanation: "x",
+      brief: "x",
       is_background: false,
       interactive: true,
       timeout: 0.2,
@@ -332,7 +332,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     await runTool(tool, {
       action: "exec",
       command: "top",
-      explanation: "x",
+      brief: "x",
       is_background: false,
       interactive: true,
       timeout: 0.2,
@@ -356,7 +356,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const p = runTool(tool, {
       action: "exec",
       command: "ls",
-      explanation: "list",
+      brief: "list",
       is_background: false,
       interactive: true,
       timeout: 1,
@@ -404,7 +404,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const result = (await runTool(tool(context), {
       action: "exec",
       command: "sh",
-      explanation: "x",
+      brief: "x",
       is_background: false,
       interactive: true,
     })) as { result: { error?: string } };
@@ -428,7 +428,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const result = (await runTool(tool, {
       action: "exec",
       command: "sh",
-      explanation: "x",
+      brief: "x",
       is_background: false,
       interactive: true,
     })) as { result: { error?: string } };
