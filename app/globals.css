@@ -201,6 +201,21 @@
   }
 }
 
+@keyframes text-shimmer {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+
+.animate-text-shimmer {
+  animation-name: text-shimmer;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
 /* Scrollbar Styles */
 
 /* Firefox */

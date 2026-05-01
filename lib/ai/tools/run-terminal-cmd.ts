@@ -97,33 +97,7 @@ In using these tools, adhere to the following guidelines:
 10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
-   - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.
-
-When making charts for the user: 1) never use seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never set any specific colors – unless explicitly asked to by the user.
-I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never, ever, specify colors or matplotlib styles – unless explicitly asked to by the user
-
-If you are generating files:
-- You MUST use the instructed library for each supported file format. (Do not assume any other libraries are available):
-    - pdf --> reportlab
-    - docx --> python-docx
-    - xlsx --> openpyxl
-    - pptx --> python-pptx
-    - csv --> pandas
-    - rtf --> pypandoc
-    - txt --> pypandoc
-    - md --> pypandoc
-    - ods --> odfpy
-    - odt --> odfpy
-    - odp --> odfpy
-- If you are generating a pdf:
-    - You MUST prioritize generating text content using reportlab.platypus rather than canvas
-    - If you are generating text in korean, chinese, OR japanese, you MUST use the following built-in UnicodeCIDFont. To use these fonts, you must call pdfmetrics.registerFont(UnicodeCIDFont(font_name)) and apply the style to all text elements:
-        - japanese --> HeiseiMin-W3 or HeiseiKakuGo-W5
-        - simplified chinese --> STSong-Light
-        - traditional chinese --> MSung-Light
-        - korean --> HYSMyeongJo-Medium
-- If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
-    - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
+   - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
     inputSchema: z.object({
       command: z.string().describe("The shell command to execute"),
       brief: z
