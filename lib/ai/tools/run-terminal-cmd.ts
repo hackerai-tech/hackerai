@@ -33,7 +33,12 @@ import {
   type PtySession,
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
-import { waitForOutput, capOutput, stripAnsi } from "./utils/pty-wait-utils";
+import {
+  waitForOutput,
+  capOutput,
+  stripAnsi,
+  peekExited,
+} from "./utils/pty-wait-utils";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -320,6 +325,10 @@ If you are generating files:
             ptySessionManager,
             session,
           );
+          // If the command finished during the quiet window (e.g. a one-shot
+          // `echo … && whoami`), surface that so the agent doesn't try to
+          // `interact_terminal_session send` against a dead session.
+          const exited = await peekExited(session);
           return {
             result: {
               session: session.sessionId,
@@ -328,6 +337,7 @@ If you are generating files:
               sessionSnapshot: snapshots.cleaned,
               rawSnapshot: snapshots.raw,
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+              ...(exited ? { exited: { exitCode: exited.exitCode } } : {}),
             },
           };
         } catch (err) {

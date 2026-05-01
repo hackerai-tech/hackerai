@@ -49,7 +49,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 - Only use \`wait\` after \`send\` (or after \`run_terminal_cmd\` returned without finishing); decide whether to wait based on the prior output
 - DO NOT use \`wait\` for long-running daemon processes
 - \`send\` writes input and captures only the immediate response chunk; if the process needs more time before it replies, follow up with \`action=wait\`
-- When using \`send\`, end the \`input\` with a newline character (\\n) to simulate pressing Enter
+- \`input\` is sent verbatim. Without a trailing \\n (or \`Enter\`), the line is typed but NOT submitted — a follow-up \`send\` will append to the same line. ALWAYS include \\n unless you specifically want to type without pressing Enter (e.g. building up a key sequence)
 - For special keys, use official tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Home, End, Escape, Tab, Enter, Space, F1-F12, PageUp, PageDown
 - For modifier combinations: M-key (Alt), C-S-key (Ctrl+Shift)
 - Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
@@ -78,7 +78,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         .string()
         .optional()
         .describe(
-          "Input text to send to the interactive session. End with a newline character (\\n) to simulate pressing Enter if needed. Required for `send` action.",
+          'Input text to send to the interactive session. Required for `send`. Sent verbatim — without a trailing \\n (or `Enter`) the line is typed but NOT submitted, and a subsequent `send` will append to the same line. To submit just Enter, pass `"Enter"` or `"\\n"`.',
         ),
       session: z
         .string()
@@ -202,7 +202,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
-          return errorResult("action=send requires non-empty `input`.");
+          return errorResult(
+            'action=send requires `input`. To submit just Enter (e.g. to terminate a Python multi-line block or accept a default prompt), pass input="Enter" or input="\\n".',
+          );
         }
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
