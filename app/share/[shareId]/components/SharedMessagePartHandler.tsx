@@ -35,10 +35,7 @@ import { useSharedChatContext } from "../SharedChatContext";
 import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
-  getShellActionLabel,
-  getShellDisplayCommand,
-  getShellDisplayTarget,
-  getShellOutput,
+  computeShellTerminalBlock,
   type ShellToolInput,
   type ShellToolOutput,
 } from "@/app/components/tools/shell-tool-utils";
@@ -209,69 +206,60 @@ function renderTerminalTool(
   idx: number,
   openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
-  const terminalInput = part.input as ShellToolInput;
-  const terminalOutput = part.output as ShellToolOutput;
-  const command = getShellDisplayCommand(terminalInput);
-  // For kill, route the session id into the target slot — gives the
-  // inline block an identifier ("Killed 7ed0b48d") without bracket noise.
-  const killSession = terminalInput?.session ?? terminalOutput?.session;
-  const target =
-    terminalInput?.action === "kill"
-      ? killSession || ""
-      : getShellDisplayTarget(terminalInput);
-  const output = getShellOutput(terminalOutput);
-
   if (
-    part.state === "input-available" ||
-    part.state === "output-available" ||
-    part.state === "output-error"
+    part.state !== "input-available" &&
+    part.state !== "output-available" &&
+    part.state !== "output-error"
   ) {
-    const handleOpenInSidebar = () => {
-      openSidebar({
-        command,
-        output,
-        isExecuting: false,
-        toolCallId: part.toolCallId || "",
-      });
-    };
+    return null;
+  }
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    };
+  const isShellTool = part.type === "tool-shell";
+  const legacyInput = !isShellTool
+    ? (part.input as {
+        command?: string;
+        interactive?: boolean;
+        is_background?: boolean;
+      })
+    : undefined;
 
-    const isShellTool = part.type === "tool-shell";
-    const legacyInput = !isShellTool
-      ? (part.input as { interactive?: boolean; is_background?: boolean })
-      : undefined;
-    const actionLabel = getShellActionLabel({
+  const { blockAction, blockTarget, sidebarContent } =
+    computeShellTerminalBlock({
       isShellTool,
-      action: terminalInput?.action,
-      pid: terminalInput?.pid ?? terminalOutput?.pid,
-      session: terminalInput?.session ?? terminalOutput?.session,
-      interactive: legacyInput?.interactive,
-      isBackground: legacyInput?.is_background,
-      compact: true,
+      shellInput: part.input as ShellToolInput | undefined,
+      shellOutput: part.output as ShellToolOutput | undefined,
+      errorText: undefined,
+      streamingOutput: "",
+      isExecuting: false,
+      hasResult: part.state === "output-available",
+      toolCallId: part.toolCallId || "",
+      legacyInteractive: legacyInput?.interactive,
+      legacyIsBackground: legacyInput?.is_background,
+      legacyCommand: legacyInput?.command,
     });
 
-    // Kill has nothing useful to show in the sidebar — disable the click.
-    const isKillAction = terminalInput?.action === "kill";
+  const handleOpenInSidebar = () => {
+    if (sidebarContent) openSidebar(sidebarContent);
+  };
 
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<Terminal aria-hidden="true" />}
-        action={actionLabel}
-        target={target}
-        isClickable={!isKillAction}
-        onClick={isKillAction ? undefined : handleOpenInSidebar}
-        onKeyDown={isKillAction ? undefined : handleKeyDown}
-      />
-    );
-  }
-  return null;
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleOpenInSidebar();
+    }
+  };
+
+  return (
+    <ToolBlock
+      key={idx}
+      icon={<Terminal aria-hidden="true" />}
+      action={blockAction(false)}
+      target={blockTarget}
+      isClickable={!!sidebarContent}
+      onClick={sidebarContent ? handleOpenInSidebar : undefined}
+      onKeyDown={sidebarContent ? handleKeyDown : undefined}
+    />
+  );
 }
 
 // Legacy file tools renderer

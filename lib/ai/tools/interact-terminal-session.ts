@@ -320,13 +320,18 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        const killSnapshot = ptySessionManager.snapshot(session);
-        if (killSnapshot.byteLength > 0) emitTerminal(killSnapshot);
-        await drainEmitQueue();
+        // Skip the snapshot dump — the user already saw the final state via
+        // prior view/wait/send blocks; a one-line confirmation reads cleaner
+        // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
         await ptySessionManager.close(chatId, session.sessionId);
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
-        return { result: { exitCode: exit.exitCode } };
+        return {
+          result: {
+            output: "Successfully killed interactive shell.",
+            exitCode: exit.exitCode,
+          },
+        };
       };
 
       // ─── Dispatch ──────────────────────────────────────────────────────────
