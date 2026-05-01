@@ -11,10 +11,16 @@ export const ANSI_REGEX =
 export const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 
 /**
- * Collect output for `timeoutMs`, then resolve. Aborts early on `signal`.
+ * Collect output for up to `timeoutMs`, then resolve. Aborts early on `signal`.
  *
  * Streams every raw chunk through `onChunk` for the UI writer before
  * consuming the session delta and returning.
+ *
+ * If `quietMs` is set, also resolves once `quietMs` of silence elapses *after*
+ * the first chunk arrives — useful for "wait until the shell prompt redraws"
+ * semantics where the full `timeoutMs` is only a hard ceiling. The quiet timer
+ * is intentionally NOT armed pre-first-chunk so a slow shell startup (cold
+ * `.zshrc`) doesn't return an empty result.
  */
 export async function waitForOutput(
   session: PtySession,
@@ -22,9 +28,18 @@ export async function waitForOutput(
   signal: AbortSignal | undefined,
   onChunk: (chunk: Uint8Array) => void,
   consume: (s: PtySession) => Uint8Array,
+  options?: { quietMs?: number },
 ): Promise<Uint8Array> {
+  const quietMs = options?.quietMs;
   return new Promise<Uint8Array>((resolve) => {
     let settled = false;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const armQuietTimer = () => {
+      if (!quietMs) return;
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => finish(), quietMs);
+    };
 
     // Capture any bytes already buffered before subscription (e.g. data that
     // arrived during await sendInput's network RTT on E2B). Without this,
@@ -37,6 +52,7 @@ export async function waitForOutput(
       } catch (err) {
         console.error("[pty-wait-utils] onChunk failed:", err);
       }
+      armQuietTimer();
     }
 
     const hardTimer = setTimeout(() => finish(), timeoutMs);
@@ -48,6 +64,7 @@ export async function waitForOutput(
       } catch (err) {
         console.error("[pty-wait-utils] onChunk failed:", err);
       }
+      armQuietTimer();
     });
 
     const onAbort = () => finish();
@@ -57,6 +74,7 @@ export async function waitForOutput(
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer);
+      if (quietTimer) clearTimeout(quietTimer);
       try {
         unsubscribe();
       } catch (err) {

@@ -37,6 +37,11 @@ import { waitForOutput, capOutput, stripAnsi } from "./utils/pty-wait-utils";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
+// Once an interactive PTY emits its first bytes, treat `quietMs` of silence
+// as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
+// return in ~half a second instead of blocking the user-supplied timeout
+// ceiling. The agent can follow up with action=wait/send.
+const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -299,13 +304,16 @@ If you are generating files:
           }
           session.lastActivityAt = Date.now();
 
-          // Stream output chunks as they arrive
+          // Stream output chunks as they arrive. Resolve early on a brief
+          // quiet window so launching a REPL/shell returns when its prompt
+          // finishes drawing rather than blocking the full timeout ceiling.
           const delta = await waitForOutput(
             session,
             effectiveStreamTimeout * 1000,
             abortSignal,
             emitTerminal,
             (s) => ptySessionManager.consumeDelta(s),
+            { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
           );
           await drainEmitQueue();
           const snapshots = await getSessionSnapshots(

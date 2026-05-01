@@ -22,6 +22,10 @@ const MAX_WAIT_TIMEOUT_SECONDS = 300;
 // echoing "Hello, X!"). Too short and we miss instant CLI replies; too long
 // and we block the agent on long-running processes that need explicit `wait`.
 const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
+// For `wait`, treat `WAIT_QUIET_WINDOW_MS` of silence (after the first chunk)
+// as "process settled" — typically a redrawn prompt or completed command.
+// `timeout` remains the hard ceiling for processes that never settle.
+const WAIT_QUIET_WINDOW_MS = 500;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
@@ -270,6 +274,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           abortSignal,
           emitTerminal,
           (s) => ptySessionManager.consumeDelta(s),
+          { quietMs: WAIT_QUIET_WINDOW_MS },
         );
         await drainEmitQueue();
         const snapshots = await getSessionSnapshots(ptySessionManager, session);
