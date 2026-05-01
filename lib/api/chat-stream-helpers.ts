@@ -69,6 +69,35 @@ export function countFileAttachments(
 }
 
 /**
+ * Remove image file parts from messages. Used for free-tier users continuing
+ * chats that already contain images uploaded while paid. Messages that would
+ * end up empty get a text placeholder so turn structure stays intact.
+ */
+export function stripImageAttachments<
+  T extends { parts?: Array<{ type?: string; mediaType?: string }> },
+>(messages: T[]): T[] {
+  return messages.map((msg) => {
+    if (!msg.parts) return msg;
+    const filtered = msg.parts.filter(
+      (p) => !(p.type === "file" && (p.mediaType ?? "").startsWith("image/")),
+    );
+    if (filtered.length === msg.parts.length) return msg;
+    return {
+      ...msg,
+      parts:
+        filtered.length > 0
+          ? filtered
+          : [
+              {
+                type: "text",
+                text: "[Image attachment hidden — image attachments are a paid-plan feature and aren't available on the free plan.]",
+              },
+            ],
+    } as T;
+  });
+}
+
+/**
  * Send rate limit warnings based on subscription and rate limit info
  */
 export function sendRateLimitWarnings(

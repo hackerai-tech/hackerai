@@ -58,6 +58,7 @@ import {
 } from "@/lib/api/chat-logger";
 import {
   countFileAttachments,
+  stripImageAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
   isXaiSafetyError,
@@ -249,18 +250,22 @@ export const createChatHandler = (
         selectedModelOverride,
       );
 
-      const { truncatedMessages, chat, isNewChat, fileTokens } =
-        await getMessagesByChatId({
-          chatId,
-          userId,
-          subscription,
-          newMessages: messages,
-          regenerate,
-          isTemporary: temporary,
-          mode,
-          maxMode: maxModeEnabled,
-          modelName: resolvedModelName,
-        });
+      const fetched = await getMessagesByChatId({
+        chatId,
+        userId,
+        subscription,
+        newMessages: messages,
+        regenerate,
+        isTemporary: temporary,
+        mode,
+        maxMode: maxModeEnabled,
+        modelName: resolvedModelName,
+      });
+      const { chat, isNewChat, fileTokens } = fetched;
+      const truncatedMessages =
+        subscription === "free"
+          ? stripImageAttachments(fetched.truncatedMessages)
+          : fetched.truncatedMessages;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
