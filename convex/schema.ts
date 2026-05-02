@@ -128,6 +128,9 @@ export default defineSchema({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
+    // Legacy MAX Mode flag retained on historical rows. The feature was
+    // removed and nothing reads or writes this anymore — kept in the schema
+    // so old rows still pass validation.
     max_mode_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
@@ -252,7 +255,9 @@ export default defineSchema({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
-    // True when Max mode was active for this request (larger context window).
+    // Legacy MAX Mode flag retained on historical rows. The feature was
+    // removed and nothing reads or writes this anymore — kept in the schema
+    // so old rows still pass validation.
     max_mode: v.optional(v.boolean()),
     // Legacy BYOK flag retained on historical rows. The feature was removed
     // and nothing reads or writes this anymore — kept in the schema so old
