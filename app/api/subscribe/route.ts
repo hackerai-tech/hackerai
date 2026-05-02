@@ -2,6 +2,7 @@ import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest, NextResponse } from "next/server";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 export const POST = async (req: NextRequest) => {
   try {
@@ -116,6 +117,18 @@ export const POST = async (req: NextRequest) => {
     );
 
     if (matchingCustomer) {
+      // Reject blocked customers (flagged by fraud webhook)
+      if (matchingCustomer.metadata.blocked === "true") {
+        return NextResponse.json(
+          {
+            error: getSuspensionMessage(
+              matchingCustomer.metadata.blocked_reason,
+            ),
+          },
+          { status: 403 },
+        );
+      }
+
       customer = matchingCustomer;
     }
 

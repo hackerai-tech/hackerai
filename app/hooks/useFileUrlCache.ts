@@ -11,6 +11,7 @@ interface CachedUrl {
 }
 
 const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 hour)
+const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.ts
 
 /**
  * Hook to manage prefetching and caching of file URLs
@@ -114,19 +115,27 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         return;
       }
 
-      // Batch fetch URLs with deduplicated fileIds
+      // Batch fetch URLs with deduplicated fileIds, chunked to respect server limit
       try {
         const fileIds = s3ImageFiles.map((f) => f.fileId);
-        const urlMap = await getFileUrlsBatchAction({ fileIds });
+        const chunks: Array<Array<Id<"files">>> = [];
+        for (let i = 0; i < fileIds.length; i += MAX_BATCH_SIZE) {
+          chunks.push(fileIds.slice(i, i + MAX_BATCH_SIZE));
+        }
 
-        // Cache the fetched URLs (only if urlMap is valid)
-        if (urlMap && typeof urlMap === "object") {
-          const now = Date.now();
-          for (const [fileId, url] of Object.entries(urlMap) as Array<
-            [string, string]
-          >) {
-            urlCacheRef.current.set(fileId, { url, timestamp: now });
-            prefetchedIdsRef.current.add(fileId);
+        const urlMaps = await Promise.all(
+          chunks.map((chunk) => getFileUrlsBatchAction({ fileIds: chunk })),
+        );
+
+        const now = Date.now();
+        for (const urlMap of urlMaps) {
+          if (urlMap && typeof urlMap === "object") {
+            for (const [fileId, url] of Object.entries(urlMap) as Array<
+              [string, string]
+            >) {
+              urlCacheRef.current.set(fileId, { url, timestamp: now });
+              prefetchedIdsRef.current.add(fileId);
+            }
           }
         }
       } catch (error) {

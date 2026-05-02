@@ -234,8 +234,6 @@ export async function getMessagesByChatId({
   subscription,
   isTemporary,
   mode,
-  maxMode,
-  modelName,
 }: {
   chatId: string;
   userId: string;
@@ -244,8 +242,6 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   isTemporary?: boolean;
   mode?: ChatMode;
-  maxMode?: boolean;
-  modelName?: string;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -274,7 +270,7 @@ export async function getMessagesByChatId({
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
-        const skipFileTokens = mode === "agent";
+        const skipFileTokens = mode ? isAgentMode(mode) : false;
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
@@ -311,8 +307,6 @@ export async function getMessagesByChatId({
           }
 
           const maxTokens = getMaxTokensForSubscription(subscription, {
-            maxMode,
-            modelName,
             mode,
           });
           const truncatedMessages = truncateMessagesToTokenLimit(
@@ -390,8 +384,6 @@ export async function getMessagesByChatId({
 
             // Re-truncate real messages to leave room for the summary message
             const maxTokens = getMaxTokensForSubscription(subscription, {
-              maxMode,
-              modelName,
               mode,
             });
             const summaryTokens = countMessagesTokens(
@@ -459,9 +451,8 @@ export async function getMessagesByChatId({
   const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
-    mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
-    maxMode,
-    modelName,
+    mode ? isAgentMode(mode) : false, // Skip file tokens for agent modes (files go to sandbox)
+    mode,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -472,8 +463,6 @@ export async function getMessagesByChatId({
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any);
       const maxTokens = getMaxTokensForSubscription(subscription, {
-        maxMode,
-        modelName,
         mode,
       });
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
@@ -950,8 +939,6 @@ export async function logUsageRecord({
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
-  byok,
-  maxMode,
 }: {
   userId: string;
   model: string;
@@ -962,8 +949,6 @@ export async function logUsageRecord({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
-  byok?: boolean;
-  maxMode?: boolean;
 }) {
   try {
     await convex.mutation(api.usageLogs.logUsage, {
@@ -977,8 +962,6 @@ export async function logUsageRecord({
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
       cost_dollars: costDollars,
-      byok,
-      max_mode: maxMode,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {

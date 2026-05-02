@@ -23,6 +23,7 @@ import {
   generateDoomLoopNudge,
 } from "@/lib/chat/doom-loop-detection";
 import { createTools } from "@/lib/ai/tools";
+import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type {
@@ -57,6 +58,7 @@ import {
 } from "@/lib/api/chat-logger";
 import {
   countFileAttachments,
+  stripImageAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
   isXaiSafetyError,
@@ -91,11 +93,7 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
-import {
-  createByokTrackedProvider,
-  createTrackedProvider,
-} from "@/lib/ai/providers";
-import { getByokApiKey } from "@/lib/auth/byok";
+import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
   getUploadBasePath,
@@ -109,7 +107,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
   getUserFriendlyProviderError,
@@ -145,6 +143,7 @@ export const createChatHandler = (
 
     // Wide event logger for structured logging
     let chatLogger: ChatLogger | undefined;
+    let outerChatId: string | undefined;
 
     try {
       const {
@@ -168,6 +167,7 @@ export const createChatHandler = (
         selectedModel?: string;
         isAutoContinue?: boolean;
       } = await req.json();
+      outerChatId = chatId;
 
       const selectedModelOverride: SelectedModel | undefined =
         rawSelectedModel && isSelectedModel(rawSelectedModel)
@@ -235,44 +235,22 @@ export const createChatHandler = (
         });
       }
 
-      // Fetch user customization early so max_mode_enabled can influence
-      // context truncation (before messages are fetched from DB).
       const userCustomization = await getUserCustomization({ userId });
 
-      // BYOK: if the user enabled their own OpenRouter API key, route LLM calls
-      // through their key and bypass our rate limiter. Sandbox/tool costs are
-      // still billed to their subscription. The Convex flag gates the Vault
-      // lookup so non-BYOK users pay zero WorkOS round-trips. Removing the key
-      // (whether via UI DELETE or the GET self-heal path) also clears the
-      // flag, so an orphan flag-without-key state isn't reachable from the UI.
-      const byokApiKey =
-        subscription !== "free" && userCustomization?.byok_enabled
-          ? await getByokApiKey(userId)
-          : undefined;
-      const isByok = !!byokApiKey;
-      // Max Mode only applies when a specific model is selected — not in Auto.
-      const isAutoModelSelection =
-        !selectedModelOverride || selectedModelOverride === "auto";
-      const maxModeEnabled =
-        !isAutoModelSelection && (userCustomization?.max_mode_enabled ?? false);
-      const resolvedModelName = selectModel(
-        mode,
+      const fetched = await getMessagesByChatId({
+        chatId,
+        userId,
         subscription,
-        selectedModelOverride,
-      );
-
-      const { truncatedMessages, chat, isNewChat, fileTokens } =
-        await getMessagesByChatId({
-          chatId,
-          userId,
-          subscription,
-          newMessages: messages,
-          regenerate,
-          isTemporary: temporary,
-          mode,
-          maxMode: maxModeEnabled,
-          modelName: resolvedModelName,
-        });
+        newMessages: messages,
+        regenerate,
+        isTemporary: temporary,
+        mode,
+      });
+      const { chat, isNewChat, fileTokens } = fetched;
+      const truncatedMessages =
+        subscription === "free"
+          ? stripImageAttachments(fetched.truncatedMessages)
+          : fetched.truncatedMessages;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -365,7 +343,6 @@ export const createChatHandler = (
         },
         selectedModel,
       );
-      chatLogger.setByok(isByok);
 
       // Build extra usage config (paid users only, works for both agent and ask modes)
       // extra_usage_enabled is in userCustomization, balance is in extra_usage
@@ -404,30 +381,19 @@ export const createChatHandler = (
         }
       }
 
-      const rateLimitInfo: RateLimitInfo = isByok
-        ? {
-            remaining: Number.POSITIVE_INFINITY,
-            resetTime: new Date(0),
-            limit: Number.POSITIVE_INFINITY,
-            pointsDeducted: 0,
-            extraUsagePointsDeducted: 0,
-            rateLimitSkipped: true,
-          }
-        : (freeAskRateLimitInfo ??
-          (await checkRateLimit(
-            userId,
-            mode,
-            subscription,
-            estimatedInputTokens,
-            extraUsageConfig,
-            selectedModel,
-            organizationId,
-          )));
+      const rateLimitInfo: RateLimitInfo =
+        freeAskRateLimitInfo ??
+        (await checkRateLimit(
+          userId,
+          mode,
+          subscription,
+          estimatedInputTokens,
+          extraUsageConfig,
+          selectedModel,
+          organizationId,
+        ));
 
-      // Track deductions for potential refund on error (no-op for BYOK)
-      if (!isByok) {
-        usageRefundTracker.recordDeductions(rateLimitInfo);
-      }
+      usageRefundTracker.recordDeductions(rateLimitInfo);
 
       // Add rate limit and extra usage context to logger
       chatLogger.setRateLimit(
@@ -473,6 +439,16 @@ export const createChatHandler = (
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
+        onError: (error) => {
+          // Surface ChatSDKError causes (e.g., upload failures) to the client
+          // so MessageErrorState renders the user-actionable message.
+          if (error instanceof ChatSDKError) {
+            return typeof error.cause === "string"
+              ? error.cause
+              : error.message;
+          }
+          return getUserFriendlyProviderError(error);
+        },
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
@@ -552,10 +528,29 @@ export const createChatHandler = (
 
           if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
+            let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
-              await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+              uploadResult = await uploadSandboxFiles(
+                sandboxFiles,
+                ensureSandbox,
+              );
             } finally {
               writeUploadCompleteStatus(writer);
+            }
+            if (uploadResult.failedCount > 0) {
+              const noun =
+                uploadResult.failedCount === 1 ? "attachment" : "attachments";
+              const uploadError = new ChatSDKError(
+                "bad_request:stream",
+                `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+              );
+              // Errors thrown from execute are caught by createUIMessageStream's
+              // onError and never reach the outer catch, so refund / timeout
+              // clear / error logging must happen here. refund() is idempotent.
+              preemptiveTimeout?.clear();
+              await usageRefundTracker.refund();
+              chatLogger?.emitChatError(uploadError);
+              throw uploadError;
             }
           }
 
@@ -568,9 +563,7 @@ export const createChatHandler = (
                 )
               : Promise.resolve(undefined);
 
-          const trackedProvider = isByok
-            ? createByokTrackedProvider(byokApiKey!)
-            : createTrackedProvider();
+          const trackedProvider = createTrackedProvider();
 
           let currentSystemPrompt = await systemPrompt(
             userId,
@@ -588,11 +581,7 @@ export const createChatHandler = (
           const contextUsageOn = isContextUsageEnabled(subscription, mode);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(subscription, {
-                maxMode: maxModeEnabled,
-                modelName: selectedModel,
-                mode,
-              })
+            ? getMaxTokensForSubscription(subscription, { mode })
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -676,39 +665,6 @@ export const createChatHandler = (
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
 
-            // BYOK: LLM cost is on the user's OpenRouter account. Still charge
-            // the full non-model spend (sandbox session fee + any tool charges
-            // accumulated during the stream) to the subscription bucket, and
-            // still log usage.
-            if (isByok) {
-              const byokNonModelCost = usageTracker.nonModelCost;
-              if (byokNonModelCost > 0) {
-                hasDeductedUsage = true;
-                await deductUsage(
-                  userId,
-                  subscription,
-                  0,
-                  0,
-                  0,
-                  extraUsageConfig,
-                  byokNonModelCost,
-                  selectedModel,
-                  byokNonModelCost,
-                );
-              }
-              usageTracker.log({
-                userId,
-                selectedModel,
-                selectedModelOverride,
-                responseModel,
-                configuredModelId,
-                rateLimitInfo,
-                byok: isByok,
-                maxMode: maxModeEnabled,
-              });
-              return;
-            }
-
             if (!usageTracker.hasUsage) {
               // No usage data reported — skip deduction
               return;
@@ -746,7 +702,6 @@ export const createChatHandler = (
               responseModel,
               configuredModelId,
               rateLimitInfo,
-              maxMode: maxModeEnabled,
             });
           };
 
@@ -765,11 +720,8 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(subscription, {
-                      maxMode: maxModeEnabled,
-                      modelName: selectedModel,
-                      mode,
-                    }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(subscription, { mode }) *
+                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -801,8 +753,8 @@ export const createChatHandler = (
                       tools,
                       providerOptions: buildProviderOptions(
                         isReasoningModel,
-                        subscription,
                         userId,
+                        configuredModelId,
                       ),
                     });
 
@@ -897,19 +849,16 @@ export const createChatHandler = (
               abortSignal: userStopSignal.signal,
               providerOptions: buildProviderOptions(
                 isReasoningModel,
-                subscription,
                 userId,
+                configuredModelId,
               ),
               stopWhen: isAgentMode(mode)
                 ? [
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(subscription, {
-                          maxMode: maxModeEnabled,
-                          modelName: selectedModel,
-                          mode,
-                        }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(subscription, { mode }) *
+                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
@@ -976,22 +925,28 @@ export const createChatHandler = (
 
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
-              },
-              onError: async (error) => {
-                // Suppress xAI safety check errors from logging (they're expected for certain content)
-                if (!isXaiSafetyError(error)) {
-                  console.error("Error:", error);
 
-                  // Log provider errors to Axiom with request context
-                  nextJsAxiomLogger.error("Provider streaming error", {
-                    chatId,
-                    endpoint,
+                // Tear down any PTY sessions the model left open at end of
+                // turn. M1 policy: PTYs don't survive a turn. Best-effort —
+                // must never block or throw into the finish path.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error("[chat-handler] PTY closeAll failed:", err),
+                  );
+              },
+              onError: async ({ error }) => {
+                // streamText wraps errors in `{ error }` events. Without this
+                // destructure, the wrapper object reaches getErrorMessage which
+                // JSON.stringifies it and leaks requestBodyValues (system prompt,
+                // user messages) into logs.
+                if (!isXaiSafetyError(error)) {
+                  chatLogger?.recordProviderError(error, {
                     mode,
                     model: selectedModel,
                     userId,
                     subscription,
                     isTemporary: temporary,
-                    ...extractErrorDetails(error),
                   });
                 }
                 // Refund the upfront deduction only when the provider errored
@@ -1000,6 +955,32 @@ export const createChatHandler = (
                 if (!usageTracker.hasUsage) {
                   await usageRefundTracker.refund();
                 }
+
+                // Tear down any PTY sessions left open — streamText.onFinish
+                // may not fire on error/abort paths. `closeAll` is idempotent;
+                // calling it here + in onFinish is safe. Best-effort only —
+                // must never propagate back into the stream.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error(
+                      "[chat-handler] PTY closeAll (onError) failed:",
+                      err,
+                    ),
+                  );
+              },
+              onAbort: async () => {
+                // Mirror the onError cleanup for client-initiated aborts.
+                // If this hook is not supported by the current ai SDK it will
+                // simply be ignored; the outer catch block is the hard backstop.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error(
+                      "[chat-handler] PTY closeAll (onAbort) failed:",
+                      err,
+                    ),
+                  );
               },
             });
 
@@ -1008,29 +989,25 @@ export const createChatHandler = (
             result = await createStream(selectedModel);
           } catch (error) {
             // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback.
-            // For BYOK users this still uses the user's key because trackedProvider is the BYOK
-            // provider — only the model name changes.
             if (
               isProviderApiError(error) &&
               !isRetryWithFallback &&
               isAutoModel
             ) {
-              nextJsAxiomLogger.error(
-                "Provider API error, retrying with fallback",
-                {
-                  chatId,
-                  endpoint,
-                  mode,
-                  originalModel: selectedModel,
-                  fallbackModel,
-                  userId,
-                  subscription,
-                  isTemporary: temporary,
-                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
-                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
-                  ...extractErrorDetails(error),
-                },
-              );
+              phLogger.error("Provider API error, retrying with fallback", {
+                error,
+                chatId,
+                endpoint,
+                mode,
+                originalModel: selectedModel,
+                fallbackModel,
+                userId,
+                subscription,
+                isTemporary: temporary,
+                preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
+                ...extractErrorDetails(error),
+              });
 
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
@@ -1063,7 +1040,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  nextJsAxiomLogger.warn(
+                  phLogger.warn(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
@@ -1226,7 +1203,7 @@ export const createChatHandler = (
                               (p) => p.type,
                             ) ?? [];
 
-                          nextJsAxiomLogger.info("Fallback completed", {
+                          phLogger.info("Fallback completed", {
                             chatId,
                             originalModel: selectedModel,
                             originalAssistantMessageId: assistantMessageId,
@@ -1271,7 +1248,7 @@ export const createChatHandler = (
                     const stepDuration = Date.now() - stepStartTime;
                     const totalElapsed =
                       Date.now() - (triggerTime || onFinishStartTime);
-                    nextJsAxiomLogger.info("Preemptive timeout cleanup step", {
+                    phLogger.info("Preemptive timeout cleanup step", {
                       chatId,
                       step,
                       stepDurationMs: stepDuration,
@@ -1282,18 +1259,15 @@ export const createChatHandler = (
                 };
 
                 if (isPreemptiveAbort) {
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish started",
-                    {
-                      chatId,
-                      endpoint,
-                      timeSinceTriggerMs: triggerTime
-                        ? onFinishStartTime - triggerTime
-                        : null,
-                      messageCount: messages.length,
-                      isTemporary: temporary,
-                    },
-                  );
+                  phLogger.info("Preemptive timeout onFinish started", {
+                    chatId,
+                    endpoint,
+                    timeSinceTriggerMs: triggerTime
+                      ? onFinishStartTime - triggerTime
+                      : null,
+                    messageCount: messages.length,
+                    isTemporary: temporary,
+                  });
                 }
 
                 // Clear pre-emptive timeout
@@ -1490,18 +1464,15 @@ export const createChatHandler = (
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
-                  nextJsAxiomLogger.info(
-                    "Preemptive timeout onFinish completed",
-                    {
-                      chatId,
-                      endpoint,
-                      totalOnFinishDurationMs: totalDuration,
-                      totalSinceTriggerMs: triggerTime
-                        ? Date.now() - triggerTime
-                        : null,
-                    },
-                  );
-                  await nextJsAxiomLogger.flush();
+                  phLogger.info("Preemptive timeout onFinish completed", {
+                    chatId,
+                    endpoint,
+                    totalOnFinishDurationMs: totalDuration,
+                    totalSinceTriggerMs: triggerTime
+                      ? Date.now() - triggerTime
+                      : null,
+                  });
+                  await phLogger.flush();
                 }
 
                 // Send updated context usage with output tokens included
@@ -1553,7 +1524,7 @@ export const createChatHandler = (
             }
           } catch (error) {
             // Non-fatal: stream still works without resumability
-            nextJsAxiomLogger.warn("Stream resumption setup failed", {
+            phLogger.warn("Stream resumption setup failed", {
               chatId,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -1563,6 +1534,18 @@ export const createChatHandler = (
     } catch (error) {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
+
+      // Best-effort PTY cleanup — the stream may never have reached onFinish.
+      if (outerChatId) {
+        await ptySessionManager
+          .closeAll(outerChatId)
+          .catch((err) =>
+            console.error(
+              "[chat-handler] PTY closeAll (outer catch) failed:",
+              err,
+            ),
+          );
+      }
 
       // Refund the upfront deduction when the request fails before any tokens
       // were consumed. refund() is idempotent and only fires if deductions were

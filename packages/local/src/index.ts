@@ -23,6 +23,11 @@ import {
   getDefaultShell,
   buildShellSpawn,
 } from "./utils";
+import {
+  ProcessRunner,
+  ProcessRunOptions,
+  ProcessRunResult,
+} from "./process-runner";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -205,11 +210,82 @@ interface CentrifugoErrorMessage {
   message: string;
 }
 
+// --- PTY incoming message types ---
+
+interface PtyCreateMessage {
+  type: "pty_create";
+  sessionId: string;
+  command: string;
+  cols?: number;
+  rows?: number;
+  cwd?: string;
+  env?: Record<string, string>;
+  targetConnectionId?: string;
+}
+
+interface PtyInputMessage {
+  type: "pty_input";
+  sessionId: string;
+  data: string;
+  targetConnectionId?: string;
+}
+
+interface PtyResizeMessage {
+  type: "pty_resize";
+  sessionId: string;
+  cols: number;
+  rows: number;
+  targetConnectionId?: string;
+}
+
+interface PtyKillMessage {
+  type: "pty_kill";
+  sessionId: string;
+  signal?: string;
+  targetConnectionId?: string;
+}
+
+type CentrifugoPtyIncomingMessage =
+  | PtyCreateMessage
+  | PtyInputMessage
+  | PtyResizeMessage
+  | PtyKillMessage;
+
+// --- PTY outgoing message types ---
+
+interface CentrifugoPtyReadyMessage {
+  type: "pty_ready";
+  sessionId: string;
+  pid: number;
+}
+
+interface CentrifugoPtyDataMessage {
+  type: "pty_data";
+  sessionId: string;
+  data: string;
+}
+
+interface CentrifugoPtyExitMessage {
+  type: "pty_exit";
+  sessionId: string;
+  exitCode: number;
+}
+
+interface CentrifugoPtyErrorMessage {
+  type: "pty_error";
+  sessionId: string;
+  message: string;
+}
+
 type CentrifugoOutgoingMessage =
   | CentrifugoStdoutMessage
   | CentrifugoStderrMessage
   | CentrifugoExitMessage
-  | CentrifugoErrorMessage;
+  | CentrifugoErrorMessage
+  | CentrifugoPtyReadyMessage
+  | CentrifugoPtyDataMessage
+  | CentrifugoPtyExitMessage
+  | CentrifugoPtyErrorMessage;
 
 interface ConnectResult {
   success: boolean;
@@ -224,6 +300,24 @@ interface RefreshTokenResult {
   centrifugoToken: string;
 }
 
+// A getToken refresh fails with one of these when the Convex row has been
+// authoritatively flipped to disconnected (token regenerated, multi-tab kick,
+// manual backend disconnect, or row purged after long disconnect). Centrifuge
+// would otherwise retry getToken on its backoff schedule forever and flood
+// Convex logs with identical errors.
+function isConnectionTerminatedByServer(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return false;
+  const code = (data as { code?: string }).code;
+  const message = (data as { message?: string }).message;
+  if (code === "BAD_REQUEST" && message === "Connection is not active")
+    return true;
+  if (code === "NOT_FOUND") return true;
+  if (code === "UNAUTHORIZED") return true;
+  return false;
+}
+
 class LocalSandboxClient {
   private convexHttp: ConvexHttpClient;
   private centrifuge?: Centrifuge;
@@ -233,10 +327,63 @@ class LocalSandboxClient {
   private isShuttingDown = false;
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
+  private processRunner: ProcessRunner;
 
   constructor(private config: Config) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
+    this.processRunner = new ProcessRunner();
+    this.setupProcessRunnerListeners();
+  }
+
+  private setupProcessRunnerListeners(): void {
+    this.processRunner.on("data", (sessionId: string, data: string) => {
+      this.publishToChannel({
+        type: "pty_data",
+        sessionId,
+        data,
+      }).catch((err: unknown) => {
+        console.error(
+          chalk.red(
+            `[PTY] Failed to publish data for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      });
+    });
+
+    this.processRunner.on("exit", (sessionId: string, exitCode: number) => {
+      console.log(
+        chalk.gray(`[PTY] Session ${sessionId} exited (code ${exitCode})`),
+      );
+      this.publishToChannel({
+        type: "pty_exit",
+        sessionId,
+        exitCode,
+      }).catch((err: unknown) => {
+        console.error(
+          chalk.red(
+            `[PTY] Failed to publish exit for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      });
+    });
+
+    this.processRunner.on("error", (sessionId: string, error: Error) => {
+      console.error(
+        chalk.red(`[PTY] Session ${sessionId} error: ${error.message}`),
+      );
+      this.publishToChannel({
+        type: "pty_error",
+        sessionId,
+        message: error.message,
+      }).catch((err: unknown) => {
+        console.error(
+          chalk.red(
+            `[PTY] Failed to publish error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      });
+    });
   }
 
   async start(): Promise<void> {
@@ -323,10 +470,59 @@ class LocalSandboxClient {
           )) as RefreshTokenResult;
           return result.centrifugoToken;
         } catch (error) {
-          console.error(
-            chalk.red("Failed to refresh Centrifugo token:"),
-            error,
-          );
+          if (isConnectionTerminatedByServer(error)) {
+            const data =
+              (
+                error as {
+                  data?: {
+                    code?: string;
+                    message?: string;
+                    disconnectReason?: string | null;
+                    msSinceDisconnected?: number | null;
+                    msSinceLastHeartbeat?: number;
+                    msSinceCreated?: number;
+                  };
+                }
+              ).data ?? {};
+            console.error(
+              chalk.red(
+                `\n❌ Connection terminated by server (${data.code ?? "unknown"}: ${data.message ?? "unknown"})`,
+              ),
+            );
+            const reasonHint =
+              data.disconnectReason === "token_regenerated"
+                ? "Your token was regenerated; rerun with the new token."
+                : data.disconnectReason === "presence_sweep"
+                  ? "Server presence sweep marked this connection stale."
+                  : data.disconnectReason === "desktop_kicked_by_new_session"
+                    ? "A new desktop session took over."
+                    : data.disconnectReason === "client_disconnect" ||
+                        data.disconnectReason === "desktop_disconnect"
+                      ? "This connection was explicitly disconnected."
+                      : "Likely causes: token regenerated, or disconnected from another session.";
+            console.error(chalk.yellow(reasonHint));
+            console.error(
+              chalk.gray(
+                JSON.stringify({
+                  connectionId: this.connectionId ?? "unknown",
+                  disconnectReason: data.disconnectReason ?? null,
+                  msSinceDisconnected: data.msSinceDisconnected ?? null,
+                  msSinceLastHeartbeat: data.msSinceLastHeartbeat ?? null,
+                  msSinceCreated: data.msSinceCreated ?? null,
+                }),
+              ),
+            );
+            // Stop the Centrifuge retry loop and exit. cleanup() synchronously
+            // calls centrifuge.disconnect() before any awaits, so by the time
+            // we re-throw below Centrifuge is already in a terminal state and
+            // won't invoke getToken again.
+            this.cleanup().then(() => process.exit(1));
+          } else {
+            console.error(
+              chalk.red("Failed to refresh Centrifugo token:"),
+              error,
+            );
+          }
           throw error;
         }
       },
@@ -338,20 +534,56 @@ class LocalSandboxClient {
     this.subscription.on("publication", (ctx: PublicationContext) => {
       if (this.isShuttingDown) return;
 
-      const message = ctx.data as CentrifugoCommandMessage;
-      if (message.type === "command") {
-        if (
-          message.targetConnectionId &&
-          message.targetConnectionId !== this.connectionId
-        ) {
-          return;
-        }
-        this.lastActivityTime = Date.now();
-        this.handleCommand(message).catch((error: unknown) => {
-          const errorMsg =
-            error instanceof Error ? error.message : JSON.stringify(error);
-          console.error(chalk.red(`Error handling command: ${errorMsg}`));
-        });
+      const message = ctx.data as
+        | CentrifugoCommandMessage
+        | CentrifugoPtyIncomingMessage;
+
+      // Gate on targetConnectionId for all message types that carry it
+      const targetId = (message as { targetConnectionId?: string })
+        .targetConnectionId;
+      if (targetId && targetId !== this.connectionId) {
+        return;
+      }
+
+      this.lastActivityTime = Date.now();
+
+      switch (message.type) {
+        case "command":
+          this.handleCommand(message as CentrifugoCommandMessage).catch(
+            (error: unknown) => {
+              const errorMsg =
+                error instanceof Error ? error.message : JSON.stringify(error);
+              console.error(chalk.red(`Error handling command: ${errorMsg}`));
+            },
+          );
+          break;
+
+        case "pty_create":
+          this.handlePtyCreate(message as PtyCreateMessage).catch(
+            (error: unknown) => {
+              const errorMsg =
+                error instanceof Error ? error.message : String(error);
+              console.error(
+                chalk.red(`[PTY] Error creating session: ${errorMsg}`),
+              );
+            },
+          );
+          break;
+
+        case "pty_input":
+          this.handlePtyInput(message as PtyInputMessage);
+          break;
+
+        case "pty_resize":
+          this.handlePtyResize(message as PtyResizeMessage);
+          break;
+
+        case "pty_kill":
+          this.handlePtyKill(message as PtyKillMessage);
+          break;
+
+        default:
+          break;
       }
     });
 
@@ -657,6 +889,77 @@ class LocalSandboxClient {
     return child.pid ?? -1;
   }
 
+  private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
+    const { sessionId, command, cols, rows, cwd, env } = msg;
+
+    console.log(chalk.cyan(`[PTY] Creating session ${sessionId}: ${command}`));
+
+    try {
+      const opts: ProcessRunOptions = {};
+      if (cols !== undefined) opts.cols = cols;
+      if (rows !== undefined) opts.rows = rows;
+      if (cwd !== undefined) opts.cwd = cwd;
+      if (env !== undefined) opts.env = env;
+
+      const result: ProcessRunResult = this.processRunner.run(
+        sessionId,
+        command,
+        opts,
+      );
+
+      await this.publishToChannel({
+        type: "pty_ready",
+        sessionId,
+        pid: result.pid,
+      });
+
+      console.log(
+        chalk.green(`[PTY] Session ${sessionId} ready (pid ${result.pid})`),
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        chalk.red(`[PTY] Failed to create session ${sessionId}: ${message}`),
+      );
+      await this.publishToChannel({
+        type: "pty_error",
+        sessionId,
+        message,
+      });
+    }
+  }
+
+  private handlePtyInput(msg: PtyInputMessage): void {
+    const { sessionId, data } = msg;
+    const ok = this.processRunner.write(sessionId, data);
+    if (!ok) {
+      console.warn(chalk.yellow(`[PTY] Write to unknown session ${sessionId}`));
+    }
+  }
+
+  private handlePtyResize(msg: PtyResizeMessage): void {
+    const { sessionId, cols, rows } = msg;
+    const ok = this.processRunner.resize(sessionId, cols, rows);
+    if (!ok) {
+      console.warn(
+        chalk.yellow(`[PTY] Resize for unknown session ${sessionId}`),
+      );
+    }
+  }
+
+  private handlePtyKill(msg: PtyKillMessage): void {
+    const { sessionId, signal } = msg;
+    console.log(
+      chalk.yellow(
+        `[PTY] Killing session ${sessionId}${signal ? ` (signal: ${signal})` : ""}`,
+      ),
+    );
+    const ok = this.processRunner.stop(sessionId, signal);
+    if (!ok) {
+      console.warn(chalk.yellow(`[PTY] Kill for unknown session ${sessionId}`));
+    }
+  }
+
   private startIdleCheck(): void {
     this.idleCheckInterval = setInterval(() => {
       const idleTime = Date.now() - this.lastActivityTime;
@@ -685,6 +988,9 @@ class LocalSandboxClient {
 
     this.isShuttingDown = true;
     this.stopIdleCheck();
+
+    // Stop all PTY sessions
+    this.processRunner.stopAll();
 
     // Disconnect Centrifugo
     if (this.subscription) {

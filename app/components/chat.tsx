@@ -145,6 +145,7 @@ function StreamEffects({
   sandboxPreference,
   selectedModel,
   resetRef,
+  hasActiveStream,
 }: {
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -162,12 +163,14 @@ function StreamEffects({
   sandboxPreference: string;
   selectedModel: string;
   resetRef: RefObject<(() => void) | null>;
+  hasActiveStream: boolean | undefined;
 }) {
   useAutoResume({
     autoResume,
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
+    hasActiveStream,
   });
 
   const { resetAutoContinueCount } = useAutoContinue({
@@ -456,12 +459,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ) {
               const maxTokens = getMaxTokensForSubscription(
                 subscriptionRef.current,
-                {
-                  maxMode:
-                    userCustomizationRef.current?.max_mode_enabled ?? false,
-                  modelName: selectedModelRef.current ?? undefined,
-                  mode: chatModeRef.current as "ask" | "agent",
-                },
+                { mode: chatModeRef.current },
               );
               const context = serializeConversation(currentMessages, maxTokens);
               if (context) {
@@ -680,11 +678,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
         const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
         if (!todoInput.todos) return;
-        // Determine last assistant message id to stamp/replace
-        const lastAssistant = [...messages]
-          .reverse()
-          .find((m) => m.role === "assistant");
-        const lastAssistantId = lastAssistant?.id;
+        // Determine last assistant message id to stamp/replace.
+        // Read via ref to avoid closing over the streaming messages array.
+        const currentMessages = messagesRef.current;
+        let lastAssistantId: string | undefined;
+        for (let i = currentMessages.length - 1; i >= 0; i--) {
+          if (currentMessages[i].role === "assistant") {
+            lastAssistantId = currentMessages[i].id;
+            break;
+          }
+        }
 
         const treatAsMerge = shouldTreatAsMerge(
           todoInput.merge,
@@ -710,7 +713,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       // in-memory messages with fresh objects (causes flicker/scroll jump).
       if (isCodexLocal(selectedModelRef.current)) {
         codexSyncSuppressedUntilRef.current = Date.now() + 2000;
-        persistCodexMessages(messages);
+        persistCodexMessages(messagesRef.current);
         return;
       }
 
@@ -990,19 +993,35 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useRef(messageQueue);
+  // Re-arm sticky scroll whenever a new user message is appended at the tail.
+  // Stop+send flows (Send Now, stop-and-send) mutate the DOM mid-stream which
+  // knocks use-stick-to-bottom out of "at bottom" state, so we force-scroll on
+  // the new user message to resume following the next generation. Keyed on
+  // tail-id (not length) so pagination prepends don't trigger a scroll jump.
+  const lastMessage = messages[messages.length - 1];
+  const lastId = lastMessage?.id;
+  const lastRole = lastMessage?.role;
+  const prevLastIdRef = useRef<string | undefined>(lastId);
   useEffect(() => {
-    messageQueueRef.current = messageQueue;
-  }, [messageQueue]);
+    const prevLastId = prevLastIdRef.current;
+    prevLastIdRef.current = lastId;
+    if (lastId && lastId !== prevLastId && lastRole === "user") {
+      scrollToBottom({ force: true });
+    }
+  }, [lastId, lastRole, scrollToBottom]);
 
-  // Clear queue when navigating to a different chat
+  // Keep a ref to the latest messageQueue to avoid stale closures
+  const messageQueueRef = useLatestRef(messageQueue);
+
+  // Clear queue when navigating to a different chat.
+  // Intentionally reads messageQueueRef at cleanup time (latest value).
   useEffect(() => {
     return () => {
       if (messageQueueRef.current.length > 0) {
         clearQueue();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, clearQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
@@ -1042,7 +1061,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos: todosRef.current,
               temporary: temporaryChatsEnabledRef.current,
               sandboxPreference: sandboxPreferenceRef.current,
@@ -1164,6 +1183,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         sandboxPreference={sandboxPreference}
         selectedModel={selectedModel}
         resetRef={resetAutoContinueRef}
+        hasActiveStream={
+          chatData === undefined ? undefined : !!chatData?.active_stream_id
+        }
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">

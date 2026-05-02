@@ -9,7 +9,7 @@ import {
   createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
-import { nextJsAxiomLogger } from "@/lib/axiom/server";
+import { phLogger } from "@/lib/posthog/server";
 
 export const maxDuration = 800;
 
@@ -67,117 +67,172 @@ export async function GET(
     execute: () => {},
   });
 
+  // Best-effort cleanup of a stale `active_stream_id`. Called whenever we
+  // detect the producer is dead so subsequent reconnects skip straight to
+  // replay instead of hitting the ack-timeout (~5s) again.
+  const clearStaleActiveStream = async () => {
+    try {
+      await convex.mutation(api.chatStreams.prepareForNewStream, {
+        serviceKey,
+        chatId,
+      });
+    } catch {
+      // Best-effort — the next reconnect will re-attempt cleanup.
+    }
+  };
+
   if (recentStreamId) {
     let stream: ReadableStream | null = null;
+    let resumableThrew = false;
     try {
       stream = await streamContext.resumableStream(recentStreamId, () =>
         emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
       );
     } catch {
       // Producer is gone (ack timeout) — fall through to replay fallback
+      resumableThrew = true;
+    }
+
+    if (resumableThrew) {
+      await clearStaleActiveStream();
     }
 
     if (stream) {
-      const abortController = new AbortController();
-
-      // Set up pre-emptive timeout before Vercel's hard 800s limit
-      const preemptiveTimeout = createPreemptiveTimeout({
-        chatId,
-        endpoint: "/api/chat/[id]/stream",
-        abortController,
-      });
-
-      // Abort on client disconnect (tab close, network error, etc.)
-      req.signal.addEventListener("abort", () => abortController.abort(), {
-        once: true,
-      });
-
-      // Abort on explicit stop button click (via Redis pub/sub or polling)
-      const cancellationSubscriber = await createCancellationSubscriber({
-        chatId,
-        isTemporary,
-        abortController,
-        onStop: () => {},
-      });
-
       const reader = stream.getReader();
 
-      const abortableStream = new ReadableStream({
-        async pull(controller) {
-          try {
-            // Create a promise that rejects on abort
-            const abortPromise = new Promise<never>((_, reject) => {
-              if (abortController.signal.aborted) {
-                reject(new DOMException("Aborted", "AbortError"));
+      // Peek the first chunk. When `active_stream_id` is still set in DB but
+      // the resumable buffer is empty (producer finished and the buffer
+      // expired), `resumableStream` invokes the no-op fallback, which emits
+      // only the SSE `[DONE]` terminator. Returning that to the client renders
+      // an empty assistant message — fall through to the replay branch instead.
+      const first = await reader.read();
+      const firstText = first.done
+        ? ""
+        : typeof first.value === "string"
+          ? first.value
+          : new TextDecoder().decode(first.value as Uint8Array);
+      const isNoopStream =
+        first.done || /^\s*data:\s*\[DONE\]\s*$/m.test(firstText.trim());
+
+      if (isNoopStream) {
+        reader.releaseLock();
+        try {
+          await stream.cancel();
+        } catch {
+          // ignore — falling through to replay
+        }
+        await clearStaleActiveStream();
+      } else {
+        const abortController = new AbortController();
+
+        // Set up pre-emptive timeout before Vercel's hard 800s limit
+        const preemptiveTimeout = createPreemptiveTimeout({
+          chatId,
+          endpoint: "/api/chat/[id]/stream",
+          abortController,
+        });
+
+        // Abort on client disconnect (tab close, network error, etc.)
+        req.signal.addEventListener("abort", () => abortController.abort(), {
+          once: true,
+        });
+
+        // Abort on explicit stop button click (via Redis pub/sub or polling)
+        const cancellationSubscriber = await createCancellationSubscriber({
+          chatId,
+          isTemporary,
+          abortController,
+          onStop: () => {},
+        });
+
+        let pendingFirstDelivered = false;
+
+        const abortableStream = new ReadableStream({
+          async pull(controller) {
+            try {
+              if (!pendingFirstDelivered) {
+                pendingFirstDelivered = true;
+                controller.enqueue(first.value);
                 return;
               }
-              abortController.signal.addEventListener(
-                "abort",
-                () => reject(new DOMException("Aborted", "AbortError")),
-                { once: true },
-              );
-            });
 
-            // Race between read and abort
-            const { done, value } = await Promise.race([
-              reader.read(),
-              abortPromise,
-            ]);
-
-            if (done) {
-              preemptiveTimeout.clear();
-              controller.close();
-            } else {
-              controller.enqueue(value);
-            }
-          } catch (error) {
-            const isPreemptive = preemptiveTimeout.isPreemptive();
-            const triggerTime = preemptiveTimeout.getTriggerTime();
-            const cleanupStart = Date.now();
-
-            if (isPreemptive) {
-              nextJsAxiomLogger.info("Stream route preemptive abort caught", {
-                chatId,
-                timeSinceTriggerMs: triggerTime
-                  ? cleanupStart - triggerTime
-                  : null,
+              // Create a promise that rejects on abort
+              const abortPromise = new Promise<never>((_, reject) => {
+                if (abortController.signal.aborted) {
+                  reject(new DOMException("Aborted", "AbortError"));
+                  return;
+                }
+                abortController.signal.addEventListener(
+                  "abort",
+                  () => reject(new DOMException("Aborted", "AbortError")),
+                  { once: true },
+                );
               });
-            }
 
-            preemptiveTimeout.clear();
+              // Race between read and abort
+              const { done, value } = await Promise.race([
+                reader.read(),
+                abortPromise,
+              ]);
 
-            if (error instanceof DOMException && error.name === "AbortError") {
+              if (done) {
+                preemptiveTimeout.clear();
+                controller.close();
+              } else {
+                controller.enqueue(value);
+              }
+            } catch (error) {
+              const isPreemptive = preemptiveTimeout.isPreemptive();
+              const triggerTime = preemptiveTimeout.getTriggerTime();
+              const cleanupStart = Date.now();
+
               if (isPreemptive) {
-                nextJsAxiomLogger.info(
-                  "Stream route closing controller after abort",
-                  {
+                phLogger.info("Stream route preemptive abort caught", {
+                  userId,
+                  chatId,
+                  timeSinceTriggerMs: triggerTime
+                    ? cleanupStart - triggerTime
+                    : null,
+                });
+              }
+
+              preemptiveTimeout.clear();
+
+              if (
+                error instanceof DOMException &&
+                error.name === "AbortError"
+              ) {
+                if (isPreemptive) {
+                  phLogger.info("Stream route closing controller after abort", {
+                    userId,
                     chatId,
                     cleanupDurationMs: Date.now() - cleanupStart,
-                  },
-                );
-                await nextJsAxiomLogger.flush();
+                  });
+                  await phLogger.flush();
+                }
+                controller.close();
+              } else {
+                controller.error(error);
               }
-              controller.close();
-            } else {
-              controller.error(error);
             }
-          }
-        },
-        cancel() {
-          const isPreemptive = preemptiveTimeout.isPreemptive();
-          if (isPreemptive) {
-            nextJsAxiomLogger.info("Stream route cancel called", { chatId });
-          }
-          preemptiveTimeout.clear();
-          reader.cancel();
-          cancellationSubscriber.stop();
-          if (isPreemptive) {
-            nextJsAxiomLogger.flush();
-          }
-        },
-      });
+          },
+          async cancel() {
+            const isPreemptive = preemptiveTimeout.isPreemptive();
+            if (isPreemptive) {
+              phLogger.info("Stream route cancel called", { userId, chatId });
+            }
+            preemptiveTimeout.clear();
+            reader.cancel();
+            cancellationSubscriber.stop();
+            if (isPreemptive) {
+              // Await so the serverless runtime doesn't tear down before flush.
+              await phLogger.flush();
+            }
+          },
+        });
 
-      return new Response(abortableStream, { status: 200 });
+        return new Response(abortableStream, { status: 200 });
+      }
     }
   }
 
@@ -193,6 +248,12 @@ export async function GET(
     );
 
     if (!mostRecentMessage) {
+      // Producer is dead and there's nothing to replay — clear the stale
+      // active_stream_id so the chat isn't stuck in a "resuming" state on
+      // every page load.
+      if (recentStreamId) {
+        await clearStaleActiveStream();
+      }
       return new Response(
         emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
         { status: 200 },
@@ -213,7 +274,7 @@ export async function GET(
       restoredStream.pipeThrough(new JsonToSseTransformStream()),
       { status: 200 },
     );
-  } catch (error) {
+  } catch {
     return new Response(
       emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
       { status: 200 },

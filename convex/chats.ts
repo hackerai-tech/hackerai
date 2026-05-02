@@ -303,10 +303,9 @@ export const updateChat = mutation({
         .first();
 
       if (!chat) {
-        throw new ConvexError({
-          code: "CHAT_NOT_FOUND",
-          message: "Chat not found",
-        });
+        // Benign race: chat was deleted before this server-internal update
+        // arrived (e.g., user deleted mid-stream). Nothing to update.
+        return null;
       }
 
       // Prepare update object with only provided fields.
@@ -1036,10 +1035,8 @@ export const saveLatestSummary = mutation({
         .first();
 
       if (!chat) {
-        throw new ConvexError({
-          code: "CHAT_NOT_FOUND",
-          message: "Chat not found",
-        });
+        // Benign race: chat was deleted before the summary write landed.
+        return null;
       }
 
       // Log sizes to help diagnose document limit issues

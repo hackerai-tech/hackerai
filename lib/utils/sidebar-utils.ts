@@ -5,6 +5,10 @@ import {
   SidebarNotes,
   WebSearchResult,
 } from "@/types/chat";
+import {
+  formatSendInput,
+  isInteractiveShellAction,
+} from "@/app/components/tools/shell-tool-utils";
 
 /** Parse a unified git diff into original and modified content for diff view. */
 function parseGitDiff(diff: string): {
@@ -60,6 +64,12 @@ export interface Message {
   [key: string]: any;
 }
 
+// Tool types that intentionally render during input-streaming for progressive UI
+// (e.g. file write/append showing content as the LLM generates it). All other
+// tool types are held back until input-available — see the gate inside the
+// per-part forEach below.
+const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
+
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
@@ -95,6 +105,20 @@ export function extractSidebarContentFromMessage(
   });
 
   message.parts.forEach((part) => {
+    // Hold tool entries back until the LLM finishes generating tool input.
+    // The AI SDK populates `part.input` from partial JSON during input-streaming,
+    // which would otherwise push entries into contentList and trigger sidebar
+    // auto-follow mid-stream. Tools listed in STREAMS_DURING_INPUT opt out for
+    // progressive UI (e.g. file write/append showing content as it's generated).
+    if (
+      part.state === "input-streaming" &&
+      typeof part.type === "string" &&
+      part.type.startsWith("tool-") &&
+      !STREAMS_DURING_INPUT.has(part.type)
+    ) {
+      return;
+    }
+
     // Long-run workflow `wait_command` — the input has no `command`, only a
     // handle. Display the handle as the pseudo-command and surface the
     // tailed stdout from output.tail (or output.result.tail) as the
@@ -112,14 +136,31 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
-    // Terminal (including Codex local commands and long-run workflow agent tools)
+    // Terminal (Codex local commands, interactive PTY sessions, and
+    // long-run workflow agent shell tools).
     if (
       (part.type === "tool-run_terminal_cmd" ||
+        part.type === "tool-interact_terminal_session" ||
         part.type === "tool-run_command" ||
         part.type === "tool-start_command_async") &&
-      part.input?.command
+      part.input
     ) {
-      const command = part.input.command;
+      const action = part.input.action || "exec";
+      const isInteractive =
+        isInteractiveShellAction(action) || !!part.input.interactive;
+      // For action=send, format each token through formatSendInput (same
+      // helper the main UI uses) so raw control bytes / escape sequences
+      // render as readable tmux names and trailing newlines collapse to
+      // "Enter", never landing verbatim in the sidebar label.
+      const sendInput = part.input.input;
+      const sendDisplay =
+        action === "send" && sendInput
+          ? Array.isArray(sendInput)
+            ? sendInput.map((t) => formatSendInput(t)).join(" ")
+            : formatSendInput(sendInput)
+          : "";
+      const command =
+        part.input.command || part.input.brief || sendDisplay || action;
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";
@@ -143,16 +184,30 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // Fallback to streaming output, direct output property, or the
-      // tool-error text (state === "output-error"). Surfacing errorText
-      // ensures failed shell commands still show their stderr in the
-      // sidebar instead of an empty terminal.
+      // sessionSnapshot is cleaned via xterm headless - prefer it when available.
+      // For streaming, show live output for responsiveness. errorText fallback
+      // surfaces stderr from failed shell commands (state === "output-error")
+      // instead of leaving an empty terminal.
+      const sessionSnapshot = result?.sessionSnapshot || "";
       const finalOutput =
+        sessionSnapshot ||
+        (isInteractive ? streamingOutput : null) ||
         output ||
         streamingOutput ||
         part.output?.output ||
         part.errorText ||
         "";
+
+      // Only feed rawBytes (→ xterm renderer) for interactive PTY contexts.
+      // Plain non-interactive exec output is line-oriented; the shiki ANSI
+      // renderer handles it without dragging in xterm.js.
+      const rawSnapshot = result?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes = isInteractive
+        ? isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined
+        : undefined;
 
       contentList.push({
         command,
@@ -161,6 +216,15 @@ export function extractSidebarContentFromMessage(
           part.state === "input-available" || part.state === "running",
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
+        rawBytes: effectiveRawBytes,
+        ...(isInteractive
+          ? {
+              shellAction: action,
+              pid: part.input.pid ?? part.output?.result?.pid,
+              session: part.input.session ?? part.output?.result?.session,
+              input: part.input.input,
+            }
+          : {}),
       });
     }
 
@@ -237,7 +301,7 @@ export function extractSidebarContentFromMessage(
     if (part.type === "tool-shell" && part.input) {
       const command = part.input.command || part.input.brief || "";
 
-      // Skip if no command/brief available yet (input still streaming)
+      // Skip if no command/brief available yet
       if (!command) return;
 
       // Get streaming output from data-terminal parts
@@ -249,6 +313,19 @@ export function extractSidebarContentFromMessage(
 
       const finalOutput = directOutput || streamingOutput || "";
 
+      // Only feed rawBytes (→ xterm renderer) for interactive PTY actions.
+      // Plain `exec` output is line-oriented and renders fine via shiki.
+      const isInteractiveShellPart = isInteractiveShellAction(
+        part.input.action,
+      );
+      const rawSnapshot = part.output?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes = isInteractiveShellPart
+        ? isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined
+        : undefined;
+
       contentList.push({
         command,
         output: finalOutput,
@@ -258,6 +335,9 @@ export function extractSidebarContentFromMessage(
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
         pid: part.input.pid ?? part.output?.pid,
+        session: part.input.session ?? part.output?.session,
+        input: part.input.input,
+        rawBytes: effectiveRawBytes,
       });
     }
 

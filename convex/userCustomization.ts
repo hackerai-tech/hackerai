@@ -17,7 +17,6 @@ export const saveUserCustomization = mutation({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
-    max_mode_enabled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -93,7 +92,6 @@ export const saveUserCustomization = mutation({
         .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
         .first();
 
-      // byok_enabled is managed via setByokEnabledForBackend (not this mutation).
       if (existing) {
         // Partial update: only overwrite fields that were explicitly passed
         const patch: Record<string, unknown> = { updated_at: Date.now() };
@@ -117,8 +115,6 @@ export const saveUserCustomization = mutation({
           patch.caido_port = args.caido_port ? args.caido_port : undefined;
         if (args.extra_usage_enabled !== undefined)
           patch.extra_usage_enabled = args.extra_usage_enabled;
-        if (args.max_mode_enabled !== undefined)
-          patch.max_mode_enabled = args.max_mode_enabled;
 
         await ctx.db.patch(existing._id, patch);
       } else {
@@ -135,7 +131,6 @@ export const saveUserCustomization = mutation({
           caido_enabled: args.caido_enabled,
           caido_port: args.caido_port ? args.caido_port : undefined,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
-          max_mode_enabled: args.max_mode_enabled ?? false,
           updated_at: Date.now(),
         });
       }
@@ -173,8 +168,6 @@ export const getUserCustomization = query({
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
-      max_mode_enabled: v.boolean(),
-      byok_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -205,8 +198,6 @@ export const getUserCustomization = query({
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
-        max_mode_enabled: customization.max_mode_enabled ?? false,
-        byok_enabled: customization.byok_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -237,8 +228,6 @@ export const getUserCustomizationForBackend = query({
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
-      max_mode_enabled: v.boolean(),
-      byok_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -266,52 +255,11 @@ export const getUserCustomizationForBackend = query({
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
-        max_mode_enabled: customization.max_mode_enabled ?? false,
-        byok_enabled: customization.byok_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
       console.error("Failed to get user customization:", error);
       return null;
     }
-  },
-});
-
-/**
- * Toggle byok_enabled flag (server-side only, via service key).
- * Called from /api/byok route after the WorkOS Vault write succeeds.
- */
-export const setByokEnabledForBackend = mutation({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    enabled: v.boolean(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    const existing = await ctx.db
-      .query("user_customization")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
-
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        byok_enabled: args.enabled,
-        updated_at: Date.now(),
-      });
-    } else {
-      await ctx.db.insert("user_customization", {
-        user_id: args.userId,
-        byok_enabled: args.enabled,
-        include_memory_entries: true,
-        extra_usage_enabled: false,
-        max_mode_enabled: false,
-        updated_at: Date.now(),
-      });
-    }
-
-    return null;
   },
 });

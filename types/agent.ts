@@ -4,6 +4,7 @@ import type { Geo } from "@vercel/functions";
 import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
+import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import type { ChatMode } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
@@ -104,6 +105,8 @@ export interface ToolContext {
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
+  /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */
+  ptySessionManager: PtySessionManager;
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;

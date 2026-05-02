@@ -15,9 +15,9 @@ export type SelectedModel =
   | "auto"
   | "sonnet-4.6"
   | "grok-4.1"
+  | "grok-4.3"
   | "gemini-3-flash"
-  | "opus-4.7"
-  | "gpt-5.4"
+  | "opus-4.6"
   | "kimi-k2.6";
 // | "codex-local"
 // | `codex-local:${string}`;
@@ -26,9 +26,9 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
   "grok-4.1",
+  "grok-4.3",
   "gemini-3-flash",
-  "opus-4.7",
-  "gpt-5.4",
+  "opus-4.6",
   "kimi-k2.6",
   // "codex-local",
 ];
@@ -40,7 +40,7 @@ export function isCodexLocal(model: string | null): boolean {
   );
 }
 
-/** Extract the Codex sub-model (e.g., "gpt-5.4" from "codex-local:gpt-5.4") */
+/** Extract the Codex sub-model (e.g., "gpt-5.3" from "codex-local:gpt-5.3") */
 export function getCodexSubModel(model: string): string | undefined {
   if (model.startsWith("codex-local:")) {
     return model.slice("codex-local:".length);
@@ -103,14 +103,18 @@ export interface SidebarTerminal {
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
+  /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
+  isInteractive?: boolean;
   /** E2B process ID (only for E2B sandboxes). */
   pid?: number | null;
   /** Local session identifier (only for local sandboxes). */
   session?: string | null;
   toolCallId: string;
   shellAction?: string;
-  /** The raw input text sent via the `send` action. */
-  input?: string;
+  /** The raw input sent via the `send` action — string or array of tokens. */
+  input?: string | string[];
+  /** Raw PTY bytes for xterm.js rendering (preserves colors and cursor sequences). */
+  rawBytes?: string;
 }
 
 export interface SidebarProxy {

@@ -7,10 +7,12 @@ import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface WebSearchInput {
   queries?: string[];
+  brief?: string;
 }
 
 interface OpenUrlInput {
   url?: string;
+  brief?: string;
 }
 
 // Legacy web tool input (combined search + open_url)
@@ -18,6 +20,7 @@ interface LegacyWebInput {
   command?: "search" | "open_url";
   query?: string; // Legacy used single query string
   url?: string;
+  brief?: string;
 }
 
 interface WebToolHandlerProps {
@@ -141,13 +144,24 @@ export const WebToolHandler = memo(function WebToolHandler({
 
   const canOpenSidebar = !isOpenUrl;
 
+  // Mirror the shell/file pattern: when the model supplies a `brief`, it
+  // stands alone as the block label (no target). Pre-input states without a
+  // brief yet fall back to the existing verb + target.
+  const briefText =
+    (input as { brief?: string } | undefined)?.brief?.trim() || "";
+  const useBriefOnly = !!briefText;
+  const briefLabel = (fallback: string) =>
+    useBriefOnly ? briefText : fallback;
+  const briefTarget = (fallback: string | undefined) =>
+    useBriefOnly ? undefined : fallback;
+
   switch (state) {
     case "input-streaming":
       return status === "streaming" ? (
         <ToolBlock
           key={toolCallId}
           icon={icon}
-          action={getAction()}
+          action={briefLabel(getAction())}
           isShimmer={true}
         />
       ) : null;
@@ -157,8 +171,8 @@ export const WebToolHandler = memo(function WebToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={icon}
-          action={getAction()}
-          target={target}
+          action={briefLabel(getAction())}
+          target={briefTarget(target)}
           isShimmer={true}
         />
       ) : null;
@@ -168,8 +182,8 @@ export const WebToolHandler = memo(function WebToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={icon}
-          action={getAction(true)}
-          target={target}
+          action={briefLabel(getAction(true))}
+          target={briefTarget(target)}
           isClickable={canOpenSidebar}
           onClick={canOpenSidebar ? handleOpenInSidebar : undefined}
           onKeyDown={canOpenSidebar ? handleKeyDown : undefined}

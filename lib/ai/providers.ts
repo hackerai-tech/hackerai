@@ -67,16 +67,16 @@ type OpenRouterInstance = typeof openrouter;
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or("google/gemini-3-flash-preview"),
-    "ask-model-free": or("x-ai/grok-4.1-fast"),
+    "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or("moonshotai/kimi-k2.6:exacto"),
-    "agent-model-free": or("moonshotai/kimi-k2.6:exacto"),
+    "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
+    "model-grok-4.3": or("x-ai/grok-4.3"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
-    "model-opus-4.7": or("anthropic/claude-opus-4-7"),
-    "model-gpt-5.4": or("openai/gpt-5.4"),
+    "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
-    "fallback-agent-model": or("x-ai/grok-4.1-fast"),
+    "fallback-agent-model": or("x-ai/grok-4.3"),
     "fallback-ask-model": or("x-ai/grok-4.1-fast"),
     "title-generator-model": or("x-ai/grok-4.1-fast"),
   }) as Record<string, any>;
@@ -88,14 +88,14 @@ export type ModelName = keyof typeof baseProviders;
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
   "ask-model": "January 2025",
-  "ask-model-free": "November 2024",
+  "ask-model-free": "May 2025",
   "agent-model": "April 2024",
-  "agent-model-free": "April 2024",
+  "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.1": "November 2024",
+  "model-grok-4.3": "November 2024",
   "model-gemini-3-flash": "January 2025",
-  "model-opus-4.7": "January 2026",
-  "model-gpt-5.4": "August 2025",
+  "model-opus-4.6": "May 2025",
   "model-kimi-k2.6": "April 2024",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
@@ -111,42 +111,15 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.1": "xAI Grok 4.1 Fast",
+  "model-grok-4.3": "xAI Grok 4.3",
   "model-gemini-3-flash": "Google Gemini 3 Flash",
-  "model-opus-4.7": "Anthropic Claude Opus 4.7",
-  "model-gpt-5.4": "OpenAI GPT-5.4",
+  "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model":
     "Auto, an intelligent model router built by HackerAI",
   "model-codex-local": "OpenAI Codex (Your Account)",
-};
-
-/**
- * Maximum context window (in tokens) per model, as advertised by the provider.
- * Used when "Max Mode" is enabled to unlock the model's full native context.
- * Sourced from OpenRouter model pages.
- */
-export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
-  Record<string, number> = {
-  "ask-model": 1_048_576, // resolves to Gemini 3 Flash
-  "ask-model-free": 2_000_000, // resolves to Grok 4.1 Fast
-  "agent-model": 262_144, // resolves to Kimi K2.5
-  "agent-model-free": 262_144, // resolves to Kimi K2.6
-  "model-sonnet-4.6": 1_000_000, // Claude Sonnet 4.6 with 1M context beta
-  "model-grok-4.1": 2_000_000, // Grok 4.1 Fast
-  "model-gemini-3-flash": 1_048_576, // Gemini 3 Flash
-  "model-opus-4.7": 1_000_000, // Claude Opus 4.7 with 1M context beta
-  "model-gpt-5.4": 1_050_000, // GPT-5.4 (922k input + 128k output)
-  "model-kimi-k2.6": 262_144, // Kimi K2.6
-  "fallback-agent-model": 2_000_000,
-  "fallback-ask-model": 2_000_000,
-  "title-generator-model": 2_000_000,
-  "model-codex-local": 400_000,
-};
-
-export const getModelContextWindow = (modelName: string): number => {
-  return MODEL_CONTEXT_WINDOWS[modelName] ?? 200_000;
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -164,20 +137,6 @@ export function isAnthropicModel(modelName: string): boolean {
 export const myProvider = customProvider({
   languageModels: baseProviders,
 });
-
-/**
- * Create an OpenRouter provider using a user-supplied API key (BYOK).
- * Routes through the same model map as the default provider, so existing
- * model selection logic works unchanged. LLM costs bill to the user's
- * OpenRouter account instead of HackerAI's.
- */
-export function createByokTrackedProvider(apiKey: string) {
-  const byokOpenRouter = createOpenRouter({
-    apiKey,
-    fetch: kimiReasoningPatchFetch,
-  });
-  return customProvider({ languageModels: buildProviderMap(byokOpenRouter) });
-}
 
 export const createTrackedProvider = () =>
   // userId?: string,

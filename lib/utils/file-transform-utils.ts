@@ -5,7 +5,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
 import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
-import { isSupportedImageMediaType } from "./file-utils";
+import { isSupportedImageMediaType, MAX_IMAGE_SIZE } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
@@ -53,6 +53,33 @@ const convertUrlToBase64DataUrl = async (
   } finally {
     clearTimeout(timeoutId);
   }
+};
+
+/**
+ * Replace image file parts whose declared size exceeds Anthropic's 5 MiB
+ * per-image limit with a short text note. Without this, the model call fails
+ * with `image exceeds 5 MB maximum` once OpenRouter re-encodes the URL as
+ * base64. Older messages may not have a `size` field — those are left alone.
+ */
+const replaceOversizedImageParts = (messages: UIMessage[]) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = (msg.parts as any[]).map((part) => {
+      if (
+        !isFilePart(part) ||
+        !isSupportedImageMediaType(part.mediaType ?? "") ||
+        typeof (part as any).size !== "number" ||
+        (part as any).size <= MAX_IMAGE_SIZE
+      ) {
+        return part;
+      }
+      const sizeMb = ((part as any).size / (1024 * 1024)).toFixed(1);
+      return {
+        type: "text",
+        text: `[Image "${(part as any).name ?? "unnamed"}" omitted: ${sizeMb} MB exceeds the ${MAX_IMAGE_SIZE / (1024 * 1024)} MB per-image limit]`,
+      };
+    });
+  });
 };
 
 const collectFilesToProcess = (
@@ -248,6 +275,8 @@ export const processMessageFiles = async (
 
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
   const sandboxFiles: SandboxFile[] = [];
+
+  replaceOversizedImageParts(updatedMessages);
 
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 

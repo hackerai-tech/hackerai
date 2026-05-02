@@ -160,15 +160,22 @@ export const regenerateToken = mutation({
       });
     }
 
-    // Disconnect all existing connections for this user
+    // Disconnect existing *connected* rows. Skip already-disconnected rows so
+    // we don't clobber their original disconnect_reason/disconnected_at —
+    // those are the diagnostic signal we're trying to preserve.
     const connections = await ctx.db
       .query("local_sandbox_connections")
-      .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("user_id", userId).eq("status", "connected"),
+      )
       .collect();
 
+    const now = Date.now();
     for (const connection of connections) {
       await ctx.db.patch(connection._id, {
         status: "disconnected",
+        disconnected_at: now,
+        disconnect_reason: "token_regenerated",
       });
     }
 
@@ -283,11 +290,23 @@ export const refreshCentrifugoToken = mutation({
     }
 
     if (connection.status !== "connected") {
+      const now = Date.now();
       throw new ConvexError({
         code: "BAD_REQUEST",
         message: "Connection is not active",
+        connectionId: connection.connection_id,
+        clientVersion: connection.client_version,
+        status: connection.status,
+        disconnectReason: connection.disconnect_reason ?? null,
+        msSinceDisconnected: connection.disconnected_at
+          ? now - connection.disconnected_at
+          : null,
+        msSinceLastHeartbeat: now - connection.last_heartbeat,
+        msSinceCreated: now - connection.created_at,
       });
     }
+
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
 
     const centrifugoToken = await generateCentrifugoToken(
       connection.user_id,
@@ -316,9 +335,15 @@ export const disconnect = mutation({
       .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
       .first();
 
-    if (connection && connection.user_id === tokenResult.userId) {
+    if (
+      connection &&
+      connection.user_id === tokenResult.userId &&
+      connection.status === "connected"
+    ) {
       await ctx.db.patch(connection._id, {
         status: "disconnected",
+        disconnected_at: Date.now(),
+        disconnect_reason: "client_disconnect",
       });
     }
 
@@ -361,9 +386,14 @@ export const connectDesktop = mutation({
         q.eq("user_id", userId).eq("status", "connected"),
       )
       .collect();
+    const now = Date.now();
     for (const conn of existingDesktop) {
       if (conn.client_version === "desktop") {
-        await ctx.db.patch(conn._id, { status: "disconnected" });
+        await ctx.db.patch(conn._id, {
+          status: "disconnected",
+          disconnected_at: now,
+          disconnect_reason: "desktop_kicked_by_new_session",
+        });
       }
     }
 
@@ -434,11 +464,23 @@ export const refreshCentrifugoTokenDesktop = mutation({
     }
 
     if (connection.status !== "connected") {
+      const now = Date.now();
       throw new ConvexError({
         code: "BAD_REQUEST",
         message: "Connection is not active",
+        connectionId: connection.connection_id,
+        clientVersion: connection.client_version,
+        status: connection.status,
+        disconnectReason: connection.disconnect_reason ?? null,
+        msSinceDisconnected: connection.disconnected_at
+          ? now - connection.disconnected_at
+          : null,
+        msSinceLastHeartbeat: now - connection.last_heartbeat,
+        msSinceCreated: now - connection.created_at,
       });
     }
+
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { centrifugoToken };
@@ -472,9 +514,13 @@ export const disconnectDesktop = mutation({
       return { success: false };
     }
 
-    await ctx.db.patch(connection._id, {
-      status: "disconnected",
-    });
+    if (connection.status === "connected") {
+      await ctx.db.patch(connection._id, {
+        status: "disconnected",
+        disconnected_at: Date.now(),
+        disconnect_reason: "desktop_disconnect",
+      });
+    }
 
     return { success: true };
   },
@@ -497,7 +543,11 @@ export const disconnectByBackend = mutation({
       .first();
 
     if (connection && connection.status === "connected") {
-      await ctx.db.patch(connection._id, { status: "disconnected" });
+      await ctx.db.patch(connection._id, {
+        status: "disconnected",
+        disconnected_at: Date.now(),
+        disconnect_reason: "presence_sweep",
+      });
     }
 
     return { success: true };

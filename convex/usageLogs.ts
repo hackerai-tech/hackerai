@@ -28,8 +28,6 @@ export const logUsage = mutation({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
-    byok: v.optional(v.boolean()),
-    max_mode: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -45,8 +43,6 @@ export const logUsage = mutation({
       cache_write_tokens: args.cache_write_tokens,
       total_tokens: args.total_tokens,
       cost_dollars: args.cost_dollars,
-      byok: args.byok,
-      max_mode: args.max_mode,
     });
 
     return null;
@@ -137,8 +133,6 @@ export const getUserUsageLogs = query({
         cache_write_tokens: log.cache_write_tokens,
         total_tokens: log.total_tokens,
         cost_dollars: log.cost_dollars,
-        byok: !!log.byok,
-        max_mode: !!log.max_mode,
       })),
     };
   },

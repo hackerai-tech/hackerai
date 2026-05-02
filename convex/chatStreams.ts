@@ -99,10 +99,8 @@ export const cancelStreamFromClient = mutation({
       .first();
 
     if (!chat) {
-      throw new ConvexError({
-        code: "CHAT_NOT_FOUND",
-        message: "Chat not found",
-      });
+      // Benign race: chat was deleted before cancel arrived. Nothing to do.
+      return null;
     }
 
     // Verify ownership

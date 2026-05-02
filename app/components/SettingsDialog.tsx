@@ -12,7 +12,6 @@ import {
   Server,
   ChartNoAxesCombined,
   Gauge,
-  KeyRound,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 // import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -27,7 +26,6 @@ import { AgentsTab } from "@/app/components/AgentsTab";
 import { RemoteControlTab } from "@/app/components/RemoteControlTab";
 import { UsageTab } from "@/app/components/UsageTab";
 import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
-import { ByokSection } from "@/app/components/ByokSection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -71,21 +69,12 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
-  const byokTab = { id: "API Key", label: "API Key", icon: KeyRound };
   const teamTab = { id: "Team", label: "Team", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
   const tabs =
     subscription === "team"
-      ? [
-          ...baseTabs,
-          agentsTab,
-          localSandboxTab,
-          usageTab,
-          byokTab,
-          teamTab,
-          accountTab,
-        ]
+      ? [...baseTabs, agentsTab, localSandboxTab, usageTab, teamTab, accountTab]
       : subscription !== "free"
         ? [
             ...baseTabs,
@@ -93,7 +82,6 @@ const SettingsDialog = ({
             localSandboxTab,
             usageTab,
             extraUsageTab,
-            byokTab,
             accountTab,
           ]
         : [...baseTabs, agentsTab, localSandboxTab, accountTab];
@@ -233,8 +221,6 @@ const SettingsDialog = ({
                     <ExtraUsageSection />
                   </div>
                 )}
-
-                {activeTab === "API Key" && <ByokSection />}
 
                 {activeTab === "Team" && <TeamTab />}
 

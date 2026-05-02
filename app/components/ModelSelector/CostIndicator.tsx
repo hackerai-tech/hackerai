@@ -9,9 +9,9 @@ type CostTier = "low" | "medium" | "high" | "very-high" | "free";
 const MODEL_COST_TIER: Record<string, CostTier> = {
   "gemini-3-flash": "low",
   "grok-4.1": "low",
+  "grok-4.3": "low",
   "sonnet-4.6": "high",
-  "opus-4.7": "very-high",
-  "gpt-5.4": "high",
+  "opus-4.6": "very-high",
   "kimi-k2.6": "medium",
 };
 

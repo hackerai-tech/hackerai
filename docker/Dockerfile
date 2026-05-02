@@ -156,6 +156,10 @@ RUN useradd --create-home --shell /bin/bash user && \
 
 WORKDIR /home/user
 
+# Ensure Go bin paths are in PATH for login shells (su - user, bash -l)
+RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:$PATH\n' \
+    > /etc/profile.d/00-hackerai-path.sh && chmod 644 /etc/profile.d/00-hackerai-path.sh
+
 # ============================================================================
 # Python Packages for Document Generation & Security Tools
 # ============================================================================

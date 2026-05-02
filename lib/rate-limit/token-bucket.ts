@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 // =============================================================================
 // Configuration
@@ -17,9 +18,9 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
+  "model-grok-4.3": { input: 1.25, output: 2.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  "model-opus-4.7": { input: 5.0, output: 25.0 },
-  "model-gpt-5.4": { input: 2.5, output: 15.0 },
+  "model-opus-4.6": { input: 5.0, output: 25.0 },
   // "agent-model", "agent-model-free", and "model-kimi-k2.6" all route to
   // moonshotai/kimi-k2.6:exacto via lib/ai/providers.ts. Rates from Moonshot AI
   // direct provider (int4): $0.95 in / $4.00 out per 1M tokens. Cache-read
@@ -281,7 +282,13 @@ export const checkTokenBucketLimit = async (
           ) {
             const reason =
               deductResult.autoReloadResult.reason ?? "payment_failed";
-            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            // Suspended customers (flagged by the fraud webhook) short-circuit
+            // before any charge attempt. Render the suspension message instead
+            // of the "update your payment method" copy — they can't fix it.
+            const msg =
+              reason === "customer_blocked"
+                ? getSuspensionMessage(null)
+                : `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,

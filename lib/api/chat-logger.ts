@@ -20,6 +20,8 @@ import type {
 import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
+import { extractErrorDetails } from "@/lib/utils/error-utils";
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -113,13 +115,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
-     * Set BYOK (Bring Your Own Key) flag
-     */
-    setByok(byok: boolean) {
-      builder.setByok(byok);
-    },
-
-    /**
      * Start stream timing
      */
     startStream() {
@@ -178,6 +173,54 @@ export function createChatLogger(config: ChatLoggerConfig) {
       cacheWriteTokens: number;
     }) {
       builder.setCacheMetrics(metrics);
+    },
+
+    /**
+     * Record a provider streaming error. Fans out to:
+     *   - Vercel runtime logs (structured JSON via logger.error)
+     *   - PostHog exception capture (phLogger.error)
+     *   - The wide event (had_provider_error + provider_error fields)
+     *
+     * Does NOT change outcome — emitSuccess/emitChatError still decides that.
+     */
+    recordProviderError(
+      error: unknown,
+      context: {
+        mode?: string;
+        model?: string;
+        userId?: string;
+        subscription?: string;
+        isTemporary?: boolean;
+      },
+    ) {
+      const details = extractErrorDetails(error);
+
+      logger.error(
+        "Provider streaming error",
+        error instanceof Error ? error : undefined,
+        {
+          chat_id: config.chatId,
+          endpoint: config.endpoint,
+          ...context,
+          ...details,
+        },
+      );
+
+      phLogger.error("Provider streaming error", {
+        error,
+        chatId: config.chatId,
+        endpoint: config.endpoint,
+        ...context,
+        ...details,
+      });
+
+      builder.markProviderError({
+        statusCode: details.statusCode as number | undefined,
+        url: details.providerUrl as string | undefined,
+        reason: (error as { reason?: string })?.reason,
+        message: details.errorMessage as string | undefined,
+        retriable: details.isRetryable as boolean | undefined,
+      });
     },
 
     /**

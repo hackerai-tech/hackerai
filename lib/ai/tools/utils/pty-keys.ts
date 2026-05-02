@@ -37,12 +37,16 @@ export const SPECIAL_KEYS: Record<string, string> = {
   "C-w": "\x17",
   "C-x": "\x18",
   "C-y": "\x19",
-  // Named keys
-  Enter: "\r",
+  // Named keys — aliases come FIRST so the canonical name wins the reverse
+  // lookup in RAW_TO_KEY_NAME (last-one-wins; see comment on that map).
+  Return: "\r", // alias
+  Enter: "\r", // canonical
   Tab: "\t",
-  Escape: "\x1b",
+  Esc: "\x1b", // alias (also what the tool describe advertises)
+  Escape: "\x1b", // canonical
   Space: " ",
-  BSpace: "\x7f",
+  Backspace: "\x7f", // alias
+  BSpace: "\x7f", // canonical (tmux name)
   // Arrow keys
   Up: "\x1b[A",
   Down: "\x1b[B",
@@ -87,7 +91,10 @@ export const RAW_TO_KEY_NAME: Record<string, string> = Object.fromEntries(
 /**
  * Translate tmux-style key names to escape sequences.
  * If the input matches a known key name, return the escape sequence.
- * Otherwise, return the raw string as-is.
+ * Otherwise, return the raw string as-is, with one ergonomic tweak: a
+ * trailing real newline (LF, CR, or CRLF) is canonicalized to `\r` so
+ * `"hackerai-test-project\n"` in a single call submits the line the
+ * same way a `"Enter"` follow-up would.
  */
 export const translateInput = (input: string): Uint8Array => {
   const encoder = new TextEncoder();
@@ -110,6 +117,35 @@ export const translateInput = (input: string): Uint8Array => {
     }
   }
 
-  // Raw string — send as-is
+  // Raw string — normalize trailing newline(s) to \r so a single send of
+  // "my answer\n" submits the line. Only ONE trailing newline sequence is
+  // replaced; embedded newlines (e.g. pasting a multi-line block) pass
+  // through unchanged.
+  if (input.endsWith("\r\n")) {
+    return encoder.encode(input.slice(0, -2) + "\r");
+  }
+  if (input.endsWith("\n") || input.endsWith("\r")) {
+    return encoder.encode(input.slice(0, -1) + "\r");
+  }
+
   return encoder.encode(input);
+};
+
+/**
+ * Translate a sequence of tokens (each either a key name or literal text)
+ * and concatenate their byte sequences in order. Enables callers to mix
+ * typing text with submitting via Enter/Tab/arrows in a single call:
+ *   translateInputSequence(["hackerai-test-project", "Enter"])
+ * becomes the bytes "hackerai-test-project\r".
+ */
+export const translateInputSequence = (tokens: string[]): Uint8Array => {
+  const parts = tokens.map((t) => translateInput(t));
+  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.byteLength;
+  }
+  return out;
 };

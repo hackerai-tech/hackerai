@@ -541,57 +541,68 @@ export const deductWithAutoReload = action({
         autoReloadResult = { success: false, reason: "no_stripe_customer" };
       } else {
         try {
-          // Get default payment method
-          const paymentMethodId =
-            await getDefaultPaymentMethodId(stripeCustomerId);
-          if (!paymentMethodId) {
-            autoReloadResult = {
-              success: false,
-              reason: "no_default_payment_method",
-            };
-          } else {
-            // Calculate how much to charge to reach target balance
-            // reloadAmount is the TARGET balance, not the amount to add
-            const currentBalanceDollars = settings.balanceDollars;
-            const targetBalanceDollars = reloadAmount;
-            const amountToCharge = Math.max(
-              0,
-              targetBalanceDollars - currentBalanceDollars,
-            );
+          // Check if customer is blocked (fraud flagged) before attempting charge
+          const customerObj =
+            await getStripe().customers.retrieve(stripeCustomerId);
+          const isBlocked =
+            !customerObj.deleted &&
+            (customerObj as Stripe.Customer).metadata?.blocked === "true";
 
-            // Minimum charge of $1 to avoid tiny transactions
-            const MIN_CHARGE_DOLLARS = 1;
-            if (amountToCharge < MIN_CHARGE_DOLLARS) {
+          if (isBlocked) {
+            autoReloadResult = { success: false, reason: "customer_blocked" };
+          } else {
+            // Get default payment method
+            const paymentMethodId =
+              await getDefaultPaymentMethodId(stripeCustomerId);
+            if (!paymentMethodId) {
               autoReloadResult = {
                 success: false,
-                reason: "amount_to_charge_below_minimum",
+                reason: "no_default_payment_method",
               };
             } else {
-              // Create payment (Stripe uses cents)
-              const amountToChargeCents = Math.round(amountToCharge * 100);
-              const paymentResult = await createAutoReloadPayment(
-                stripeCustomerId,
-                paymentMethodId,
-                amountToChargeCents,
-                args.userId,
+              // Calculate how much to charge to reach target balance
+              // reloadAmount is the TARGET balance, not the amount to add
+              const currentBalanceDollars = settings.balanceDollars;
+              const targetBalanceDollars = reloadAmount;
+              const amountToCharge = Math.max(
+                0,
+                targetBalanceDollars - currentBalanceDollars,
               );
 
-              if (paymentResult.success) {
-                // Add credits (dollars -> points conversion happens in mutation)
-                await ctx.runMutation(api.extraUsage.addCredits, {
-                  serviceKey: args.serviceKey,
-                  userId: args.userId,
-                  amountDollars: amountToCharge,
-                });
-                autoReloadResult = {
-                  success: true,
-                  chargedAmountDollars: amountToCharge,
-                };
-              } else {
+              // Minimum charge of $1 to avoid tiny transactions
+              const MIN_CHARGE_DOLLARS = 1;
+              if (amountToCharge < MIN_CHARGE_DOLLARS) {
                 autoReloadResult = {
                   success: false,
-                  reason: paymentResult.error || "payment_failed",
+                  reason: "amount_to_charge_below_minimum",
                 };
+              } else {
+                // Create payment (Stripe uses cents)
+                const amountToChargeCents = Math.round(amountToCharge * 100);
+                const paymentResult = await createAutoReloadPayment(
+                  stripeCustomerId,
+                  paymentMethodId,
+                  amountToChargeCents,
+                  args.userId,
+                );
+
+                if (paymentResult.success) {
+                  // Add credits (dollars -> points conversion happens in mutation)
+                  await ctx.runMutation(api.extraUsage.addCredits, {
+                    serviceKey: args.serviceKey,
+                    userId: args.userId,
+                    amountDollars: amountToCharge,
+                  });
+                  autoReloadResult = {
+                    success: true,
+                    chargedAmountDollars: amountToCharge,
+                  };
+                } else {
+                  autoReloadResult = {
+                    success: false,
+                    reason: paymentResult.error || "payment_failed",
+                  };
+                }
               }
             }
           }
@@ -607,12 +618,14 @@ export const deductWithAutoReload = action({
     // Record outcome of auto-reload attempt for failure tracking / auto-disable.
     // Only count *real charge outcomes*: a successful charge, or a charge that
     // was actually attempted and declined by Stripe. Pre-charge configuration
-    // / lookup problems (no_stripe_customer, no_default_payment_method,
-    // stripe_lookup_failed, amount_to_charge_below_minimum) must NOT increment
-    // the consecutive failure counter — they aren't card declines and shouldn't
-    // auto-disable auto-reload.
+    // / lookup problems (no_stripe_customer, customer_blocked,
+    // no_default_payment_method, stripe_lookup_failed,
+    // amount_to_charge_below_minimum) must NOT increment the consecutive
+    // failure counter — they aren't card declines and shouldn't auto-disable
+    // auto-reload.
     const PRE_CHARGE_REASONS = new Set([
       "no_stripe_customer",
+      "customer_blocked",
       "no_default_payment_method",
       "stripe_lookup_failed",
       "amount_to_charge_below_minimum",

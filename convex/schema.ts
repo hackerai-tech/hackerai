@@ -129,8 +129,10 @@ export default defineSchema({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
+    // Legacy MAX Mode flag retained on historical rows. The feature was
+    // removed and nothing reads or writes this anymore — kept in the schema
+    // so old rows still pass validation.
     max_mode_enabled: v.optional(v.boolean()),
-    byok_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
@@ -224,6 +226,19 @@ export default defineSchema({
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
+    // Set whenever status flips to "disconnected" so refresh-time errors can
+    // report the cause (presence sweep, token regen, desktop kick, etc.) and
+    // the lag between disconnect and the failed refresh attempt.
+    disconnected_at: v.optional(v.number()),
+    disconnect_reason: v.optional(
+      v.union(
+        v.literal("client_disconnect"),
+        v.literal("desktop_disconnect"),
+        v.literal("desktop_kicked_by_new_session"),
+        v.literal("token_regenerated"),
+        v.literal("presence_sweep"),
+      ),
+    ),
   })
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
@@ -241,11 +256,14 @@ export default defineSchema({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
-    // True when the user's own OpenRouter key was used (BYOK). Subscription
-    // bucket only paid for sandbox/tool costs for this row.
-    byok: v.optional(v.boolean()),
-    // True when Max mode was active for this request (larger context window).
+    // Legacy MAX Mode flag retained on historical rows. The feature was
+    // removed and nothing reads or writes this anymore — kept in the schema
+    // so old rows still pass validation.
     max_mode: v.optional(v.boolean()),
+    // Legacy BYOK flag retained on historical rows. The feature was removed
+    // and nothing reads or writes this anymore — kept in the schema so old
+    // rows still pass validation.
+    byok: v.optional(v.boolean()),
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),
@@ -254,5 +272,11 @@ export default defineSchema({
   processed_webhooks: defineTable({
     event_id: v.string(),
     processed_at: v.number(),
+    // State-machine fields for atomic claim/finalize. Optional for
+    // backwards compatibility — legacy rows (no status) are treated as
+    // completed since they were inserted under the old "mark on entry"
+    // semantics for events whose lifecycle has already concluded.
+    status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
+    claimed_at: v.optional(v.number()),
   }).index("by_event_id", ["event_id"]),
 });

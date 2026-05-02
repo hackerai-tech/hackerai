@@ -32,10 +32,15 @@ export function isCentrifugoSandbox(
 }
 
 /**
- * Type guard to check if a sandbox is an E2B Sandbox
+ * Type guard to check if a sandbox is an E2B Sandbox.
+ *
+ * Any non-Centrifugo sandbox is treated as E2B. PTY availability should be
+ * checked at the call site via `sandbox.pty`, not in this discriminator.
  */
 export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
-  return sandbox !== null && !isCentrifugoSandbox(sandbox);
+  if (sandbox === null) return false;
+  if (isCentrifugoSandbox(sandbox)) return false;
+  return true; // any non-Centrifugo sandbox is E2B
 }
 
 /**

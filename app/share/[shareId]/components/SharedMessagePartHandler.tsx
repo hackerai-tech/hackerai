@@ -35,10 +35,7 @@ import { useSharedChatContext } from "../SharedChatContext";
 import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
-  getShellActionLabel,
-  getShellDisplayCommand,
-  getShellDisplayTarget,
-  getShellOutput,
+  computeShellTerminalBlock,
   type ShellToolInput,
   type ShellToolOutput,
 } from "@/app/components/tools/shell-tool-utils";
@@ -121,7 +118,8 @@ export const SharedMessagePartHandler = ({
   if (
     part.type === "data-terminal" ||
     part.type === "tool-shell" ||
-    part.type === "tool-run_terminal_cmd"
+    part.type === "tool-run_terminal_cmd" ||
+    part.type === "tool-interact_terminal_session"
   ) {
     return renderTerminalTool(part, idx, openSidebar);
   }
@@ -208,53 +206,60 @@ function renderTerminalTool(
   idx: number,
   openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
-  const terminalInput = part.input as ShellToolInput;
-  const terminalOutput = part.output as ShellToolOutput;
-  const command = getShellDisplayCommand(terminalInput);
-  const target = getShellDisplayTarget(terminalInput);
-  const output = getShellOutput(terminalOutput);
-
   if (
-    part.state === "input-available" ||
-    part.state === "output-available" ||
-    part.state === "output-error"
+    part.state !== "input-available" &&
+    part.state !== "output-available" &&
+    part.state !== "output-error"
   ) {
-    const handleOpenInSidebar = () => {
-      openSidebar({
-        command,
-        output,
-        isExecuting: false,
-        toolCallId: part.toolCallId || "",
-      });
-    };
+    return null;
+  }
 
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    };
+  const isShellTool = part.type === "tool-shell";
+  const legacyInput = !isShellTool
+    ? (part.input as {
+        command?: string;
+        interactive?: boolean;
+        is_background?: boolean;
+      })
+    : undefined;
 
-    const isShellTool = part.type === "tool-shell";
-    const actionLabel = getShellActionLabel({
+  const { blockAction, blockTarget, sidebarContent } =
+    computeShellTerminalBlock({
       isShellTool,
-      action: terminalInput?.action,
-      pid: terminalInput?.pid ?? terminalOutput?.pid,
+      shellInput: part.input as ShellToolInput | undefined,
+      shellOutput: part.output as ShellToolOutput | undefined,
+      errorText: undefined,
+      streamingOutput: "",
+      isExecuting: false,
+      hasResult: part.state === "output-available",
+      toolCallId: part.toolCallId || "",
+      legacyInteractive: legacyInput?.interactive,
+      legacyIsBackground: legacyInput?.is_background,
+      legacyCommand: legacyInput?.command,
     });
 
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<Terminal aria-hidden="true" />}
-        action={actionLabel}
-        target={target}
-        isClickable={true}
-        onClick={handleOpenInSidebar}
-        onKeyDown={handleKeyDown}
-      />
-    );
-  }
-  return null;
+  const handleOpenInSidebar = () => {
+    if (sidebarContent) openSidebar(sidebarContent);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleOpenInSidebar();
+    }
+  };
+
+  return (
+    <ToolBlock
+      key={idx}
+      icon={<Terminal aria-hidden="true" />}
+      action={blockAction(false)}
+      target={blockTarget}
+      isClickable={!!sidebarContent}
+      onClick={sidebarContent ? handleOpenInSidebar : undefined}
+      onKeyDown={sidebarContent ? handleKeyDown : undefined}
+    />
+  );
 }
 
 // Legacy file tools renderer
@@ -367,6 +372,7 @@ function renderFileTool(
     path?: string;
     text?: string;
     range?: [number, number];
+    brief?: string;
   };
   const fileOutput = part.output as {
     originalContent?: string;
@@ -375,6 +381,7 @@ function renderFileTool(
   };
   const filePath = fileInput?.path || "";
   const fileAction = fileInput?.action || "read";
+  const brief = fileInput?.brief?.trim() || "";
 
   const getFileRange = () => {
     if (!fileInput?.range) return "";
@@ -414,6 +421,10 @@ function renderFileTool(
     action = `Failed to ${fileAction}`;
   }
 
+  // Mirror the live FileHandler: when the model supplies a `brief` and the
+  // call didn't error, the brief stands alone as the block label.
+  const useBriefOnly = !!brief && !fileOutput?.error;
+
   if (part.state === "output-available") {
     const handleOpenInSidebar = () => {
       let content = "";
@@ -451,8 +462,8 @@ function renderFileTool(
       <ToolBlock
         key={idx}
         icon={icon}
-        action={action}
-        target={`${filePath}${getFileRange()}`}
+        action={useBriefOnly ? brief : action}
+        target={useBriefOnly ? undefined : `${filePath}${getFileRange()}`}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}
@@ -468,6 +479,7 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
     queries?: string[];
     query?: string;
     url?: string;
+    brief?: string;
   };
 
   let target: string | undefined;
@@ -479,13 +491,15 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
     target = webInput.url;
   }
 
+  const brief = webInput?.brief?.trim() || "";
+
   if (part.state === "output-available") {
     return (
       <ToolBlock
         key={idx}
         icon={<Search aria-hidden="true" />}
-        action="Searched web"
-        target={target}
+        action={brief || "Searched web"}
+        target={brief ? undefined : target}
       />
     );
   }
@@ -494,15 +508,16 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
 
 // Open URL tool renderer
 function renderOpenUrlTool(part: MessagePart, idx: number) {
-  const urlInput = part.input as { url?: string };
+  const urlInput = part.input as { url?: string; brief?: string };
+  const brief = urlInput?.brief?.trim() || "";
 
   if (part.state === "output-available") {
     return (
       <ToolBlock
         key={idx}
         icon={<ExternalLink aria-hidden="true" />}
-        action="Opened URL"
-        target={urlInput?.url}
+        action={brief || "Opened URL"}
+        target={brief ? undefined : urlInput?.url}
       />
     );
   }
@@ -511,7 +526,7 @@ function renderOpenUrlTool(part: MessagePart, idx: number) {
 
 // Get terminal files tool renderer
 function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
-  const filesInput = part.input as { files?: string[] };
+  const filesInput = part.input as { files?: string[]; brief?: string };
   const filesOutput = part.output as {
     files?: Array<{ path: string }>;
     fileUrls?: Array<{ path: string }>;
@@ -525,13 +540,16 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
     const fileCount =
       filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
     const fileNames = getFileNames(filesInput?.files || []);
+    const brief = filesInput?.brief?.trim() || "";
 
     return (
       <ToolBlock
         key={idx}
         icon={<FileDown aria-hidden="true" />}
-        action={`Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`}
-        target={fileNames}
+        action={
+          brief || `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`
+        }
+        target={brief ? undefined : fileNames}
       />
     );
   }

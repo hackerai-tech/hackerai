@@ -42,8 +42,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "@/convex/_generated/api";
 import { isCodexLocal, type ChatMode, type SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -389,8 +387,6 @@ const ModelOptionList = ({
   isAuto,
   isFreeUser,
   isTauri = false,
-  isMaxMode,
-  onMaxModeToggle,
   onAutoToggle,
   onSelect,
   onClose,
@@ -402,8 +398,6 @@ const ModelOptionList = ({
   isAuto: boolean;
   isFreeUser: boolean;
   isTauri?: boolean;
-  isMaxMode: boolean;
-  onMaxModeToggle: (checked: boolean) => void;
   onAutoToggle: (checked: boolean) => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -471,8 +465,8 @@ const ModelOptionList = ({
                   Access the top AI models
                 </p>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Access the latest AI models from OpenAI, Anthropic (Claude)
-                  and more by{" "}
+                  Access the latest AI models from Anthropic (Claude), Google
+                  (Gemini), xAI (Grok) and more by{" "}
                   <a
                     href="#pricing"
                     onClick={() => onClose()}
@@ -500,38 +494,6 @@ const ModelOptionList = ({
             />
           </>
         )}
-
-        {!isFreeUser && (
-          <>
-            <div className="my-1 border-b border-border/50" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div>
-                  <SwitchRow
-                    label="Max Mode"
-                    checked={isMaxMode}
-                    onToggle={onMaxModeToggle}
-                    ariaLabel="Toggle max mode"
-                    mobile={mobile}
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent
-                side="right"
-                sideOffset={12}
-                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] [&_svg]:!hidden"
-              >
-                <p className="text-sm font-semibold text-foreground leading-snug">
-                  Max Mode
-                </p>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Use the selected model&apos;s full native context window (up
-                  to 1M+ tokens) instead of the default 200k.
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          </>
-        )}
       </>
     )}
   </div>
@@ -556,22 +518,6 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
 
-  const userCustomization = useQuery(
-    api.userCustomization.getUserCustomization,
-    isFreeUser ? "skip" : {},
-  );
-  const saveCustomization = useMutation(
-    api.userCustomization.saveUserCustomization,
-  );
-  const isMaxMode = userCustomization?.max_mode_enabled ?? false;
-
-  const handleMaxModeToggle = async (checked: boolean) => {
-    try {
-      await saveCustomization({ max_mode_enabled: checked });
-    } catch {
-      // Silent; toggle will revert on next query refresh
-    }
-  };
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
   const codexOptions = CODEX_LOCAL_OPTIONS;
   const allOptions = [...options, ...codexOptions];
@@ -743,8 +689,6 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               isAuto={isAuto}
               isFreeUser={isFreeUser}
               isTauri={isTauri}
-              isMaxMode={isMaxMode}
-              onMaxModeToggle={handleMaxModeToggle}
               onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -769,8 +713,6 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             isAuto={isAuto}
             isFreeUser={isFreeUser}
             isTauri={isTauri}
-            isMaxMode={isMaxMode}
-            onMaxModeToggle={handleMaxModeToggle}
             onAutoToggle={handleAutoToggle}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}

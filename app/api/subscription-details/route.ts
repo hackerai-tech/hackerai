@@ -3,6 +3,7 @@ import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 export const POST = async (req: NextRequest) => {
   try {
@@ -46,6 +47,16 @@ export const POST = async (req: NextRequest) => {
       return NextResponse.json(
         { error: "No Stripe customer found" },
         { status: 404 },
+      );
+    }
+
+    // Reject blocked customers (flagged by fraud webhook)
+    if (matchingCustomer.metadata.blocked === "true") {
+      return NextResponse.json(
+        {
+          error: getSuspensionMessage(matchingCustomer.metadata.blocked_reason),
+        },
+        { status: 403 },
       );
     }
 

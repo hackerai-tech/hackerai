@@ -115,7 +115,6 @@ const UsageLogsTable = () => {
       "Date",
       "Type",
       "Model",
-      "Max Mode",
       "Cache Read",
       "Cache Write",
       "Input",
@@ -125,13 +124,8 @@ const UsageLogsTable = () => {
     ];
     const rows = results.map((log) => [
       new Date(log._creationTime).toISOString(),
-      log.byok
-        ? "User API Key"
-        : log.type === "included"
-          ? "Included"
-          : "Extra Usage",
+      log.type === "included" ? "Included" : "Extra Usage",
       log.model,
-      log.max_mode ? "Yes" : "No",
       (log.cache_read_tokens ?? 0).toString(),
       (log.cache_write_tokens ?? 0).toString(),
       log.input_tokens.toString(),
@@ -284,30 +278,10 @@ const UsageLogsTable = () => {
                     {formatTimestamp(log._creationTime)}
                   </td>
                   <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    {log.byok
-                      ? "User API Key"
-                      : log.type === "included"
-                        ? "Included"
-                        : "Extra"}
+                    {log.type === "included" ? "Included" : "Extra"}
                   </td>
                   <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    <div className="flex items-center gap-1.5">
-                      <span>{log.model}</span>
-                      {log.max_mode && (
-                        <div className="flex h-[14px] items-center gap-1.5 rounded border border-white/10 px-1 py-0 flex-shrink-0">
-                          <span
-                            className="text-xs font-bold uppercase"
-                            style={{
-                              background:
-                                "linear-gradient(to right, rgb(129, 161, 193), rgb(125, 124, 155)) text",
-                              WebkitTextFillColor: "transparent",
-                            }}
-                          >
-                            Max
-                          </span>
-                        </div>
-                      )}
-                    </div>
+                    {log.model}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
                     <TokenBreakdownTooltip

@@ -4,6 +4,7 @@ import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { phLogger } from "@/lib/posthog/server";
 
 interface CentrifugoPresenceClient {
   client: string;
@@ -105,10 +106,18 @@ export async function GET(request: NextRequest) {
     online: onlineConnectionIds.has(conn.connectionId),
   }));
 
-  // Disconnect stale connections in Convex (connected in DB but not in presence)
+  // Disconnect stale connections in Convex (connected in DB but not in presence).
+  // Skip rows whose lastSeen is within the grace window — covers the race where a
+  // client has just inserted its row but hasn't finished subscribing to Centrifugo,
+  // and brief WebSocket reconnects on healthy clients (last_heartbeat is bumped on
+  // every successful Centrifugo token refresh).
+  const PRESENCE_GRACE_MS = 30_000;
   if (presenceReliable) {
+    const now = Date.now();
     const stale = connections.filter(
-      (conn) => !onlineConnectionIds.has(conn.connectionId),
+      (conn) =>
+        !onlineConnectionIds.has(conn.connectionId) &&
+        now - conn.lastSeen > PRESENCE_GRACE_MS,
     );
     if (stale.length > 0) {
       const results = await Promise.allSettled(
@@ -120,11 +129,22 @@ export async function GET(request: NextRequest) {
         ),
       );
       results.forEach((result, i) => {
+        const conn = stale[i];
         if (result.status === "rejected") {
-          console.error(
-            `Failed to disconnect stale connection ${stale[i].connectionId}:`,
-            result.reason,
-          );
+          phLogger.error("sandbox_presence_sweep_disconnect_failed", {
+            userId,
+            connectionId: conn.connectionId,
+            isDesktop: conn.isDesktop,
+            msSinceLastSeen: now - conn.lastSeen,
+            error: result.reason,
+          });
+        } else {
+          phLogger.warn("sandbox_presence_sweep_disconnect", {
+            userId,
+            connectionId: conn.connectionId,
+            isDesktop: conn.isDesktop,
+            msSinceLastSeen: now - conn.lastSeen,
+          });
         }
       });
     }
