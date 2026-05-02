@@ -113,6 +113,73 @@ export const extractErrorDetails = (
   return details;
 };
 
+export interface ProviderAttempt {
+  status_code?: number;
+  message: string;
+  error_name?: string;
+  request_id?: string;
+}
+
+const REQUEST_ID_HEADERS = [
+  "request-id",
+  "x-request-id",
+  "cf-ray",
+  "x-amzn-requestid",
+];
+
+const extractRequestId = (error: unknown): string | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const headers = (error as { responseHeaders?: Record<string, unknown> })
+    .responseHeaders;
+  if (!headers || typeof headers !== "object") return undefined;
+  const lower: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    lower[k.toLowerCase()] = v;
+  }
+  for (const key of REQUEST_ID_HEADERS) {
+    const value = lower[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+};
+
+const toAttempt = (error: unknown): ProviderAttempt => {
+  const anyError = (error ?? {}) as Record<string, unknown>;
+  const statusCode =
+    typeof anyError.statusCode === "number"
+      ? anyError.statusCode
+      : typeof anyError.status === "number"
+        ? anyError.status
+        : undefined;
+  const errorName =
+    error instanceof Error
+      ? error.name
+      : typeof anyError.name === "string"
+        ? (anyError.name as string)
+        : undefined;
+  return {
+    status_code: statusCode,
+    message: getErrorMessage(error),
+    error_name: errorName,
+    request_id: extractRequestId(error),
+  };
+};
+
+/**
+ * Decompose an AI SDK `RetryError` (or anything with an `errors[]` array of
+ * attempt errors) into per-attempt records. Returns undefined when the error
+ * does not carry attempt history, so callers can fall back to single-error
+ * logging.
+ */
+export const extractRetryAttempts = (
+  error: unknown,
+): ProviderAttempt[] | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const errors = (error as { errors?: unknown }).errors;
+  if (!Array.isArray(errors) || errors.length === 0) return undefined;
+  return errors.map(toAttempt);
+};
+
 /**
  * Converts a provider error into a user-friendly message.
  *
