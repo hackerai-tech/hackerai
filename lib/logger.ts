@@ -139,8 +139,10 @@ export interface ChatWideEvent {
   // Tool execution
   tool_call_count?: number;
 
-  // Outcome
-  outcome: "success" | "error" | "aborted";
+  // Outcome. `partial` means the request returned 200 but the provider stream
+  // errored — either we recovered via fallback or we sent an error chunk to
+  // the client. Distinguishing this from `success` keeps dashboards honest.
+  outcome: "success" | "partial" | "error" | "aborted";
   status_code: number;
 
   // Error details (if any)
@@ -161,6 +163,15 @@ export interface ChatWideEvent {
     reason?: string;
     message?: string;
     retriable?: boolean;
+    // Per-attempt breakdown when the SDK retried internally. Each entry is one
+    // upstream call. Lets you tell consistent-500 from a mixed cascade and
+    // gives you provider request IDs to file support tickets with.
+    attempts?: Array<{
+      status_code?: number;
+      message: string;
+      error_name?: string;
+      request_id?: string;
+    }>;
   };
 }
 
@@ -445,10 +456,12 @@ export class WideEventBuilder {
   }
 
   /**
-   * Set successful outcome
+   * Set successful outcome. Downgrades to `partial` when the provider stream
+   * errored mid-flight, so dashboards/alerts don't treat broken responses as
+   * clean successes.
    */
   setSuccess(): this {
-    this.event.outcome = "success";
+    this.event.outcome = this.event.had_provider_error ? "partial" : "success";
     this.event.status_code = 200;
     return this;
   }
@@ -472,6 +485,7 @@ export class WideEventBuilder {
     reason?: string;
     message?: string;
     retriable?: boolean;
+    attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
     this.event.had_provider_error = true;
     this.event.provider_error = {
@@ -480,6 +494,7 @@ export class WideEventBuilder {
       reason: details.reason,
       message: details.message,
       retriable: details.retriable,
+      attempts: details.attempts,
     };
     return this;
   }
