@@ -22,11 +22,14 @@ interface E2BPtyCreateOpts {
   onData: PtyDataCb;
   cwd?: string;
   envs?: Record<string, string>;
+  timeoutMs?: number;
 }
 
 interface E2BCommandHandle {
   readonly pid: number;
-  wait(): Promise<{ exitCode: number | null | undefined }>;
+  wait(opts?: {
+    timeoutMs?: number;
+  }): Promise<{ exitCode: number | null | undefined }>;
 }
 
 interface E2BPtyModule {
@@ -63,6 +66,12 @@ export interface CreatePtyOptions {
 
 const LOG_PREFIX = "[e2b-pty-adapter]";
 
+// Disable the SDK's per-RPC deadline. Lifetime is owned by PtySessionManager
+// (idle + max-lifetime timers). Without this, the default RPC timeout (~60s)
+// rejects pty.create / handle.wait while the process is still healthy in the
+// sandbox, leaving the manager to mark the session as exitedNaturally.
+const PTY_NO_TIMEOUT_MS = 0;
+
 export async function createE2BPtyHandle(
   sandbox: Sandbox,
   opts: CreatePtyOptions,
@@ -89,6 +98,7 @@ export async function createE2BPtyHandle(
     cwd: opts.cwd,
     envs: opts.envs,
     onData,
+    timeoutMs: PTY_NO_TIMEOUT_MS,
   });
 
   const pid = handle.pid;
@@ -98,7 +108,7 @@ export async function createE2BPtyHandle(
   // {exitCode: null} with a structured log — the error is surfaced, not
   // swallowed silently.
   const exited: Promise<{ exitCode: number | null }> = handle
-    .wait()
+    .wait({ timeoutMs: PTY_NO_TIMEOUT_MS })
     .then((result) => ({
       exitCode: typeof result?.exitCode === "number" ? result.exitCode : null,
     }))
