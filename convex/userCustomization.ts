@@ -17,7 +17,6 @@ export const saveUserCustomization = mutation({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
-    max_mode_enabled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -116,8 +115,6 @@ export const saveUserCustomization = mutation({
           patch.caido_port = args.caido_port ? args.caido_port : undefined;
         if (args.extra_usage_enabled !== undefined)
           patch.extra_usage_enabled = args.extra_usage_enabled;
-        if (args.max_mode_enabled !== undefined)
-          patch.max_mode_enabled = args.max_mode_enabled;
 
         await ctx.db.patch(existing._id, patch);
       } else {
@@ -134,7 +131,6 @@ export const saveUserCustomization = mutation({
           caido_enabled: args.caido_enabled,
           caido_port: args.caido_port ? args.caido_port : undefined,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
-          max_mode_enabled: args.max_mode_enabled ?? false,
           updated_at: Date.now(),
         });
       }
@@ -172,7 +168,6 @@ export const getUserCustomization = query({
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
-      max_mode_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -203,7 +198,6 @@ export const getUserCustomization = query({
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
-        max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -234,7 +228,6 @@ export const getUserCustomizationForBackend = query({
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
-      max_mode_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -262,7 +255,6 @@ export const getUserCustomizationForBackend = query({
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
-        max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {

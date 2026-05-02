@@ -233,8 +233,6 @@ export async function getMessagesByChatId({
   subscription,
   isTemporary,
   mode,
-  maxMode,
-  modelName,
 }: {
   chatId: string;
   userId: string;
@@ -243,8 +241,6 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   isTemporary?: boolean;
   mode?: "ask" | "agent";
-  maxMode?: boolean;
-  modelName?: string;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -310,8 +306,6 @@ export async function getMessagesByChatId({
           }
 
           const maxTokens = getMaxTokensForSubscription(subscription, {
-            maxMode,
-            modelName,
             mode,
           });
           const truncatedMessages = truncateMessagesToTokenLimit(
@@ -389,8 +383,6 @@ export async function getMessagesByChatId({
 
             // Re-truncate real messages to leave room for the summary message
             const maxTokens = getMaxTokensForSubscription(subscription, {
-              maxMode,
-              modelName,
               mode,
             });
             const summaryTokens = countMessagesTokens(
@@ -459,8 +451,7 @@ export async function getMessagesByChatId({
     allMessages,
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
-    maxMode,
-    modelName,
+    mode,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -471,8 +462,6 @@ export async function getMessagesByChatId({
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any);
       const maxTokens = getMaxTokensForSubscription(subscription, {
-        maxMode,
-        modelName,
         mode,
       });
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
@@ -930,7 +919,6 @@ export async function logUsageRecord({
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
-  maxMode,
 }: {
   userId: string;
   model: string;
@@ -941,7 +929,6 @@ export async function logUsageRecord({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
-  maxMode?: boolean;
 }) {
   try {
     await convex.mutation(api.usageLogs.logUsage, {
@@ -955,7 +942,6 @@ export async function logUsageRecord({
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
       cost_dollars: costDollars,
-      max_mode: maxMode,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {

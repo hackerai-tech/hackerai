@@ -235,20 +235,7 @@ export const createChatHandler = (
         });
       }
 
-      // Fetch user customization early so max_mode_enabled can influence
-      // context truncation (before messages are fetched from DB).
       const userCustomization = await getUserCustomization({ userId });
-
-      // MAX Mode only applies when a specific model is selected — not in Auto.
-      const isAutoModelSelection =
-        !selectedModelOverride || selectedModelOverride === "auto";
-      const maxModeEnabled =
-        !isAutoModelSelection && (userCustomization?.max_mode_enabled ?? false);
-      const resolvedModelName = selectModel(
-        mode,
-        subscription,
-        selectedModelOverride,
-      );
 
       const fetched = await getMessagesByChatId({
         chatId,
@@ -258,8 +245,6 @@ export const createChatHandler = (
         regenerate,
         isTemporary: temporary,
         mode,
-        maxMode: maxModeEnabled,
-        modelName: resolvedModelName,
       });
       const { chat, isNewChat, fileTokens } = fetched;
       const truncatedMessages =
@@ -596,11 +581,7 @@ export const createChatHandler = (
           const contextUsageOn = isContextUsageEnabled(subscription, mode);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(subscription, {
-                maxMode: maxModeEnabled,
-                modelName: selectedModel,
-                mode,
-              })
+            ? getMaxTokensForSubscription(subscription, { mode })
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -721,7 +702,6 @@ export const createChatHandler = (
               responseModel,
               configuredModelId,
               rateLimitInfo,
-              maxMode: maxModeEnabled,
             });
           };
 
@@ -740,11 +720,8 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(subscription, {
-                      maxMode: maxModeEnabled,
-                      modelName: selectedModel,
-                      mode,
-                    }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(subscription, { mode }) *
+                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -880,11 +857,8 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(subscription, {
-                          maxMode: maxModeEnabled,
-                          modelName: selectedModel,
-                          mode,
-                        }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(subscription, { mode }) *
+                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
