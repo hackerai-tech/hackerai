@@ -325,7 +325,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       isFile
                         ? sidebarContent.action === "searching"
                           ? "search-results.txt"
-                          : sidebarContent.path.split("/").pop() || "code.txt"
+                          : sidebarContent.path?.split("/").pop() || "code.txt"
                         : "terminal-output.txt"
                     }
                     language={
@@ -333,7 +333,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                         ? sidebarContent.action === "searching"
                           ? "text"
                           : sidebarContent.language ||
-                            getLanguageFromPath(sidebarContent.path)
+                            getLanguageFromPath(sidebarContent.path ?? "")
                         : "ansi"
                     }
                     isWrapped={isWrapped}

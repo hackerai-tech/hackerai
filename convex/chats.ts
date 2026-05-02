@@ -47,6 +47,7 @@ export const getChatByIdFromClient = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_workflow_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       codex_thread_id: v.optional(v.string()),
@@ -138,6 +139,7 @@ export const getChatById = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_workflow_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       codex_thread_id: v.optional(v.string()),
@@ -374,6 +376,37 @@ export const updateChat = mutation({
       console.error("Failed to update chat:", error);
       throw error;
     }
+  },
+});
+
+/**
+ * Set or clear the workflow run id for a chat (used by long-running
+ * workflow mode so that browser refreshes can reattach to the live SSE
+ * stream).
+ */
+export const setActiveWorkflowRun = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    runId: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+    await ctx.db.patch(chat._id, {
+      active_workflow_run_id: args.runId === null ? undefined : args.runId,
+    });
+    return null;
   },
 });
 

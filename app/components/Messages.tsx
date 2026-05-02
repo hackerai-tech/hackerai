@@ -17,6 +17,7 @@ import { useFileUrlCache } from "../hooks/useFileUrlCache";
 import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
 import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
+import type { ChatMode } from "@/types/chat";
 import type { FileDetails } from "@/types/file";
 import { toast } from "sonner";
 import { WandSparkles } from "lucide-react";
@@ -54,7 +55,7 @@ interface MessagesProps {
     status: "started" | "completed";
     message: string;
   } | null;
-  mode?: "ask" | "agent";
+  mode?: ChatMode;
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;

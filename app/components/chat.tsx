@@ -314,6 +314,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
 
+  // Active workflow run id (set when chat is mid-flight in agent-long mode)
+  // — read by the transport's prepareReconnectToStreamRequest to retarget
+  // the SSE reconnect URL onto /api/workflow/[runId]/stream. Derived via
+  // useLatestRef so it updates synchronously on render, before child
+  // effects (e.g. useAutoResume) fire.
+  const activeWorkflowRunIdRef = useLatestRef<string | null>(
+    (chatData as { active_workflow_run_id?: string | null } | null | undefined)
+      ?.active_workflow_run_id ?? null,
+  );
+
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages: ChatMessage[] =
@@ -449,7 +459,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ) {
               const maxTokens = getMaxTokensForSubscription(
                 subscriptionRef.current,
-                { mode: chatModeRef.current as "ask" | "agent" },
+                { mode: chatModeRef.current },
               );
               const context = serializeConversation(currentMessages, maxTokens);
               if (context) {
@@ -480,11 +490,30 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
-        const url =
-          input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
-            : input;
+        let url = input;
+        if (input === "/api/chat") {
+          if (chatModeRef.current === "agent-long") {
+            url = "/api/workflow";
+          } else if (chatModeRef.current === "agent") {
+            url = "/api/agent";
+          }
+        }
         return fetchWithErrorHandlers(url, init);
+      },
+      prepareReconnectToStreamRequest: ({ id }) => {
+        // For long-run workflow chats with a live run id, reconnect to the
+        // workflow stream endpoint instead of the default chat resume route.
+        const runId = activeWorkflowRunIdRef.current;
+        if (chatModeRef.current === "agent-long" && runId) {
+          return {
+            api: `/api/workflow/${runId}/stream`,
+            credentials: "include",
+          };
+        }
+        return {
+          api: `/api/chat/${id}/stream`,
+          credentials: "include",
+        };
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
         const {
@@ -811,11 +840,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
       hasInitializedModeFromChatRef.current = true;
       const slug = (chatData as any).default_model_slug;
-      if (slug === "ask" || slug === "agent") {
+      if (slug === "ask" || slug === "agent" || slug === "agent-long") {
         setChatMode(slug);
-      } else if (slug === "agent-long") {
-        // Legacy chats stored as agent-long map to agent mode
-        setChatMode("agent");
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

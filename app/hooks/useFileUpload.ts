@@ -14,6 +14,7 @@ import {
 import { getMaxFileTokens } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
+import { toLegacyChatMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
@@ -205,7 +206,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           name: file.name,
           mediaType: file.type,
           size: file.size,
-          mode,
+          mode: toLegacyChatMode(mode),
         });
 
         // Only check token limit for "ask" mode

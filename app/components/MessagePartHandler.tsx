@@ -188,7 +188,11 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "data-terminal":
     case "tool-shell":
     case "tool-run_terminal_cmd":
-    case "tool-interact_terminal_session": {
+    case "tool-interact_terminal_session":
+    // Long-running workflow agent (agent-long mode) shell tools
+    case "tool-run_command":
+    case "tool-start_command_async":
+    case "tool-wait_command": {
       const effectiveToolCallId =
         (part as any).data?.toolCallId ?? part.toolCallId;
       const precomputedStreamingOutput = effectiveToolCallId

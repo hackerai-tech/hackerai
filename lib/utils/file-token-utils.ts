@@ -9,6 +9,7 @@ import {
   getMaxTokensForSubscription,
 } from "@/lib/token-utils";
 import type { SubscriptionTier } from "@/types";
+import type { ChatMode } from "@/types/chat";
 import type { FileMessagePart } from "@/types/file";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
@@ -78,7 +79,7 @@ export const truncateMessagesWithFileTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
-  mode?: "ask" | "agent",
+  mode?: ChatMode,
 ): Promise<{
   messages: UIMessage[];
   fileTokens: Record<Id<"files">, number>;

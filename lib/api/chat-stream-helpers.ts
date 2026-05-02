@@ -24,6 +24,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
 import { countMessagesTokens } from "@/lib/token-utils";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
@@ -250,10 +251,10 @@ export function computeContextUsage(
 
 export function isContextUsageEnabled(
   subscription: SubscriptionTier,
-  mode?: "ask" | "agent",
+  mode?: ChatMode,
 ): boolean {
   if (subscription !== "free") return true;
-  return mode === "agent";
+  return mode !== undefined && isAgentMode(mode);
 }
 
 /**

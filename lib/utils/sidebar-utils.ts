@@ -119,10 +119,30 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
-    // Terminal (including Codex local commands)
+    // Long-run workflow `wait_command` — the input has no `command`, only a
+    // handle. Display the handle as the pseudo-command and surface the
+    // tailed stdout from output.tail (or output.result.tail) as the
+    // terminal output.
+    if (part.type === "tool-wait_command" && part.input?.handle) {
+      const tail = part.output?.tail ?? part.output?.result?.tail ?? "";
+      contentList.push({
+        command: `# wait_command handle=${part.input.handle}`,
+        output: tail,
+        isExecuting:
+          part.state === "input-available" || part.state === "running",
+        isBackground: false,
+        toolCallId: part.toolCallId || "",
+      });
+      return;
+    }
+
+    // Terminal (Codex local commands, interactive PTY sessions, and
+    // long-run workflow agent shell tools).
     if (
       (part.type === "tool-run_terminal_cmd" ||
-        part.type === "tool-interact_terminal_session") &&
+        part.type === "tool-interact_terminal_session" ||
+        part.type === "tool-run_command" ||
+        part.type === "tool-start_command_async") &&
       part.input
     ) {
       const action = part.input.action || "exec";
@@ -165,17 +185,17 @@ export function extractSidebarContentFromMessage(
       }
 
       // sessionSnapshot is cleaned via xterm headless - prefer it when available.
-      // For streaming, show live output for responsiveness.
+      // For streaming, show live output for responsiveness. errorText fallback
+      // surfaces stderr from failed shell commands (state === "output-error")
+      // instead of leaving an empty terminal.
       const sessionSnapshot = result?.sessionSnapshot || "";
       const finalOutput =
-        // Prefer cleaned sessionSnapshot when available (works for all action types)
         sessionSnapshot ||
-        // For interactive actions, prefer live streaming output
         (isInteractive ? streamingOutput : null) ||
-        // Fallback chain
         output ||
         streamingOutput ||
         part.output?.output ||
+        part.errorText ||
         "";
 
       // Only feed rawBytes (→ xterm renderer) for interactive PTY contexts.

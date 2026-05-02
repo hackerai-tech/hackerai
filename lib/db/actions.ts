@@ -17,6 +17,7 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import type { SubscriptionTier, NoteCategory } from "@/types";
+import type { ChatMode } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -202,7 +203,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent";
+  defaultModelSlug?: ChatMode;
   sandboxType?: string;
   selectedModel?: string;
 }) {
@@ -240,7 +241,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent";
+  mode?: ChatMode;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -269,7 +270,7 @@ export async function getMessagesByChatId({
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
-        const skipFileTokens = mode === "agent";
+        const skipFileTokens = mode ? isAgentMode(mode) : false;
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
@@ -450,7 +451,7 @@ export async function getMessagesByChatId({
   const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
-    mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
+    mode ? isAgentMode(mode) : false, // Skip file tokens for agent modes (files go to sandbox)
     mode,
   );
   const truncatedMessages = truncateResult.messages;
@@ -567,6 +568,25 @@ export async function startStream({
     return;
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to start stream");
+  }
+}
+
+export async function setActiveWorkflowRun({
+  chatId,
+  runId,
+}: {
+  chatId: string;
+  runId: string | null;
+}) {
+  try {
+    await convex.mutation(api.chats.setActiveWorkflowRun, {
+      serviceKey,
+      chatId,
+      runId,
+    });
+  } catch (error) {
+    // Best-effort: don't block the workflow on persistence of the runId.
+    console.error("[db] setActiveWorkflowRun failed", error);
   }
 }
 
