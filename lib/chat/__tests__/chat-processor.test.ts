@@ -180,7 +180,7 @@ describe("selectModel", () => {
   // Agent mode allows model override for paid users
   describe("model override in agent mode", () => {
     it("should use allowed model override for paid users in agent mode", () => {
-      expect(selectModel("agent", "pro", "grok-4.1")).toBe("model-grok-4.1");
+      expect(selectModel("agent", "pro", "grok-4.3")).toBe("model-grok-4.3");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );

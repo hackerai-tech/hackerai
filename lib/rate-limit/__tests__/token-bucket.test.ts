@@ -328,6 +328,15 @@ describe("token-bucket", () => {
       );
     });
 
+    it("should use Grok 4.3 pricing ($1.25/$2.50)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-grok-4.3")).toBe(
+        15000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-grok-4.3")).toBe(
+        30000,
+      );
+    });
+
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens
