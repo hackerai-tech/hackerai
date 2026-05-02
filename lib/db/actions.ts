@@ -451,6 +451,7 @@ export async function getMessagesByChatId({
     allMessages,
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
+    mode,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
