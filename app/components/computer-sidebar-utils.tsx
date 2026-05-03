@@ -233,8 +233,10 @@ export function getDisplayTarget(content: SidebarContent): string {
     return content.affectedTitle || "";
   }
   if (isSidebarSharedFiles(content)) {
-    const count = content.files.length || content.requestedPaths.length;
-    return `${count} file${count !== 1 ? "s" : ""}`;
+    const names = content.files.length
+      ? content.files.map((f) => f.name)
+      : content.requestedPaths.map((p) => p.split("/").pop() || p);
+    return names.join(", ");
   }
   return "";
 }
