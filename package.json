@@ -92,6 +92,7 @@
     "convex": "^1.36.1",
     "date-fns": "^4.1.0",
     "e2b": "^2.19.2",
+    "franc-min": "^6.2.0",
     "gpt-tokenizer": "^3.4.0",
     "iron-session": "^8.0.4",
     "isbinaryfile": "^6.0.0",
