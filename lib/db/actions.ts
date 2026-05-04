@@ -496,6 +496,38 @@ export async function getMessagesByChatId({
   return { truncatedMessages, chat, isNewChat, fileTokens };
 }
 
+export async function getLastUserMessageText({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}): Promise<string | null> {
+  try {
+    const result = await convex.query(api.messages.getMessagesPageForBackend, {
+      serviceKey,
+      chatId,
+      userId,
+      paginationOpts: { numItems: 24, cursor: null },
+    });
+    for (const msg of result.page) {
+      if (msg.role !== "user") continue;
+      const parts = msg.parts as Array<{ type: string; text?: string }>;
+      if (!Array.isArray(parts)) continue;
+      const text = parts
+        .filter((p) => p.type === "text" && typeof p.text === "string")
+        .map((p) => p.text as string)
+        .join("\n")
+        .trim();
+      if (text) return text;
+    }
+    return null;
+  } catch (error) {
+    console.error("[db] getLastUserMessageText failed", error);
+    return null;
+  }
+}
+
 export async function getUserCustomization({ userId }: { userId: string }) {
   try {
     const userCustomization = await convex.query(

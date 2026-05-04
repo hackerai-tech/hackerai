@@ -8,6 +8,7 @@ import { selectModel } from "@/lib/chat/chat-processor";
 import { isSelectedModel, type SelectedModel } from "@/types/chat";
 import {
   getChatById,
+  getLastUserMessageText,
   handleInitialChatAndUserMessage,
   setActiveWorkflowRun,
   updateChat,
@@ -22,6 +23,7 @@ interface WorkflowRequestBody {
   mode?: string;
   selectedModel?: string;
   prompt?: string;
+  regenerate?: boolean;
 }
 
 function extractPrompt(body: WorkflowRequestBody): string | null {
@@ -76,7 +78,15 @@ export async function POST(req: NextRequest) {
     return new ChatSDKError("bad_request:api", "Missing chatId").toResponse();
   }
 
-  const prompt = extractPrompt(body);
+  const isRegenerate = body.regenerate === true;
+
+  let prompt = extractPrompt(body);
+  if (!prompt && isRegenerate) {
+    prompt = await getLastUserMessageText({
+      chatId: body.chatId,
+      userId: auth.userId,
+    });
+  }
   if (!prompt) {
     return new ChatSDKError(
       "bad_request:api",
@@ -96,12 +106,15 @@ export async function POST(req: NextRequest) {
 
   // Persist chat row + user message before starting the workflow so the
   // chat is visible immediately in the UI and survives reload/navigation
-  // even if the workflow run errors midway.
-  const lastUserMessage = (body.messages ?? [])
-    .slice()
-    .reverse()
-    .find((m) => m.role === "user");
-  if (!lastUserMessage) {
+  // even if the workflow run errors midway. On regenerate the user message
+  // already exists in the DB, so we skip the save.
+  const lastUserMessage = isRegenerate
+    ? null
+    : (body.messages ?? [])
+        .slice()
+        .reverse()
+        .find((m) => m.role === "user");
+  if (!isRegenerate && !lastUserMessage) {
     return new ChatSDKError(
       "bad_request:api",
       "No user message in request",
@@ -109,15 +122,24 @@ export async function POST(req: NextRequest) {
   }
   try {
     const existingChat = await getChatById({ id: body.chatId });
+    if (isRegenerate && !existingChat) {
+      return new ChatSDKError(
+        "not_found:chat",
+        "Chat not found for regeneration",
+      ).toResponse();
+    }
     await handleInitialChatAndUserMessage({
       chatId: body.chatId,
       userId: auth.userId,
-      messages: [
-        {
-          id: lastUserMessage.id,
-          parts: (lastUserMessage as { parts: any[] }).parts ?? [],
-        },
-      ],
+      messages: lastUserMessage
+        ? [
+            {
+              id: lastUserMessage.id,
+              parts: (lastUserMessage as { parts: any[] }).parts ?? [],
+            },
+          ]
+        : [],
+      regenerate: isRegenerate,
       chat: existingChat,
     });
     await updateChat({
