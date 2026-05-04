@@ -42,8 +42,8 @@ import { toast } from "sonner";
 import {
   readChatMode,
   writeChatMode,
-  readSelectedModelForMode,
-  writeSelectedModelForMode,
+  readSelectedModel,
+  writeSelectedModel,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
 interface GlobalStateType {
@@ -262,47 +262,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Model selection — only enabled for Ask mode. Agent mode always uses "auto".
+  // Model selection — shared across ask + agent modes (lineup is identical).
   // On web, Codex models are not usable so treat them as "auto".
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
-    const saved = readSelectedModelForMode("ask");
+    const saved = readSelectedModel();
     if (!isSelectedModel(saved)) return "auto";
     if (isCodexLocal(saved) && !isTauriEnvironment()) return "auto";
     return saved;
   });
 
-  // When switching modes, restore saved preference for that mode.
+  // Persist model preference to localStorage (single key, shared across modes).
   useEffect(() => {
-    const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
-    const saved = readSelectedModelForMode(modeKey);
-    if (
-      isSelectedModel(saved) &&
-      !(isCodexLocal(saved) && !isTauriEnvironment())
-    ) {
-      setSelectedModelRaw(saved);
-    } else {
-      setSelectedModelRaw("auto");
-    }
-  }, [chatMode]);
+    writeSelectedModel(selectedModel);
+  }, [selectedModel]);
 
-  // Persist model preference to localStorage per mode.
-  // Codex models run across both modes, so save to both ask and agent.
-  useEffect(() => {
-    if (isCodexLocal(selectedModel)) {
-      writeSelectedModelForMode("ask", selectedModel);
-      writeSelectedModelForMode("agent", selectedModel);
-    } else {
-      const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
-      writeSelectedModelForMode(modeKey, selectedModel);
-    }
-  }, [selectedModel, chatMode]);
-
-  const setSelectedModelState = useCallback(
-    (model: SelectedModel) => {
-      setSelectedModelRaw(model);
-    },
-    [chatMode],
-  );
+  const setSelectedModelState = useCallback((model: SelectedModel) => {
+    setSelectedModelRaw(model);
+  }, []);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {

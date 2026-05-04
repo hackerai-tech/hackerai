@@ -10,7 +10,6 @@ import {
   Loader2,
   Lock,
   Monitor,
-  ShieldAlert,
   Terminal,
 } from "lucide-react";
 import {
@@ -158,55 +157,68 @@ const ModelOptionButton = ({
   isFreeUser: boolean;
   onSelect: (option: ModelOption) => void;
   mobile?: boolean;
-}) => (
-  <button
-    type="button"
-    onClick={() => onSelect(option)}
-    aria-pressed={isSelected}
-    className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-      mobile ? "py-2.5" : "py-1.5"
-    } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
-  >
-    <div className="flex-1 min-w-0">
-      <div className="flex items-center gap-1.5">
-        <span
-          className={`text-sm transition-colors ${
-            isSelected
-              ? "text-accent-foreground"
-              : "text-muted-foreground group-hover:text-foreground"
-          }`}
-        >
-          {option.label}
-        </span>
-        {option.thinking && (
-          <Brain className="h-3 w-3 text-muted-foreground/60" />
-        )}
-        {option.censored && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <ShieldAlert className="h-3 w-3 text-amber-500/70 shrink-0 cursor-default" />
-            </TooltipTrigger>
-            <TooltipContent
-              side="right"
-              sideOffset={4}
-              className="text-xs px-2 py-1"
-            >
-              More restricted content policy
-            </TooltipContent>
-          </Tooltip>
-        )}
-        {option.id !== "auto" && !option.localProvider && (
-          <CostIndicator modelId={option.id} />
-        )}
+}) => {
+  const button = (
+    <button
+      type="button"
+      onClick={() => onSelect(option)}
+      aria-pressed={isSelected}
+      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+        mobile ? "py-2.5" : "py-1.5"
+      } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={`text-sm transition-colors ${
+              isSelected
+                ? "text-accent-foreground"
+                : "text-muted-foreground group-hover:text-foreground"
+            }`}
+          >
+            {option.label}
+          </span>
+          {option.thinking && (
+            <Brain className="h-3 w-3 text-muted-foreground/60" />
+          )}
+          {option.id !== "auto" && !option.localProvider && (
+            <CostIndicator modelId={option.id} />
+          )}
+        </div>
       </div>
-    </div>
-    {isFreeUser ? (
-      <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
-    ) : isSelected ? (
-      <Check className="h-3.5 w-3.5 shrink-0" />
-    ) : null}
-  </button>
-);
+      {isFreeUser ? (
+        <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
+      ) : isSelected ? (
+        <Check className="h-3.5 w-3.5 shrink-0" />
+      ) : null}
+    </button>
+  );
+
+  // Free users get the upgrade tooltip from the parent ModelOptionList; skipping
+  // the inner one prevents a flicker where both nested tooltips race to render.
+  if (mobile || !option.description || isFreeUser) return button;
+
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent
+        side="right"
+        sideOffset={12}
+        align="start"
+        className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] space-y-1.5 [&_svg]:!hidden"
+      >
+        <p className="text-sm font-semibold text-foreground leading-snug">
+          {option.description}
+        </p>
+        {option.poweredBy && (
+          <p className="text-xs text-muted-foreground">
+            Powered by {option.poweredBy}
+          </p>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
+};
 
 // ── Codex submenu ──────────────────────────────────────────────────
 
@@ -459,23 +471,33 @@ const ModelOptionList = ({
               <TooltipContent
                 side="right"
                 sideOffset={12}
-                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[220px] [&_svg]:!hidden"
+                align="start"
+                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] space-y-1.5 [&_svg]:!hidden"
               >
-                <p className="text-sm font-semibold text-foreground leading-snug">
-                  Access the top AI models
-                </p>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Access the latest AI models from Anthropic (Claude), Google
-                  (Gemini), xAI (Grok) and more by{" "}
+                {option.description ? (
+                  <p className="text-sm font-semibold text-foreground leading-snug">
+                    {option.description}
+                  </p>
+                ) : (
+                  <p className="text-sm font-semibold text-foreground leading-snug">
+                    {option.label}
+                  </p>
+                )}
+                {option.poweredBy && (
+                  <p className="text-xs text-muted-foreground">
+                    Powered by {option.poweredBy}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
                   <a
                     href="#pricing"
                     onClick={() => onClose()}
                     className="text-foreground underline underline-offset-2 hover:text-foreground/80"
                     tabIndex={0}
                   >
-                    upgrading your plan
+                    Upgrade your plan
                   </a>{" "}
-                  today
+                  to unlock.
                 </p>
               </TooltipContent>
             </Tooltip>

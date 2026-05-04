@@ -170,17 +170,17 @@ describe("selectModel", () => {
     });
 
     it("should apply all selectable models in ask mode", () => {
-      expect(selectModel("ask", "pro", "grok-4.1")).toBe("model-grok-4.1");
       expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );
+      expect(selectModel("ask", "pro", "opus-4.6")).toBe("model-opus-4.6");
     });
   });
 
   // Agent mode allows model override for paid users
   describe("model override in agent mode", () => {
     it("should use allowed model override for paid users in agent mode", () => {
-      expect(selectModel("agent", "pro", "grok-4.3")).toBe("model-grok-4.3");
+      expect(selectModel("agent", "pro", "kimi-k2.6")).toBe("model-kimi-k2.6");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );

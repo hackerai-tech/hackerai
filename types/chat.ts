@@ -14,8 +14,6 @@ export function isChatMode(value: string | null): value is ChatMode {
 export type SelectedModel =
   | "auto"
   | "sonnet-4.6"
-  | "grok-4.1"
-  | "grok-4.3"
   | "gemini-3-flash"
   | "opus-4.6"
   | "kimi-k2.6";
@@ -25,8 +23,6 @@ export type SelectedModel =
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
-  "grok-4.1",
-  "grok-4.3",
   "gemini-3-flash",
   "opus-4.6",
   "kimi-k2.6",
