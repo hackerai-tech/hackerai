@@ -1,0 +1,87 @@
+diff --git a/dist/index.js b/dist/index.js
+index d61f4cf1a35e27de26deac8fa90f99781ae80f21..cd4d924cab22ba0c431ef33ea71e6c234db2af10 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -13326,14 +13326,16 @@ var AbstractChat = class {
+       this.setStatus({ status: "error", error: err });
+     } finally {
+       try {
+-        (_b = this.onFinish) == null ? void 0 : _b.call(this, {
+-          message: this.activeResponse.state.message,
+-          messages: this.state.messages,
+-          isAbort,
+-          isDisconnect,
+-          isError,
+-          finishReason: (_a21 = this.activeResponse) == null ? void 0 : _a21.state.finishReason
+-        });
++        if (this.activeResponse) {
++          (_b = this.onFinish) == null ? void 0 : _b.call(this, {
++            message: this.activeResponse.state.message,
++            messages: this.state.messages,
++            isAbort,
++            isDisconnect,
++            isError,
++            finishReason: (_a21 = this.activeResponse) == null ? void 0 : _a21.state.finishReason
++          });
++        }
+       } catch (err) {
+         console.error(err);
+       }
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 77ba932742ab66a900b1330a6b12ce5f82802463..0d215015dabd216486c4cb203a3bd0d2f9ce8b39 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -13299,14 +13299,16 @@ var AbstractChat = class {
+       this.setStatus({ status: "error", error: err });
+     } finally {
+       try {
+-        (_b = this.onFinish) == null ? void 0 : _b.call(this, {
+-          message: this.activeResponse.state.message,
+-          messages: this.state.messages,
+-          isAbort,
+-          isDisconnect,
+-          isError,
+-          finishReason: (_a21 = this.activeResponse) == null ? void 0 : _a21.state.finishReason
+-        });
++        if (this.activeResponse) {
++          (_b = this.onFinish) == null ? void 0 : _b.call(this, {
++            message: this.activeResponse.state.message,
++            messages: this.state.messages,
++            isAbort,
++            isDisconnect,
++            isError,
++            finishReason: (_a21 = this.activeResponse) == null ? void 0 : _a21.state.finishReason
++          });
++        }
+       } catch (err) {
+         console.error(err);
+       }
+diff --git a/src/ui/chat.ts b/src/ui/chat.ts
+index eb243b410e964cb6bba9cc311e0b23e6d7c27f1b..74c9e49ae2ea96c6631aa139f7910ba3f416d9a4 100644
+--- a/src/ui/chat.ts
++++ b/src/ui/chat.ts
+@@ -757,14 +757,16 @@ export abstract class AbstractChat<UI_MESSAGE extends UIMessage> {
+       this.setStatus({ status: 'error', error: err as Error });
+     } finally {
+       try {
+-        this.onFinish?.({
+-          message: this.activeResponse!.state.message,
+-          messages: this.state.messages,
+-          isAbort,
+-          isDisconnect,
+-          isError,
+-          finishReason: this.activeResponse?.state.finishReason,
+-        });
++        if (this.activeResponse) {
++          this.onFinish?.({
++            message: this.activeResponse.state.message,
++            messages: this.state.messages,
++            isAbort,
++            isDisconnect,
++            isError,
++            finishReason: this.activeResponse.state.finishReason,
++          });
++        }
+       } catch (err) {
+         console.error(err);
+       }
