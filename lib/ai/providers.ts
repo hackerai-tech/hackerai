@@ -114,7 +114,7 @@ export function resolveTierToProviderKey(
 ): ModelName | null {
   if (tier === "auto") return null;
   switch (tier) {
-    case "hackerai-lite":
+    case "hackerai-standard":
       return isAgentMode(mode) ? "model-kimi-k2.6" : "model-gemini-3-flash";
     case "hackerai-pro":
       return "model-sonnet-4.6";

@@ -171,8 +171,8 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Lite to Gemini 3 Flash in ask mode", () => {
-      expect(selectModel("ask", "pro", "hackerai-lite")).toBe(
+    it("should map HackerAI Standard to Gemini 3 Flash in ask mode", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
         "model-gemini-3-flash",
       );
     });
@@ -184,8 +184,8 @@ describe("selectModel", () => {
 
   // Agent mode — Lite resolves to Kimi instead of Gemini
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Lite to Kimi K2.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-lite")).toBe(
+    it("should map HackerAI Standard to Kimi K2.6 in agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
         "model-kimi-k2.6",
       );
     });

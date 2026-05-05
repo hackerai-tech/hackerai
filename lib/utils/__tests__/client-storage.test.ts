@@ -36,12 +36,20 @@ describe("client-storage selected model", () => {
       expect(window.localStorage.getItem(STORAGE_KEY)).toBe("hackerai-max");
     });
 
-    it("maps legacy gemini-3-flash and kimi-k2.6 both to hackerai-lite", () => {
+    it("maps legacy gemini-3-flash and kimi-k2.6 both to hackerai-standard", () => {
       window.localStorage.setItem(STORAGE_KEY, "gemini-3-flash");
-      expect(readSelectedModel()).toBe("hackerai-lite");
+      expect(readSelectedModel()).toBe("hackerai-standard");
 
       window.localStorage.setItem(STORAGE_KEY, "kimi-k2.6");
-      expect(readSelectedModel()).toBe("hackerai-lite");
+      expect(readSelectedModel()).toBe("hackerai-standard");
+    });
+
+    it("migrates the short-lived hackerai-lite tier id to hackerai-standard", () => {
+      window.localStorage.setItem(STORAGE_KEY, "hackerai-lite");
+      expect(readSelectedModel()).toBe("hackerai-standard");
+      expect(window.localStorage.getItem(STORAGE_KEY)).toBe(
+        "hackerai-standard",
+      );
     });
 
     it("migrates from legacy selected_model_ask key when unified key is empty", () => {
@@ -57,8 +65,10 @@ describe("client-storage selected model", () => {
     it("falls back to legacy selected_model_agent key when ask is missing", () => {
       window.localStorage.setItem(LEGACY_AGENT_KEY, "kimi-k2.6");
 
-      expect(readSelectedModel()).toBe("hackerai-lite");
-      expect(window.localStorage.getItem(STORAGE_KEY)).toBe("hackerai-lite");
+      expect(readSelectedModel()).toBe("hackerai-standard");
+      expect(window.localStorage.getItem(STORAGE_KEY)).toBe(
+        "hackerai-standard",
+      );
       expect(window.localStorage.getItem(LEGACY_AGENT_KEY)).toBeNull();
     });
 

@@ -13,7 +13,7 @@ export function isChatMode(value: string | null): value is ChatMode {
 
 export type SelectedModel =
   | "auto"
-  | "hackerai-lite"
+  | "hackerai-standard"
   | "hackerai-pro"
   | "hackerai-max";
 // | "codex-local"
@@ -21,22 +21,26 @@ export type SelectedModel =
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
-  "hackerai-lite",
+  "hackerai-standard",
   "hackerai-pro",
   "hackerai-max",
   // "codex-local",
 ];
 
 /**
- * Map of legacy underlying-model ids to the new HackerAI tier ids.
- * Used to migrate values stored before the tier rebrand from
- * localStorage and from `chats.selected_model` in Convex.
+ * Map of legacy ids to the current `SelectedModel` union. Covers two prior
+ * shapes:
+ *   1. Underlying-model ids from before the HackerAI tier rebrand.
+ *   2. `hackerai-lite` from the short-lived first naming of the entry tier
+ *      (renamed to `hackerai-standard` because Lite mis-described Kimi K2.6).
+ * Used by `coerceSelectedModel` to migrate values on read.
  */
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   "sonnet-4.6": "hackerai-pro",
   "opus-4.6": "hackerai-max",
-  "gemini-3-flash": "hackerai-lite",
-  "kimi-k2.6": "hackerai-lite",
+  "gemini-3-flash": "hackerai-standard",
+  "kimi-k2.6": "hackerai-standard",
+  "hackerai-lite": "hackerai-standard",
 };
 
 /**

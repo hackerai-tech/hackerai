@@ -31,11 +31,11 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Lite resolves to different providers per mode", () => {
-    expect(resolveTierToProviderKey("hackerai-lite", "ask")).toBe(
+  it("HackerAI Standard resolves to different providers per mode", () => {
+    expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
       "model-gemini-3-flash",
     );
-    expect(resolveTierToProviderKey("hackerai-lite", "agent")).toBe(
+    expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
       "model-kimi-k2.6",
     );
   });

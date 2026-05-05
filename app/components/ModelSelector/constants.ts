@@ -15,9 +15,9 @@ export interface ModelOption {
 
 export const ASK_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "hackerai-lite",
-    label: "HackerAI Lite",
-    description: "Fast and efficient for everyday tasks",
+    id: "hackerai-standard",
+    label: "HackerAI Standard",
+    description: "Reliable performance for everyday tasks",
     poweredBy: "Google Gemini 3 Flash",
   },
   {
@@ -36,9 +36,9 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "hackerai-lite",
-    label: "HackerAI Lite",
-    description: "Fast agent for everyday automation",
+    id: "hackerai-standard",
+    label: "HackerAI Standard",
+    description: "Reliable agent for everyday automation",
     poweredBy: "Moonshot Kimi K2.6",
     thinking: true,
   },

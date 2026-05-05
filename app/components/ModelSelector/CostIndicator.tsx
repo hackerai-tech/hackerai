@@ -6,11 +6,11 @@ import {
 
 type CostTier = "low" | "medium" | "high" | "very-high" | "free";
 
-// Cost tier per HackerAI tier id. Lite spans gemini-3-flash (low) in ask and
-// kimi-k2.6 (medium) in agent — pick "medium" as the conservative upper bound
-// so the indicator never under-promises cost.
+// Cost tier per HackerAI tier id. Standard spans gemini-3-flash (low) in ask
+// and kimi-k2.6 (medium) in agent — pick "medium" as the conservative upper
+// bound so the indicator never under-promises cost.
 const MODEL_COST_TIER: Record<string, CostTier> = {
-  "hackerai-lite": "medium",
+  "hackerai-standard": "medium",
   "hackerai-pro": "high",
   "hackerai-max": "very-high",
 };
