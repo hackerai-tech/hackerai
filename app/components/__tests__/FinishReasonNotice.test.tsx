@@ -76,6 +76,10 @@ describe("FinishReasonNotice", () => {
       { finishReason: "length" as const, autoContinueCount: 0 },
       { finishReason: "length" as const, autoContinueCount: 3 },
       { finishReason: "length" as const, autoContinueCount: 4 },
+      { finishReason: "tool-calls" as const, autoContinueCount: 0 },
+      { finishReason: "tool-calls" as const, autoContinueCount: 2 },
+      { finishReason: "tool-calls" as const, autoContinueCount: 4 },
+      { finishReason: "preemptive-timeout" as const, autoContinueCount: 0 },
     ])(
       "returns null in agent mode when autoContinueCount=$autoContinueCount < MAX for finishReason=$finishReason",
       ({ finishReason, autoContinueCount }) => {
@@ -108,20 +112,19 @@ describe("FinishReasonNotice", () => {
     it.each([
       {
         finishReason: "tool-calls",
-        expectedText: "I automatically stopped to prevent going off course",
+        expectedText: "Reached the step limit for this turn",
       },
       {
         finishReason: "timeout",
-        expectedText: "I had to stop due to the time limit",
+        expectedText: "Reached the time limit for this turn",
       },
       {
         finishReason: "length",
-        expectedText: "I hit the output token limit and had to stop",
+        expectedText: "Reached the output limit for this turn",
       },
       {
         finishReason: "context-limit",
-        expectedText:
-          "I reached the context limit for this conversation after summarizing",
+        expectedText: "Reached the context limit for this conversation",
       },
     ])(
       "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
@@ -138,13 +141,12 @@ describe("FinishReasonNotice", () => {
       {
         finishReason: "context-limit",
         mode: "ask" as ChatMode,
-        expectedText:
-          "I reached the context limit for this conversation after summarizing",
+        expectedText: "Reached the context limit for this conversation",
       },
       {
         finishReason: "length",
         mode: "ask" as ChatMode,
-        expectedText: "I hit the output token limit and had to stop",
+        expectedText: "Reached the output limit for this turn",
       },
     ])(
       "renders notice for finishReason=$finishReason in $mode mode with autoContinueCount=0 (auto-continue only applies to agent mode)",
@@ -158,23 +160,13 @@ describe("FinishReasonNotice", () => {
       },
     );
 
-    it("renders tool-calls notice in agent mode even with autoContinueCount=0 (tool-calls is not auto-continuable)", () => {
-      renderNotice(
-        { finishReason: "tool-calls", mode: "agent" },
-        { isAutoResuming: false, autoContinueCount: 0 },
-      );
-      expect(
-        screen.getByText(/I automatically stopped to prevent going off course/),
-      ).toBeInTheDocument();
-    });
-
     it("renders timeout notice in agent mode even with autoContinueCount=0 (timeout is not auto-continuable)", () => {
       renderNotice(
         { finishReason: "timeout", mode: "agent" },
         { isAutoResuming: false, autoContinueCount: 0 },
       );
       expect(
-        screen.getByText(/I had to stop due to the time limit/),
+        screen.getByText(/Reached the time limit for this turn/),
       ).toBeInTheDocument();
     });
   });
@@ -183,7 +175,7 @@ describe("FinishReasonNotice", () => {
     it("does not render the Continue button when onContinue is not provided", () => {
       renderNotice(
         { finishReason: "tool-calls", mode: "agent" },
-        { isAutoResuming: false, autoContinueCount: 0 },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
       );
       expect(
         screen.queryByRole("button", { name: /continue/i }),
@@ -194,7 +186,7 @@ describe("FinishReasonNotice", () => {
       const onContinue = jest.fn();
       renderNotice(
         { finishReason: "tool-calls", mode: "agent", onContinue },
-        { isAutoResuming: false, autoContinueCount: 0 },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
       );
       expect(
         screen.getByRole("button", { name: /continue/i }),
@@ -205,7 +197,7 @@ describe("FinishReasonNotice", () => {
       const onContinue = jest.fn();
       renderNotice(
         { finishReason: "tool-calls", mode: "agent", onContinue },
-        { isAutoResuming: false, autoContinueCount: 0 },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
       );
       fireEvent.click(screen.getByRole("button", { name: /continue/i }));
       expect(onContinue).toHaveBeenCalledTimes(1);
@@ -237,7 +229,7 @@ describe("FinishReasonNotice", () => {
       );
 
       const innerDiv = screen
-        .getByText(/I hit the output token limit/)
+        .getByText(/Reached the output limit for this turn/)
         .closest("div.bg-muted");
       expect(innerDiv).toBeInTheDocument();
       expect(innerDiv).toHaveClass(

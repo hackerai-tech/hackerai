@@ -1484,7 +1484,8 @@ export const createChatHandler = (
 
                 if (
                   (stoppedDueToTokenExhaustion ||
-                    stoppedDueToPreemptiveTimeout) &&
+                    stoppedDueToPreemptiveTimeout ||
+                    streamFinishReason === "tool-calls") &&
                   isAgentMode(mode) &&
                   !temporary
                 ) {

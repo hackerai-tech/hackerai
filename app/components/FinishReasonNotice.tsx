@@ -24,7 +24,8 @@ export const FinishReasonNotice = ({
     autoContinueCount < MAX_AUTO_CONTINUES &&
     (finishReason === "context-limit" ||
       finishReason === "length" ||
-      finishReason === "preemptive-timeout")
+      finishReason === "preemptive-timeout" ||
+      finishReason === "tool-calls")
   ) {
     return null;
   }
@@ -33,28 +34,19 @@ export const FinishReasonNotice = ({
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
-      return <>I automatically stopped to prevent going off course.</>;
+      return <>Reached the step limit for this turn.</>;
     }
 
-    if (finishReason === "timeout") {
-      return <>I had to stop due to the time limit.</>;
+    if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
+      return <>Reached the time limit for this turn.</>;
     }
 
     if (finishReason === "length") {
-      return <>I hit the output token limit and had to stop.</>;
+      return <>Reached the output limit for this turn.</>;
     }
 
     if (finishReason === "context-limit") {
-      return (
-        <>
-          I reached the context limit for this conversation after summarizing
-          earlier messages.
-        </>
-      );
-    }
-
-    if (finishReason === "preemptive-timeout") {
-      return <>I had to stop because the session exceeded the time limit.</>;
+      return <>Reached the context limit for this conversation.</>;
     }
 
     return null;
