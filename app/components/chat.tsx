@@ -926,7 +926,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const last = persistedPrefsRef.current;
     if (last.model === selectedModel && last.mode === chatMode) return;
 
+    // `cancelled` guards both branches: clearTimeout cancels before the
+    // request fires, and the flag prevents an in-flight request from writing
+    // its (stale) snapshot to persistedPrefsRef after the user has already
+    // navigated to a different chat or toggled again.
+    let cancelled = false;
     const handle = setTimeout(() => {
+      if (cancelled) return;
       const snapshot = { model: selectedModel, mode: chatMode };
       void updateChatPreferences({
         id: chatId,
@@ -934,6 +940,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         mode: chatMode as "ask" | "agent",
       })
         .then(() => {
+          if (cancelled) return;
           persistedPrefsRef.current = snapshot;
         })
         .catch(() => {
@@ -941,7 +948,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // re-persist on next send via updateChat.
         });
     }, 500);
-    return () => clearTimeout(handle);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
   }, [
     selectedModel,
     chatMode,

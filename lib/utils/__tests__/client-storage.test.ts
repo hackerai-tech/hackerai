@@ -52,6 +52,27 @@ describe("client-storage selected model", () => {
       );
     });
 
+    it("migrates removed Grok ids to hackerai-standard", () => {
+      window.localStorage.setItem(STORAGE_KEY, "grok-4.1");
+      expect(readSelectedModel()).toBe("hackerai-standard");
+
+      window.localStorage.setItem(STORAGE_KEY, "grok-4.3");
+      expect(readSelectedModel()).toBe("hackerai-standard");
+    });
+
+    it("does not match inherited Object.prototype keys via the legacy map", () => {
+      // Without Object.hasOwn, "toString" / "constructor" would resolve to
+      // inherited functions, not SelectedModel values.
+      window.localStorage.setItem(STORAGE_KEY, "toString");
+      expect(readSelectedModel()).toBeNull();
+
+      window.localStorage.setItem(STORAGE_KEY, "constructor");
+      expect(readSelectedModel()).toBeNull();
+
+      window.localStorage.setItem(STORAGE_KEY, "hasOwnProperty");
+      expect(readSelectedModel()).toBeNull();
+    });
+
     it("migrates from legacy selected_model_ask key when unified key is empty", () => {
       window.localStorage.setItem(LEGACY_ASK_KEY, "opus-4.6");
       window.localStorage.setItem(LEGACY_AGENT_KEY, "sonnet-4.6");
@@ -73,8 +94,8 @@ describe("client-storage selected model", () => {
     });
 
     it("ignores legacy keys with unrecognized values and returns null", () => {
-      window.localStorage.setItem(LEGACY_ASK_KEY, "grok-4.3");
-      window.localStorage.setItem(LEGACY_AGENT_KEY, "grok-4.1");
+      window.localStorage.setItem(LEGACY_ASK_KEY, "totally-fake-model");
+      window.localStorage.setItem(LEGACY_AGENT_KEY, "another-bogus-id");
 
       expect(readSelectedModel()).toBeNull();
       expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();

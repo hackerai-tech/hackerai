@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
+import { coerceSelectedModel } from "../types/chat";
 
 /**
  * Get a chat by its ID
@@ -296,7 +297,13 @@ export const updateChatPreferences = mutation({
 
     const patch: Record<string, unknown> = {};
     if (args.selectedModel !== undefined) {
-      patch.selected_model = args.selectedModel;
+      // Coerce legacy / unknown ids before writing so the row never ends up
+      // with a value the load path will silently rewrite later. Unknown ids
+      // are dropped (skipped) rather than written verbatim.
+      const coerced = coerceSelectedModel(args.selectedModel);
+      if (coerced !== null) {
+        patch.selected_model = coerced;
+      }
     }
     if (args.mode !== undefined) {
       patch.default_model_slug = args.mode;

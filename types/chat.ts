@@ -40,6 +40,11 @@ export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   "opus-4.6": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",
   "kimi-k2.6": "hackerai-standard",
+  // Grok was removed from the picker before the tier rebrand. Both variants
+  // were entry-level alternatives to the auto router (Gemini/Kimi territory),
+  // so map them to Standard rather than dropping the user's preference.
+  "grok-4.1": "hackerai-standard",
+  "grok-4.3": "hackerai-standard",
   "hackerai-lite": "hackerai-standard",
 };
 
@@ -55,7 +60,10 @@ export function coerceSelectedModel(
   if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
     return value as SelectedModel;
   }
-  if (value in LEGACY_MODEL_ID_MAP) {
+  // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
+  // properties like "toString" or "constructor" if a hostile/garbage value
+  // ever reaches this function via localStorage or the request body.
+  if (Object.hasOwn(LEGACY_MODEL_ID_MAP, value)) {
     return LEGACY_MODEL_ID_MAP[value];
   }
   return null;
