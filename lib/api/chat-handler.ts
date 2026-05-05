@@ -850,34 +850,32 @@ export const createChatHandler = (
                 userId,
                 configuredModelId,
               ),
-              stopWhen: isAgentMode(mode)
-                ? [
-                    stepCountIs(getMaxStepsForUser(mode, subscription)),
-                    tokenExhaustedAfterSummarization({
-                      threshold: Math.floor(
-                        getMaxTokensForSubscription(subscription, { mode }) *
-                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
-                      ),
-                      getLastStepInputTokens: () => lastStepInputTokens,
-                      getHasSummarized: hasSummarized,
-                      onFired: () => {
-                        stoppedDueToTokenExhaustion = true;
-                      },
-                    }),
-                    elapsedTimeExceeds({
-                      maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
-                      getStartTime: () => streamStartTime,
-                      onFired: () => {
-                        stoppedDueToPreemptiveTimeout = true;
-                      },
-                    }),
-                    doomLoopDetected({
-                      onFired: () => {
-                        stoppedDueToDoomLoop = true;
-                      },
-                    }),
-                  ]
-                : stepCountIs(getMaxStepsForUser(mode, subscription)),
+              stopWhen: [
+                stepCountIs(getMaxStepsForUser(mode, subscription)),
+                tokenExhaustedAfterSummarization({
+                  threshold: Math.floor(
+                    getMaxTokensForSubscription(subscription, { mode }) *
+                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                  ),
+                  getLastStepInputTokens: () => lastStepInputTokens,
+                  getHasSummarized: hasSummarized,
+                  onFired: () => {
+                    stoppedDueToTokenExhaustion = true;
+                  },
+                }),
+                elapsedTimeExceeds({
+                  maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
+                  getStartTime: () => streamStartTime,
+                  onFired: () => {
+                    stoppedDueToPreemptiveTimeout = true;
+                  },
+                }),
+                doomLoopDetected({
+                  onFired: () => {
+                    stoppedDueToDoomLoop = true;
+                  },
+                }),
+              ],
               onChunk: async (chunk) => {
                 if (chunk.chunk.type === "tool-call") {
                   const sandboxType = sandboxManager.getSandboxType(
