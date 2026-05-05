@@ -258,6 +258,57 @@ export const saveChat = mutation({
 });
 
 /**
+ * Persist per-chat picker preferences (selected model + mode) when the user
+ * toggles them in the UI, before sending. Client-callable, ownership-checked.
+ *
+ * Intentionally does NOT bump `update_time` (would reorder the sidebar) or
+ * touch stream state — those side effects belong to `updateChat`, which only
+ * the backend should call at end-of-stream.
+ */
+export const updateChatPreferences = mutation({
+  args: {
+    id: v.string(),
+    selectedModel: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+      .first();
+
+    // No-op for chats that haven't been created server-side yet — the backend
+    // will write these fields on first send via `updateChat`.
+    if (!chat) return null;
+
+    if (chat.user_id !== user.subject) {
+      throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (args.selectedModel !== undefined) {
+      patch.selected_model = args.selectedModel;
+    }
+    if (args.mode !== undefined) {
+      patch.default_model_slug = args.mode;
+    }
+    if (Object.keys(patch).length === 0) return null;
+
+    await ctx.db.patch(chat._id, patch);
+    return null;
+  },
+});
+
+/**
  * Update an existing chat with title and finish reason
  * Automatically clears active_stream_id and canceled_at for stream cleanup
  */
