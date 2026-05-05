@@ -45,6 +45,7 @@ interface MessageItemProps {
   onSaveEdit: (newContent: string, remainingFileIds: string[]) => Promise<void>;
   onCancelEdit: () => void;
   onRegenerate: () => void;
+  onContinue?: () => void;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
   onFeedbackSubmit: (details: string) => Promise<void>;
@@ -110,6 +111,7 @@ export const MessageItem = memo(function MessageItem({
   onSaveEdit,
   onCancelEdit,
   onRegenerate,
+  onContinue,
   onBranchMessage,
   onFeedback,
   onFeedbackSubmit,
@@ -420,7 +422,11 @@ export const MessageItem = memo(function MessageItem({
 
         {/* Finish reason notice under last assistant message */}
         {isLastAssistantMessage && status !== "streaming" && (
-          <FinishReasonNotice finishReason={finishReason} mode={mode} />
+          <FinishReasonNotice
+            finishReason={finishReason}
+            mode={mode}
+            onContinue={onContinue}
+          />
         )}
 
         <MessageActions

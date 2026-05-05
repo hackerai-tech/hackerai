@@ -618,6 +618,23 @@ export const useChatHandlers = ({
     }
   };
 
+  const handleContinue = () => {
+    if (status === "streaming") return;
+    hasManuallyStoppedRef.current = false;
+    sendMessage(
+      { text: "continue" },
+      {
+        body: {
+          mode: chatMode,
+          todos,
+          temporary: temporaryChatsEnabled,
+          sandboxPreference,
+          selectedModel,
+        },
+      },
+    );
+  };
+
   const handleSendNow = async (messageId: string) => {
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
@@ -683,5 +700,6 @@ export const useChatHandlers = ({
     handleRetry,
     handleEditMessage,
     handleSendNow,
+    handleContinue,
   };
 };

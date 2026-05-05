@@ -1,15 +1,18 @@
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
+import { Button } from "@/components/ui/button";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
+  onContinue?: () => void;
 }
 
 export const FinishReasonNotice = ({
   finishReason,
   mode,
+  onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, autoContinueCount } = useDataStreamState();
 
@@ -30,50 +33,28 @@ export const FinishReasonNotice = ({
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
-      return (
-        <>
-          I automatically stopped to prevent going off course. Say
-          &quot;continue&quot; if you&apos;d like me to keep working on this
-          task.
-        </>
-      );
+      return <>I automatically stopped to prevent going off course.</>;
     }
 
     if (finishReason === "timeout") {
-      return (
-        <>
-          I had to stop due to the time limit. Say &quot;continue&quot; if
-          you&apos;d like me to keep working on this task.
-        </>
-      );
+      return <>I had to stop due to the time limit.</>;
     }
 
     if (finishReason === "length") {
-      return (
-        <>
-          I hit the output token limit and had to stop. Say &quot;continue&quot;
-          to pick up where I left off.
-        </>
-      );
+      return <>I hit the output token limit and had to stop.</>;
     }
 
     if (finishReason === "context-limit") {
       return (
         <>
           I reached the context limit for this conversation after summarizing
-          earlier messages. Say &quot;continue&quot; to pick up where I left
-          off.
+          earlier messages.
         </>
       );
     }
 
     if (finishReason === "preemptive-timeout") {
-      return (
-        <>
-          I had to stop because the session exceeded the time limit. Say
-          &quot;continue&quot; to pick up where I left off.
-        </>
-      );
+      return <>I had to stop because the session exceeded the time limit.</>;
     }
 
     return null;
@@ -85,8 +66,18 @@ export const FinishReasonNotice = ({
 
   return (
     <div className="mt-2 w-full">
-      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
-        {content}
+      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
+        <span>{content}</span>
+        {onContinue && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onContinue}
+          >
+            Continue
+          </Button>
+        )}
       </div>
     </div>
   );

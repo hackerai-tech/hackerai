@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect } from "@jest/globals";
+import { describe, it, expect, jest } from "@jest/globals";
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
@@ -35,6 +35,7 @@ function DataStreamSetter({
 interface RenderNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
+  onContinue?: () => void;
 }
 
 function renderNotice(
@@ -174,6 +175,56 @@ describe("FinishReasonNotice", () => {
       );
       expect(
         screen.getByText(/I had to stop due to the time limit/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe("Continue button", () => {
+    it("does not render the Continue button when onContinue is not provided", () => {
+      renderNotice(
+        { finishReason: "tool-calls", mode: "agent" },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders the Continue button when onContinue is provided", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        { finishReason: "tool-calls", mode: "agent", onContinue },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+      expect(
+        screen.getByRole("button", { name: /continue/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("invokes onContinue when the button is clicked", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        { finishReason: "tool-calls", mode: "agent", onContinue },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+      expect(onContinue).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      "tool-calls",
+      "timeout",
+      "length",
+      "context-limit",
+      "preemptive-timeout",
+    ])("renders the Continue button for finishReason=%s", (finishReason) => {
+      const onContinue = jest.fn();
+      renderNotice(
+        { finishReason, mode: "agent", onContinue },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+      );
+      expect(
+        screen.getByRole("button", { name: /continue/i }),
       ).toBeInTheDocument();
     });
   });
