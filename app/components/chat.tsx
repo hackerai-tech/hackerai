@@ -1138,6 +1138,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     handleRetry,
     handleEditMessage,
     handleSendNow,
+    handleContinue,
   } = useChatHandlers({
     chatId,
     messages,
@@ -1278,6 +1279,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
+                  onContinue={handleContinue}
                   onReconnect={resumeStream}
                   onEditMessage={handleEditMessage}
                   onBranchMessage={handleBranchMessage}

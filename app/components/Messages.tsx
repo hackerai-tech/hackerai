@@ -29,6 +29,7 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onRetry: () => void;
+  onContinue?: () => void;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
@@ -66,6 +67,7 @@ export const Messages = ({
   setMessages,
   onRegenerate,
   onRetry,
+  onContinue,
   onReconnect,
   onEditMessage,
   onBranchMessage,
@@ -326,6 +328,7 @@ export const Messages = ({
               onSaveEdit={handleSaveEdit}
               onCancelEdit={handleCancelEdit}
               onRegenerate={onRegenerate}
+              onContinue={onContinue}
               onBranchMessage={
                 onBranchMessage ? handleBranchMessage : undefined
               }

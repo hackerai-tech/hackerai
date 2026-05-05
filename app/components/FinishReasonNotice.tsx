@@ -1,19 +1,25 @@
+import { useState } from "react";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
+import { Button } from "@/components/ui/button";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
+  onContinue?: () => void;
 }
 
 export const FinishReasonNotice = ({
   finishReason,
   mode,
+  onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, autoContinueCount } = useDataStreamState();
+  const [hasContinued, setHasContinued] = useState(false);
 
   if (isAutoResuming) return null;
+  if (hasContinued) return null;
 
   // Suppress for auto-continuable reasons in agent mode when more auto-continues will fire
   if (
@@ -21,7 +27,8 @@ export const FinishReasonNotice = ({
     autoContinueCount < MAX_AUTO_CONTINUES &&
     (finishReason === "context-limit" ||
       finishReason === "length" ||
-      finishReason === "preemptive-timeout")
+      finishReason === "preemptive-timeout" ||
+      finishReason === "tool-calls")
   ) {
     return null;
   }
@@ -30,50 +37,19 @@ export const FinishReasonNotice = ({
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
-      return (
-        <>
-          I automatically stopped to prevent going off course. Say
-          &quot;continue&quot; if you&apos;d like me to keep working on this
-          task.
-        </>
-      );
+      return <>Reached the step limit for this turn.</>;
     }
 
-    if (finishReason === "timeout") {
-      return (
-        <>
-          I had to stop due to the time limit. Say &quot;continue&quot; if
-          you&apos;d like me to keep working on this task.
-        </>
-      );
+    if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
+      return <>Reached the time limit for this turn.</>;
     }
 
     if (finishReason === "length") {
-      return (
-        <>
-          I hit the output token limit and had to stop. Say &quot;continue&quot;
-          to pick up where I left off.
-        </>
-      );
+      return <>Reached the output limit for this turn.</>;
     }
 
     if (finishReason === "context-limit") {
-      return (
-        <>
-          I reached the context limit for this conversation after summarizing
-          earlier messages. Say &quot;continue&quot; to pick up where I left
-          off.
-        </>
-      );
-    }
-
-    if (finishReason === "preemptive-timeout") {
-      return (
-        <>
-          I had to stop because the session exceeded the time limit. Say
-          &quot;continue&quot; to pick up where I left off.
-        </>
-      );
+      return <>Reached the context limit for this conversation.</>;
     }
 
     return null;
@@ -85,8 +61,21 @@ export const FinishReasonNotice = ({
 
   return (
     <div className="mt-2 w-full">
-      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
-        {content}
+      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
+        <span>{content}</span>
+        {onContinue && !hasContinued && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setHasContinued(true);
+              onContinue();
+            }}
+          >
+            Continue
+          </Button>
+        )}
       </div>
     </div>
   );

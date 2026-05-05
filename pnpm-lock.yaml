@@ -42,6 +42,11 @@ overrides:
   yaml@>=1.0.0 <1.10.3: 1.10.3
   yaml@>=2.0.0 <2.8.3: 2.8.3
 
+patchedDependencies:
+  ai@6.0.174:
+    hash: c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455
+    path: patches/ai@6.0.174.patch
+
 importers:
 
   .:
@@ -75,7 +80,7 @@ importers:
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@openrouter/ai-sdk-provider':
         specifier: ^2.9.0
-        version: 2.9.0(ai@6.0.174(zod@4.4.3))(zod@4.4.3)
+        version: 2.9.0(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)
       '@posthog/ai':
         specifier: ^7.17.2
         version: 7.17.2(@ai-sdk/provider@3.0.10)(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.2.0(@opentelemetry/api@1.9.0))(posthog-node@5.33.0(rxjs@7.8.2))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(ws@8.19.0)(zod-to-json-schema@3.25.1(zod@4.4.3))
@@ -147,7 +152,7 @@ importers:
         version: 6.0.0
       ai:
         specifier: ^6.0.174
-        version: 6.0.174(zod@4.4.3)
+        version: 6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3)
       ai-elements:
         specifier: ^1.9.0
         version: 1.9.0
@@ -8462,7 +8467,7 @@ snapshots:
   '@ai-sdk/react@3.0.176(react@19.2.5)(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider-utils': 4.0.26(zod@4.4.3)
-      ai: 6.0.174(zod@4.4.3)
+      ai: 6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3)
       react: 19.2.5
       swr: 2.3.5(react@19.2.5)
       throttleit: 2.1.0
@@ -10156,9 +10161,9 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@openrouter/ai-sdk-provider@2.9.0(ai@6.0.174(zod@4.4.3))(zod@4.4.3)':
+  '@openrouter/ai-sdk-provider@2.9.0(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)':
     dependencies:
-      ai: 6.0.174(zod@4.4.3)
+      ai: 6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3)
       zod: 4.4.3
 
   '@opentelemetry/api-logs@0.208.0':
@@ -12389,7 +12394,7 @@ snapshots:
 
   ai-elements@1.9.0: {}
 
-  ai@6.0.174(zod@4.4.3):
+  ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3):
     dependencies:
       '@ai-sdk/gateway': 3.0.109(zod@4.4.3)
       '@ai-sdk/provider': 3.0.10

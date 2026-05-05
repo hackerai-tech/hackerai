@@ -11,25 +11,16 @@ import {
 } from "@/lib/ai/providers";
 import { AUTH_DISCLAIMER, detectLang } from "@/lib/chat/auth-disclaimer";
 /**
- * Get maximum steps allowed for a user based on mode and subscription tier
- * Agent mode: 100 steps (all tiers)
- * Ask mode: Free: 5 steps, Paid: 15 steps
+ * Get maximum steps allowed for a user based on mode and subscription.
+ * Agent mode: 100 steps (all tiers).
+ * Ask mode: Free 15, Paid 100.
  */
 export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent mode
-  if (isAgentMode(mode)) {
-    return 100;
-  }
-
-  // Ask mode steps: Free: 5, Ultra: 15, Pro/Team: 10
-  if (subscription === "free") {
-    return 5;
-  }
-
-  return 15;
+  if (isAgentMode(mode)) return 100;
+  return subscription === "free" ? 15 : 100;
 };
 
 /**
