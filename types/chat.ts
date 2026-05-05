@@ -13,25 +13,61 @@ export function isChatMode(value: string | null): value is ChatMode {
 
 export type SelectedModel =
   | "auto"
-  | "sonnet-4.6"
-  | "grok-4.1"
-  | "grok-4.3"
-  | "gemini-3-flash"
-  | "opus-4.6"
-  | "kimi-k2.6";
+  | "hackerai-standard"
+  | "hackerai-pro"
+  | "hackerai-max";
 // | "codex-local"
 // | `codex-local:${string}`;
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
-  "sonnet-4.6",
-  "grok-4.1",
-  "grok-4.3",
-  "gemini-3-flash",
-  "opus-4.6",
-  "kimi-k2.6",
+  "hackerai-standard",
+  "hackerai-pro",
+  "hackerai-max",
   // "codex-local",
 ];
+
+/**
+ * Map of legacy ids to the current `SelectedModel` union. Covers two prior
+ * shapes:
+ *   1. Underlying-model ids from before the HackerAI tier rebrand.
+ *   2. `hackerai-lite` from the short-lived first naming of the entry tier
+ *      (renamed to `hackerai-standard` because Lite mis-described Kimi K2.6).
+ * Used by `coerceSelectedModel` to migrate values on read.
+ */
+export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
+  "sonnet-4.6": "hackerai-pro",
+  "opus-4.6": "hackerai-max",
+  "gemini-3-flash": "hackerai-standard",
+  "kimi-k2.6": "hackerai-standard",
+  // Grok was removed from the picker before the tier rebrand. Both variants
+  // were entry-level alternatives to the auto router (Gemini/Kimi territory),
+  // so map them to Standard rather than dropping the user's preference.
+  "grok-4.1": "hackerai-standard",
+  "grok-4.3": "hackerai-standard",
+  "hackerai-lite": "hackerai-standard",
+};
+
+/**
+ * Coerce any stored selected-model string into the current `SelectedModel`
+ * union. Returns `null` if the value isn't recognized (caller should fall
+ * back to "auto").
+ */
+export function coerceSelectedModel(
+  value: string | null,
+): SelectedModel | null {
+  if (value === null) return null;
+  if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
+    return value as SelectedModel;
+  }
+  // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
+  // properties like "toString" or "constructor" if a hostile/garbage value
+  // ever reaches this function via localStorage or the request body.
+  if (Object.hasOwn(LEGACY_MODEL_ID_MAP, value)) {
+    return LEGACY_MODEL_ID_MAP[value];
+  }
+  return null;
+}
 
 /** Check if a model is a local Codex model (with or without sub-model) */
 export function isCodexLocal(model: string | null): boolean {

@@ -1,6 +1,6 @@
 import {
+  coerceSelectedModel,
   isChatMode,
-  isSelectedModel,
   type ChatMode,
   type SelectedModel,
 } from "@/types/chat";
@@ -69,41 +69,65 @@ export const writeChatMode = (mode: ChatMode): void => {
   }
 };
 
-/** Read the saved model preference for a specific mode (ask vs agent) */
-export const readSelectedModelForMode = (
-  mode: "ask" | "agent",
-): SelectedModel | null => {
+/**
+ * Read the saved model preference (shared across ask + agent modes).
+ * Migrates two flavors of legacy values when present:
+ *   1. Per-mode keys from before the unified preference: `selected_model_ask`
+ *      and `selected_model_agent`.
+ *   2. Underlying-model ids from before the HackerAI tier rebrand
+ *      (e.g. `"opus-4.6"` → `"hackerai-max"`) — handled by `coerceSelectedModel`.
+ * Both kinds are rewritten to the unified key in their new form so the
+ * migration is a one-shot.
+ */
+export const readSelectedModel = (): SelectedModel | null => {
   if (!isBrowser()) return null;
   try {
-    const raw = window.localStorage.getItem(
-      `${SELECTED_MODEL_STORAGE_KEY}_${mode}`,
+    const raw = window.localStorage.getItem(SELECTED_MODEL_STORAGE_KEY);
+    const coerced = coerceSelectedModel(raw);
+    if (coerced) {
+      // If the stored value was a legacy underlying-model id, rewrite it.
+      if (raw !== coerced) {
+        window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, coerced);
+      }
+      return coerced;
+    }
+    // Migrate from legacy per-mode keys (selected_model_ask / selected_model_agent).
+    const legacyAsk = window.localStorage.getItem(
+      `${SELECTED_MODEL_STORAGE_KEY}_ask`,
     );
-    return isSelectedModel(raw) ? raw : null;
+    const legacyAgent = window.localStorage.getItem(
+      `${SELECTED_MODEL_STORAGE_KEY}_agent`,
+    );
+    const legacy =
+      coerceSelectedModel(legacyAsk) ?? coerceSelectedModel(legacyAgent);
+    if (legacy) {
+      window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, legacy);
+      window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_ask`);
+      window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_agent`);
+    }
+    return legacy;
   } catch {
     return null;
   }
 };
 
-/** Save the model preference for a specific mode (ask vs agent) */
-export const writeSelectedModelForMode = (
-  mode: "ask" | "agent",
-  model: SelectedModel,
-): void => {
+/** Save the model preference (shared across ask + agent modes). */
+export const writeSelectedModel = (model: SelectedModel): void => {
   if (!isBrowser()) return;
   try {
-    window.localStorage.setItem(`${SELECTED_MODEL_STORAGE_KEY}_${mode}`, model);
+    window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, model);
   } catch {
     // ignore
   }
 };
 
-/** Remove all persisted model preferences (ask + agent) — e.g. on logout. */
+/** Remove the persisted model preference (and any legacy per-mode keys) — e.g. on logout. */
 export const clearSelectedModelFromStorage = (): void => {
   if (!isBrowser()) return;
   try {
-    for (const mode of ["ask", "agent"] as const) {
-      window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_${mode}`);
-    }
+    window.localStorage.removeItem(SELECTED_MODEL_STORAGE_KEY);
+    window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_ask`);
+    window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_agent`);
   } catch {
     // ignore
   }

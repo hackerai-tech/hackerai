@@ -62,7 +62,7 @@ function buildConfig(overrides: Record<string, unknown> = {}) {
     }),
     refreshCentrifugoTokenDesktop: jest
       .fn()
-      .mockResolvedValue({ centrifugoToken: "new-token" }),
+      .mockResolvedValue({ ok: true, centrifugoToken: "new-token" }),
     disconnectDesktop: jest.fn().mockResolvedValue({ success: true }),
     ...overrides,
   };

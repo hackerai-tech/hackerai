@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
+import { coerceSelectedModel } from "../types/chat";
 
 /**
  * Get a chat by its ID
@@ -254,6 +255,63 @@ export const saveChat = mutation({
       console.error("Failed to save chat:", error);
       throw new Error("Failed to save chat");
     }
+  },
+});
+
+/**
+ * Persist per-chat picker preferences (selected model + mode) when the user
+ * toggles them in the UI, before sending. Client-callable, ownership-checked.
+ *
+ * Intentionally does NOT bump `update_time` (would reorder the sidebar) or
+ * touch stream state — those side effects belong to `updateChat`, which only
+ * the backend should call at end-of-stream.
+ */
+export const updateChatPreferences = mutation({
+  args: {
+    id: v.string(),
+    selectedModel: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+      .first();
+
+    // No-op for chats that haven't been created server-side yet — the backend
+    // will write these fields on first send via `updateChat`.
+    if (!chat) return null;
+
+    if (chat.user_id !== user.subject) {
+      throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (args.selectedModel !== undefined) {
+      // Coerce legacy / unknown ids before writing so the row never ends up
+      // with a value the load path will silently rewrite later. Unknown ids
+      // are dropped (skipped) rather than written verbatim.
+      const coerced = coerceSelectedModel(args.selectedModel);
+      if (coerced !== null) {
+        patch.selected_model = coerced;
+      }
+    }
+    if (args.mode !== undefined) {
+      patch.default_model_slug = args.mode;
+    }
+    if (Object.keys(patch).length === 0) return null;
+
+    await ctx.db.patch(chat._id, patch);
+    return null;
   },
 });
 

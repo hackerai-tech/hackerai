@@ -34,7 +34,7 @@ import type {
   SelectedModel,
   RateLimitInfo,
 } from "@/types";
-import { isSelectedModel } from "@/types";
+import { coerceSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   checkRateLimit,
@@ -170,9 +170,7 @@ export const createChatHandler = (
       outerChatId = chatId;
 
       const selectedModelOverride: SelectedModel | undefined =
-        rawSelectedModel && isSelectedModel(rawSelectedModel)
-          ? rawSelectedModel
-          : undefined;
+        coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
 
       // Local provider models are handled client-side and must never reach the server
       if (
