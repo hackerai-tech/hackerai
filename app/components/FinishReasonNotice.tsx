@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
@@ -15,8 +16,10 @@ export const FinishReasonNotice = ({
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, autoContinueCount } = useDataStreamState();
+  const [hasContinued, setHasContinued] = useState(false);
 
   if (isAutoResuming) return null;
+  if (hasContinued) return null;
 
   // Suppress for auto-continuable reasons in agent mode when more auto-continues will fire
   if (
@@ -60,12 +63,15 @@ export const FinishReasonNotice = ({
     <div className="mt-2 w-full">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span>{content}</span>
-        {onContinue && (
+        {onContinue && !hasContinued && (
           <Button
             type="button"
             size="sm"
             variant="outline"
-            onClick={onContinue}
+            onClick={() => {
+              setHasContinued(true);
+              onContinue();
+            }}
           >
             Continue
           </Button>

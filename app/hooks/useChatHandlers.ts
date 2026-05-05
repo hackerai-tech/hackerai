@@ -622,10 +622,11 @@ export const useChatHandlers = ({
     if (status === "streaming") return;
     hasManuallyStoppedRef.current = false;
     sendMessage(
-      { text: "continue" },
+      { text: "continue", metadata: { isAutoContinue: true } },
       {
         body: {
           mode: chatMode,
+          isAutoContinue: true,
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
