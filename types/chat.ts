@@ -13,25 +13,49 @@ export function isChatMode(value: string | null): value is ChatMode {
 
 export type SelectedModel =
   | "auto"
-  | "sonnet-4.6"
-  | "grok-4.1"
-  | "grok-4.3"
-  | "gemini-3-flash"
-  | "opus-4.6"
-  | "kimi-k2.6";
+  | "hackerai-lite"
+  | "hackerai-pro"
+  | "hackerai-max";
 // | "codex-local"
 // | `codex-local:${string}`;
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
-  "sonnet-4.6",
-  "grok-4.1",
-  "grok-4.3",
-  "gemini-3-flash",
-  "opus-4.6",
-  "kimi-k2.6",
+  "hackerai-lite",
+  "hackerai-pro",
+  "hackerai-max",
   // "codex-local",
 ];
+
+/**
+ * Map of legacy underlying-model ids to the new HackerAI tier ids.
+ * Used to migrate values stored before the tier rebrand from
+ * localStorage and from `chats.selected_model` in Convex.
+ */
+export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
+  "sonnet-4.6": "hackerai-pro",
+  "opus-4.6": "hackerai-max",
+  "gemini-3-flash": "hackerai-lite",
+  "kimi-k2.6": "hackerai-lite",
+};
+
+/**
+ * Coerce any stored selected-model string into the current `SelectedModel`
+ * union. Returns `null` if the value isn't recognized (caller should fall
+ * back to "auto").
+ */
+export function coerceSelectedModel(
+  value: string | null,
+): SelectedModel | null {
+  if (value === null) return null;
+  if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
+    return value as SelectedModel;
+  }
+  if (value in LEGACY_MODEL_ID_MAP) {
+    return LEGACY_MODEL_ID_MAP[value];
+  }
+  return null;
+}
 
 /** Check if a model is a local Codex model (with or without sub-model) */
 export function isCodexLocal(model: string | null): boolean {

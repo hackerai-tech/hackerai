@@ -296,26 +296,38 @@ interface ConnectResult {
   error?: string;
 }
 
-interface RefreshTokenResult {
-  centrifugoToken: string;
-}
+type RefreshTokenResult =
+  | { ok: true; centrifugoToken: string }
+  | {
+      ok: false;
+      terminated: true;
+      reason:
+        | "connection_not_found"
+        | "ownership_mismatch"
+        | "connection_inactive";
+      connectionId: string;
+      clientVersion: string | null;
+      status: string | null;
+      disconnectReason:
+        | "client_disconnect"
+        | "desktop_disconnect"
+        | "desktop_kicked_by_new_session"
+        | "token_regenerated"
+        | "presence_sweep"
+        | null;
+      msSinceDisconnected: number | null;
+      msSinceLastHeartbeat: number | null;
+      msSinceCreated: number | null;
+    };
 
-// A getToken refresh fails with one of these when the Convex row has been
-// authoritatively flipped to disconnected (token regenerated, multi-tab kick,
-// manual backend disconnect, or row purged after long disconnect). Centrifuge
-// would otherwise retry getToken on its backoff schedule forever and flood
-// Convex logs with identical errors.
-function isConnectionTerminatedByServer(error: unknown): boolean {
+// "Invalid token" UNAUTHORIZED still throws server-side (the caller's token
+// is bad, not a connection lifecycle event), so the catch path needs to
+// recognize it as another terminate-the-loop signal.
+function isInvalidTokenError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const data = (error as { data?: unknown }).data;
   if (!data || typeof data !== "object") return false;
-  const code = (data as { code?: string }).code;
-  const message = (data as { message?: string }).message;
-  if (code === "BAD_REQUEST" && message === "Connection is not active")
-    return true;
-  if (code === "NOT_FOUND") return true;
-  if (code === "UNAUTHORIZED") return true;
-  return false;
+  return (data as { code?: string }).code === "UNAUTHORIZED";
 }
 
 class LocalSandboxClient {
@@ -460,62 +472,24 @@ class LocalSandboxClient {
         if (!this.connectionId) {
           throw new Error("Cannot refresh token: connectionId is null");
         }
+        let result: RefreshTokenResult;
         try {
-          const result = (await this.convexHttp.mutation(
+          result = (await this.convexHttp.mutation(
             api.localSandbox.refreshCentrifugoToken as never,
             {
               token: this.config.token,
               connectionId: this.connectionId,
             } as never,
           )) as RefreshTokenResult;
-          return result.centrifugoToken;
         } catch (error) {
-          if (isConnectionTerminatedByServer(error)) {
-            const data =
-              (
-                error as {
-                  data?: {
-                    code?: string;
-                    message?: string;
-                    disconnectReason?: string | null;
-                    msSinceDisconnected?: number | null;
-                    msSinceLastHeartbeat?: number;
-                    msSinceCreated?: number;
-                  };
-                }
-              ).data ?? {};
+          if (isInvalidTokenError(error)) {
+            console.error(chalk.red("\n❌ Token rejected by server."));
             console.error(
-              chalk.red(
-                `\n❌ Connection terminated by server (${data.code ?? "unknown"}: ${data.message ?? "unknown"})`,
-              ),
+              chalk.yellow("Please regenerate your token in Settings."),
             );
-            const reasonHint =
-              data.disconnectReason === "token_regenerated"
-                ? "Your token was regenerated; rerun with the new token."
-                : data.disconnectReason === "presence_sweep"
-                  ? "Server presence sweep marked this connection stale."
-                  : data.disconnectReason === "desktop_kicked_by_new_session"
-                    ? "A new desktop session took over."
-                    : data.disconnectReason === "client_disconnect" ||
-                        data.disconnectReason === "desktop_disconnect"
-                      ? "This connection was explicitly disconnected."
-                      : "Likely causes: token regenerated, or disconnected from another session.";
-            console.error(chalk.yellow(reasonHint));
-            console.error(
-              chalk.gray(
-                JSON.stringify({
-                  connectionId: this.connectionId ?? "unknown",
-                  disconnectReason: data.disconnectReason ?? null,
-                  msSinceDisconnected: data.msSinceDisconnected ?? null,
-                  msSinceLastHeartbeat: data.msSinceLastHeartbeat ?? null,
-                  msSinceCreated: data.msSinceCreated ?? null,
-                }),
-              ),
-            );
-            // Stop the Centrifuge retry loop and exit. cleanup() synchronously
-            // calls centrifuge.disconnect() before any awaits, so by the time
-            // we re-throw below Centrifuge is already in a terminal state and
-            // won't invoke getToken again.
+            // cleanup() synchronously calls centrifuge.disconnect() before any
+            // awaits, so by the time we re-throw below Centrifuge is in a
+            // terminal state and won't invoke getToken again.
             this.cleanup().then(() => process.exit(1));
           } else {
             console.error(
@@ -525,6 +499,40 @@ class LocalSandboxClient {
           }
           throw error;
         }
+        if (result.ok) return result.centrifugoToken;
+
+        console.error(
+          chalk.red(`\n❌ Connection terminated by server (${result.reason})`),
+        );
+        const reasonHint =
+          result.disconnectReason === "token_regenerated"
+            ? "Your token was regenerated; rerun with the new token."
+            : result.disconnectReason === "presence_sweep"
+              ? "Server presence sweep marked this connection stale."
+              : result.disconnectReason === "desktop_kicked_by_new_session"
+                ? "A new desktop session took over."
+                : result.disconnectReason === "client_disconnect" ||
+                    result.disconnectReason === "desktop_disconnect"
+                  ? "This connection was explicitly disconnected."
+                  : "Likely causes: token regenerated, or disconnected from another session.";
+        console.error(chalk.yellow(reasonHint));
+        console.error(
+          chalk.gray(
+            JSON.stringify({
+              connectionId: result.connectionId,
+              disconnectReason: result.disconnectReason,
+              msSinceDisconnected: result.msSinceDisconnected,
+              msSinceLastHeartbeat: result.msSinceLastHeartbeat,
+              msSinceCreated: result.msSinceCreated,
+            }),
+          ),
+        );
+        // Stop the Centrifuge retry loop and exit. cleanup() synchronously
+        // calls centrifuge.disconnect() before any awaits, so by the time we
+        // throw below Centrifuge is in a terminal state and won't invoke
+        // getToken again.
+        this.cleanup().then(() => process.exit(1));
+        throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });
 

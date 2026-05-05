@@ -4,7 +4,11 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
-import { isAnthropicModel, type ModelName } from "@/lib/ai/providers";
+import {
+  isAnthropicModel,
+  resolveTierToProviderKey,
+  type ModelName,
+} from "@/lib/ai/providers";
 import { AUTH_DISCLAIMER, detectLang } from "@/lib/chat/auth-disclaimer";
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
@@ -48,20 +52,23 @@ export function selectModel(
   //   );
   // }
 
-  // Agent mode: allow model override for paid users; free users get agent-model-free
-  if (isAgentMode(mode)) {
-    if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
-      return `model-${selectedModel}` as ModelName;
-    }
-    return subscription === "free" ? "agent-model-free" : "agent-model";
+  const isAgent = isAgentMode(mode);
+  const autoModel: ModelName = isAgent
+    ? subscription === "free"
+      ? "agent-model-free"
+      : "agent-model"
+    : subscription === "free"
+      ? "ask-model-free"
+      : "ask-model";
+
+  // Free users always route through the auto router; paid users may pick a
+  // tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
+  if (!selectedModel || selectedModel === "auto" || subscription === "free") {
+    return autoModel;
   }
 
-  // Ask mode: allow user-selected model override for paid users
-  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
-    return `model-${selectedModel}` as ModelName;
-  }
-
-  return subscription === "free" ? "ask-model-free" : "ask-model";
+  const providerKey = resolveTierToProviderKey(selectedModel, mode);
+  return providerKey ?? autoModel;
 }
 
 /**

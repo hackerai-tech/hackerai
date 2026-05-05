@@ -38,7 +38,11 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import { isCodexLocal, getCodexSubModel, isSelectedModel } from "@/types/chat";
+import {
+  coerceSelectedModel,
+  isCodexLocal,
+  getCodexSubModel,
+} from "@/types/chat";
 import { serializeConversation } from "@/lib/utils/conversation-serializer";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import type { ContextUsageData } from "./ContextUsageIndicator";
@@ -270,6 +274,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
   const hasInitializedModelRef = useRef(false);
+  // Snapshot of the last picker values successfully persisted to the chat doc.
+  // Seeded after init from chatData; subsequent picker toggles trigger a debounced patch.
+  const persistedPrefsRef = useRef<{ model: string; mode: string } | null>(
+    null,
+  );
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -753,6 +762,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
+    persistedPrefsRef.current = null;
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -881,10 +891,65 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (!chatData || dataId !== chatId) return;
     const savedModel = (chatData as any).selected_model as string | undefined;
     hasInitializedModelRef.current = true;
-    if (savedModel && isSelectedModel(savedModel)) {
-      setSelectedModel(savedModel);
+    const coerced = coerceSelectedModel(savedModel ?? null);
+    if (coerced) {
+      setSelectedModel(coerced);
     }
   }, [chatData, isExistingChat, chatId]);
+
+  // Persist picker preferences (model + mode) when the user toggles them.
+  // Debounced so quick toggles don't spam Convex; baseline is seeded from the
+  // chat's stored values so the post-init render doesn't trigger a no-op write.
+  const updateChatPreferences = useMutation(api.chats.updateChatPreferences);
+  useEffect(() => {
+    if (!isExistingChat || !chatData) return;
+    const dataId = (chatData as any).id as string | undefined;
+    if (dataId !== chatId) return;
+    if (
+      !hasInitializedModelRef.current ||
+      !hasInitializedModeFromChatRef.current
+    ) {
+      return;
+    }
+
+    if (persistedPrefsRef.current === null) {
+      const savedModel = (chatData as any).selected_model as string | undefined;
+      const savedMode = (chatData as any).default_model_slug as
+        | string
+        | undefined;
+      persistedPrefsRef.current = {
+        model: savedModel ?? selectedModel,
+        mode: savedMode ?? chatMode,
+      };
+    }
+
+    const last = persistedPrefsRef.current;
+    if (last.model === selectedModel && last.mode === chatMode) return;
+
+    const handle = setTimeout(() => {
+      const snapshot = { model: selectedModel, mode: chatMode };
+      void updateChatPreferences({
+        id: chatId,
+        selectedModel,
+        mode: chatMode as "ask" | "agent",
+      })
+        .then(() => {
+          persistedPrefsRef.current = snapshot;
+        })
+        .catch(() => {
+          // Silent — picker state in memory is still correct; backend will
+          // re-persist on next send via updateChat.
+        });
+    }, 500);
+    return () => clearTimeout(handle);
+  }, [
+    selectedModel,
+    chatMode,
+    isExistingChat,
+    chatId,
+    chatData,
+    updateChatPreferences,
+  ]);
 
   // Sync Convex real-time data with useChat messages.
   // Uses statusRef (not status state) so this effect only fires when
