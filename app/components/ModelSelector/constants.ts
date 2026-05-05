@@ -15,19 +15,19 @@ export interface ModelOption {
 
 export const ASK_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "gemini-3-flash",
+    id: "hackerai-lite",
     label: "HackerAI Lite",
     description: "Fast and efficient for everyday tasks",
     poweredBy: "Google Gemini 3 Flash",
   },
   {
-    id: "sonnet-4.6",
+    id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
     poweredBy: "Claude Sonnet 4.6",
   },
   {
-    id: "opus-4.6",
+    id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
     poweredBy: "Claude Opus 4.6",
@@ -36,21 +36,21 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "kimi-k2.6",
+    id: "hackerai-lite",
     label: "HackerAI Lite",
     description: "Fast agent for everyday automation",
     poweredBy: "Moonshot Kimi K2.6",
     thinking: true,
   },
   {
-    id: "sonnet-4.6",
+    id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
     poweredBy: "Claude Sonnet 4.6",
     thinking: true,
   },
   {
-    id: "opus-4.6",
+    id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
     poweredBy: "Claude Opus 4.6",

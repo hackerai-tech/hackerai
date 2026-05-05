@@ -38,7 +38,11 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import { isCodexLocal, getCodexSubModel, isSelectedModel } from "@/types/chat";
+import {
+  coerceSelectedModel,
+  isCodexLocal,
+  getCodexSubModel,
+} from "@/types/chat";
 import { serializeConversation } from "@/lib/utils/conversation-serializer";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import type { ContextUsageData } from "./ContextUsageIndicator";
@@ -887,8 +891,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (!chatData || dataId !== chatId) return;
     const savedModel = (chatData as any).selected_model as string | undefined;
     hasInitializedModelRef.current = true;
-    if (savedModel && isSelectedModel(savedModel)) {
-      setSelectedModel(savedModel);
+    const coerced = coerceSelectedModel(savedModel ?? null);
+    if (coerced) {
+      setSelectedModel(coerced);
     }
   }, [chatData, isExistingChat, chatId]);
 

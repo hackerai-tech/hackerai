@@ -18,7 +18,6 @@ import {
   type QueuedMessage,
   type QueueBehavior,
   type SandboxPreference,
-  isSelectedModel,
   isCodexLocal,
   isChatMode,
 } from "@/types/chat";
@@ -46,6 +45,7 @@ import {
   writeSelectedModel,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
+
 interface GlobalStateType {
   // Input state
   input: string;
@@ -262,11 +262,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Model selection — shared across ask + agent modes (lineup is identical).
+  // Model selection — HackerAI tier ids (Lite/Pro/Max) are mode-agnostic;
+  // the active model is resolved server-side via resolveTierToProviderKey.
   // On web, Codex models are not usable so treat them as "auto".
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModel();
-    if (!isSelectedModel(saved)) return "auto";
+    if (!saved) return "auto";
     if (isCodexLocal(saved) && !isTauriEnvironment()) return "auto";
     return saved;
   });

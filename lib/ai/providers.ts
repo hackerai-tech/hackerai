@@ -1,5 +1,7 @@
 import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import type { ChatMode, SelectedModel } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
@@ -98,6 +100,27 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
 
 export function isAnthropicModel(modelName: string): boolean {
   return modelName.includes("sonnet") || modelName.includes("opus");
+}
+
+/**
+ * Map a HackerAI tier id to the underlying provider key for a given mode.
+ * Returns `null` for `"auto"` (the caller routes to the auto-router model
+ * key instead). The Pro/Max tiers map to the same model in both modes; only
+ * Lite differs (Gemini 3 Flash for ask, Kimi K2.6 for agent).
+ */
+export function resolveTierToProviderKey(
+  tier: SelectedModel,
+  mode: ChatMode,
+): ModelName | null {
+  if (tier === "auto") return null;
+  switch (tier) {
+    case "hackerai-lite":
+      return isAgentMode(mode) ? "model-kimi-k2.6" : "model-gemini-3-flash";
+    case "hackerai-pro":
+      return "model-sonnet-4.6";
+    case "hackerai-max":
+      return "model-opus-4.6";
+  }
 }
 
 export const myProvider = customProvider({

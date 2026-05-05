@@ -1,6 +1,6 @@
 import {
+  coerceSelectedModel,
   isChatMode,
-  isSelectedModel,
   type ChatMode,
   type SelectedModel,
 } from "@/types/chat";
@@ -69,12 +69,28 @@ export const writeChatMode = (mode: ChatMode): void => {
   }
 };
 
-/** Read the saved model preference (shared across ask + agent modes). */
+/**
+ * Read the saved model preference (shared across ask + agent modes).
+ * Migrates two flavors of legacy values when present:
+ *   1. Per-mode keys from before the unified preference: `selected_model_ask`
+ *      and `selected_model_agent`.
+ *   2. Underlying-model ids from before the HackerAI tier rebrand
+ *      (e.g. `"opus-4.6"` → `"hackerai-max"`) — handled by `coerceSelectedModel`.
+ * Both kinds are rewritten to the unified key in their new form so the
+ * migration is a one-shot.
+ */
 export const readSelectedModel = (): SelectedModel | null => {
   if (!isBrowser()) return null;
   try {
     const raw = window.localStorage.getItem(SELECTED_MODEL_STORAGE_KEY);
-    if (isSelectedModel(raw)) return raw;
+    const coerced = coerceSelectedModel(raw);
+    if (coerced) {
+      // If the stored value was a legacy underlying-model id, rewrite it.
+      if (raw !== coerced) {
+        window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, coerced);
+      }
+      return coerced;
+    }
     // Migrate from legacy per-mode keys (selected_model_ask / selected_model_agent).
     const legacyAsk = window.localStorage.getItem(
       `${SELECTED_MODEL_STORAGE_KEY}_ask`,
@@ -82,11 +98,8 @@ export const readSelectedModel = (): SelectedModel | null => {
     const legacyAgent = window.localStorage.getItem(
       `${SELECTED_MODEL_STORAGE_KEY}_agent`,
     );
-    const legacy = isSelectedModel(legacyAsk)
-      ? legacyAsk
-      : isSelectedModel(legacyAgent)
-        ? legacyAgent
-        : null;
+    const legacy =
+      coerceSelectedModel(legacyAsk) ?? coerceSelectedModel(legacyAgent);
     if (legacy) {
       window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, legacy);
       window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_ask`);

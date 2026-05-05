@@ -1,50 +1,63 @@
 import { describe, it, expect } from "@jest/globals";
 import { ASK_MODEL_OPTIONS, AGENT_MODEL_OPTIONS } from "../constants";
-import { myProvider } from "@/lib/ai/providers";
+import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import type { ChatMode } from "@/types/chat";
 
 /**
- * Drift guard: every selectable model option must have a corresponding
- * `model-{id}` entry registered with the provider. Without this, picking
- * the option from the UI would crash on `myProvider.languageModel()`.
+ * Drift guard: every selectable HackerAI tier must resolve to a provider key
+ * registered with `myProvider` in *both* modes. Without this, picking the
+ * tier from the UI would crash on `myProvider.languageModel()`.
  */
-describe("ModelSelector option ↔ provider drift", () => {
+describe("ModelSelector tier ↔ provider drift", () => {
   const allOptions = [...ASK_MODEL_OPTIONS, ...AGENT_MODEL_OPTIONS];
 
-  it.each(allOptions.map((o) => [o.id, o.label]))(
-    "option %s (%s) has a registered provider",
-    (id) => {
-      // languageModel throws (NoSuchModelError) for unregistered ids.
-      expect(() => myProvider.languageModel(`model-${id}`)).not.toThrow();
-    },
-  );
-
-  it("every option has a stable id and label", () => {
-    for (const option of allOptions) {
-      expect(option.id).toBeTruthy();
-      expect(option.label).toBeTruthy();
+  it("every option in both lineups resolves to a registered provider", () => {
+    for (const mode of ["ask", "agent"] as ChatMode[]) {
+      const options =
+        mode === "agent" ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
+      for (const option of options) {
+        const providerKey = resolveTierToProviderKey(option.id, mode);
+        expect(providerKey).not.toBeNull();
+        expect(() =>
+          myProvider.languageModel(providerKey as string),
+        ).not.toThrow();
+      }
     }
   });
 
-  it("HackerAI tier labels map to expected underlying models", () => {
-    const askLite = ASK_MODEL_OPTIONS.find((o) => o.label === "HackerAI Lite");
-    const askPro = ASK_MODEL_OPTIONS.find((o) => o.label === "HackerAI Pro");
-    const askMax = ASK_MODEL_OPTIONS.find((o) => o.label === "HackerAI Max");
-    const agentLite = AGENT_MODEL_OPTIONS.find(
-      (o) => o.label === "HackerAI Lite",
-    );
-    const agentPro = AGENT_MODEL_OPTIONS.find(
-      (o) => o.label === "HackerAI Pro",
-    );
-    const agentMax = AGENT_MODEL_OPTIONS.find(
-      (o) => o.label === "HackerAI Max",
-    );
+  it("ask + agent lineups expose the same tier ids", () => {
+    const askIds = new Set(ASK_MODEL_OPTIONS.map((o) => o.id));
+    const agentIds = new Set(AGENT_MODEL_OPTIONS.map((o) => o.id));
+    expect([...askIds].sort()).toEqual([...agentIds].sort());
+  });
 
-    expect(askLite?.id).toBe("gemini-3-flash");
-    expect(askPro?.id).toBe("sonnet-4.6");
-    expect(askMax?.id).toBe("opus-4.6");
-    expect(agentLite?.id).toBe("kimi-k2.6");
-    expect(agentPro?.id).toBe("sonnet-4.6");
-    expect(agentMax?.id).toBe("opus-4.6");
+  it("HackerAI Lite resolves to different providers per mode", () => {
+    expect(resolveTierToProviderKey("hackerai-lite", "ask")).toBe(
+      "model-gemini-3-flash",
+    );
+    expect(resolveTierToProviderKey("hackerai-lite", "agent")).toBe(
+      "model-kimi-k2.6",
+    );
+  });
+
+  it("HackerAI Pro and Max resolve to the same provider in both modes", () => {
+    expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
+      "model-sonnet-4.6",
+    );
+    expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
+      "model-sonnet-4.6",
+    );
+    expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
+      "model-opus-4.6",
+    );
+    expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
+      "model-opus-4.6",
+    );
+  });
+
+  it("'auto' returns null (caller routes to the auto router)", () => {
+    expect(resolveTierToProviderKey("auto", "ask")).toBeNull();
+    expect(resolveTierToProviderKey("auto", "agent")).toBeNull();
   });
 
   it("hover-popup descriptions are present for every HackerAI tier", () => {
