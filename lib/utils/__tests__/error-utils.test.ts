@@ -32,6 +32,19 @@ describe("extractRetryAttempts -> request_id", () => {
     expect(attempts?.[0].error_name).toBe("AI_APICallError");
   });
 
+  it("accepts a req- id from data.id (no gen- prefix required)", () => {
+    const err = retryError([
+      apiCallError({
+        data: { id: "req-1778016347-xR1Km9PePxpLUOKwXsqW" },
+        responseHeaders: { "cf-ray": "9f72c2a5a959778a-IAD" },
+      }),
+    ]);
+
+    expect(extractRetryAttempts(err)?.[0].request_id).toBe(
+      "req-1778016347-xR1Km9PePxpLUOKwXsqW",
+    );
+  });
+
   it("falls back to data.request_id (req-…) when no gen id", () => {
     const err = retryError([
       apiCallError({

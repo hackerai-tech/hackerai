@@ -135,7 +135,10 @@ const REQUEST_ID_HEADERS = [
 const pickBodyId = (body: unknown): string | undefined => {
   if (!body || typeof body !== "object") return undefined;
   const b = body as { id?: unknown; request_id?: unknown };
-  if (typeof b.id === "string" && b.id.startsWith("gen-")) return b.id;
+  // Accept any non-empty string from `id` — OpenRouter uses `gen-…` today,
+  // but locking to that prefix would silently drop a `req-…` id and fall
+  // back to cf-ray, which is the opposite of what this function is for.
+  if (typeof b.id === "string" && b.id.length > 0) return b.id;
   if (typeof b.request_id === "string" && b.request_id.length > 0)
     return b.request_id;
   return undefined;
