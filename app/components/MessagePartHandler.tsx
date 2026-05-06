@@ -7,7 +7,6 @@ import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
-import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
@@ -221,9 +220,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
-
-    case "tool-update_memory":
-      return <MemoryToolHandler part={part} status={status} />;
 
     case "tool-create_note":
       return (

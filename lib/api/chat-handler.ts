@@ -646,7 +646,6 @@ export const createChatHandler = (
                 await convertToModelMessages(finalMessages),
               ),
               tools,
-              // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
                   const stepNumber = steps.length;

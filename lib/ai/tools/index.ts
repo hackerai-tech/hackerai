@@ -13,7 +13,6 @@ import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
 // Caido proxy temporarily disabled for all users — see lib/api/chat-handler.ts kill switch.
 // import { createProxyTools } from "./proxy-tool";
-// import { createUpdateMemory } from "./update-memory";
 import {
   createCreateNote,
   createListNotes,
@@ -139,8 +138,6 @@ export const createTools = (
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
     todo_write: createTodoWrite(context),
-    // ...(!isTemporary &&
-    //   memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(!isTemporary &&
       memoryEnabled && {
         create_note: createCreateNote(context),
@@ -162,8 +159,6 @@ export const createTools = (
   const tools =
     mode === "ask"
       ? {
-          // ...(!isTemporary &&
-          //   memoryEnabled && { update_memory: allTools.update_memory }),
           ...(!isTemporary &&
             memoryEnabled && {
               create_note: allTools.create_note,
