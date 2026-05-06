@@ -409,6 +409,8 @@ export class SummarizationTracker {
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-opus-4.6": ["model-sonnet-4.6", "model-kimi-k2.6"],
+  "ask-model-free": ["fallback-ask-model"],
+  "agent-model-free": ["fallback-agent-model"],
 };
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -456,6 +458,31 @@ export function buildProviderOptions(
         fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
+}
+
+const isSameModelFamily = (served: string, requested: string) =>
+  served === requested ||
+  served.startsWith(`${requested}-`) ||
+  served.startsWith(`${requested}:`) ||
+  served.startsWith(`${requested}@`);
+
+/**
+ * Logs `[fallback-fired]` when OpenRouter's `models` chain rolled forward to
+ * a different model family. Compare against requestedSlug (not the
+ * configured model name) so the app-level Grok retry isn't misclassified as
+ * an OpenRouter chain rescue.
+ */
+export function logOpenRouterFallbackIfFired(args: {
+  requestedSlug: string | undefined;
+  responseModel: string | undefined;
+  chatId: string;
+}) {
+  const { requestedSlug, responseModel, chatId } = args;
+  if (!responseModel || !requestedSlug) return;
+  if (isSameModelFamily(responseModel, requestedSlug)) return;
+  console.log(
+    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
+  );
 }
 
 const ANTHROPIC_CACHE_BREAKPOINT = {

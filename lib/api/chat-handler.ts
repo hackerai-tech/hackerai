@@ -73,6 +73,7 @@ import {
   applyPrepareStepReminders,
   buildSystemPrompt,
   addCacheBreakpointToLastUserMessage,
+  logOpenRouterFallbackIfFired,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -923,21 +924,11 @@ export const createChatHandler = (
                 streamUsage = usage as Record<string, unknown>;
                 responseModel = response?.modelId;
 
-                // OpenRouter `models` fallback fired: the served slug differs
-                // from the slug requested by *this* createStream invocation.
-                // Comparing against requestedSlug rather than configuredModelId
-                // avoids misclassifying the existing app-level Grok retry
-                // (where modelName, and thus the requested slug, changes) as
-                // an OpenRouter chain rescue.
-                if (
-                  responseModel &&
-                  requestedSlug &&
-                  responseModel !== requestedSlug
-                ) {
-                  console.log(
-                    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
-                  );
-                }
+                logOpenRouterFallbackIfFired({
+                  requestedSlug,
+                  responseModel,
+                  chatId,
+                });
 
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
