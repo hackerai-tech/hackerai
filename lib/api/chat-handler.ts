@@ -472,7 +472,8 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            userCustomization?.caido_enabled ?? false,
+            subscription !== "free" &&
+              (userCustomization?.caido_enabled ?? false),
             userCustomization?.caido_port,
             undefined, // appendMetadataStream
             (costDollars: number) => {

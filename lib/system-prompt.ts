@@ -378,7 +378,8 @@ The current date is ${currentDateTime}.`;
   if (mode === "ask") {
     sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
-    const caidoEnabled = userCustomization?.caido_enabled ?? false;
+    const caidoEnabled =
+      subscription !== "free" && (userCustomization?.caido_enabled ?? false);
     const caidoPort = userCustomization?.caido_port;
     sections.push(
       getAgentModeSection(mode, sandboxContext, caidoEnabled, caidoPort),
