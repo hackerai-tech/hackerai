@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { start } from "workflow/api";
 import { JsonToSseTransformStream, type UIMessage } from "ai";
+import { geolocation } from "@vercel/functions";
 import { agentRunWorkflow } from "@/lib/workflows/agent-run";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
@@ -9,10 +10,12 @@ import { isSelectedModel, type SelectedModel } from "@/types/chat";
 import {
   getChatById,
   getLastUserMessageText,
+  getUserCustomization,
   handleInitialChatAndUserMessage,
   setActiveWorkflowRun,
   updateChat,
 } from "@/lib/db/actions";
+import type { Todo } from "@/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -20,7 +23,6 @@ export const maxDuration = 800;
 interface WorkflowRequestBody {
   chatId?: string;
   messages?: UIMessage[];
-  mode?: string;
   selectedModel?: string;
   prompt?: string;
   regenerate?: boolean;
@@ -120,8 +122,9 @@ export async function POST(req: NextRequest) {
       "No user message in request",
     ).toResponse();
   }
+  let existingChat: Awaited<ReturnType<typeof getChatById>>;
   try {
-    const existingChat = await getChatById({ id: body.chatId });
+    existingChat = await getChatById({ id: body.chatId });
     if (isRegenerate && !existingChat) {
       return new ChatSDKError(
         "not_found:chat",
@@ -155,12 +158,36 @@ export async function POST(req: NextRequest) {
     ).toResponse();
   }
 
+  // Fetch user customization once so the workflow input is fully self-contained
+  // (system prompt, guardrails, memory gating). Failure here is non-fatal —
+  // we fall through with sensible defaults (no guardrails, memory enabled).
+  const userCustomization = await getUserCustomization({
+    userId: auth.userId,
+  }).catch(() => null);
+
+  // Free subscription was rejected at the start of the handler; everything
+  // here runs as a paid tier where memory is always available subject to
+  // the user's customization preference.
+  const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+
+  const userLocationCountry = geolocation(req)?.country;
+
+  // Seed TodoManager from the chat row so multi-turn runs preserve todos
+  // (matches what `chat-handler.ts` does via `getBaseTodosForRequest`).
+  const initialTodos = existingChat?.todos as Todo[] | undefined;
+
   const run = await start(agentRunWorkflow, [
     {
       userId: auth.userId,
       chatId: body.chatId,
       prompt,
       model: resolvedModel,
+      subscription: auth.subscription,
+      userCustomization,
+      guardrailsConfig: userCustomization?.guardrails_config,
+      memoryEnabled,
+      userLocationCountry,
+      initialTodos,
     },
   ]);
 

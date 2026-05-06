@@ -1,8 +1,22 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
+
+/**
+ * Pure-JS deterministic 32-bit hash (FNV-1a). Used only to disambiguate
+ * truncated filenames — not cryptographic. Lives here so the file has no
+ * Node.js-only imports, which lets it stay reachable from the Vercel
+ * Workflow build (workflow rejects `node:crypto`).
+ */
+const fnv1aHex = (s: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+};
 
 export type SandboxFile = {
   url: string;
@@ -47,7 +61,7 @@ const sanitizeFilenameForTerminal = (filename: string): string => {
   // different long filenames that share the same prefix.
   const MAX_NAME_LEN = 80;
   if (sanitized.length > MAX_NAME_LEN) {
-    const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
+    const hash = fnv1aHex(name);
     sanitized = sanitized.slice(0, MAX_NAME_LEN - 9) + "_" + hash;
   }
 

@@ -1,47 +1,58 @@
 import { DurableAgent } from "@workflow/ai/agent";
-import { getWritable, sleep, FatalError } from "workflow";
+import { getWritable } from "workflow";
 import type { UIMessageChunk } from "ai";
-import { z } from "zod";
 import {
   startSandbox,
-  runCommandStep,
-  startCommandAsync,
-  pollCommandAsync,
-  readFileStep,
-  writeFileStep,
   killSandbox,
   emitWorkflowError,
   saveAssistantMessageStep,
   clearActiveWorkflowRunStep,
 } from "./steps/sandbox-steps";
 import { openrouterModel } from "./steps/openrouter-model";
+import { createWorkflowTools } from "./tools";
+import { systemPromptStep } from "./steps/system-prompt-step";
+import { persistTodosStep } from "./steps/persist-todos-step";
+import type { UploadedFileMetadata } from "./steps/terminal-steps";
+import { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
+import type { SubscriptionTier, Todo } from "@/types";
+import type { UserCustomization } from "@/types/user";
+import type { ModelName } from "@/lib/ai/providers";
 
 export interface WorkflowAgentInput {
   userId: string;
   chatId: string;
   prompt: string;
-  model?: string;
-  systemPrompt?: string;
+  /** Subscription tier for system prompt + memory gating. The route gates
+   *  free tier so this is always a paid plan. */
+  subscription: SubscriptionTier;
+  /** Snapshot of user customization at run start (gates notes, sets persona,
+   *  carries guardrails config). */
+  userCustomization: UserCustomization | null;
+  /** Pre-extracted from `userCustomization.guardrails_config` to keep the
+   *  step input small and explicit. */
+  guardrailsConfig?: string;
+  memoryEnabled: boolean;
+  /** ISO country code from `geolocation(req)?.country` for `web_search`. */
+  userLocationCountry?: string;
+  /** Existing todos from the chat row, used to seed `TodoManager`. */
+  initialTodos?: Todo[];
+  /** OpenRouter model ID; route always passes a resolved value. */
+  model?: ModelName;
   maxSteps?: number;
-  hardWallSeconds?: number;
 }
-
-const DEFAULT_SYSTEM = `You are a long-running pentesting agent. You operate inside a Linux sandbox and have these tools:
-- run_command: short blocking shell command (<=60s).
-- start_command_async: launch long-running command in background, returns a handle.
-- wait_command: poll a backgrounded command until it completes (handles minute-to-hour scans).
-- read_file (args: target_file, maxBytes?) / write_file (args: file_path, contents): text I/O inside the sandbox.
-
-Rules:
-- Use start_command_async + wait_command for any scan that may exceed 60 seconds (nmap -A, sqlmap, ffuf, gobuster, nikto, hydra, etc.).
-- Always redirect verbose output to a file inside the sandbox and grep the relevant findings.
-- Be deliberate. Plan, run, summarize.`;
 
 export async function agentRunWorkflow(input: WorkflowAgentInput) {
   "use workflow";
 
   const writable = getWritable<UIMessageChunk>();
   let sandboxId: string | null = null;
+
+  // Workflow-scope mutable state. Tool factories receive these by reference
+  // and update them after each step returns. They are NOT step-shared
+  // objects — durable replay re-runs the surrounding code, so the array /
+  // manager is reconstructed deterministically from cached step results.
+  const fileAccumulator: UploadedFileMetadata[] = [];
+  const todoManager = new TodoManager(input.initialTodos);
 
   try {
     const sandbox = await startSandbox({
@@ -51,149 +62,34 @@ export async function agentRunWorkflow(input: WorkflowAgentInput) {
     sandboxId = sandbox.sandboxId;
     const sid: string = sandbox.sandboxId;
 
-    const modelId = input.model ?? "agent-model";
+    const modelId: ModelName = input.model ?? "agent-model";
+
+    const system = await systemPromptStep({
+      userId: input.userId,
+      mode: "agent-long",
+      subscription: input.subscription,
+      modelName: modelId,
+      userCustomization: input.userCustomization,
+      isTemporary: false,
+      sandboxContext: null,
+    });
+
+    const tools = createWorkflowTools({
+      sandboxId: sid,
+      chatId: input.chatId,
+      userId: input.userId,
+      subscription: input.subscription,
+      guardrailsConfig: input.guardrailsConfig,
+      memoryEnabled: input.memoryEnabled,
+      userLocationCountry: input.userLocationCountry,
+      fileAccumulator,
+      todoManager,
+    });
+
     const agent = new DurableAgent({
       model: openrouterModel(modelId),
-      system: input.systemPrompt ?? DEFAULT_SYSTEM,
-      tools: {
-        run_command: {
-          description:
-            "Run a short shell command inside the sandbox (<=60s). REQUIRED args: command (string), timeoutSeconds (int, optional, default 60). Always pass the literal shell text in `command`.",
-          inputSchema: z
-            .object({
-              command: z
-                .string()
-                .optional()
-                .describe(
-                  "Shell command to execute, e.g. 'ls -la /tmp'. REQUIRED.",
-                ),
-              cmd: z.string().optional(),
-              script: z.string().optional(),
-              timeoutSeconds: z.number().int().min(1).max(60).default(60),
-            })
-            .transform((raw) => ({
-              command: raw.command ?? raw.cmd ?? raw.script ?? "",
-              timeoutSeconds: raw.timeoutSeconds ?? 60,
-            }))
-            .refine((v) => v.command.trim().length > 0, {
-              message:
-                "Missing `command` argument. Pass the literal shell text in `command`.",
-              path: ["command"],
-            }),
-          execute: async ({ command, timeoutSeconds }) => {
-            return runCommandStep({ sandboxId: sid, command, timeoutSeconds });
-          },
-        },
-        start_command_async: {
-          description:
-            "Start a long-running shell command in the background. REQUIRED args: command (string), outputFile (absolute path string). Returns { result: { handle, outputFile } } — pass the handle to wait_command.",
-          inputSchema: z
-            .object({
-              command: z.string().optional(),
-              cmd: z.string().optional(),
-              script: z.string().optional(),
-              outputFile: z.string().optional(),
-              output_file: z.string().optional(),
-            })
-            .transform((raw) => ({
-              command: raw.command ?? raw.cmd ?? raw.script ?? "",
-              outputFile: raw.outputFile ?? raw.output_file ?? "",
-            }))
-            .refine(
-              (v) => v.command.trim().length > 0 && v.outputFile.length > 0,
-              {
-                message:
-                  "Missing required args. Provide both `command` (string) and `outputFile` (absolute path).",
-              },
-            ),
-          execute: async ({ command, outputFile }) => {
-            return startCommandAsync({ sandboxId: sid, command, outputFile });
-          },
-        },
-        wait_command: {
-          description:
-            "Wait for a backgrounded command to finish. Polls every interval seconds, up to maxMinutes.",
-          inputSchema: z.object({
-            handle: z.string(),
-            outputFile: z.string(),
-            intervalSeconds: z.number().int().min(5).max(120).default(30),
-            maxMinutes: z.number().int().min(1).max(120).default(30),
-            tailLines: z.number().int().min(10).max(2000).default(200),
-          }),
-          execute: async ({
-            handle,
-            outputFile,
-            intervalSeconds,
-            maxMinutes,
-            tailLines,
-          }) => {
-            const deadline = maxMinutes * 60;
-            let waited = 0;
-            while (waited < deadline) {
-              const status = await pollCommandAsync({
-                sandboxId: sid,
-                handle,
-                outputFile,
-                tailLines,
-              });
-              if (status.done) {
-                // Wrap in `{result: ...}` to match the shape sidebar-utils
-                // expects from terminal-style tools.
-                return {
-                  ...status,
-                  result: {
-                    tail: status.tail,
-                    output: status.tail,
-                    exitCode: status.exitCode,
-                    done: status.done,
-                    bytes: status.bytes,
-                  },
-                };
-              }
-              await sleep(`${intervalSeconds}s`);
-              waited += intervalSeconds;
-            }
-            throw new FatalError(
-              `wait_command exceeded ${maxMinutes} minutes for handle ${handle}`,
-            );
-          },
-        },
-        // Field names mirror the existing /api/agent file tools so the UI
-        // (FileToolsHandler) renders the file name correctly: read_file
-        // expects `target_file`, write_file expects `file_path` + `contents`.
-        read_file: {
-          description: "Read a text file from the sandbox.",
-          inputSchema: z.object({
-            target_file: z
-              .string()
-              .describe("Absolute path of the file inside the sandbox."),
-            maxBytes: z.number().int().min(1).max(2_000_000).default(200_000),
-          }),
-          execute: async ({ target_file, maxBytes }) => {
-            return readFileStep({
-              sandboxId: sid,
-              path: target_file,
-              maxBytes,
-            });
-          },
-        },
-        write_file: {
-          description: "Write a text file inside the sandbox.",
-          inputSchema: z.object({
-            file_path: z
-              .string()
-              .describe("Absolute path of the file inside the sandbox."),
-            contents: z.string().describe("Full file contents to write."),
-          }),
-          execute: async ({ file_path, contents }) => {
-            return writeFileStep({
-              sandboxId: sid,
-              path: file_path,
-              content: contents,
-            });
-          },
-        },
-      },
+      system,
+      tools,
     });
 
     const result = await agent.stream({
@@ -201,6 +97,13 @@ export async function agentRunWorkflow(input: WorkflowAgentInput) {
       writable,
       maxSteps: input.maxSteps ?? 60,
       collectUIMessages: true,
+    });
+
+    // Persist accumulated todos before saving the message so a reload after
+    // the run shows them (mirrors what chat-handler does at end-of-turn).
+    await persistTodosStep({
+      chatId: input.chatId,
+      todos: todoManager.getAllTodos(),
     });
 
     // Persist the final assistant UI message so the chat shows the response
@@ -217,6 +120,7 @@ export async function agentRunWorkflow(input: WorkflowAgentInput) {
         },
         model: modelId,
         finishReason: "stop",
+        extraFileIds: fileAccumulator.map((f) => f.fileId),
       });
     }
 

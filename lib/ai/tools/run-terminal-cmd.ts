@@ -48,6 +48,11 @@ const MAX_TIMEOUT_SECONDS = 600;
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
+import {
+  RUN_TERMINAL_CMD_DESCRIPTION,
+  RUN_TERMINAL_CMD_INPUT_SCHEMA,
+} from "./schemas";
+
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
     sandboxManager,
@@ -73,60 +78,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   let caidoSetupDisabled = false;
 
   return tool({
-    description: `Execute a command on behalf of the user.
-If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
-Commands execute immediately without requiring user approval.
-In using these tools, adhere to the following guidelines:
-1. Use command chaining and pipes for efficiency:
-   - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
-   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)
-2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
-3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
-4. If the command would use a pager, append \` | cat\` to the command.
-5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-6. Dont include any newlines in the command.
-7. Handle large outputs and save scan results to files:
-  - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
-  - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
-    - Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
-    - Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
-    - Anti-pattern: Never let full verbose output return to context (causes overflow)
-  - Always redirect excessive output to files to avoid context overflow.
-8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
-9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
-11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
-12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
-   - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
-    inputSchema: z.object({
-      command: z.string().describe("The shell command to execute"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
-      is_background: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
-        ),
-      timeout: z
-        .number()
-        .optional()
-        .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
-        .describe(
-          `Timeout in seconds to wait for command output before returning. For interactive=false, the command keeps running in background on timeout. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
-        ),
-      interactive: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
-        ),
-    }),
+    description: RUN_TERMINAL_CMD_DESCRIPTION,
+    inputSchema: RUN_TERMINAL_CMD_INPUT_SCHEMA,
     execute: async (
       {
         command,
