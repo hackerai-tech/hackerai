@@ -705,9 +705,12 @@ export const createChatHandler = (
           };
 
           // Helper to create streamText with a given model (reused for retry)
-          const createStream = async (modelName: string) =>
-            streamText({
-              model: trackedProvider.languageModel(modelName),
+          const createStream = async (modelName: string) => {
+            const requestedLanguageModel =
+              trackedProvider.languageModel(modelName);
+            const requestedSlug = requestedLanguageModel.modelId;
+            return streamText({
+              model: requestedLanguageModel,
               maxOutputTokens: 30000,
               system: buildSystemPrompt(currentSystemPrompt, modelName),
               messages: filterEmptyAssistantMessages(
@@ -921,15 +924,18 @@ export const createChatHandler = (
                 responseModel = response?.modelId;
 
                 // OpenRouter `models` fallback fired: the served slug differs
-                // from the slug we requested. Surfaces as a grep-friendly line
-                // alongside the structured fields chatLogger already records.
+                // from the slug requested by *this* createStream invocation.
+                // Comparing against requestedSlug rather than configuredModelId
+                // avoids misclassifying the existing app-level Grok retry
+                // (where modelName, and thus the requested slug, changes) as
+                // an OpenRouter chain rescue.
                 if (
                   responseModel &&
-                  configuredModelId &&
-                  responseModel !== configuredModelId
+                  requestedSlug &&
+                  responseModel !== requestedSlug
                 ) {
                   console.log(
-                    `[fallback-fired] requested=${configuredModelId} served=${responseModel} chat=${chatId}`,
+                    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
                   );
                 }
 
@@ -993,6 +999,7 @@ export const createChatHandler = (
                   );
               },
             });
+          };
 
           let result;
           try {

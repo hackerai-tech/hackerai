@@ -12,6 +12,7 @@ import type {
   ModelMessage,
   SystemModelMessage,
 } from "ai";
+import { NoSuchModelError } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
@@ -414,11 +415,13 @@ const resolveSlug = (modelName: string): string | undefined => {
   try {
     const lm = myProvider.languageModel(modelName) as { modelId?: unknown };
     return typeof lm?.modelId === "string" ? lm.modelId : undefined;
-  } catch {
-    // myProvider.languageModel throws NoSuchModelError if `modelName` isn't in
-    // the registry. Treat it as "no slug" so a stale fallback entry can't
-    // bring down the primary request.
-    return undefined;
+  } catch (err) {
+    if (err instanceof NoSuchModelError) {
+      // Stale fallback entry — treat as "no slug" so it can't bring down the
+      // primary request. Anything else is an unexpected failure and surfaces.
+      return undefined;
+    }
+    throw err;
   }
 };
 
