@@ -752,7 +752,7 @@ export const createChatHandler = (
                       providerOptions: buildProviderOptions(
                         isReasoningModel,
                         userId,
-                        configuredModelId,
+                        modelName,
                       ),
                     });
 
@@ -848,7 +848,7 @@ export const createChatHandler = (
               providerOptions: buildProviderOptions(
                 isReasoningModel,
                 userId,
-                configuredModelId,
+                modelName,
               ),
               stopWhen: [
                 stepCountIs(getMaxStepsForUser(mode, subscription)),
@@ -918,6 +918,19 @@ export const createChatHandler = (
                 // Capture full usage and model
                 streamUsage = usage as Record<string, unknown>;
                 responseModel = response?.modelId;
+
+                // OpenRouter `models` fallback fired: the served slug differs
+                // from the slug we requested. Surfaces as a grep-friendly line
+                // alongside the structured fields chatLogger already records.
+                if (
+                  responseModel &&
+                  configuredModelId &&
+                  responseModel !== configuredModelId
+                ) {
+                  console.log(
+                    `[fallback-fired] requested=${configuredModelId} served=${responseModel} chat=${chatId}`,
+                  );
+                }
 
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);

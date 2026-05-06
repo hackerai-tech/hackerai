@@ -127,10 +127,36 @@ const REQUEST_ID_HEADERS = [
   "x-amzn-requestid",
 ];
 
+const pickBodyId = (body: unknown): string | undefined => {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as { id?: unknown; request_id?: unknown };
+  if (typeof b.id === "string" && b.id.startsWith("gen-")) return b.id;
+  if (typeof b.request_id === "string" && b.request_id.length > 0)
+    return b.request_id;
+  return undefined;
+};
+
 const extractRequestId = (error: unknown): string | undefined => {
   if (!error || typeof error !== "object") return undefined;
-  const headers = (error as { responseHeaders?: Record<string, unknown> })
-    .responseHeaders;
+  const e = error as {
+    responseHeaders?: Record<string, unknown>;
+    data?: unknown;
+    responseBody?: unknown;
+  };
+
+  const fromData = pickBodyId(e.data);
+  if (fromData) return fromData;
+
+  if (typeof e.responseBody === "string") {
+    try {
+      const fromBody = pickBodyId(JSON.parse(e.responseBody));
+      if (fromBody) return fromBody;
+    } catch {
+      // responseBody isn't JSON; fall through to headers
+    }
+  }
+
+  const headers = e.responseHeaders;
   if (!headers || typeof headers !== "object") return undefined;
   const lower: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(headers)) {
