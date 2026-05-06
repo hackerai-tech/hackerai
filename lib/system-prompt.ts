@@ -95,10 +95,14 @@ before coming back to the user.\n"
 };
 
 const getProxySection = (
-  caidoEnabled: boolean,
-  isLocalSandbox: boolean,
-  caidoPort?: number,
+  _caidoEnabled: boolean,
+  _isLocalSandbox: boolean,
+  _caidoPort?: number,
 ): string => {
+  // Caido proxy temporarily disabled for all users — emit nothing in the prompt.
+  // Kill switch in lib/api/chat-handler.ts (caidoEnabled forced false).
+  return "";
+  /*
   if (!caidoEnabled) {
     return `<proxy_interception>
 Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
@@ -120,6 +124,7 @@ ${runningLine}
 ${uiLine}
 - If the user experiences proxy-related issues or doesn't need traffic interception, they can disable the Caido proxy in Settings > Agent.
 </proxy_interception>`;
+  */
 };
 
 const getDefaultSandboxEnvironmentSection = (

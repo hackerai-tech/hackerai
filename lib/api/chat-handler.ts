@@ -402,9 +402,10 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            subscription !== "free" &&
-              (userCustomization?.caido_enabled ?? false),
-            userCustomization?.caido_port,
+            // Caido proxy temporarily disabled for all users.
+            // Was: subscription !== "free" && (userCustomization?.caido_enabled ?? false)
+            false,
+            undefined, // caido_port (disabled)
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;

@@ -11,7 +11,8 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-import { createProxyTools } from "./proxy-tool";
+// Caido proxy temporarily disabled for all users — see lib/api/chat-handler.ts kill switch.
+// import { createProxyTools } from "./proxy-tool";
 // import { createUpdateMemory } from "./update-memory";
 import {
   createCreateNote,
@@ -150,7 +151,8 @@ export const createTools = (
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
-    ...(caidoEnabled && createProxyTools(context)),
+    // Caido proxy temporarily disabled for all users.
+    // ...(caidoEnabled && createProxyTools(context)),
     ...(process.env.JINA_API_KEY && {
       open_url: createOpenUrlTool(),
     }),
