@@ -61,7 +61,22 @@ describe("extractRetryAttempts -> request_id", () => {
     );
   });
 
-  it("falls back to cf-ray header when no body id is present", () => {
+  it("prefers x-generation-id header over cf-ray when no body id is present", () => {
+    const err = retryError([
+      apiCallError({
+        responseHeaders: {
+          "x-generation-id": "gen-1778028118-8p4SD1KZJCPm5JpEOwtC",
+          "cf-ray": "9f72bbfae8f83b5c-IAD",
+        },
+      }),
+    ]);
+
+    expect(extractRetryAttempts(err)?.[0].request_id).toBe(
+      "gen-1778028118-8p4SD1KZJCPm5JpEOwtC",
+    );
+  });
+
+  it("falls back to cf-ray header when neither body nor x-generation-id is present", () => {
     const err = retryError([
       apiCallError({
         responseHeaders: { "cf-ray": "9f72bbfae8f83b5c-IAD" },

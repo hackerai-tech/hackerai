@@ -121,6 +121,11 @@ export interface ProviderAttempt {
 }
 
 const REQUEST_ID_HEADERS = [
+  // OpenRouter exposes its generation id as `X-Generation-Id` on every
+  // response where a generation was attempted (CORS-exposed). Prefer it
+  // over cf-ray so we get a queryable id even when the error body isn't
+  // parsed into `data` / `responseBody`.
+  "x-generation-id",
   "request-id",
   "x-request-id",
   "cf-ray",
