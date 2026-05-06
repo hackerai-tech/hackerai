@@ -354,15 +354,6 @@ export type QueueBehavior = "queue" | "stop-and-send";
 export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 /**
- * Memory entry returned by Convex memories queries
- */
-export interface Memory {
-  memory_id: string;
-  content: string;
-  update_time: number;
-}
-
-/**
  * Preview message for share dialog (full message structure with parts)
  */
 export interface PreviewMessage {

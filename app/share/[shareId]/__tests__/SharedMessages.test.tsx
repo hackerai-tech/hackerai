@@ -261,7 +261,7 @@ describe("SharedMessages", () => {
     });
   });
 
-  describe("Tool Execution - Todo and Memory", () => {
+  describe("Tool Execution - Todo", () => {
     it("should render todo update tool block", () => {
       const messages = [
         {
@@ -281,27 +281,6 @@ describe("SharedMessages", () => {
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
       expect(screen.getByText("Updated todos")).toBeInTheDocument();
-    });
-
-    it("should render memory update tool block", () => {
-      const messages = [
-        {
-          id: "1",
-          role: "assistant" as const,
-          parts: [
-            {
-              type: "tool-update_memory",
-              state: "output-available",
-            },
-          ],
-          update_time: mockShareDate,
-        },
-      ];
-
-      renderWithContext(
-        <SharedMessages messages={messages} shareDate={mockShareDate} />,
-      );
-      expect(screen.getByText("Updated memory")).toBeInTheDocument();
     });
   });
 

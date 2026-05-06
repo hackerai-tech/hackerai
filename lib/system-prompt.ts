@@ -2,9 +2,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 import { getPersonalityInstructions } from "./system-prompt/personality";
 import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
-// import { generateMemorySection } from "./system-prompt/memory";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
-// import { getMemories, getNotes } from "@/lib/db/actions";
 import {
   getModelCutoffDate,
   getModelDisplayName,
@@ -95,10 +93,14 @@ before coming back to the user.\n"
 };
 
 const getProxySection = (
-  caidoEnabled: boolean,
-  isLocalSandbox: boolean,
-  caidoPort?: number,
+  _caidoEnabled: boolean,
+  _isLocalSandbox: boolean,
+  _caidoPort?: number,
 ): string => {
+  // Caido proxy temporarily disabled for all users — emit nothing in the prompt.
+  // Kill switch in lib/api/chat-handler.ts (caidoEnabled forced false).
+  return "";
+  /*
   if (!caidoEnabled) {
     return `<proxy_interception>
 Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
@@ -120,6 +122,7 @@ ${runningLine}
 ${uiLine}
 - If the user experiences proxy-related issues or doesn't need traffic interception, they can disable the Caido proxy in Settings > Agent.
 </proxy_interception>`;
+  */
 };
 
 const getDefaultSandboxEnvironmentSection = (
@@ -271,14 +274,14 @@ HackerAI should tell them it doesn't know, and point them to 'https://help.hacke
 const getAskModeSection = (
   modelName: ModelName,
   subscription: SubscriptionTier,
-  isTemporary?: boolean,
+  notesEnabled: boolean,
 ): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
-  const memoryCapability = isTemporary ? "" : " and manage memory";
+  const notesCapability = notesEnabled ? " and manage notes" : "";
   const modeReminder =
     subscription !== "free"
       ? `<current_mode>
-You are in ASK MODE with limited tools. You can search the web${memoryCapability}, but cannot read files, \
+You are in ASK MODE with limited tools. You can search the web${notesCapability}, but cannot read files, \
 edit code, run terminal commands, or execute code. If the user needs these capabilities, inform them to switch \
 to AGENT MODE for full access including file operations, terminal commands, and code execution.
 </current_mode>
@@ -368,7 +371,7 @@ HackerAI helps with penetration testing, vulnerability assessment, ethical hacki
 You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
-${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page. You do not have access to the memory tool in this mode." : ""}
+${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved and will be deleted when user refreshes the page. You do not have access to notes tools in this mode." : ""}
 
 The current date is ${currentDateTime}.`;
 
@@ -376,7 +379,9 @@ The current date is ${currentDateTime}.`;
   const sections: string[] = [basePrompt];
 
   if (mode === "ask") {
-    sections.push(getAskModeSection(modelName, subscription, isTemporary));
+    sections.push(
+      getAskModeSection(modelName, subscription, shouldIncludeNotes),
+    );
   } else {
     const caidoEnabled =
       subscription !== "free" && (userCustomization?.caido_enabled ?? false);

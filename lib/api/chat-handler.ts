@@ -30,7 +30,6 @@ import type {
   ChatMode,
   Todo,
   SandboxPreference,
-  ExtraUsageConfig,
   SelectedModel,
   RateLimitInfo,
 } from "@/types";
@@ -42,11 +41,7 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { UsageTracker } from "@/lib/usage-tracker";
-import { getExtraUsageBalance } from "@/lib/extra-usage";
-import {
-  countMessagesTokens,
-  getMaxTokensForSubscription,
-} from "@/lib/token-utils";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
@@ -61,6 +56,7 @@ import {
   stripImageAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
+  getFallbackSlugs,
   isXaiSafetyError,
   isProviderApiError,
   computeContextUsage,
@@ -73,6 +69,10 @@ import {
   applyPrepareStepReminders,
   buildSystemPrompt,
   addCacheBreakpointToLastUserMessage,
+  logOpenRouterFallbackIfFired,
+  assertFreeAgentGates,
+  buildExtraUsageConfig,
+  estimatePreflightInputTokens,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -183,7 +183,6 @@ export const createChatHandler = (
         );
       }
 
-      // Initialize chat logger
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,
@@ -203,28 +202,16 @@ export const createChatHandler = (
         region: userLocation?.region,
       });
 
-      if (isAgentMode(mode) && subscription === "free") {
-        // Gate 1: Free agent requires a local sandbox preference (not E2B)
-        const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
-        if (!isLocalSandbox) {
-          throw new ChatSDKError(
-            "forbidden:chat",
-            "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
-          );
-        }
+      assertFreeAgentGates({
+        mode,
+        subscription,
+        sandboxPreference,
+        rawSelectedModel,
+      });
 
-        // Gate 2: Free agent must use auto model selection (no model override)
-        if (rawSelectedModel && rawSelectedModel !== "auto") {
-          throw new ChatSDKError(
-            "forbidden:chat",
-            "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
-          );
-        }
-      }
-
-      // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
+      // Pre-emptive abort fires before Vercel's hard request timeout so we
+      // can flush logs and refund usage; agent mode uses elapsedTimeExceeds.
       const userStopSignal = new AbortController();
-      // Agent mode uses elapsedTimeExceeds stop condition instead
       if (!isAgentMode(mode)) {
         preemptiveTimeout = createPreemptiveTimeout({
           chatId,
@@ -267,8 +254,7 @@ export const createChatHandler = (
         });
       }
 
-      // Free users in ask mode: check rate limit early (sliding window, no token counting needed)
-      // This avoids unnecessary processing if they're over the limit
+      // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
         mode === "ask" && subscription === "free"
           ? await checkRateLimit(userId, mode, subscription)
@@ -287,8 +273,7 @@ export const createChatHandler = (
           modelOverride: selectedModelOverride,
         });
 
-      // Validate that we have at least one message with content after processing
-      // This prevents "must include at least one parts field" errors from providers like Gemini
+      // Empty after processing → Gemini rejects with "must include at least one parts field".
       if (!processedMessages || processedMessages.length === 0) {
         throw new ChatSDKError(
           "bad_request:api",
@@ -300,35 +285,16 @@ export const createChatHandler = (
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_memory_entries ?? true);
 
-      // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
-      // Token bucket requires estimated token count for cost calculation
-      // Note: File tokens are not included because counts are inaccurate (especially PDFs)
-      // and deductUsage reconciles with actual provider cost anyway
-      let estimatedInputTokens = 0;
-      if (isAgentMode(mode) || subscription !== "free") {
-        const messageTokens = countMessagesTokens(truncatedMessages);
-        // Compute system prompt tokens early (without sandboxContext) for a more
-        // accurate pre-flight estimate. The real prompt is built later with sandbox
-        // context, but the difference is small (~200-500 tokens).
-        const estimatedSystemPrompt = await systemPrompt(
-          userId,
-          mode,
-          subscription,
-          selectedModel,
-          userCustomization,
-          temporary,
-          null, // sandboxContext not available yet
-        );
-        const systemTokens = countTokens(estimatedSystemPrompt);
-        // Tool schemas are sent alongside the request but can't be computed here
-        // (they depend on sandboxManager). Agent mode has ~8 tools (~1500 tokens),
-        // ask mode has ~4 tools (~500 tokens).
-        const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
-        estimatedInputTokens =
-          messageTokens + systemTokens + toolSchemaOverhead;
-      }
+      const estimatedInputTokens = await estimatePreflightInputTokens({
+        mode,
+        subscription,
+        userId,
+        selectedModel,
+        userCustomization,
+        temporary,
+        truncatedMessages,
+      });
 
-      // Add chat context to logger
       const fileCounts = countFileAttachments(truncatedMessages);
       chatLogger.setChat(
         {
@@ -342,42 +308,11 @@ export const createChatHandler = (
         selectedModel,
       );
 
-      // Build extra usage config (paid users only, works for both agent and ask modes)
-      // extra_usage_enabled is in userCustomization, balance is in extra_usage
-      let extraUsageConfig: ExtraUsageConfig | undefined;
-      if (subscription !== "free") {
-        const extraUsageEnabled =
-          userCustomization?.extra_usage_enabled ?? false;
-
-        if (extraUsageEnabled) {
-          const balanceInfo = await getExtraUsageBalance(userId);
-
-          if (!balanceInfo) {
-            // Balance check failed (Convex error) — use optimistic config so
-            // the rate limiter still attempts the deduction, which is the real
-            // source of truth. Without this, a transient Convex failure silently
-            // disables extra usage and the user hits the hard subscription limit.
-            console.warn(
-              `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
-            );
-            extraUsageConfig = {
-              enabled: true,
-              hasBalance: true,
-              autoReloadEnabled: false,
-            };
-          } else if (
-            balanceInfo.balanceDollars > 0 ||
-            balanceInfo.autoReloadEnabled
-          ) {
-            extraUsageConfig = {
-              enabled: true,
-              hasBalance: balanceInfo.balanceDollars > 0,
-              balanceDollars: balanceInfo.balanceDollars,
-              autoReloadEnabled: balanceInfo.autoReloadEnabled,
-            };
-          }
-        }
-      }
+      const extraUsageConfig = await buildExtraUsageConfig({
+        userId,
+        subscription,
+        userCustomization,
+      });
 
       const rateLimitInfo: RateLimitInfo =
         freeAskRateLimitInfo ??
@@ -393,7 +328,6 @@ export const createChatHandler = (
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
 
-      // Add rate limit and extra usage context to logger
       chatLogger.setRateLimit(
         {
           pointsDeducted: rateLimitInfo.pointsDeducted,
@@ -411,12 +345,11 @@ export const createChatHandler = (
       const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
-      // Start temp stream coordination for temporary chats
       if (temporary) {
         try {
           await startTempStream({ chatId, userId });
         } catch {
-          // Silently continue; temp coordination is best-effort
+          // Best-effort; temp coordination must not block the request.
         }
       }
 
@@ -433,7 +366,6 @@ export const createChatHandler = (
 
       const summarizationTracker = new SummarizationTracker();
 
-      // Start stream timing
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
@@ -448,7 +380,6 @@ export const createChatHandler = (
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
-          // Send rate limit warnings based on subscription type
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
 
           const {
@@ -472,9 +403,10 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            subscription !== "free" &&
-              (userCustomization?.caido_enabled ?? false),
-            userCustomization?.caido_port,
+            // Caido proxy temporarily disabled for all users.
+            // Was: subscription !== "free" && (userCustomization?.caido_enabled ?? false)
+            false,
+            undefined, // caido_port (disabled)
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
@@ -576,7 +508,6 @@ export const createChatHandler = (
 
           const systemPromptTokens = countTokens(currentSystemPrompt);
 
-          // Compute and stream context usage breakdown
           const contextUsageOn = isContextUsageEnabled(subscription, mode);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
@@ -631,7 +562,6 @@ export const createChatHandler = (
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
-          // Track metrics for data collection
           const streamStartTime = Date.now();
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
@@ -717,7 +647,6 @@ export const createChatHandler = (
                 await convertToModelMessages(finalMessages),
               ),
               tools,
-              // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
                   const stepNumber = steps.length;
@@ -896,7 +825,6 @@ export const createChatHandler = (
                   );
                   lastStepInputTokens = usage.inputTokens || 0;
 
-                  // Update context indicator after each step
                   if (contextUsageOn) {
                     writeContextUsage(writer, {
                       usedTokens:
@@ -919,27 +847,16 @@ export const createChatHandler = (
                 } else {
                   streamFinishReason = finishReason;
                 }
-                // Capture full usage and model
                 streamUsage = usage as Record<string, unknown>;
                 responseModel = response?.modelId;
 
-                // OpenRouter `models` fallback fired: the served slug differs
-                // from the slug requested by *this* createStream invocation.
-                // Comparing against requestedSlug rather than configuredModelId
-                // avoids misclassifying the existing app-level Grok retry
-                // (where modelName, and thus the requested slug, changes) as
-                // an OpenRouter chain rescue.
-                if (
-                  responseModel &&
-                  requestedSlug &&
-                  responseModel !== requestedSlug
-                ) {
-                  console.log(
-                    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
-                  );
-                }
+                logOpenRouterFallbackIfFired({
+                  fallbackSlugs: getFallbackSlugs(modelName),
+                  requestedSlug,
+                  responseModel,
+                  chatId,
+                });
 
-                // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
 
                 // Tear down any PTY sessions the model left open at end of

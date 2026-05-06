@@ -12,7 +12,6 @@ import {
   FileOutput,
   FileIcon,
   ListTodo,
-  NotebookPen,
   FileDown,
   ExternalLink,
   Globe,
@@ -158,11 +157,6 @@ export const SharedMessagePartHandler = ({
   // Todo operations
   if (part.type === "tool-todo_write") {
     return renderTodoTool(part, idx);
-  }
-
-  // Memory operations
-  if (part.type === "tool-update_memory") {
-    return renderMemoryTool(part, idx);
   }
 
   // HTTP request (legacy)
@@ -579,39 +573,6 @@ function renderTodoTool(part: MessagePart, idx: number) {
         key={idx}
         icon={<ListTodo aria-hidden="true" />}
         action="Updated todos"
-      />
-    );
-  }
-  return null;
-}
-
-// Memory tool renderer
-function renderMemoryTool(part: MessagePart, idx: number) {
-  const memoryInput = part.input as {
-    action?: "create" | "update" | "delete";
-    title?: string;
-  };
-
-  const getActionText = (action?: string) => {
-    switch (action) {
-      case "create":
-        return "Created memory";
-      case "update":
-        return "Updated memory";
-      case "delete":
-        return "Deleted memory";
-      default:
-        return "Updated memory";
-    }
-  };
-
-  if (part.state === "output-available") {
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<NotebookPen aria-hidden="true" />}
-        action={getActionText(memoryInput?.action)}
-        target={memoryInput?.title}
       />
     );
   }

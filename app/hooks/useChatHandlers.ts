@@ -2,6 +2,7 @@ import { RefObject, useEffect, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { isCodexLocal } from "@/types/chat";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -76,6 +77,12 @@ export const useChatHandlers = ({
   useEffect(() => {
     temporaryChatsEnabledRef.current = temporaryChatsEnabled;
   }, [temporaryChatsEnabled]);
+
+  // Avoid stale closure on chatMode: on mobile, a tap on Regenerate can fire
+  // before React commits the new chatMode after a mode toggle, sending the
+  // previous mode in the request body. Reading from a ref always gets the
+  // latest value at the moment of the click.
+  const chatModeRef = useLatestRef(chatMode);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -302,7 +309,7 @@ export const useChatHandlers = ({
           },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
@@ -318,7 +325,7 @@ export const useChatHandlers = ({
           { text: input },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
@@ -385,7 +392,7 @@ export const useChatHandlers = ({
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodos,
           regenerate: true,
@@ -397,7 +404,7 @@ export const useChatHandlers = ({
     } else {
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: trimmedMessages,
           todos: cleanedTodos,
           regenerate: true,
@@ -429,7 +436,7 @@ export const useChatHandlers = ({
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodos,
           regenerate: true,
@@ -452,7 +459,7 @@ export const useChatHandlers = ({
 
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: messagesToSend,
           todos: cleanedTodos,
           regenerate: true,
@@ -568,7 +575,7 @@ export const useChatHandlers = ({
     if (!temporaryChatsEnabled) {
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodosForEdit,
           regenerate: true,
@@ -605,7 +612,7 @@ export const useChatHandlers = ({
 
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: messagesUpToEdit,
           todos: cleanedTodosForEdit,
           regenerate: true,
@@ -625,7 +632,7 @@ export const useChatHandlers = ({
       { text: "continue", metadata: { isAutoContinue: true } },
       {
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           isAutoContinue: true,
           todos,
           temporary: temporaryChatsEnabled,
@@ -676,7 +683,7 @@ export const useChatHandlers = ({
 
       sendMessage(messagePayload, {
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
