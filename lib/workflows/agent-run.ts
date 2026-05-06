@@ -1,6 +1,10 @@
 import { DurableAgent } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
-import type { UIMessageChunk } from "ai";
+import {
+  convertToModelMessages,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai";
 import {
   startSandbox,
   killSandbox,
@@ -14,6 +18,7 @@ import { systemPromptStep } from "./steps/system-prompt-step";
 import { persistTodosStep } from "./steps/persist-todos-step";
 import type { UploadedFileMetadata } from "./steps/terminal-steps";
 import { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
+import { filterEmptyAssistantMessages } from "@/lib/chat/compaction/prune-tool-outputs";
 import type { SubscriptionTier, Todo } from "@/types";
 import type { UserCustomization } from "@/types/user";
 import type { ModelName } from "@/lib/ai/providers";
@@ -21,7 +26,11 @@ import type { ModelName } from "@/lib/ai/providers";
 export interface WorkflowAgentInput {
   userId: string;
   chatId: string;
-  prompt: string;
+  /** Full chat history (existing DB messages merged with the new user turn,
+   *  truncated to fit the subscription's token budget). The workflow converts
+   *  these to model messages before calling `agent.stream` so the agent has
+   *  context of prior turns, not just the latest user prompt. */
+  messages: UIMessage[];
   /** Subscription tier for system prompt + memory gating. The route gates
    *  free tier so this is always a paid plan. */
   subscription: SubscriptionTier;
@@ -93,7 +102,9 @@ export async function agentRunWorkflow(input: WorkflowAgentInput) {
     });
 
     const result = await agent.stream({
-      messages: [{ role: "user", content: input.prompt }],
+      messages: filterEmptyAssistantMessages(
+        await convertToModelMessages(input.messages),
+      ),
       writable,
       maxSteps: input.maxSteps ?? 60,
       collectUIMessages: true,

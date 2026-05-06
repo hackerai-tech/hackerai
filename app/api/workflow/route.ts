@@ -9,12 +9,14 @@ import { selectModel } from "@/lib/chat/chat-processor";
 import { isSelectedModel, type SelectedModel } from "@/types/chat";
 import {
   getChatById,
-  getLastUserMessageText,
+  getMessagesByChatId,
   getUserCustomization,
   handleInitialChatAndUserMessage,
   setActiveWorkflowRun,
   updateChat,
 } from "@/lib/db/actions";
+import { processChatMessages } from "@/lib/chat/chat-processor";
+import { getUploadBasePath } from "@/lib/utils/sandbox-file-utils";
 import type { Todo } from "@/types";
 
 export const runtime = "nodejs";
@@ -24,30 +26,7 @@ interface WorkflowRequestBody {
   chatId?: string;
   messages?: UIMessage[];
   selectedModel?: string;
-  prompt?: string;
   regenerate?: boolean;
-}
-
-function extractPrompt(body: WorkflowRequestBody): string | null {
-  if (typeof body.prompt === "string" && body.prompt.trim()) return body.prompt;
-  const messages = body.messages ?? [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== "user") continue;
-    const parts = (msg as { parts?: Array<{ type: string; text?: string }> })
-      .parts;
-    if (Array.isArray(parts)) {
-      const text = parts
-        .filter((p) => p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text)
-        .join("\n")
-        .trim();
-      if (text) return text;
-    }
-    const content = (msg as { content?: unknown }).content;
-    if (typeof content === "string" && content.trim()) return content;
-  }
-  return null;
 }
 
 export async function POST(req: NextRequest) {
@@ -81,18 +60,12 @@ export async function POST(req: NextRequest) {
   }
 
   const isRegenerate = body.regenerate === true;
+  const incomingMessages = body.messages ?? [];
 
-  let prompt = extractPrompt(body);
-  if (!prompt && isRegenerate) {
-    prompt = await getLastUserMessageText({
-      chatId: body.chatId,
-      userId: auth.userId,
-    });
-  }
-  if (!prompt) {
+  if (!isRegenerate && incomingMessages.length === 0) {
     return new ChatSDKError(
       "bad_request:api",
-      "Could not derive a user prompt from the request",
+      "No user message in request",
     ).toResponse();
   }
 
@@ -106,42 +79,41 @@ export async function POST(req: NextRequest) {
     selectedModelOverride,
   );
 
-  // Persist chat row + user message before starting the workflow so the
-  // chat is visible immediately in the UI and survives reload/navigation
-  // even if the workflow run errors midway. On regenerate the user message
-  // already exists in the DB, so we skip the save.
-  const lastUserMessage = isRegenerate
-    ? null
-    : (body.messages ?? [])
-        .slice()
-        .reverse()
-        .find((m) => m.role === "user");
-  if (!isRegenerate && !lastUserMessage) {
-    return new ChatSDKError(
-      "bad_request:api",
-      "No user message in request",
-    ).toResponse();
-  }
+  // Fetch the full chat history from the DB and merge it with the new user
+  // message (the client only sends the latest turn for non-temporary chats).
+  // Without this the workflow would see only a single user message and the
+  // agent would be amnesiac across turns. Mirrors the chat-handler pattern.
+  let truncatedMessages: UIMessage[];
   let existingChat: Awaited<ReturnType<typeof getChatById>>;
   try {
-    existingChat = await getChatById({ id: body.chatId });
+    const fetched = await getMessagesByChatId({
+      chatId: body.chatId,
+      userId: auth.userId,
+      subscription: auth.subscription,
+      newMessages: incomingMessages,
+      regenerate: isRegenerate,
+      isTemporary: false,
+      mode: "agent-long",
+    });
+    truncatedMessages = fetched.truncatedMessages;
+    existingChat = fetched.chat ?? null;
+
     if (isRegenerate && !existingChat) {
       return new ChatSDKError(
         "not_found:chat",
         "Chat not found for regeneration",
       ).toResponse();
     }
+
+    // Persist chat row + new user message before starting the workflow so the
+    // chat is visible immediately in the UI and survives reload/navigation
+    // even if the workflow run errors midway. handleInitialChatAndUserMessage
+    // saves only the LAST message in the array; on regenerate it skips the
+    // save entirely (the user message already exists in the DB).
     await handleInitialChatAndUserMessage({
       chatId: body.chatId,
       userId: auth.userId,
-      messages: lastUserMessage
-        ? [
-            {
-              id: lastUserMessage.id,
-              parts: (lastUserMessage as { parts: any[] }).parts ?? [],
-            },
-          ]
-        : [],
+      messages: truncatedMessages,
       regenerate: isRegenerate,
       chat: existingChat,
     });
@@ -155,6 +127,24 @@ export async function POST(req: NextRequest) {
     return new ChatSDKError(
       "bad_request:database",
       `Failed to initialize chat: ${error instanceof Error ? error.message : String(error)}`,
+    ).toResponse();
+  }
+
+  // Run the same message-processing pipeline as the regular chat handler so
+  // prior assistant turns with tool invocations / file parts / provider
+  // metadata are normalized before they reach the agent.
+  const { processedMessages } = await processChatMessages({
+    messages: truncatedMessages,
+    mode: "agent-long",
+    subscription: auth.subscription,
+    uploadBasePath: getUploadBasePath("e2b"),
+    modelOverride: selectedModelOverride,
+  });
+
+  if (!processedMessages || processedMessages.length === 0) {
+    return new ChatSDKError(
+      "bad_request:api",
+      "Your message could not be processed. Please include some text with your file attachments and try again.",
     ).toResponse();
   }
 
@@ -180,7 +170,7 @@ export async function POST(req: NextRequest) {
     {
       userId: auth.userId,
       chatId: body.chatId,
-      prompt,
+      messages: processedMessages,
       model: resolvedModel,
       subscription: auth.subscription,
       userCustomization,
