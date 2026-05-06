@@ -421,6 +421,7 @@ export class SummarizationTracker {
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-opus-4.6": ["model-sonnet-4.6", "model-kimi-k2.6"],
+  "model-sonnet-4.6": ["model-kimi-k2.6"],
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
 };
@@ -636,7 +637,7 @@ export function replaceNotesBlock(
 }
 
 /**
- * Updates the notes in model messages (CoreMessage[]) from prepareStep.
+ * Updates the notes in model messages (ModelMessage[]) from prepareStep.
  * Preserves full conversation history (tool calls, results, assistant messages).
  *
  * The AI SDK does NOT preserve `<system-reminder>` text that was injected into
@@ -718,7 +719,7 @@ export async function refreshNotesInModelMessages(
 }
 
 /**
- * Appends a <system-reminder> block to the last user message in a CoreMessage array.
+ * Appends a <system-reminder> block to the last user message in a ModelMessage array.
  * Used in prepareStep to inject runtime reminders without mutating the original.
  */
 export function appendReminderToModelMessages(

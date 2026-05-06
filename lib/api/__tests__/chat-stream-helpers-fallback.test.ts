@@ -31,8 +31,16 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("emits no `models` field for a model without a chain entry", () => {
+  it("resolves Sonnet 4.6 chain to Kimi slug", () => {
     const opts = buildProviderOptions(false, "user-1", "model-sonnet-4.6");
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("emits no `models` field for a model without a chain entry", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
