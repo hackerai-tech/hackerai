@@ -12,8 +12,10 @@ import type {
   ModelMessage,
   SystemModelMessage,
 } from "ai";
+import { NoSuchModelError } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
-import { isAnthropicModel } from "@/lib/ai/providers";
+import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import type { ModelName } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -391,14 +393,54 @@ export class SummarizationTracker {
 }
 
 /**
+ * OpenRouter `models` fallback chain, expressed in local registry keys.
+ *
+ * When the primary 5xx's, rate-limits, or otherwise errors before any tokens
+ * stream, OpenRouter rolls forward through this list and bills at the served
+ * model's rate (response.modelId reflects what actually ran).
+ *
+ * Chain ordering: prefer a same-provider fallback first to preserve context
+ * window and behavior, then cross to a different provider so an Anthropic
+ * outage that takes down Opus and Sonnet together still has somewhere to go.
+ *
+ * Keys and values are registry names (see lib/ai/providers.ts) — the actual
+ * OpenRouter slugs are resolved at request-build time so this stays in sync
+ * with the registry.
+ */
+const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
+  "model-opus-4.6": ["model-sonnet-4.6", "model-kimi-k2.6"],
+};
+
+const resolveSlug = (modelName: string): string | undefined => {
+  try {
+    const lm = myProvider.languageModel(modelName) as { modelId?: unknown };
+    return typeof lm?.modelId === "string" ? lm.modelId : undefined;
+  } catch (err) {
+    if (err instanceof NoSuchModelError) {
+      // Stale fallback entry — treat as "no slug" so it can't bring down the
+      // primary request. Anything else is an unexpected failure and surfaces.
+      return undefined;
+    }
+    throw err;
+  }
+};
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(
   isReasoningModel: boolean,
   userId?: string,
-  modelId?: string,
+  modelName?: string,
 ) {
+  const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const fallbackKeys = modelName
+    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
+    : undefined;
+  const fallbackSlugs = fallbackKeys
+    ?.map((key) => resolveSlug(key))
+    .filter((s): s is string => typeof s === "string" && s.length > 0);
   return {
     openrouter: {
       ...(isReasoningModel
@@ -410,6 +452,8 @@ export function buildProviderOptions(
           }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
+      ...(fallbackSlugs &&
+        fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
 }

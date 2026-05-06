@@ -472,7 +472,8 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            userCustomization?.caido_enabled ?? false,
+            subscription !== "free" &&
+              (userCustomization?.caido_enabled ?? false),
             userCustomization?.caido_port,
             undefined, // appendMetadataStream
             (costDollars: number) => {
@@ -704,9 +705,12 @@ export const createChatHandler = (
           };
 
           // Helper to create streamText with a given model (reused for retry)
-          const createStream = async (modelName: string) =>
-            streamText({
-              model: trackedProvider.languageModel(modelName),
+          const createStream = async (modelName: string) => {
+            const requestedLanguageModel =
+              trackedProvider.languageModel(modelName);
+            const requestedSlug = requestedLanguageModel.modelId;
+            return streamText({
+              model: requestedLanguageModel,
               maxOutputTokens: 30000,
               system: buildSystemPrompt(currentSystemPrompt, modelName),
               messages: filterEmptyAssistantMessages(
@@ -752,7 +756,7 @@ export const createChatHandler = (
                       providerOptions: buildProviderOptions(
                         isReasoningModel,
                         userId,
-                        configuredModelId,
+                        modelName,
                       ),
                     });
 
@@ -848,7 +852,7 @@ export const createChatHandler = (
               providerOptions: buildProviderOptions(
                 isReasoningModel,
                 userId,
-                configuredModelId,
+                modelName,
               ),
               stopWhen: [
                 stepCountIs(getMaxStepsForUser(mode, subscription)),
@@ -919,6 +923,22 @@ export const createChatHandler = (
                 streamUsage = usage as Record<string, unknown>;
                 responseModel = response?.modelId;
 
+                // OpenRouter `models` fallback fired: the served slug differs
+                // from the slug requested by *this* createStream invocation.
+                // Comparing against requestedSlug rather than configuredModelId
+                // avoids misclassifying the existing app-level Grok retry
+                // (where modelName, and thus the requested slug, changes) as
+                // an OpenRouter chain rescue.
+                if (
+                  responseModel &&
+                  requestedSlug &&
+                  responseModel !== requestedSlug
+                ) {
+                  console.log(
+                    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
+                  );
+                }
+
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
 
@@ -979,6 +999,7 @@ export const createChatHandler = (
                   );
               },
             });
+          };
 
           let result;
           try {
