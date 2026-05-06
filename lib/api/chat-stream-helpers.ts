@@ -420,7 +420,7 @@ export class SummarizationTracker {
  * with the registry.
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "model-opus-4.6": ["model-sonnet-4.6", "model-kimi-k2.6"],
+  "model-opus-4.6": ["model-kimi-k2.6"],
   "model-sonnet-4.6": ["model-kimi-k2.6"],
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
@@ -441,6 +441,21 @@ const resolveSlug = (modelName: string): string | undefined => {
 };
 
 /**
+ * Resolve a model's fallback chain to OpenRouter slugs.
+ * Returns an empty array if the model has no chain or all entries are stale.
+ */
+export function getFallbackSlugs(modelName?: string): string[] {
+  const fallbackKeys = modelName
+    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
+    : undefined;
+  return (
+    fallbackKeys
+      ?.map((key) => resolveSlug(key))
+      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
+  );
+}
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(
@@ -450,12 +465,7 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const fallbackKeys = modelName
-    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
-    : undefined;
-  const fallbackSlugs = fallbackKeys
-    ?.map((key) => resolveSlug(key))
-    .filter((s): s is string => typeof s === "string" && s.length > 0);
+  const fallbackSlugs = getFallbackSlugs(modelName);
   return {
     openrouter: {
       ...(isReasoningModel
@@ -467,34 +477,30 @@ export function buildProviderOptions(
           }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
-      ...(fallbackSlugs &&
-        fallbackSlugs.length > 0 && { models: fallbackSlugs }),
+      ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
 }
 
-const isSameModelFamily = (served: string, requested: string) =>
-  served === requested ||
-  served.startsWith(`${requested}-`) ||
-  served.startsWith(`${requested}:`) ||
-  served.startsWith(`${requested}@`);
-
 /**
- * Logs `[fallback-fired]` when OpenRouter's `models` chain rolled forward to
- * a different model family. Compare against requestedSlug (not the
- * configured model name) so the app-level Grok retry isn't misclassified as
- * an OpenRouter chain rescue.
+ * Logs `[fallback-fired]` when the served model is one of the slugs we
+ * explicitly listed in the OpenRouter `models` chain. We can't use a naive
+ * `served !== requested` check because OpenRouter sometimes returns the
+ * requested model under a different label (dated snapshots, reordered tokens)
+ * — that's not a fallback. Membership in our chain is the authoritative
+ * signal.
  */
 export function logOpenRouterFallbackIfFired(args: {
-  requestedSlug: string | undefined;
+  fallbackSlugs: readonly string[];
   responseModel: string | undefined;
+  requestedSlug: string | undefined;
   chatId: string;
 }) {
-  const { requestedSlug, responseModel, chatId } = args;
-  if (!responseModel || !requestedSlug) return;
-  if (isSameModelFamily(responseModel, requestedSlug)) return;
+  const { fallbackSlugs, responseModel, requestedSlug, chatId } = args;
+  if (!responseModel) return;
+  if (!fallbackSlugs.includes(responseModel)) return;
   console.log(
-    `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
+    `[fallback-fired] requested=${requestedSlug ?? "?"} served=${responseModel} chat=${chatId}`,
   );
 }
 

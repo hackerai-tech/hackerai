@@ -19,14 +19,13 @@ jest.mock("@/lib/logger", () => ({
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally —
 // that's the point of this test.
-const SONNET_SLUG = "anthropic/claude-sonnet-4-6";
 const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 chain to Sonnet then Kimi slugs", () => {
+  it("resolves Opus 4.6 chain to Kimi slug", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6");
     expect(opts.openrouter).toMatchObject({
-      models: [SONNET_SLUG, KIMI_SLUG],
+      models: [KIMI_SLUG],
       user: "user-1",
     });
   });
@@ -61,13 +60,13 @@ describe("buildProviderOptions fallback chain", () => {
     const reasoning = buildProviderOptions(true, "user-1", "model-opus-4.6");
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [SONNET_SLUG, KIMI_SLUG],
+      models: [KIMI_SLUG],
     });
 
     const noReasoning = buildProviderOptions(false, "user-1", "model-opus-4.6");
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
-      models: [SONNET_SLUG, KIMI_SLUG],
+      models: [KIMI_SLUG],
     });
   });
 });

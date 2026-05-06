@@ -56,6 +56,7 @@ import {
   stripImageAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
+  getFallbackSlugs,
   isXaiSafetyError,
   isProviderApiError,
   computeContextUsage,
@@ -850,6 +851,7 @@ export const createChatHandler = (
                 responseModel = response?.modelId;
 
                 logOpenRouterFallbackIfFired({
+                  fallbackSlugs: getFallbackSlugs(modelName),
                   requestedSlug,
                   responseModel,
                   chatId,
