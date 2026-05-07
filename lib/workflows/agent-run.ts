@@ -18,6 +18,7 @@ import { systemPromptStep } from "./steps/system-prompt-step";
 import { persistTodosStep } from "./steps/persist-todos-step";
 import type { UploadedFileMetadata } from "./steps/terminal-steps";
 import { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
+import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { filterEmptyAssistantMessages } from "@/lib/chat/compaction/prune-tool-outputs";
 import type { SubscriptionTier, Todo } from "@/types";
 import type { UserCustomization } from "@/types/user";
@@ -145,6 +146,13 @@ export async function agentRunWorkflow(input: WorkflowAgentInput) {
     await emitWorkflowError({ errorText: `Workflow failed: ${message}` });
     throw error;
   } finally {
+    // Tear down PTY sessions (kill handles, clear timers) before destroying
+    // the sandbox they live in. Mirrors `chat-handler.onFinish`'s cleanup.
+    try {
+      await ptySessionManager.closeAll(input.chatId);
+    } catch (e) {
+      console.error("[workflow] PTY closeAll failed:", e);
+    }
     if (sandboxId) {
       await killSandbox({ sandboxId });
     }

@@ -119,30 +119,12 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
-    // Long-run workflow `wait_command` — the input has no `command`, only a
-    // handle. Display the handle as the pseudo-command and surface the
-    // tailed stdout from output.tail (or output.result.tail) as the
-    // terminal output.
-    if (part.type === "tool-wait_command" && part.input?.handle) {
-      const tail = part.output?.tail ?? part.output?.result?.tail ?? "";
-      contentList.push({
-        command: `# wait_command handle=${part.input.handle}`,
-        output: tail,
-        isExecuting:
-          part.state === "input-available" || part.state === "running",
-        isBackground: false,
-        toolCallId: part.toolCallId || "",
-      });
-      return;
-    }
-
     // Terminal (Codex local commands, interactive PTY sessions, and
-    // long-run workflow agent shell tools).
+    // workflow agent shell tools).
     if (
       (part.type === "tool-run_terminal_cmd" ||
         part.type === "tool-interact_terminal_session" ||
-        part.type === "tool-run_command" ||
-        part.type === "tool-start_command_async") &&
+        part.type === "tool-run_command") &&
       part.input
     ) {
       const action = part.input.action || "exec";

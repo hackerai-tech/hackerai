@@ -5,6 +5,12 @@ import {
   checkCommandGuardrails,
 } from "@/lib/ai/tools/utils/guardrails";
 import { uploadSandboxFileToConvex } from "@/lib/ai/tools/utils/sandbox-file-uploader";
+import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
+import { runInteractivePty } from "@/lib/ai/tools/utils/run-terminal-pty-impl";
+import {
+  performInteractTerminalAction,
+  type InteractTerminalAction,
+} from "@/lib/ai/tools/utils/interact-terminal-impl";
 import type { Id } from "@/convex/_generated/dataModel";
 import { connectToSandbox } from "./sandbox-connect";
 
@@ -12,18 +18,14 @@ const OUTPUT_CAP = 50_000;
 
 export async function runTerminalCmdStep(args: {
   sandboxId: string;
+  chatId: string;
   command: string;
   is_background: boolean;
+  interactive: boolean;
   timeout: number;
   guardrailsConfig?: string;
 }): Promise<{
-  result: {
-    output: string;
-    exitCode?: number | null;
-    error?: string;
-    pid?: number;
-    truncated?: boolean;
-  };
+  result: Record<string, unknown>;
 }> {
   "use step";
 
@@ -41,6 +43,19 @@ export async function runTerminalCmdStep(args: {
   }
 
   const sbx = await connectToSandbox(args.sandboxId);
+
+  if (args.interactive) {
+    const timeoutSeconds = Math.min(Math.max(args.timeout, 1), 600);
+    return runInteractivePty({
+      sandbox: sbx,
+      command: args.command,
+      chatId: args.chatId,
+      effectiveStreamTimeoutMs: timeoutSeconds * 1000,
+      ptySessionManager,
+      // No Caido / writer in workflow scope; rely on `sessionSnapshot` in
+      // the final result for sidebar rendering.
+    });
+  }
 
   if (args.is_background) {
     try {
@@ -205,86 +220,27 @@ export async function getTerminalFilesStep(args: {
   }
 }
 
-// ── Long-running async command pair (workflow-only) ─────────────────────
+// ── interact_terminal_session ───────────────────────────────────────────
 
-function buildAsyncWrapper(
-  userCmd: string,
-  outputFile: string,
-  handle: string,
-) {
-  const inner = `${userCmd} > ${outputFile} 2>&1; echo $? > ${outputFile}.exit`;
-  const quoted = JSON.stringify(inner);
-  return `mkdir -p $(dirname ${outputFile}) && nohup bash -lc ${quoted} > /dev/null 2>&1 & echo $! > /tmp/${handle}.pid; disown`;
-}
-
-export async function startCommandAsyncStep(args: {
+export async function interactTerminalSessionStep(args: {
+  /** Kept for symmetry / debugging; the PTY is already addressable via the
+   *  in-memory `ptySessionManager` keyed by chatId+sessionId. */
   sandboxId: string;
-  command: string;
-  outputFile: string;
-}): Promise<{
-  result: { handle: string; outputFile: string; output: string };
-}> {
+  chatId: string;
+  action: InteractTerminalAction;
+  sessionId: string;
+  input?: string;
+  /** Already converted to ms by the caller; only used by `wait`. */
+  timeoutMs: number;
+}): Promise<{ result: Record<string, unknown> }> {
   "use step";
-  const sbx = await connectToSandbox(args.sandboxId);
-  const handle = `wf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const wrapped = buildAsyncWrapper(args.command, args.outputFile, handle);
-  await sbx.commands.run(wrapped, { timeoutMs: 10_000 });
-  return {
-    result: {
-      handle,
-      outputFile: args.outputFile,
-      output: `[started in background]\nhandle=${handle}\noutput_file=${args.outputFile}`,
-    },
-  };
-}
-
-function buildPollScript(
-  handle: string,
-  outputFile: string,
-  tailLines: number,
-) {
-  return [
-    `PID_FILE=/tmp/${handle}.pid`,
-    `EXIT_FILE=${outputFile}.exit`,
-    `PID=$(cat "$PID_FILE" 2>/dev/null || echo "")`,
-    `if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
-    `  echo "STATUS=running"`,
-    `else`,
-    `  echo "STATUS=done"`,
-    `  if [ -f "$EXIT_FILE" ]; then echo "EXIT=$(cat "$EXIT_FILE")"; fi`,
-    `fi`,
-    `echo "BYTES=$(wc -c < ${outputFile} 2>/dev/null || echo 0)"`,
-    `echo "----TAIL----"`,
-    `tail -n ${tailLines} ${outputFile} 2>/dev/null || true`,
-  ].join("\n");
-}
-
-export async function pollCommandAsyncStep(args: {
-  sandboxId: string;
-  handle: string;
-  outputFile: string;
-  tailLines: number;
-}): Promise<{
-  done: boolean;
-  exitCode?: number;
-  tail: string;
-  bytes: number;
-}> {
-  "use step";
-  const sbx = await connectToSandbox(args.sandboxId);
-  const script = buildPollScript(args.handle, args.outputFile, args.tailLines);
-  const result = await sbx.commands.run(script, { timeoutMs: 15_000 });
-  const out = result.stdout ?? "";
-  const tailIdx = out.indexOf("----TAIL----\n");
-  const head = tailIdx >= 0 ? out.slice(0, tailIdx) : out;
-  const tail = tailIdx >= 0 ? out.slice(tailIdx + "----TAIL----\n".length) : "";
-  const status = /STATUS=(\w+)/.exec(head)?.[1] ?? "running";
-  const exitCode = Number(/EXIT=(-?\d+)/.exec(head)?.[1]);
-  const bytes = Number(/BYTES=(\d+)/.exec(head)?.[1] ?? 0);
-  return {
-    done: status === "done",
-    exitCode: Number.isFinite(exitCode) ? exitCode : undefined,
-    tail,
-    bytes,
-  };
+  return performInteractTerminalAction({
+    action: args.action,
+    sessionId: args.sessionId,
+    chatId: args.chatId,
+    input: args.input,
+    timeoutMs: args.timeoutMs,
+    ptySessionManager,
+    // No emitTerminal: workflow renders PTY via the final `sessionSnapshot`.
+  });
 }

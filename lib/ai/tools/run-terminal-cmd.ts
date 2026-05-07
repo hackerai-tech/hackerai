@@ -1,5 +1,4 @@
 import { tool } from "ai";
-import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
@@ -14,7 +13,7 @@ import {
   waitForSandboxReady,
   getSandboxDiagnostics,
 } from "./utils/sandbox-health";
-import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
+import { isE2BSandbox } from "./utils/sandbox-types";
 import {
   buildSandboxCommandOptions,
   augmentCommandPath,
@@ -26,27 +25,10 @@ import {
 } from "./utils/guardrails";
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
-import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
-import {
-  DEFAULT_PTY_COLS,
-  DEFAULT_PTY_ROWS,
-  type PtySession,
-} from "./utils/pty-session-manager";
-import { getSessionSnapshots } from "./utils/pty-output-formatter";
-import {
-  waitForOutput,
-  capOutput,
-  stripAnsi,
-  peekExited,
-} from "./utils/pty-wait-utils";
+import { runInteractivePty } from "./utils/run-terminal-pty-impl";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
-// Once an interactive PTY emits its first bytes, treat `quietMs` of silence
-// as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
-// return in ~half a second instead of blocking the user-supplied timeout
-// ceiling. The agent can follow up with action=wait/send.
-const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
 import {
   RUN_TERMINAL_CMD_DESCRIPTION,
@@ -94,13 +76,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       },
       { toolCallId, abortSignal },
     ) => {
-      // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
-      // The model intentionally has no knob for this — a terminal size should
-      // match a real display, not a model-chosen value. UIs that render the
-      // PTY can call `PtyHandle.resize()` directly.
-      const cols = DEFAULT_PTY_COLS;
-      const rows = DEFAULT_PTY_ROWS;
-
       // Helper: emit a raw-byte chunk to the UI terminal stream.
       // The `data-terminal` part shape in `UIMessageStreamWriter` only types
       // the minimal `{terminal, toolCallId}` fields, but the frontend
@@ -163,122 +138,42 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
-        try {
-          const { sandbox } = await sandboxManager.getSandbox();
-          const isCentrifugo = isCentrifugoSandbox(sandbox);
-          const isE2B = isE2BSandbox(sandbox);
+        const { sandbox } = await sandboxManager.getSandbox();
+        const isE2B = isE2BSandbox(sandbox);
 
-          if (!isE2B && !isCentrifugo) {
-            return {
-              result: {
-                output: "",
-                exitCode: 1,
-                error:
-                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
-              },
-            };
-          }
-
-          // Set up Caido proxy env vars before spawning the PTY so the session
-          // launches with proxy env pointing at a running Caido. Mirrors the
-          // non-interactive `executeCommand` flow: only eager on E2B; on
-          // failure, permanently disable for the rest of this tool instance.
-          let caidoEnvVars: Record<string, string> | undefined;
-          if (caidoEnabled && isE2B && !caidoSetupDisabled) {
-            try {
-              await ensureCaido(context);
-              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
-            } catch (e) {
-              console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
-                e instanceof Error ? e.message : e,
-              );
-              caidoSetupDisabled = true;
-            }
-          }
-
-          // Factory is invoked BY `ptySessionManager.create` — this ensures
-          // that if the concurrency cap is hit, the factory is never called
-          // and no PTY is spawned (see FIX 4).
-          const session = await ptySessionManager.create(chatId, {
-            cols,
-            rows,
-            createHandle: async () => {
-              if (isCentrifugo) {
-                const { createCentrifugoPtyHandle } =
-                  await import("./utils/centrifugo-pty-adapter");
-                return createCentrifugoPtyHandle(sandbox, {
-                  command,
-                  cols,
-                  rows,
-                  envs: caidoEnvVars,
-                });
-              }
-              return createE2BPtyHandle(sandbox, {
-                cols,
-                rows,
-                envs: caidoEnvVars,
-              });
-            },
-          });
-
-          // Now that the session exists, tag subsequent data-terminal events
-          // with its sessionId (was undefined at emitTerminal definition time).
-          activePtySessionId = session.sessionId;
-
-          // For E2B, the PTY starts a bare shell — fire the command + Enter
-          // so the shell actually runs it. For Centrifugo, the command is
-          // passed in pty_create and the local runner spawns it directly.
-          if (!isCentrifugo) {
-            await session.handle.sendInput(
-              new TextEncoder().encode(command + "\n"),
+        // Set up Caido proxy env vars before spawning the PTY so the session
+        // launches with proxy env pointing at a running Caido. Only eager on
+        // E2B; on failure, permanently disable for the rest of this tool
+        // instance.
+        let caidoEnvVars: Record<string, string> | undefined;
+        if (caidoEnabled && isE2B && !caidoSetupDisabled) {
+          try {
+            await ensureCaido(context);
+            caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
+          } catch (e) {
+            console.warn(
+              "[Terminal Command] Caido setup failed, disabling proxy env vars:",
+              e instanceof Error ? e.message : e,
             );
+            caidoSetupDisabled = true;
           }
-          session.lastActivityAt = Date.now();
-
-          // Stream output chunks as they arrive. Resolve early on a brief
-          // quiet window so launching a REPL/shell returns when its prompt
-          // finishes drawing rather than blocking the full timeout ceiling.
-          const delta = await waitForOutput(
-            session,
-            effectiveStreamTimeout * 1000,
-            abortSignal,
-            emitTerminal,
-            (s) => ptySessionManager.consumeDelta(s),
-            { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
-          );
-          await drainEmitQueue();
-          const snapshots = await getSessionSnapshots(
-            ptySessionManager,
-            session,
-          );
-          // If the command finished during the quiet window (e.g. a one-shot
-          // `echo … && whoami`), surface that so the agent doesn't try to
-          // `interact_terminal_session send` against a dead session.
-          const exited = await peekExited(session);
-          return {
-            result: {
-              session: session.sessionId,
-              pid: session.pid,
-              output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: snapshots.cleaned,
-              rawSnapshot: snapshots.raw,
-              ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
-              ...(exited ? { exited: { exitCode: exited.exitCode } } : {}),
-            },
-          };
-        } catch (err) {
-          return {
-            result: {
-              output: "",
-              exitCode: 1,
-              error:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to create interactive PTY session.",
-            },
-          };
         }
+
+        const result = await runInteractivePty({
+          sandbox,
+          command,
+          chatId,
+          effectiveStreamTimeoutMs: effectiveStreamTimeout * 1000,
+          ptySessionManager,
+          caidoEnvVars,
+          abortSignal,
+          emitTerminal,
+          onSessionCreated: (sid) => {
+            activePtySessionId = sid;
+          },
+        });
+        await drainEmitQueue();
+        return result;
       }
 
       try {

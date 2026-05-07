@@ -5,20 +5,26 @@
  * wrapper that calls `"use step"` step functions in `../steps/*` and
  * forwards results unchanged so the UI sidebar renders them identically.
  *
+ * PTY note: `run_terminal_cmd interactive=true` and `interact_terminal_session`
+ * use the same in-memory `ptySessionManager` singleton as the chat handler.
+ * Sessions live for one agent turn — closed in `agent-run.ts`'s finally block.
+ * Workflow PTY does NOT stream `data-terminal` events; the final tool result
+ * carries `sessionSnapshot` for sidebar rendering (one block per call).
+ *
  * Out of scope for the workflow durable agent (intentionally absent):
- *   - `interact_terminal_session` and PTY mode of `run_terminal_cmd`
- *     (PTY state can't survive durable steps without a tmux/script layer)
  *   - Caido proxy tools (depend on persistent in-process state)
- *   - Real-time line-by-line `data-terminal` streaming (one block per call)
  */
 import { tool, type ToolSet } from "ai";
-import { sleep, FatalError } from "workflow";
 // Import from `lib/ai/tools/schemas` (pure Zod, no Node.js imports) so the
 // workflow scope doesn't transitively pull in `node:crypto`, E2B SDK, etc.
 // from the AI-SDK factory files.
 import {
   RUN_TERMINAL_CMD_DESCRIPTION,
   RUN_TERMINAL_CMD_WORKFLOW_INPUT_SCHEMA,
+  INTERACT_TERMINAL_SESSION_DESCRIPTION,
+  INTERACT_TERMINAL_SESSION_INPUT_SCHEMA,
+  INTERACT_TERMINAL_SESSION_DEFAULT_WAIT_TIMEOUT_SECONDS,
+  INTERACT_TERMINAL_SESSION_MAX_WAIT_TIMEOUT_SECONDS,
   FILE_DESCRIPTION,
   FILE_INPUT_SCHEMA,
   GET_TERMINAL_FILES_DESCRIPTION,
@@ -37,10 +43,6 @@ import {
   WEB_SEARCH_INPUT_SCHEMA,
   OPEN_URL_DESCRIPTION,
   OPEN_URL_INPUT_SCHEMA,
-  START_COMMAND_ASYNC_DESCRIPTION,
-  START_COMMAND_ASYNC_INPUT_SCHEMA,
-  WAIT_COMMAND_DESCRIPTION,
-  WAIT_COMMAND_INPUT_SCHEMA,
 } from "@/lib/ai/tools/schemas";
 import {
   fileReadStep,
@@ -53,8 +55,7 @@ import { updateNoteToModelOutput } from "@/lib/ai/tools/utils/notes-impl";
 import {
   runTerminalCmdStep,
   getTerminalFilesStep,
-  startCommandAsyncStep,
-  pollCommandAsyncStep,
+  interactTerminalSessionStep,
   type UploadedFileMetadata,
 } from "@/lib/workflows/steps/terminal-steps";
 import {
@@ -89,13 +90,34 @@ export function createWorkflowTools(ctx: WorkflowToolContext): ToolSet {
     run_terminal_cmd: tool({
       description: RUN_TERMINAL_CMD_DESCRIPTION,
       inputSchema: RUN_TERMINAL_CMD_WORKFLOW_INPUT_SCHEMA,
-      execute: async ({ command, is_background, timeout }) => {
+      execute: async ({ command, is_background, timeout, interactive }) => {
         return runTerminalCmdStep({
           sandboxId: ctx.sandboxId,
+          chatId: ctx.chatId,
           command,
           is_background: is_background ?? false,
+          interactive: interactive ?? false,
           timeout: timeout ?? 60,
           guardrailsConfig: ctx.guardrailsConfig,
+        });
+      },
+    }),
+
+    interact_terminal_session: tool({
+      description: INTERACT_TERMINAL_SESSION_DESCRIPTION,
+      inputSchema: INTERACT_TERMINAL_SESSION_INPUT_SCHEMA,
+      execute: async ({ action, session, input, timeout }) => {
+        const timeoutSeconds = Math.min(
+          timeout ?? INTERACT_TERMINAL_SESSION_DEFAULT_WAIT_TIMEOUT_SECONDS,
+          INTERACT_TERMINAL_SESSION_MAX_WAIT_TIMEOUT_SECONDS,
+        );
+        return interactTerminalSessionStep({
+          sandboxId: ctx.sandboxId,
+          chatId: ctx.chatId,
+          action,
+          sessionId: session,
+          input,
+          timeoutMs: timeoutSeconds * 1000,
         });
       },
     }),
@@ -235,58 +257,6 @@ export function createWorkflowTools(ctx: WorkflowToolContext): ToolSet {
       inputSchema: OPEN_URL_INPUT_SCHEMA,
       execute: async ({ url }) => {
         return openUrlStep({ url });
-      },
-    }),
-
-    start_command_async: tool({
-      description: START_COMMAND_ASYNC_DESCRIPTION,
-      inputSchema: START_COMMAND_ASYNC_INPUT_SCHEMA,
-      execute: async ({ command, outputFile }) => {
-        return startCommandAsyncStep({
-          sandboxId: ctx.sandboxId,
-          command,
-          outputFile,
-        });
-      },
-    }),
-
-    wait_command: tool({
-      description: WAIT_COMMAND_DESCRIPTION,
-      inputSchema: WAIT_COMMAND_INPUT_SCHEMA,
-      execute: async ({
-        handle,
-        outputFile,
-        intervalSeconds,
-        maxMinutes,
-        tailLines,
-      }) => {
-        const deadline = maxMinutes * 60;
-        let waited = 0;
-        while (waited < deadline) {
-          const status = await pollCommandAsyncStep({
-            sandboxId: ctx.sandboxId,
-            handle,
-            outputFile,
-            tailLines,
-          });
-          if (status.done) {
-            return {
-              ...status,
-              result: {
-                tail: status.tail,
-                output: status.tail,
-                exitCode: status.exitCode,
-                done: status.done,
-                bytes: status.bytes,
-              },
-            };
-          }
-          await sleep(`${intervalSeconds}s`);
-          waited += intervalSeconds;
-        }
-        throw new FatalError(
-          `wait_command exceeded ${maxMinutes} minutes for handle ${handle}`,
-        );
       },
     }),
   };
