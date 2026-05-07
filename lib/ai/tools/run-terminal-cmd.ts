@@ -784,5 +784,24 @@ In using these tools, adhere to the following guidelines:
         return error as CommandExitError;
       }
     },
+    // For interactive PTY results, strip rawSnapshot from what the model
+    // sees — the agent only needs the cleaned `output` plus structural
+    // fields. rawSnapshot stays in the persisted tool result so the
+    // sidebar's xterm renderer can replay it. No-op for non-interactive
+    // results, which never include rawSnapshot.
+    toModelOutput({ output }) {
+      if (typeof output !== "object" || output === null) {
+        return { type: "text", value: String(output ?? "") };
+      }
+      const result = (output as { result?: unknown }).result;
+      if (typeof result !== "object" || result === null) {
+        return { type: "text", value: JSON.stringify(output) };
+      }
+      const { rawSnapshot: _rawSnapshot, ...rest } = result as Record<
+        string,
+        unknown
+      >;
+      return { type: "text", value: JSON.stringify({ result: rest }) };
+    },
   });
 };
