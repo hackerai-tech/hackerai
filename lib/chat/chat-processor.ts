@@ -279,10 +279,18 @@ function removeDuplicateToolParts(messages: UIMessage[]): UIMessage[] {
 }
 
 /**
- * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
- * Also strips original and modified from update_note tool outputs.
- * These are persisted for UI but shouldn't be sent to the model
- * (toModelOutput handles what the model sees, but we also strip it here as a safeguard).
+ * Strips bulky UI-only fields from historical tool outputs before they're
+ * fed back into the model context.
+ *
+ * Tools' own `toModelOutput` handles the current step's result, but
+ * `convertToModelMessages` is called here without the tools registry, so
+ * `toModelOutput` is bypassed for past results — we strip explicitly.
+ *
+ * - `tool-file` (read/edit/append): drops originalContent / modifiedContent
+ * - `tool-update_note`: drops original / modified diff data
+ * - `tool-run_terminal_cmd` / `tool-interact_terminal_session`: drops
+ *   rawSnapshot (raw ANSI byte buffer used only by the sidebar's xterm
+ *   renderer; the model already has `output` and `sessionSnapshot`).
  */
 function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => {
@@ -322,6 +330,25 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
         return {
           ...part,
           output: restOutput,
+        };
+      }
+
+      // Process PTY tool parts to strip rawSnapshot. Output shape is
+      // `{ result: { output, sessionSnapshot, rawSnapshot, ... } }`.
+      if (
+        (part.type === "tool-run_terminal_cmd" ||
+          part.type === "tool-interact_terminal_session") &&
+        typeof part.output === "object" &&
+        part.output !== null &&
+        typeof (part.output as any).result === "object" &&
+        (part.output as any).result !== null &&
+        "rawSnapshot" in (part.output as any).result
+      ) {
+        hasChanges = true;
+        const { rawSnapshot, ...restResult } = (part.output as any).result;
+        return {
+          ...part,
+          output: { ...part.output, result: restResult },
         };
       }
 

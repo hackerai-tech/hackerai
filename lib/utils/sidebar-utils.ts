@@ -167,6 +167,10 @@ export function extractSidebarContentFromMessage(
       // sessionSnapshot is cleaned via xterm headless - prefer it when available.
       // For streaming, show live output for responsiveness.
       const sessionSnapshot = result?.sessionSnapshot || "";
+      // Surface tool-level errors as the displayed output so e.g. action=view
+      // on a killed session shows "Session ... not found." in the sidebar
+      // instead of an empty panel — same pattern as `getShellOutput`.
+      const resultError = typeof result?.error === "string" ? result.error : "";
       const finalOutput =
         // Prefer cleaned sessionSnapshot when available (works for all action types)
         sessionSnapshot ||
@@ -176,6 +180,7 @@ export function extractSidebarContentFromMessage(
         output ||
         streamingOutput ||
         part.output?.output ||
+        resultError ||
         "";
 
       // Only feed rawBytes (→ xterm renderer) for interactive PTY contexts.
