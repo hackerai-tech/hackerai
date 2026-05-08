@@ -2,9 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
-  logging: {
-    serverFunctions: false,
-  },
+  ...(process.env.NODE_ENV === "development" && {
+    logging: {
+      serverFunctions: false,
+    },
+  }),
   images: {
     unoptimized: true,
     remotePatterns: [
