@@ -70,7 +70,6 @@ export const modelCutoffDates: Record<ModelName, string> &
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "title-generator-model": "November 2024",
-  "model-codex-local": "April 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -87,7 +86,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model":
     "Auto, an intelligent model router built by HackerAI",
-  "model-codex-local": "OpenAI Codex (Your Account)",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {

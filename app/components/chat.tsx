@@ -7,17 +7,12 @@ import {
   useEffect,
   useState,
   useReducer,
-  useMemo,
   useCallback,
   type RefObject,
 } from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
-import { CodexLocalTransport } from "@/lib/local-providers/codex-transport";
-import { DelegatingTransport } from "@/lib/local-providers/delegating-transport";
-import { useCodexSidecar } from "@/app/hooks/useCodexLocal";
-import { useCodexPersistence } from "@/app/hooks/useCodexPersistence";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import type { RateLimitWarningData } from "./RateLimitWarning";
@@ -30,21 +25,12 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
-import {
-  normalizeMessages,
-  sanitizeCodexToolCalls,
-} from "@/lib/utils/message-processor";
+import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import {
-  coerceSelectedModel,
-  isCodexLocal,
-  getCodexSubModel,
-} from "@/types/chat";
-import { serializeConversation } from "@/lib/utils/conversation-serializer";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
+import { coerceSelectedModel } from "@/types/chat";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -54,12 +40,6 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
-import {
-  getCmdServerInfo,
-  setConvexAuth,
-  isTauriEnvironment,
-} from "../hooks/useTauri";
-import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
@@ -336,156 +316,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
-  // Track current message IDs so the Convex sync effect can skip redundant
-  // setMessages calls (e.g. after local provider saves echo back the same data).
   const messagesRef = useRef<ChatMessage[]>([]);
-  // Suppress Convex sync briefly after Codex stream finishes to prevent
-  // the echo-back from replacing in-memory messages (causes flicker/scroll jump).
-  const codexSyncSuppressedUntilRef = useRef(0);
-
-  // Ref for selected model so the delegating transport reads latest value
-  const selectedModelRef = useLatestRef(selectedModel);
-  // Ref for subscription so the delegating transport reads latest value
-  const subscriptionRef = useLatestRef(subscription);
-  // Ref for chatId so the delegating transport reads latest value
-  const chatIdRef = useLatestRef(chatId);
-
-  // Convex queries for local provider prompt data (only fetched when in Tauri desktop)
-  const userCustomization = useQuery(
-    api.userCustomization.getUserCustomization,
-  );
-  const userNotes = useQuery(api.notes.getUserNotes, {});
-  const userCustomizationRef = useLatestRef(userCustomization);
-  const userNotesRef = useLatestRef(userNotes);
-
-  // Cmd server info for notes API (fetched once in Tauri environment)
-  const cmdServerInfoRef = useRef<{ port: number; token: string } | null>(null);
-  const { user: authUser } = useAuth();
-  const { getAccessToken } = useAccessToken();
-  useEffect(() => {
-    if (isTauriEnvironment()) {
-      getCmdServerInfo()
-        .then((info) => {
-          cmdServerInfoRef.current = info;
-        })
-        .catch((err) => {
-          console.error("[Tauri] Failed to get cmd server info:", err);
-        });
-    }
-  }, []);
-
-  // Sync Convex auth token + notes setting to Tauri backend for notes API
-  const notesEnabled = userCustomization?.include_memory_entries ?? true;
-  const lastSyncedTokenRef = useRef<string | null>(null);
-  const lastSyncedNotesEnabledRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    if (!isTauriEnvironment() || !authUser?.id) return;
-    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-    if (!convexUrl) return;
-
-    const syncToken = async () => {
-      try {
-        const token = await getAccessToken();
-        if (
-          token &&
-          (token !== lastSyncedTokenRef.current ||
-            notesEnabled !== lastSyncedNotesEnabledRef.current)
-        ) {
-          await setConvexAuth(convexUrl, token, notesEnabled);
-          lastSyncedTokenRef.current = token;
-          lastSyncedNotesEnabledRef.current = notesEnabled;
-        }
-      } catch (err) {
-        console.error("[Tauri] Failed to sync Convex auth:", err);
-      }
-    };
-
-    syncToken();
-    // Check token freshness every 30s but only sync if changed
-    const interval = setInterval(syncToken, 30_000);
-    return () => clearInterval(interval);
-  }, [authUser?.id, getAccessToken, notesEnabled]);
-
-  // Stable transport instances
-  const codexTransport = useMemo(() => new CodexLocalTransport(), []);
-
-  // Manage the Codex SDK sidecar process — starts on demand when Codex is selected
-  const { ensureSidecar } = useCodexSidecar(codexTransport);
-  const ensureSidecarRef = useLatestRef(ensureSidecar);
-
-  // Local provider message persistence
-  const { persistCodexMessages } = useCodexPersistence({
-    chatId,
-    codexTransport,
-    selectedModelRef,
-    isExistingChatRef,
-    setIsExistingChat,
-  });
-
-  // Delegating transport that switches between Codex local and default based on selected model
-  // beforeSend ensures the sidecar is running when Codex is selected
-  const transport = useMemo(
-    () =>
-      new DelegatingTransport(
-        () => {
-          if (isCodexLocal(selectedModelRef.current)) {
-            return codexTransport;
-          }
-          return defaultTransportRef.current;
-        },
-        async () => {
-          if (isCodexLocal(selectedModelRef.current)) {
-            const subModel = getCodexSubModel(selectedModelRef.current || "");
-            codexTransport.setModel(subModel);
-            const includeNotes =
-              userCustomizationRef.current?.include_memory_entries ?? true;
-            codexTransport.setUserData({
-              userCustomization: userCustomizationRef.current,
-              notes: includeNotes
-                ? (userNotesRef.current ?? undefined)
-                : undefined,
-              model: subModel,
-              cmdServerPort: cmdServerInfoRef.current?.port,
-              cmdServerToken: cmdServerInfoRef.current?.token,
-            });
-
-            // Detect server→codex switch: existing messages but no codex thread
-            const currentMessages = messagesRef.current;
-            const currentChatId = chatIdRef.current;
-            if (
-              currentMessages.length > 0 &&
-              !codexTransport.getThreadId(currentChatId)
-            ) {
-              const maxTokens = getMaxTokensForSubscription(
-                subscriptionRef.current,
-                { mode: chatModeRef.current as "ask" | "agent" },
-              );
-              const context = serializeConversation(currentMessages, maxTokens);
-              if (context) {
-                codexTransport.setConversationContext(currentChatId, context);
-              }
-            }
-
-            const sidecarOk = await ensureSidecarRef.current();
-            if (!sidecarOk) {
-              toast.error("This chat requires the desktop app", {
-                description:
-                  "Codex models run locally and need the HackerAI desktop app.",
-              });
-              return false;
-            }
-          }
-        },
-      ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [codexTransport],
-  );
 
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
-  const defaultTransportRef = useRef(
+  const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
@@ -528,9 +365,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         const messagesToSend = isTemporaryChat
           ? normalizedMessages
           : lastMessage;
-        // Convert codex-specific tool parts to text so server models understand them
-        const sanitizedMessages = sanitizeCodexToolCalls(messagesToSend);
-        const messagesWithoutUrls = stripUrlsFromMessages(sanitizedMessages);
+        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
 
         return {
           body: {
@@ -558,7 +393,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     experimental_throttle: 150,
     generateId: () => uuidv4(),
 
-    transport,
+    transport: transportRef.current,
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
@@ -688,15 +523,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
 
-      // Local providers: persist messages + thread to Convex.
-      // Suppress Convex sync for 2s so the echo-back doesn't replace
-      // in-memory messages with fresh objects (causes flicker/scroll jump).
-      if (isCodexLocal(selectedModelRef.current)) {
-        codexSyncSuppressedUntilRef.current = Date.now() + 2000;
-        persistCodexMessages(messagesRef.current);
-        return;
-      }
-
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
@@ -776,14 +602,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // Ignore when no data or data is stale (doesn't match current chatId)
     if (!chatData || dataId !== chatId) {
       return;
-    }
-
-    // Restore Codex thread ID from persisted chat data
-    const codexThreadId = (chatData as any)?.codex_thread_id as
-      | string
-      | undefined;
-    if (codexThreadId && codexTransport) {
-      codexTransport.restoreThread(chatId, codexThreadId);
     }
 
     // Load todos from the chat data if they exist.
@@ -975,10 +793,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       statusRef.current === "streaming" ||
       statusRef.current === "submitted"
     ) {
-      return;
-    }
-    // Skip while Codex echo-back is settling to avoid flicker
-    if (Date.now() < codexSyncSuppressedUntilRef.current) {
       return;
     }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
@@ -1296,7 +1110,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   chatTitle={chatTitle}
                   branchedFromChatId={branchedFromChatId}
                   branchedFromChatTitle={branchedFromChatTitle}
-                  isLocalProvider={isCodexLocal(selectedModel)}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
