@@ -14,7 +14,6 @@ import {
   Gauge,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-// import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
 import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
@@ -43,7 +42,6 @@ const SettingsDialog = ({
   const [activeTab, setActiveTab] = useState("Personalization");
   const [prevOpen, setPrevOpen] = useState(false);
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
-  // const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
   const [showNotesDialog, setShowNotesDialog] = useState(false);
   const isMobile = useIsMobile();
   const { subscription } = useGlobalState();
@@ -231,11 +229,6 @@ const SettingsDialog = ({
         </DialogContent>
       </Dialog>
 
-      {/* Manage Notes Dialog (formerly Manage Memories Dialog) */}
-      {/* <ManageMemoriesDialog
-        open={showMemoriesDialog}
-        onOpenChange={setShowMemoriesDialog}
-      /> */}
       <ManageNotesDialog
         open={showNotesDialog}
         onOpenChange={setShowNotesDialog}

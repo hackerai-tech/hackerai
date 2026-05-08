@@ -148,7 +148,8 @@ const AgentsTab = () => {
         </div>
       </div>
 
-      {/* Caido - Hidden for free users */}
+      {/* Caido proxy temporarily disabled for all users.
+          Kill switch lives in lib/api/chat-handler.ts (caidoEnabled forced false).
       {subscription !== "free" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between py-3 border-b">
@@ -235,6 +236,7 @@ const AgentsTab = () => {
           )}
         </div>
       )}
+      */}
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (

@@ -13,7 +13,14 @@ import type {
   SystemModelMessage,
 } from "ai";
 import { NoSuchModelError } from "ai";
-import type { ChatMode, SubscriptionTier, Todo } from "@/types";
+import type {
+  ChatMode,
+  ExtraUsageConfig,
+  SandboxPreference,
+  SubscriptionTier,
+  Todo,
+  UserCustomization,
+} from "@/types";
 import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
@@ -35,6 +42,11 @@ import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
+import { ChatSDKError } from "@/lib/errors";
+import { getExtraUsageBalance } from "@/lib/extra-usage";
+import { systemPrompt } from "@/lib/system-prompt";
+import { countTokens } from "gpt-tokenizer";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 /**
  * Check if messages contain file attachments
@@ -441,7 +453,10 @@ export class SummarizationTracker {
  * with the registry.
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "model-opus-4.6": ["model-sonnet-4.6", "model-kimi-k2.6"],
+  "model-opus-4.6": ["model-kimi-k2.6"],
+  "model-sonnet-4.6": ["model-kimi-k2.6"],
+  "ask-model-free": ["fallback-ask-model"],
+  "agent-model-free": ["fallback-agent-model"],
 };
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -459,6 +474,21 @@ const resolveSlug = (modelName: string): string | undefined => {
 };
 
 /**
+ * Resolve a model's fallback chain to OpenRouter slugs.
+ * Returns an empty array if the model has no chain or all entries are stale.
+ */
+export function getFallbackSlugs(modelName?: string): string[] {
+  const fallbackKeys = modelName
+    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
+    : undefined;
+  return (
+    fallbackKeys
+      ?.map((key) => resolveSlug(key))
+      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
+  );
+}
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(
@@ -468,12 +498,7 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const fallbackKeys = modelName
-    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
-    : undefined;
-  const fallbackSlugs = fallbackKeys
-    ?.map((key) => resolveSlug(key))
-    .filter((s): s is string => typeof s === "string" && s.length > 0);
+  const fallbackSlugs = getFallbackSlugs(modelName);
   return {
     openrouter: {
       ...(isReasoningModel
@@ -485,10 +510,31 @@ export function buildProviderOptions(
           }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
-      ...(fallbackSlugs &&
-        fallbackSlugs.length > 0 && { models: fallbackSlugs }),
+      ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
+}
+
+/**
+ * Logs `[fallback-fired]` when the served model is one of the slugs we
+ * explicitly listed in the OpenRouter `models` chain. We can't use a naive
+ * `served !== requested` check because OpenRouter sometimes returns the
+ * requested model under a different label (dated snapshots, reordered tokens)
+ * — that's not a fallback. Membership in our chain is the authoritative
+ * signal.
+ */
+export function logOpenRouterFallbackIfFired(args: {
+  fallbackSlugs: readonly string[];
+  responseModel: string | undefined;
+  requestedSlug: string | undefined;
+  chatId: string;
+}) {
+  const { fallbackSlugs, responseModel, requestedSlug, chatId } = args;
+  if (!responseModel) return;
+  if (!fallbackSlugs.includes(responseModel)) return;
+  console.log(
+    `[fallback-fired] requested=${requestedSlug ?? "?"} served=${responseModel} chat=${chatId}`,
+  );
 }
 
 const ANTHROPIC_CACHE_BREAKPOINT = {
@@ -630,7 +676,7 @@ export function replaceNotesBlock(
 }
 
 /**
- * Updates the notes in model messages (CoreMessage[]) from prepareStep.
+ * Updates the notes in model messages (ModelMessage[]) from prepareStep.
  * Preserves full conversation history (tool calls, results, assistant messages).
  *
  * The AI SDK does NOT preserve `<system-reminder>` text that was injected into
@@ -712,7 +758,7 @@ export async function refreshNotesInModelMessages(
 }
 
 /**
- * Appends a <system-reminder> block to the last user message in a CoreMessage array.
+ * Appends a <system-reminder> block to the last user message in a ModelMessage array.
  * Used in prepareStep to inject runtime reminders without mutating the original.
  */
 export function appendReminderToModelMessages(
@@ -782,4 +828,110 @@ export async function applyPrepareStepReminders(
   }
 
   return messages;
+}
+
+/**
+ * Free-tier agent mode is restricted to the local sandbox + auto model.
+ * Throws ChatSDKError("forbidden:chat") if either gate fails.
+ */
+export function assertFreeAgentGates(args: {
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  sandboxPreference: SandboxPreference | undefined;
+  rawSelectedModel: string | undefined;
+}): void {
+  const { mode, subscription, sandboxPreference, rawSelectedModel } = args;
+  if (!isAgentMode(mode) || subscription !== "free") return;
+
+  const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
+  if (!isLocalSandbox) {
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
+    );
+  }
+
+  if (rawSelectedModel && rawSelectedModel !== "auto") {
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
+    );
+  }
+}
+
+/**
+ * Build the extra-usage config for paid users with `extra_usage_enabled`.
+ * Falls back to an optimistic config if the balance lookup fails so a
+ * transient Convex error doesn't silently disable extra usage and force
+ * the user into the hard subscription limit.
+ */
+export async function buildExtraUsageConfig(args: {
+  userId: string;
+  subscription: SubscriptionTier;
+  userCustomization: UserCustomization | null | undefined;
+}): Promise<ExtraUsageConfig | undefined> {
+  const { userId, subscription, userCustomization } = args;
+  if (subscription === "free") return undefined;
+  if (!(userCustomization?.extra_usage_enabled ?? false)) return undefined;
+
+  const balanceInfo = await getExtraUsageBalance(userId);
+
+  if (!balanceInfo) {
+    console.warn(
+      `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
+    );
+    return { enabled: true, hasBalance: true, autoReloadEnabled: false };
+  }
+
+  if (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled) {
+    return {
+      enabled: true,
+      hasBalance: balanceInfo.balanceDollars > 0,
+      balanceDollars: balanceInfo.balanceDollars,
+      autoReloadEnabled: balanceInfo.autoReloadEnabled,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Pre-flight token estimate used to size the rate-limit deduction before
+ * the actual stream runs. File tokens are excluded (PDF counts are
+ * inaccurate; deductUsage reconciles against real provider cost). Tool
+ * schemas can't be computed here (they depend on sandboxManager), so we
+ * approximate: ~1500 for agent (~8 tools), ~500 for ask (~4 tools).
+ */
+export async function estimatePreflightInputTokens(args: {
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  userId: string;
+  selectedModel: ModelName;
+  userCustomization: UserCustomization | null | undefined;
+  temporary: boolean | undefined;
+  truncatedMessages: UIMessage[];
+}): Promise<number> {
+  const {
+    mode,
+    subscription,
+    userId,
+    selectedModel,
+    userCustomization,
+    temporary,
+    truncatedMessages,
+  } = args;
+  if (!isAgentMode(mode) && subscription === "free") return 0;
+
+  const messageTokens = countMessagesTokens(truncatedMessages);
+  const estimatedSystemPrompt = await systemPrompt(
+    userId,
+    mode,
+    subscription,
+    selectedModel,
+    userCustomization,
+    temporary,
+    null,
+  );
+  const systemTokens = countTokens(estimatedSystemPrompt);
+  const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
+  return messageTokens + systemTokens + toolSchemaOverhead;
 }
