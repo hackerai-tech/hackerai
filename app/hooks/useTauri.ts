@@ -94,26 +94,6 @@ export async function getCmdServerInfo(): Promise<{
 }
 
 /**
- * Set the Convex auth (URL + user token) on the Tauri backend.
- * Used to enable the Notes API bridge with user's own auth token.
- */
-export async function setConvexAuth(
-  url: string,
-  token: string,
-  notesEnabled: boolean,
-): Promise<boolean> {
-  if (!detectTauri()) return false;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_convex_auth", { url, token, notesEnabled });
-    return true;
-  } catch (err) {
-    console.error("[Tauri] Failed to set Convex auth:", err);
-    return false;
-  }
-}
-
-/**
  * Reveal a file or folder in the OS file manager (Finder/Explorer).
  */
 export async function revealFileInDir(path: string): Promise<boolean> {

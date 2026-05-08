@@ -20,8 +20,7 @@ import {
   createDeleteNote,
 } from "./notes";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
-// the added complexity. Codex doesn't provide grep/glob tools either, and for simplicity
-// and effectiveness the agent should use run_terminal_cmd with rg instead.
+// the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
 import type { UIMessageStreamWriter } from "ai";
 import type {

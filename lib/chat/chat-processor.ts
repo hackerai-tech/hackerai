@@ -38,16 +38,6 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageOrPdf?: boolean,
 ): ModelName {
-  // Local provider models should never reach server-side model selection
-  // if (
-  //   selectedModel === "codex-local" ||
-  //   selectedModel?.startsWith("codex-local:")
-  // ) {
-  //   throw new Error(
-  //     "Local provider model 'codex-local' cannot be used server-side",
-  //   );
-  // }
-
   const isAgent = isAgentMode(mode);
   // ASK takes the cheap DeepSeek text path for free users (always) and for
   // paid users only when no image/PDF is attached — DeepSeek is text-only,

@@ -16,15 +16,12 @@ export type SelectedModel =
   | "hackerai-standard"
   | "hackerai-pro"
   | "hackerai-max";
-// | "codex-local"
-// | `codex-local:${string}`;
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "hackerai-standard",
   "hackerai-pro",
   "hackerai-max",
-  // "codex-local",
 ];
 
 /**
@@ -69,25 +66,9 @@ export function coerceSelectedModel(
   return null;
 }
 
-/** Check if a model is a local Codex model (with or without sub-model) */
-export function isCodexLocal(model: string | null): boolean {
-  return (
-    model === "codex-local" || (!!model && model.startsWith("codex-local:"))
-  );
-}
-
-/** Extract the Codex sub-model (e.g., "gpt-5.3" from "codex-local:gpt-5.3") */
-export function getCodexSubModel(model: string): string | undefined {
-  if (model.startsWith("codex-local:")) {
-    return model.slice("codex-local:".length);
-  }
-  return undefined;
-}
-
 export function isSelectedModel(value: string | null): value is SelectedModel {
   return (
     value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
-    // || isCodexLocal(value)
   );
 }
 

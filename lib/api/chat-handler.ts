@@ -177,17 +177,6 @@ export const createChatHandler = (
       const selectedModelOverride: SelectedModel | undefined =
         coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
 
-      // Local provider models are handled client-side and must never reach the server
-      if (
-        rawSelectedModel === "codex-local" ||
-        (rawSelectedModel && rawSelectedModel.startsWith("codex-local:"))
-      ) {
-        throw new ChatSDKError(
-          "bad_request:api",
-          "Local provider models are handled client-side",
-        );
-      }
-
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,

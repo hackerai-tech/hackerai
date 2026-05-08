@@ -6,13 +6,12 @@ import {
 import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
-type CostTier = "low" | "medium" | "high" | "very-high" | "free";
+type CostTier = "low" | "medium" | "high" | "very-high";
 
 // Cost tier per HackerAI tier id. Standard is mode-aware: in ask it routes
 // through the cheap DeepSeek V4 Flash text path (low), in agent it runs on
 // Kimi K2.6 (medium).
 export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
-  if (modelId.startsWith("codex-local")) return "free";
   switch (modelId) {
     case "hackerai-standard":
       return mode && isAgentMode(mode) ? "medium" : "low";
@@ -29,11 +28,6 @@ const COST_CONFIG: Record<
   CostTier,
   { count: number; label: string; activeClass: string; suffix?: string }
 > = {
-  free: {
-    count: 0,
-    label: "Your account",
-    activeClass: "text-blue-600/80 dark:text-blue-400/80",
-  },
   low: {
     count: 1,
     label: "Low cost",
@@ -68,10 +62,6 @@ export function CostIndicator({
 }) {
   const tier = getCostTier(modelId, mode);
   const config = COST_CONFIG[tier];
-
-  if (tier === "free") {
-    return null;
-  }
 
   return (
     <Tooltip>
