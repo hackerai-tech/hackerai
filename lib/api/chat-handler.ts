@@ -960,10 +960,17 @@ export const createChatHandler = (
                 // avoids misclassifying the existing app-level Grok retry
                 // (where modelName, and thus the requested slug, changes) as
                 // an OpenRouter chain rescue.
+                //
+                // Normalize before comparing: `:variant` suffixes (`:exacto`,
+                // `:nitro`, …) are OpenRouter routing modifiers, and trailing
+                // `-YYYYMMDD` is a date-pinned canonical of the same model.
+                // Neither represents a real chain rescue.
+                const normalizeSlug = (slug: string) =>
+                  slug.replace(/:[^:/]+$/, "").replace(/-\d{8}$/, "");
                 if (
                   responseModel &&
                   requestedSlug &&
-                  responseModel !== requestedSlug
+                  normalizeSlug(responseModel) !== normalizeSlug(requestedSlug)
                 ) {
                   console.log(
                     `[fallback-fired] requested=${requestedSlug} served=${responseModel} chat=${chatId}`,
