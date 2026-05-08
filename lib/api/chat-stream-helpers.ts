@@ -160,32 +160,65 @@ export function sendRateLimitWarnings(
       });
     } else {
       // Paid users without extra usage: warn at 80% and 95%
-      const monthlyPercent =
+      const usedPercent =
+        100 -
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
-      const usedPercent = 100 - monthlyPercent;
 
       if (usedPercent >= 80) {
-        const severity: "info" | "warning" =
-          usedPercent >= 95 ? "warning" : "info";
-
-        const usedDollars =
-          (rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining) /
-          POINTS_PER_DOLLAR;
-        const limitDollars = rateLimitInfo.monthly.limit / POINTS_PER_DOLLAR;
-
-        writeRateLimitWarning(writer, {
-          warningType: "token-bucket",
-          bucketType: "monthly",
-          remainingPercent: Math.round(monthlyPercent),
-          resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
+        emitTokenBucketThresholdWarning(writer, {
+          usedPercent,
+          projectedUsedPoints:
+            rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining,
+          monthlyLimitPoints: rateLimitInfo.monthly.limit,
+          resetTime: rateLimitInfo.monthly.resetTime,
           subscription,
-          severity,
-          usedDollars: Math.round(usedDollars * 100) / 100,
-          limitDollars: Math.round(limitDollars * 100) / 100,
         });
       }
     }
   }
+}
+
+/**
+ * Inputs to {@link emitTokenBucketThresholdWarning}. Both start-of-stream
+ * (`sendRateLimitWarnings`) and mid-stream (`BudgetMonitor`) callers build
+ * one of these and let the helper format the dollar/severity payload.
+ */
+export interface TokenBucketEmitContext {
+  /** Used percentage (0–100+), pre-rounding. */
+  usedPercent: number;
+  /** Points consumed against the monthly bucket so far. */
+  projectedUsedPoints: number;
+  /** Monthly bucket size in points. */
+  monthlyLimitPoints: number;
+  /** When the bucket resets. */
+  resetTime: Date;
+  subscription: SubscriptionTier;
+  /** Set when the warning is emitted from inside an active stream. */
+  midStream?: boolean;
+  /** Set when the response was cut off because the bucket hit 0. */
+  cutOff?: boolean;
+}
+
+export function emitTokenBucketThresholdWarning(
+  writer: UIMessageStreamWriter,
+  ctx: TokenBucketEmitContext,
+): void {
+  const remainingPercent = Math.max(0, Math.round(100 - ctx.usedPercent));
+  const severity: "info" | "warning" =
+    ctx.usedPercent >= 95 ? "warning" : "info";
+  writeRateLimitWarning(writer, {
+    warningType: "token-bucket",
+    bucketType: "monthly",
+    remainingPercent,
+    resetTime: ctx.resetTime.toISOString(),
+    subscription: ctx.subscription,
+    severity,
+    usedDollars:
+      Math.round((ctx.projectedUsedPoints / POINTS_PER_DOLLAR) * 100) / 100,
+    limitDollars: ctx.monthlyLimitPoints / POINTS_PER_DOLLAR,
+    ...(ctx.midStream ? { midStream: true } : {}),
+    ...(ctx.cutOff ? { cutOff: true } : {}),
+  });
 }
 
 /**
