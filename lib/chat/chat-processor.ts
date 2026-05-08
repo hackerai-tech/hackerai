@@ -33,16 +33,6 @@ export function selectModel(
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
 ): ModelName {
-  // Local provider models should never reach server-side model selection
-  // if (
-  //   selectedModel === "codex-local" ||
-  //   selectedModel?.startsWith("codex-local:")
-  // ) {
-  //   throw new Error(
-  //     "Local provider model 'codex-local' cannot be used server-side",
-  //   );
-  // }
-
   const isAgent = isAgentMode(mode);
   const autoModel: ModelName = isAgent
     ? subscription === "free"

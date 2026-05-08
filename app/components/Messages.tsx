@@ -59,7 +59,6 @@ interface MessagesProps {
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
-  isLocalProvider?: boolean;
 }
 
 export const Messages = ({
@@ -86,7 +85,6 @@ export const Messages = ({
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
-  isLocalProvider = false,
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
@@ -115,14 +113,10 @@ export const Messages = ({
     return hasText || hasFiles;
   }, [lastAssistantMessageIndex, visibleMessages]);
 
-  // Check if we should show loading dots (streaming with no content yet, or submitted for local providers)
+  // Check if we should show loading dots (streaming with no content yet)
   const shouldShowLoadingDots = useMemo(() => {
     // Show dots while resuming an interrupted stream until the first chunk arrives
     if (isAutoResuming) return true;
-    if (status === "submitted" && isLocalProvider) {
-      // Show dots immediately for local providers during sidecar startup
-      return true;
-    }
     if (status !== "streaming") return false;
     if (summarizationStatus?.status === "started") return false;
     if (uploadStatus?.isUploading) return false;
@@ -137,7 +131,6 @@ export const Messages = ({
   }, [
     isAutoResuming,
     status,
-    isLocalProvider,
     summarizationStatus,
     uploadStatus,
     lastAssistantMessageIndex,

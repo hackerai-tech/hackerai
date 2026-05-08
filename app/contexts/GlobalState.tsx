@@ -18,10 +18,8 @@ import {
   type QueuedMessage,
   type QueueBehavior,
   type SandboxPreference,
-  isCodexLocal,
   isChatMode,
 } from "@/types/chat";
-import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
 import {
@@ -264,12 +262,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Model selection — HackerAI tier ids (Lite/Pro/Max) are mode-agnostic;
   // the active model is resolved server-side via resolveTierToProviderKey.
-  // On web, Codex models are not usable so treat them as "auto".
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModel();
-    if (!saved) return "auto";
-    if (isCodexLocal(saved) && !isTauriEnvironment()) return "auto";
-    return saved;
+    return saved ?? "auto";
   });
 
   // Persist model preference to localStorage (single key, shared across modes).

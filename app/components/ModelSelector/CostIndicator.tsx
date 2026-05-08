@@ -4,7 +4,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-type CostTier = "low" | "medium" | "high" | "very-high" | "free";
+type CostTier = "low" | "medium" | "high" | "very-high";
 
 // Cost tier per HackerAI tier id. Standard spans gemini-3-flash (low) in ask
 // and kimi-k2.6 (medium) in agent — pick "medium" as the conservative upper
@@ -16,7 +16,6 @@ const MODEL_COST_TIER: Record<string, CostTier> = {
 };
 
 export function getCostTier(modelId: string): CostTier {
-  if (modelId.startsWith("codex-local")) return "free";
   return MODEL_COST_TIER[modelId] || "medium";
 }
 
@@ -24,11 +23,6 @@ const COST_CONFIG: Record<
   CostTier,
   { count: number; label: string; activeClass: string; suffix?: string }
 > = {
-  free: {
-    count: 0,
-    label: "Your account",
-    activeClass: "text-blue-600/80 dark:text-blue-400/80",
-  },
   low: {
     count: 1,
     label: "Low cost",
@@ -57,10 +51,6 @@ const MAX_DOLLARS = 3;
 export function CostIndicator({ modelId }: { modelId: string }) {
   const tier = getCostTier(modelId);
   const config = COST_CONFIG[tier];
-
-  if (tier === "free") {
-    return null;
-  }
 
   return (
     <Tooltip>

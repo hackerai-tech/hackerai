@@ -59,8 +59,8 @@ export function captureBudgetSnapshot(args: {
 }
 
 /**
- * Mid-stream budget enforcement. Mirrors the codex `Session` pattern: state
- * lives on the monitor, the hook point in chat-handler stays thin.
+ * Mid-stream budget enforcement. State lives on the monitor; the hook point
+ * in chat-handler stays thin.
  *
  * Each call to `checkAfterStep` emits at most one warning (per crossed
  * threshold) and returns "abort" only when the bucket is exhausted with no
