@@ -453,7 +453,7 @@ export class SummarizationTracker {
  * with the registry.
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "model-opus-4.6": ["model-kimi-k2.6"],
+  "model-opus-4.7": ["model-kimi-k2.6"],
   "model-sonnet-4.6": ["model-kimi-k2.6"],
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],

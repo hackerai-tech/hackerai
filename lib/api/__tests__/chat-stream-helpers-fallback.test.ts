@@ -22,8 +22,8 @@ jest.mock("@/lib/logger", () => ({
 const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 chain to Kimi slug", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-opus-4.6");
+  it("resolves Opus 4.7 chain to Kimi slug", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-opus-4.7");
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG],
       user: "user-1",
@@ -57,13 +57,13 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it("includes reasoning settings independent of fallback chain", () => {
-    const reasoning = buildProviderOptions(true, "user-1", "model-opus-4.6");
+    const reasoning = buildProviderOptions(true, "user-1", "model-opus-4.7");
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
       models: [KIMI_SLUG],
     });
 
-    const noReasoning = buildProviderOptions(false, "user-1", "model-opus-4.6");
+    const noReasoning = buildProviderOptions(false, "user-1", "model-opus-4.7");
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
       models: [KIMI_SLUG],
