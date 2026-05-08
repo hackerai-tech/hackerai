@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  logging: {
+    serverFunctions: false,
+  },
   images: {
     unoptimized: true,
     remotePatterns: [
