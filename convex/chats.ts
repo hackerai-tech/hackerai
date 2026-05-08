@@ -50,7 +50,6 @@ export const getChatByIdFromClient = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
-      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -75,22 +74,26 @@ export const getChatByIdFromClient = query({
         return null;
       }
 
+      // Drop legacy codex_thread_id from the response — preserved on the row
+      // for old data but not exposed to clients.
+      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+
       // Fetch branched_from_title if this chat is branched from another chat
-      if (chat.branched_from_chat_id) {
+      if (chatPublic.branched_from_chat_id) {
         const branchedFromChat = await ctx.db
           .query("chats")
           .withIndex("by_chat_id", (q) =>
-            q.eq("id", chat.branched_from_chat_id!),
+            q.eq("id", chatPublic.branched_from_chat_id!),
           )
           .first();
 
         return {
-          ...chat,
+          ...chatPublic,
           branched_from_title: branchedFromChat?.title,
         };
       }
 
-      return chat;
+      return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id:", error);
       return null;
@@ -141,7 +144,6 @@ export const getChatById = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
-      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -155,7 +157,12 @@ export const getChatById = query({
         .withIndex("by_chat_id", (q) => q.eq("id", args.id))
         .first();
 
-      return chat || null;
+      if (!chat) return null;
+
+      // Drop legacy codex_thread_id from the response — preserved on the row
+      // for old data but not exposed to callers.
+      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id (backend):", error);
       return null;
