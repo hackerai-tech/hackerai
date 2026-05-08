@@ -140,20 +140,24 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
     });
 
-    it("should return ask-model for ask mode (paid)", () => {
-      expect(selectModel("ask", "pro")).toBe("ask-model");
+    it("should return ask-model-free (DeepSeek) for paid ask with no image/PDF", () => {
+      expect(selectModel("ask", "pro")).toBe("ask-model-free");
+    });
+
+    it("should return ask-model (Gemini) for paid ask when an image/PDF is attached", () => {
+      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
     });
 
     it("should return ask-model-free for ask mode (free)", () => {
       expect(selectModel("ask", "free")).toBe("ask-model-free");
     });
 
-    it("should return ask-model for ultra subscription", () => {
-      expect(selectModel("ask", "ultra")).toBe("ask-model");
+    it("should return ask-model-free for ultra subscription with no image/PDF", () => {
+      expect(selectModel("ask", "ultra")).toBe("ask-model-free");
     });
 
-    it("should return ask-model for team subscription", () => {
-      expect(selectModel("ask", "team")).toBe("ask-model");
+    it("should return ask-model-free for team subscription with no image/PDF", () => {
+      expect(selectModel("ask", "team")).toBe("ask-model-free");
     });
   });
 
@@ -171,8 +175,14 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Standard to Gemini 3 Flash in ask mode", () => {
+    it("should map HackerAI Standard to DeepSeek V4 Flash when no image/PDF", () => {
       expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
+        "model-deepseek-v4-flash",
+      );
+    });
+
+    it("should promote HackerAI Standard to Gemini 3 Flash when an image/PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true)).toBe(
         "model-gemini-3-flash",
       );
     });
@@ -227,8 +237,12 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
     });
 
-    it("should treat 'auto' as no override in ask mode", () => {
-      expect(selectModel("ask", "pro", "auto")).toBe("ask-model");
+    it("should treat 'auto' as no override in ask mode (text-only → DeepSeek)", () => {
+      expect(selectModel("ask", "pro", "auto")).toBe("ask-model-free");
+    });
+
+    it("should treat 'auto' as no override in ask mode with image/PDF → Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", true)).toBe("ask-model");
     });
   });
 
@@ -236,7 +250,8 @@ describe("selectModel", () => {
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
       expect(selectModel("agent", "pro", undefined)).toBe("agent-model");
-      expect(selectModel("ask", "pro", undefined)).toBe("ask-model");
+      expect(selectModel("ask", "pro", undefined)).toBe("ask-model-free");
+      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
     });
   });
 });

@@ -150,12 +150,14 @@ const ModelOptionButton = ({
   isSelected,
   isFreeUser,
   onSelect,
+  mode,
   mobile = false,
 }: {
   option: ModelOption;
   isSelected: boolean;
   isFreeUser: boolean;
   onSelect: (option: ModelOption) => void;
+  mode: ChatMode;
   mobile?: boolean;
 }) => {
   const button = (
@@ -182,7 +184,7 @@ const ModelOptionButton = ({
             <Brain className="h-3 w-3 text-muted-foreground/60" />
           )}
           {option.id !== "auto" && !option.localProvider && (
-            <CostIndicator modelId={option.id} />
+            <CostIndicator modelId={option.id} mode={mode} />
           )}
         </div>
       </div>
@@ -255,6 +257,7 @@ const CodexSubMenu = ({
   codexOptions,
   value,
   onSelect,
+  mode,
   isTauri = false,
   mobile = false,
   compact = false,
@@ -262,6 +265,7 @@ const CodexSubMenu = ({
   codexOptions: ModelOption[];
   value: SelectedModel;
   onSelect: (option: ModelOption) => void;
+  mode: ChatMode;
   isTauri?: boolean;
   mobile?: boolean;
   compact?: boolean;
@@ -320,6 +324,7 @@ const CodexSubMenu = ({
             onSelect(opt);
             setSubOpen(false);
           }}
+          mode={mode}
           mobile={mobile}
         />
       ))}
@@ -398,6 +403,7 @@ const ModelOptionList = ({
   value,
   isAuto,
   isFreeUser,
+  mode,
   isTauri = false,
   onAutoToggle,
   onSelect,
@@ -409,6 +415,7 @@ const ModelOptionList = ({
   value: SelectedModel;
   isAuto: boolean;
   isFreeUser: boolean;
+  mode: ChatMode;
   isTauri?: boolean;
   onAutoToggle: (checked: boolean) => void;
   onSelect: (option: ModelOption) => void;
@@ -449,6 +456,7 @@ const ModelOptionList = ({
                   isSelected={isSelected}
                   isFreeUser={isFreeUser}
                   onSelect={onSelect}
+                  mode={mode}
                   mobile={mobile}
                 />
               </div>
@@ -464,6 +472,7 @@ const ModelOptionList = ({
                     isSelected={isSelected}
                     isFreeUser={isFreeUser}
                     onSelect={onSelect}
+                    mode={mode}
                     mobile={mobile}
                   />
                 </div>
@@ -511,6 +520,7 @@ const ModelOptionList = ({
               codexOptions={codexOptions}
               value={value}
               onSelect={onSelect}
+              mode={mode}
               isTauri={isTauri}
               mobile={mobile}
             />
@@ -710,6 +720,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               value={effectiveValue}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
+              mode={mode}
               isTauri={isTauri}
               onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
@@ -734,6 +745,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             value={effectiveValue}
             isAuto={isAuto}
             isFreeUser={isFreeUser}
+            mode={mode}
             isTauri={isTauri}
             onAutoToggle={handleAutoToggle}
             onSelect={handleModelSelect}
