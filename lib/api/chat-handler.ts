@@ -17,6 +17,7 @@ import {
   AGENT_MAX_STREAM_DURATION_MS,
   doomLoopDetected,
   DOOM_LOOP_FINISH_REASON,
+  BUDGET_EXHAUSTION_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
   detectDoomLoop,
@@ -41,6 +42,10 @@ import {
   deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
+import {
+  BudgetMonitor,
+  captureBudgetSnapshot,
+} from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
 import {
@@ -628,7 +633,22 @@ export const createChatHandler = (
           let stoppedDueToTokenExhaustion = false;
           let stoppedDueToPreemptiveTimeout = false;
           let stoppedDueToDoomLoop = false;
+          let stoppedDueToBudgetExhaustion = false;
           let lastStepInputTokens = 0;
+
+          // Mid-stream budget enforcement (paid users only). Snapshot bucket
+          // state once; the monitor emits threshold warnings (80/95/100) and
+          // signals "abort" when the bucket hits 0 with no extra-usage
+          // cushion. captureBudgetSnapshot returns null when enforcement
+          // shouldn't run (free, no bucket, rate limiting skipped in dev).
+          const budgetSnapshot = captureBudgetSnapshot({
+            rateLimitInfo,
+            extraUsageConfig,
+            subscription,
+          });
+          const budgetMonitor = budgetSnapshot
+            ? new BudgetMonitor(budgetSnapshot, writer, subscription)
+            : null;
           const isReasoningModel = isAgentMode(mode);
 
           // Track metrics for data collection
@@ -905,6 +925,15 @@ export const createChatHandler = (
                     });
                   }
                 }
+
+                if (
+                  budgetMonitor?.checkAfterStep(
+                    usageTracker.computeCostDollars(selectedModel),
+                  ) === "abort"
+                ) {
+                  stoppedDueToBudgetExhaustion = true;
+                  userStopSignal.abort();
+                }
               },
               onFinish: async ({ finishReason, usage, response }) => {
                 // If preemptive timeout triggered, use "timeout" as finish reason
@@ -916,6 +945,8 @@ export const createChatHandler = (
                   streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
                 } else if (stoppedDueToDoomLoop) {
                   streamFinishReason = DOOM_LOOP_FINISH_REASON;
+                } else if (stoppedDueToBudgetExhaustion) {
+                  streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
                 } else {
                   streamFinishReason = finishReason;
                 }
@@ -1031,6 +1062,7 @@ export const createChatHandler = (
               stoppedDueToTokenExhaustion = false;
               stoppedDueToPreemptiveTimeout = false;
               stoppedDueToDoomLoop = false;
+              stoppedDueToBudgetExhaustion = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               // Discard the failed primary leg's model usage so the user is

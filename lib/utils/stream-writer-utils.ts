@@ -109,6 +109,11 @@ export type RateLimitWarningData =
       severity?: "info" | "warning";
       usedDollars?: number;
       limitDollars?: number;
+      // Mid-stream emits bypass localStorage dedup so threshold escalations
+      // (50→80→95→100) within a single stream always reach the client.
+      midStream?: boolean;
+      // Set when the response was cut off mid-stream because the bucket hit 0.
+      cutOff?: boolean;
     }
   | {
       // Paid users: extra usage is now being consumed
@@ -116,6 +121,7 @@ export type RateLimitWarningData =
       bucketType: "monthly";
       resetTime: string;
       subscription: SubscriptionTier;
+      midStream?: boolean;
     };
 
 // Unified rate limit warning notification

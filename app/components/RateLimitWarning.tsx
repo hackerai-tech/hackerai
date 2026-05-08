@@ -22,12 +22,15 @@ export type RateLimitWarningData =
       severity?: "info" | "warning";
       usedDollars?: number;
       limitDollars?: number;
+      midStream?: boolean;
+      cutOff?: boolean;
     }
   | {
       warningType: "extra-usage-active";
       bucketType: "monthly";
       resetTime: Date;
       subscription: SubscriptionTier;
+      midStream?: boolean;
     };
 
 interface RateLimitWarningProps {
@@ -80,6 +83,9 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
 
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
+    if (data.cutOff) {
+      return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
+    }
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
   }
 
