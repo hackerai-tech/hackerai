@@ -26,19 +26,30 @@ export const getMaxStepsForUser = (
 /**
  * Selects the appropriate model based on mode and subscription
  * @param mode - Chat mode (ask or agent)
+ * @param hasImageOrPdf - Whether any message has an image or PDF attachment.
+ *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Flash
+ *   (text-only, much cheaper); when an image or PDF is present we promote to
+ *   Gemini 3 Flash so vision/document parts are actually understood.
  * @returns Model name to use
  */
 export function selectModel(
   mode: ChatMode,
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
+  hasImageOrPdf?: boolean,
 ): ModelName {
   const isAgent = isAgentMode(mode);
+  // ASK takes the cheap DeepSeek text path for free users (always) and for
+  // paid users only when no image/PDF is attached — DeepSeek is text-only,
+  // so we promote to Gemini 3 Flash when vision/document parts are present.
+  const askUsesDeepSeek =
+    !isAgent && (subscription === "free" || !hasImageOrPdf);
+
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
       : "agent-model"
-    : subscription === "free"
+    : askUsesDeepSeek
       ? "ask-model-free"
       : "ask-model";
 
@@ -48,8 +59,30 @@ export function selectModel(
     return autoModel;
   }
 
+  // Paid ASK Standard mirrors the auto-route split, but uses the explicit
+  // `model-deepseek-v4-flash` / `model-gemini-3-flash` keys so any UI that
+  // reads `getModelDisplayName` shows the picked model rather than the
+  // auto-router label.
+  if (selectedModel === "hackerai-standard" && !isAgent) {
+    return askUsesDeepSeek ? "model-deepseek-v4-flash" : "model-gemini-3-flash";
+  }
+
   const providerKey = resolveTierToProviderKey(selectedModel, mode);
   return providerKey ?? autoModel;
+}
+
+/**
+ * True if any message has an image or PDF file part. Used by selectModel
+ * to decide whether the cheaper DeepSeek V4 Flash text route is viable.
+ */
+function hasImageOrPdfAttachment(messages: UIMessage[]): boolean {
+  return messages.some((msg) =>
+    msg.parts?.some((part: any) => {
+      if (part.type !== "file") return false;
+      const mediaType: string = part.mediaType ?? "";
+      return mediaType.startsWith("image/") || mediaType === "application/pdf";
+    }),
+  );
 }
 
 /**
@@ -536,7 +569,12 @@ export async function processChatMessages({
     removeDuplicateToolParts(messagesWithContent);
 
   // Select the appropriate model early so we can make model-aware decisions below
-  const selectedModel = selectModel(mode, subscription, modelOverride);
+  const selectedModel = selectModel(
+    mode,
+    subscription,
+    modelOverride,
+    hasImageOrPdfAttachment(messagesWithoutDuplicates),
+  );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
   // Anthropic requires valid signatures on thinking blocks, and signatures from other

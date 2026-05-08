@@ -124,12 +124,14 @@ const ModelOptionButton = ({
   isSelected,
   isFreeUser,
   onSelect,
+  mode,
   mobile = false,
 }: {
   option: ModelOption;
   isSelected: boolean;
   isFreeUser: boolean;
   onSelect: (option: ModelOption) => void;
+  mode: ChatMode;
   mobile?: boolean;
 }) => {
   const button = (
@@ -155,7 +157,9 @@ const ModelOptionButton = ({
           {option.thinking && (
             <Brain className="h-3 w-3 text-muted-foreground/60" />
           )}
-          {option.id !== "auto" && <CostIndicator modelId={option.id} />}
+          {option.id !== "auto" && (
+            <CostIndicator modelId={option.id} mode={mode} />
+          )}
         </div>
       </div>
       {isFreeUser ? (
@@ -199,6 +203,7 @@ const ModelOptionList = ({
   value,
   isAuto,
   isFreeUser,
+  mode,
   onAutoToggle,
   onSelect,
   onClose,
@@ -208,6 +213,7 @@ const ModelOptionList = ({
   value: SelectedModel;
   isAuto: boolean;
   isFreeUser: boolean;
+  mode: ChatMode;
   onAutoToggle: (checked: boolean) => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -247,6 +253,7 @@ const ModelOptionList = ({
                   isSelected={isSelected}
                   isFreeUser={isFreeUser}
                   onSelect={onSelect}
+                  mode={mode}
                   mobile={mobile}
                 />
               </div>
@@ -262,6 +269,7 @@ const ModelOptionList = ({
                     isSelected={isSelected}
                     isFreeUser={isFreeUser}
                     onSelect={onSelect}
+                    mode={mode}
                     mobile={mobile}
                   />
                 </div>
@@ -385,6 +393,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               value={effectiveValue}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
+              mode={mode}
               onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -405,6 +414,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
           value={effectiveValue}
           isAuto={isAuto}
           isFreeUser={isFreeUser}
+          mode={mode}
           onAutoToggle={handleAutoToggle}
           onSelect={handleModelSelect}
           onClose={() => setOpen(false)}

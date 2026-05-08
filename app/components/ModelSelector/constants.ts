@@ -16,7 +16,8 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
-    poweredBy: "Google Gemini 3 Flash",
+    poweredBy:
+      "DeepSeek V4 Flash · switches to Gemini 3 Flash for images & PDFs",
   },
   {
     id: "hackerai-pro",
