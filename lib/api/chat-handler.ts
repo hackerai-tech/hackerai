@@ -856,7 +856,7 @@ export const createChatHandler = (
 
                 if (
                   budgetMonitor?.checkAfterStep(
-                    usageTracker.computeCostDollars(selectedModel),
+                    usageTracker.computeCostDollars(modelName),
                   ) === "abort"
                 ) {
                   stoppedDueToBudgetExhaustion = true;
@@ -1030,6 +1030,7 @@ export const createChatHandler = (
                     stoppedDueToTokenExhaustion = false;
                     stoppedDueToPreemptiveTimeout = false;
                     stoppedDueToDoomLoop = false;
+                    stoppedDueToBudgetExhaustion = false;
                     const fallbackStartTime = Date.now();
 
                     // Discard the failed primary leg's model usage so the
