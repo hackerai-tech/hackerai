@@ -26,7 +26,8 @@ pub struct ShellConfig {
 ///   to `cmd /C` when git-bash is not installed.
 /// - **Unix:** the user's `$SHELL` as a login shell so PATH from
 ///   `.zshrc` / `.bashrc` / `.profile` is sourced — needed to find
-///   globally-installed CLIs like `codex`.
+///   globally-installed CLIs (e.g. those in `~/.local/bin` or
+///   `nvm`/`pyenv`-managed bin dirs).
 pub fn get_shell_config() -> ShellConfig {
     #[cfg(windows)]
     {
