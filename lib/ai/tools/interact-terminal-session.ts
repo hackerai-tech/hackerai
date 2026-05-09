@@ -62,5 +62,22 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         emitTerminal,
       });
     },
+    // Strip rawSnapshot from the model's view: the agent only needs the
+    // cleaned `output` plus structural fields. rawSnapshot stays in the
+    // persisted tool result so the sidebar's xterm renderer can replay it.
+    toModelOutput({ output }) {
+      if (typeof output !== "object" || output === null) {
+        return { type: "text", value: String(output ?? "") };
+      }
+      const result = (output as { result?: unknown }).result;
+      if (typeof result !== "object" || result === null) {
+        return { type: "text", value: JSON.stringify(output) };
+      }
+      const { rawSnapshot: _rawSnapshot, ...rest } = result as Record<
+        string,
+        unknown
+      >;
+      return { type: "text", value: JSON.stringify({ result: rest }) };
+    },
   });
 };

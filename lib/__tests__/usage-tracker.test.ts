@@ -195,15 +195,15 @@ describe("UsageTracker", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 
       const cost = tracker.computeCostDollars("model-default");
-      // 1M input tokens at $0.50/1M * 1.2x = 6000 points / 10000 = 0.60
-      expect(cost).toBe(0.6);
+      // 1M input tokens at $0.50/1M * 1.3x = 6500 points / 10000 = 0.65
+      expect(cost).toBe(0.65);
     });
 
     it("should include non-model costs when provider cost is unavailable", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
       tracker.nonModelCost = 0.25;
 
-      expect(tracker.computeCostDollars("model-default")).toBe(0.85);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.9);
     });
 
     it("should use token-based model cost + nonModelCost when modelProviderCost is 0 but providerCost is positive from sandbox/tool spend (post-resetModelLeg scenario)", () => {
@@ -214,9 +214,9 @@ describe("UsageTracker", () => {
       tracker.nonModelCost = 0.25;
       // modelProviderCost stays 0 because the fallback provider didn't emit cost.
 
-      // Must include BOTH the token-based model cost (0.60) AND the sandbox
+      // Must include BOTH the token-based model cost (0.65) AND the sandbox
       // spend (0.25). The old implementation returned just providerCost = 0.25.
-      expect(tracker.computeCostDollars("model-default")).toBe(0.85);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.9);
     });
   });
 

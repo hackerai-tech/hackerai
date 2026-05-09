@@ -31,6 +31,7 @@ const customJestConfig = {
     "^@upstash/redis$": "<rootDir>/__mocks__/@upstash/redis.ts",
     "^@upstash/ratelimit$": "<rootDir>/__mocks__/@upstash/ratelimit.ts",
     "^convex/browser$": "<rootDir>/__mocks__/convex/browser.ts",
+    "^franc-min$": "<rootDir>/__mocks__/franc-min.ts",
   },
   transformIgnorePatterns: [
     "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|superjson)/)",

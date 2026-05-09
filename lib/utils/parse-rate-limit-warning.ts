@@ -82,10 +82,24 @@ export function parseRateLimitWarning(
     };
   }
 
+  const midStream = rawData.midStream === true;
+
   if (warningType === "extra-usage-active") {
     const bucketType = rawData.bucketType as RawBucketType | undefined;
     if (!bucketType || !BUCKET_TYPES.includes(bucketType)) {
       return null;
+    }
+    // Mid-stream emits bypass per-reset-period dedup so the user sees the
+    // switch to extra usage as it happens, even if a prior request already
+    // surfaced the warning this period.
+    if (midStream) {
+      return {
+        warningType: "extra-usage-active",
+        bucketType,
+        resetTime,
+        subscription,
+        midStream: true,
+      };
     }
     if (typeof window === "undefined" || !window.localStorage) {
       return {
@@ -135,8 +149,17 @@ export function parseRateLimitWarning(
       ? rawData.limitDollars
       : undefined;
 
-  // Dedup by severity tier — don't spam users with info-level warnings
-  if (severity && typeof window !== "undefined" && window.localStorage) {
+  const cutOff = rawData.cutOff === true;
+
+  // Dedup by severity tier — don't spam users with info-level warnings.
+  // Mid-stream emits skip this gate; server-side highestThresholdEmitted
+  // already prevents duplicates within a single stream.
+  if (
+    !midStream &&
+    severity &&
+    typeof window !== "undefined" &&
+    window.localStorage
+  ) {
     const dedupHours = SEVERITY_DEDUP_HOURS[severity] ?? 0;
     if (dedupHours > 0) {
       const storageKey = `${TOKEN_BUCKET_WARNING_KEY_PREFIX}${severity}`;
@@ -160,5 +183,7 @@ export function parseRateLimitWarning(
     ...(severity && { severity }),
     ...(usedDollars !== undefined && { usedDollars }),
     ...(limitDollars !== undefined && { limitDollars }),
+    ...(midStream && { midStream: true }),
+    ...(cutOff && { cutOff: true }),
   };
 }

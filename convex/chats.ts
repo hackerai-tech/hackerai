@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
+import { coerceSelectedModel } from "../types/chat";
 
 /**
  * Get a chat by its ID
@@ -50,7 +51,6 @@ export const getChatByIdFromClient = query({
       active_workflow_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
-      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -75,22 +75,26 @@ export const getChatByIdFromClient = query({
         return null;
       }
 
+      // Drop legacy codex_thread_id from the response — preserved on the row
+      // for old data but not exposed to clients.
+      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+
       // Fetch branched_from_title if this chat is branched from another chat
-      if (chat.branched_from_chat_id) {
+      if (chatPublic.branched_from_chat_id) {
         const branchedFromChat = await ctx.db
           .query("chats")
           .withIndex("by_chat_id", (q) =>
-            q.eq("id", chat.branched_from_chat_id!),
+            q.eq("id", chatPublic.branched_from_chat_id!),
           )
           .first();
 
         return {
-          ...chat,
+          ...chatPublic,
           branched_from_title: branchedFromChat?.title,
         };
       }
 
-      return chat;
+      return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id:", error);
       return null;
@@ -142,7 +146,6 @@ export const getChatById = query({
       active_workflow_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
-      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -156,75 +159,16 @@ export const getChatById = query({
         .withIndex("by_chat_id", (q) => q.eq("id", args.id))
         .first();
 
-      return chat || null;
+      if (!chat) return null;
+
+      // Drop legacy codex_thread_id from the response — preserved on the row
+      // for old data but not exposed to callers.
+      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id (backend):", error);
       return null;
     }
-  },
-});
-
-/**
- * Save a chat from a local provider (e.g., Codex running on user's desktop).
- * Client-callable — uses auth identity instead of service key.
- */
-export const saveLocalChat = mutation({
-  args: {
-    id: v.string(),
-    title: v.string(),
-    selectedModel: v.optional(v.string()),
-    codexThreadId: v.optional(v.string()),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-    if (!user) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Not authenticated",
-      });
-    }
-
-    // Input validation
-    if (args.id.length > 200) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "Chat ID too long",
-      });
-    }
-    if (args.title.length > 500) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "Title too long",
-      });
-    }
-
-    // Check if chat already exists (idempotent)
-    const existing = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
-      .first();
-    if (existing) {
-      // Verify ownership — don't let users modify other users' chats
-      if (existing.user_id !== user.subject) {
-        throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
-      }
-      const patch: Record<string, unknown> = { update_time: Date.now() };
-      if (args.codexThreadId) patch.codex_thread_id = args.codexThreadId;
-      if (args.selectedModel) patch.selected_model = args.selectedModel;
-      await ctx.db.patch(existing._id, patch);
-      return null;
-    }
-
-    await ctx.db.insert("chats", {
-      id: args.id,
-      title: args.title,
-      user_id: user.subject,
-      update_time: Date.now(),
-      codex_thread_id: args.codexThreadId,
-      selected_model: args.selectedModel,
-    });
-    return null;
   },
 });
 
@@ -256,6 +200,63 @@ export const saveChat = mutation({
       console.error("Failed to save chat:", error);
       throw new Error("Failed to save chat");
     }
+  },
+});
+
+/**
+ * Persist per-chat picker preferences (selected model + mode) when the user
+ * toggles them in the UI, before sending. Client-callable, ownership-checked.
+ *
+ * Intentionally does NOT bump `update_time` (would reorder the sidebar) or
+ * touch stream state — those side effects belong to `updateChat`, which only
+ * the backend should call at end-of-stream.
+ */
+export const updateChatPreferences = mutation({
+  args: {
+    id: v.string(),
+    selectedModel: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+      .first();
+
+    // No-op for chats that haven't been created server-side yet — the backend
+    // will write these fields on first send via `updateChat`.
+    if (!chat) return null;
+
+    if (chat.user_id !== user.subject) {
+      throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (args.selectedModel !== undefined) {
+      // Coerce legacy / unknown ids before writing so the row never ends up
+      // with a value the load path will silently rewrite later. Unknown ids
+      // are dropped (skipped) rather than written verbatim.
+      const coerced = coerceSelectedModel(args.selectedModel);
+      if (coerced !== null) {
+        patch.selected_model = coerced;
+      }
+    }
+    if (args.mode !== undefined) {
+      patch.default_model_slug = args.mode;
+    }
+    if (Object.keys(patch).length === 0) return null;
+
+    await ctx.db.patch(chat._id, patch);
+    return null;
   },
 });
 

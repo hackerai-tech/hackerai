@@ -12,8 +12,17 @@ import type {
   ModelMessage,
   SystemModelMessage,
 } from "ai";
-import type { ChatMode, SubscriptionTier, Todo } from "@/types";
-import { isAnthropicModel } from "@/lib/ai/providers";
+import { NoSuchModelError } from "ai";
+import type {
+  ChatMode,
+  ExtraUsageConfig,
+  SandboxPreference,
+  SubscriptionTier,
+  Todo,
+  UserCustomization,
+} from "@/types";
+import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import type { ModelName } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -34,6 +43,10 @@ import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
+import { ChatSDKError } from "@/lib/errors";
+import { getExtraUsageBalance } from "@/lib/extra-usage";
+import { systemPrompt } from "@/lib/system-prompt";
+import { countTokens } from "gpt-tokenizer";
 
 /**
  * Check if messages contain file attachments
@@ -147,32 +160,65 @@ export function sendRateLimitWarnings(
       });
     } else {
       // Paid users without extra usage: warn at 80% and 95%
-      const monthlyPercent =
+      const usedPercent =
+        100 -
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
-      const usedPercent = 100 - monthlyPercent;
 
       if (usedPercent >= 80) {
-        const severity: "info" | "warning" =
-          usedPercent >= 95 ? "warning" : "info";
-
-        const usedDollars =
-          (rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining) /
-          POINTS_PER_DOLLAR;
-        const limitDollars = rateLimitInfo.monthly.limit / POINTS_PER_DOLLAR;
-
-        writeRateLimitWarning(writer, {
-          warningType: "token-bucket",
-          bucketType: "monthly",
-          remainingPercent: Math.round(monthlyPercent),
-          resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
+        emitTokenBucketThresholdWarning(writer, {
+          usedPercent,
+          projectedUsedPoints:
+            rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining,
+          monthlyLimitPoints: rateLimitInfo.monthly.limit,
+          resetTime: rateLimitInfo.monthly.resetTime,
           subscription,
-          severity,
-          usedDollars: Math.round(usedDollars * 100) / 100,
-          limitDollars: Math.round(limitDollars * 100) / 100,
         });
       }
     }
   }
+}
+
+/**
+ * Inputs to {@link emitTokenBucketThresholdWarning}. Both start-of-stream
+ * (`sendRateLimitWarnings`) and mid-stream (`BudgetMonitor`) callers build
+ * one of these and let the helper format the dollar/severity payload.
+ */
+export interface TokenBucketEmitContext {
+  /** Used percentage (0–100+), pre-rounding. */
+  usedPercent: number;
+  /** Points consumed against the monthly bucket so far. */
+  projectedUsedPoints: number;
+  /** Monthly bucket size in points. */
+  monthlyLimitPoints: number;
+  /** When the bucket resets. */
+  resetTime: Date;
+  subscription: SubscriptionTier;
+  /** Set when the warning is emitted from inside an active stream. */
+  midStream?: boolean;
+  /** Set when the response was cut off because the bucket hit 0. */
+  cutOff?: boolean;
+}
+
+export function emitTokenBucketThresholdWarning(
+  writer: UIMessageStreamWriter,
+  ctx: TokenBucketEmitContext,
+): void {
+  const remainingPercent = Math.max(0, Math.round(100 - ctx.usedPercent));
+  const severity: "info" | "warning" =
+    ctx.usedPercent >= 95 ? "warning" : "info";
+  writeRateLimitWarning(writer, {
+    warningType: "token-bucket",
+    bucketType: "monthly",
+    remainingPercent,
+    resetTime: ctx.resetTime.toISOString(),
+    subscription: ctx.subscription,
+    severity,
+    usedDollars:
+      Math.round((ctx.projectedUsedPoints / POINTS_PER_DOLLAR) * 100) / 100,
+    limitDollars: ctx.monthlyLimitPoints / POINTS_PER_DOLLAR,
+    ...(ctx.midStream ? { midStream: true } : {}),
+    ...(ctx.cutOff ? { cutOff: true } : {}),
+  });
 }
 
 /**
@@ -392,14 +438,67 @@ export class SummarizationTracker {
 }
 
 /**
+ * OpenRouter `models` fallback chain, expressed in local registry keys.
+ *
+ * When the primary 5xx's, rate-limits, or otherwise errors before any tokens
+ * stream, OpenRouter rolls forward through this list and bills at the served
+ * model's rate (response.modelId reflects what actually ran).
+ *
+ * Chain ordering: prefer a same-provider fallback first to preserve context
+ * window and behavior, then cross to a different provider so an Anthropic
+ * outage that takes down Opus and Sonnet together still has somewhere to go.
+ *
+ * Keys and values are registry names (see lib/ai/providers.ts) — the actual
+ * OpenRouter slugs are resolved at request-build time so this stays in sync
+ * with the registry.
+ */
+const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
+  "model-opus-4.7": ["model-kimi-k2.6"],
+  "model-sonnet-4.6": ["model-kimi-k2.6"],
+  "ask-model-free": ["fallback-ask-model"],
+  "agent-model-free": ["fallback-agent-model"],
+};
+
+const resolveSlug = (modelName: string): string | undefined => {
+  try {
+    const lm = myProvider.languageModel(modelName) as { modelId?: unknown };
+    return typeof lm?.modelId === "string" ? lm.modelId : undefined;
+  } catch (err) {
+    if (err instanceof NoSuchModelError) {
+      // Stale fallback entry — treat as "no slug" so it can't bring down the
+      // primary request. Anything else is an unexpected failure and surfaces.
+      return undefined;
+    }
+    throw err;
+  }
+};
+
+/**
+ * Resolve a model's fallback chain to OpenRouter slugs.
+ * Returns an empty array if the model has no chain or all entries are stale.
+ */
+export function getFallbackSlugs(modelName?: string): string[] {
+  const fallbackKeys = modelName
+    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
+    : undefined;
+  return (
+    fallbackKeys
+      ?.map((key) => resolveSlug(key))
+      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
+  );
+}
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(
   isReasoningModel: boolean,
   userId?: string,
-  modelId?: string,
+  modelName?: string,
 ) {
+  const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const fallbackSlugs = getFallbackSlugs(modelName);
   return {
     openrouter: {
       ...(isReasoningModel
@@ -411,8 +510,31 @@ export function buildProviderOptions(
           }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
+      ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
+}
+
+/**
+ * Logs `[fallback-fired]` when the served model is one of the slugs we
+ * explicitly listed in the OpenRouter `models` chain. We can't use a naive
+ * `served !== requested` check because OpenRouter sometimes returns the
+ * requested model under a different label (dated snapshots, reordered tokens)
+ * — that's not a fallback. Membership in our chain is the authoritative
+ * signal.
+ */
+export function logOpenRouterFallbackIfFired(args: {
+  fallbackSlugs: readonly string[];
+  responseModel: string | undefined;
+  requestedSlug: string | undefined;
+  chatId: string;
+}) {
+  const { fallbackSlugs, responseModel, requestedSlug, chatId } = args;
+  if (!responseModel) return;
+  if (!fallbackSlugs.includes(responseModel)) return;
+  console.log(
+    `[fallback-fired] requested=${requestedSlug ?? "?"} served=${responseModel} chat=${chatId}`,
+  );
 }
 
 const ANTHROPIC_CACHE_BREAKPOINT = {
@@ -554,7 +676,7 @@ export function replaceNotesBlock(
 }
 
 /**
- * Updates the notes in model messages (CoreMessage[]) from prepareStep.
+ * Updates the notes in model messages (ModelMessage[]) from prepareStep.
  * Preserves full conversation history (tool calls, results, assistant messages).
  *
  * The AI SDK does NOT preserve `<system-reminder>` text that was injected into
@@ -636,7 +758,7 @@ export async function refreshNotesInModelMessages(
 }
 
 /**
- * Appends a <system-reminder> block to the last user message in a CoreMessage array.
+ * Appends a <system-reminder> block to the last user message in a ModelMessage array.
  * Used in prepareStep to inject runtime reminders without mutating the original.
  */
 export function appendReminderToModelMessages(
@@ -706,4 +828,110 @@ export async function applyPrepareStepReminders(
   }
 
   return messages;
+}
+
+/**
+ * Free-tier agent mode is restricted to the local sandbox + auto model.
+ * Throws ChatSDKError("forbidden:chat") if either gate fails.
+ */
+export function assertFreeAgentGates(args: {
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  sandboxPreference: SandboxPreference | undefined;
+  rawSelectedModel: string | undefined;
+}): void {
+  const { mode, subscription, sandboxPreference, rawSelectedModel } = args;
+  if (!isAgentMode(mode) || subscription !== "free") return;
+
+  const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
+  if (!isLocalSandbox) {
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
+    );
+  }
+
+  if (rawSelectedModel && rawSelectedModel !== "auto") {
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
+    );
+  }
+}
+
+/**
+ * Build the extra-usage config for paid users with `extra_usage_enabled`.
+ * Falls back to an optimistic config if the balance lookup fails so a
+ * transient Convex error doesn't silently disable extra usage and force
+ * the user into the hard subscription limit.
+ */
+export async function buildExtraUsageConfig(args: {
+  userId: string;
+  subscription: SubscriptionTier;
+  userCustomization: UserCustomization | null | undefined;
+}): Promise<ExtraUsageConfig | undefined> {
+  const { userId, subscription, userCustomization } = args;
+  if (subscription === "free") return undefined;
+  if (!(userCustomization?.extra_usage_enabled ?? false)) return undefined;
+
+  const balanceInfo = await getExtraUsageBalance(userId);
+
+  if (!balanceInfo) {
+    console.warn(
+      `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
+    );
+    return { enabled: true, hasBalance: true, autoReloadEnabled: false };
+  }
+
+  if (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled) {
+    return {
+      enabled: true,
+      hasBalance: balanceInfo.balanceDollars > 0,
+      balanceDollars: balanceInfo.balanceDollars,
+      autoReloadEnabled: balanceInfo.autoReloadEnabled,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Pre-flight token estimate used to size the rate-limit deduction before
+ * the actual stream runs. File tokens are excluded (PDF counts are
+ * inaccurate; deductUsage reconciles against real provider cost). Tool
+ * schemas can't be computed here (they depend on sandboxManager), so we
+ * approximate: ~1500 for agent (~8 tools), ~500 for ask (~4 tools).
+ */
+export async function estimatePreflightInputTokens(args: {
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  userId: string;
+  selectedModel: ModelName;
+  userCustomization: UserCustomization | null | undefined;
+  temporary: boolean | undefined;
+  truncatedMessages: UIMessage[];
+}): Promise<number> {
+  const {
+    mode,
+    subscription,
+    userId,
+    selectedModel,
+    userCustomization,
+    temporary,
+    truncatedMessages,
+  } = args;
+  if (!isAgentMode(mode) && subscription === "free") return 0;
+
+  const messageTokens = countMessagesTokens(truncatedMessages);
+  const estimatedSystemPrompt = await systemPrompt(
+    userId,
+    mode,
+    subscription,
+    selectedModel,
+    userCustomization,
+    temporary,
+    null,
+  );
+  const systemTokens = countTokens(estimatedSystemPrompt);
+  const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
+  return messageTokens + systemTokens + toolSchemaOverhead;
 }

@@ -11,8 +11,8 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-import { createProxyTools } from "./proxy-tool";
-// import { createUpdateMemory } from "./update-memory";
+// Caido proxy temporarily disabled for all users — see lib/api/chat-handler.ts kill switch.
+// import { createProxyTools } from "./proxy-tool";
 import {
   createCreateNote,
   createListNotes,
@@ -20,8 +20,7 @@ import {
   createDeleteNote,
 } from "./notes";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
-// the added complexity. Codex doesn't provide grep/glob tools either, and for simplicity
-// and effectiveness the agent should use run_terminal_cmd with rg instead.
+// the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
 import type { UIMessageStreamWriter } from "ai";
 import type {
@@ -138,8 +137,6 @@ export const createTools = (
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
     todo_write: createTodoWrite(context),
-    // ...(!isTemporary &&
-    //   memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(!isTemporary &&
       memoryEnabled && {
         create_note: createCreateNote(context),
@@ -150,7 +147,8 @@ export const createTools = (
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
-    ...(caidoEnabled && createProxyTools(context)),
+    // Caido proxy temporarily disabled for all users.
+    // ...(caidoEnabled && createProxyTools(context)),
     ...(process.env.JINA_API_KEY && {
       open_url: createOpenUrlTool(),
     }),
@@ -160,8 +158,6 @@ export const createTools = (
   const tools =
     mode === "ask"
       ? {
-          // ...(!isTemporary &&
-          //   memoryEnabled && { update_memory: allTools.update_memory }),
           ...(!isTemporary &&
             memoryEnabled && {
               create_note: allTools.create_note,

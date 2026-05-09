@@ -10,45 +10,6 @@ import {
   isInteractiveShellAction,
 } from "@/app/components/tools/shell-tool-utils";
 
-/** Parse a unified git diff into original and modified content for diff view. */
-function parseGitDiff(diff: string): {
-  originalContent: string;
-  modifiedContent: string;
-} | null {
-  if (!diff) return null;
-  const lines = diff.split("\n");
-  const original: string[] = [];
-  const modified: string[] = [];
-  let inHunk = false;
-  for (const line of lines) {
-    if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("---") ||
-      line.startsWith("+++") ||
-      line.startsWith("new file") ||
-      line.startsWith("deleted file")
-    )
-      continue;
-    if (line.startsWith("@@")) {
-      inHunk = true;
-      continue;
-    }
-    if (!inHunk) continue;
-    if (line.startsWith("-")) original.push(line.slice(1));
-    else if (line.startsWith("+")) modified.push(line.slice(1));
-    else if (line.startsWith(" ")) {
-      original.push(line.slice(1));
-      modified.push(line.slice(1));
-    }
-  }
-  if (original.length === 0 && modified.length === 0) return null;
-  return {
-    originalContent: original.join("\n"),
-    modifiedContent: modified.join("\n"),
-  };
-}
-
 interface MessagePart {
   type: string;
   toolCallId?: string;
@@ -119,8 +80,7 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
-    // Terminal (Codex local commands, interactive PTY sessions, and
-    // workflow agent shell tools).
+    // Terminal (commands, interactive PTY sessions, and workflow agent shell tools).
     if (
       (part.type === "tool-run_terminal_cmd" ||
         part.type === "tool-interact_terminal_session" ||
@@ -171,6 +131,10 @@ export function extractSidebarContentFromMessage(
       // surfaces stderr from failed shell commands (state === "output-error")
       // instead of leaving an empty terminal.
       const sessionSnapshot = result?.sessionSnapshot || "";
+      // Surface tool-level errors as the displayed output so e.g. action=view
+      // on a killed session shows "Session ... not found." in the sidebar
+      // instead of an empty panel — same pattern as `getShellOutput`.
+      const resultError = typeof result?.error === "string" ? result.error : "";
       const finalOutput =
         sessionSnapshot ||
         (isInteractive ? streamingOutput : null) ||
@@ -178,6 +142,7 @@ export function extractSidebarContentFromMessage(
         streamingOutput ||
         part.output?.output ||
         part.errorText ||
+        resultError ||
         "";
 
       // Only feed rawBytes (→ xterm renderer) for interactive PTY contexts.
@@ -208,75 +173,6 @@ export function extractSidebarContentFromMessage(
             }
           : {}),
       });
-    }
-
-    // Generic Codex tools (tool-codex_*) — route to correct sidebar type
-    if (typeof part.type === "string" && part.type.startsWith("tool-codex_")) {
-      const input = part.input || {};
-      const itemType =
-        input.codexItemType || part.type.replace("tool-codex_", "");
-      const isExec =
-        part.state === "input-available" || part.state === "running";
-
-      if (itemType === "webSearch") {
-        // Web search → SidebarWebSearch
-        const query =
-          part.output?.query || input.toolLabel || input.query || "web search";
-        const action = part.output?.action;
-        const queries: string[] = action?.queries || [];
-        const results: WebSearchResult[] = queries.map((q: string) => ({
-          title: q,
-          url: "",
-          content: "",
-          date: null,
-          lastUpdated: null,
-        }));
-        contentList.push({
-          query,
-          results,
-          isSearching: isExec,
-          toolCallId: part.toolCallId || "",
-        });
-      } else if (itemType === "fileChange") {
-        // File change → SidebarFile
-        const filePath =
-          part.output?.path || input.path || input.file || "file";
-        const changeAction = part.output?.action || input.action || "edit";
-        const actionMap: Record<string, string> = {
-          add: "writing",
-          update: "editing",
-          delete: "reading",
-        };
-        const rawDiff = part.output?.diff || input.diff || "";
-        const parsed = parseGitDiff(rawDiff);
-        contentList.push({
-          path: filePath,
-          content:
-            parsed?.modifiedContent || rawDiff || part.output?.output || "",
-          action: (actionMap[changeAction] || "editing") as
-            | "writing"
-            | "editing"
-            | "reading",
-          toolCallId: part.toolCallId || "",
-          isExecuting: isExec,
-          originalContent: parsed?.originalContent,
-          modifiedContent: parsed?.modifiedContent,
-        });
-      } else {
-        // Commands and unknown types → SidebarTerminal
-        const command =
-          input.command || input.toolLabel || input.path || itemType;
-        const streamingOutput =
-          terminalDataMap.get(part.toolCallId || "") || "";
-        const completedOutput = part.output?.output || part.output?.diff || "";
-        contentList.push({
-          command,
-          output: completedOutput || streamingOutput || "",
-          isExecuting: isExec,
-          isBackground: false,
-          toolCallId: part.toolCallId || "",
-        });
-      }
     }
 
     // Shell tool (new interactive PTY-based shell)

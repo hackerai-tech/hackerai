@@ -38,6 +38,9 @@ export default defineSchema({
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
+    // Legacy field retained on historical rows. The local-provider feature
+    // was removed and nothing reads or writes this anymore — kept in the
+    // schema so old rows still pass validation.
     codex_thread_id: v.optional(v.string()),
   })
     .index("by_chat_id", ["id"])

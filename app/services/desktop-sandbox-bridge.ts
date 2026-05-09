@@ -14,24 +14,29 @@ import {
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
 
-interface ConnectionTerminatedDetails {
-  code?: string;
-  message?: string;
-  connectionId?: string;
-  clientVersion?: string;
-  status?: string;
-  disconnectReason?: string | null;
-  msSinceDisconnected?: number | null;
-  msSinceLastHeartbeat?: number;
-  msSinceCreated?: number;
-}
-
-function readErrorData(error: unknown): ConnectionTerminatedDetails {
-  if (!error || typeof error !== "object") return {};
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== "object") return {};
-  return data as ConnectionTerminatedDetails;
-}
+type RefreshTokenResult =
+  | { ok: true; centrifugoToken: string }
+  | {
+      ok: false;
+      terminated: true;
+      reason:
+        | "connection_not_found"
+        | "ownership_mismatch"
+        | "connection_inactive";
+      connectionId: string;
+      clientVersion: string | null;
+      status: string | null;
+      disconnectReason:
+        | "client_disconnect"
+        | "desktop_disconnect"
+        | "desktop_kicked_by_new_session"
+        | "token_regenerated"
+        | "presence_sweep"
+        | null;
+      msSinceDisconnected: number | null;
+      msSinceLastHeartbeat: number | null;
+      msSinceCreated: number | null;
+    };
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -40,22 +45,14 @@ interface StreamChunk {
   message?: string;
 }
 
-// A getToken refresh fails with one of these when the Convex row has been
-// authoritatively flipped to disconnected (token regenerated, multi-tab
-// connectDesktop kick, manual disconnectByBackend, or row purged after long
-// disconnect). Centrifuge would otherwise retry getToken on its backoff
-// schedule forever and flood Convex logs with identical errors.
-function isConnectionTerminatedByServer(error: unknown): boolean {
+// "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
+// identity is missing/expired, not a connection lifecycle event), so the
+// catch path needs to recognize it as a terminate-the-loop signal too.
+function isUnauthenticatedError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const data = (error as { data?: unknown }).data;
   if (!data || typeof data !== "object") return false;
-  const code = (data as { code?: string }).code;
-  const message = (data as { message?: string }).message;
-  if (code === "BAD_REQUEST" && message === "Connection is not active")
-    return true;
-  if (code === "NOT_FOUND") return true;
-  if (code === "UNAUTHORIZED") return true;
-  return false;
+  return (data as { code?: string }).code === "UNAUTHORIZED";
 }
 
 interface DesktopBridgeConfig {
@@ -74,7 +71,7 @@ interface DesktopBridgeConfig {
   }>;
   refreshCentrifugoTokenDesktop: (args: {
     connectionId: string;
-  }) => Promise<{ centrifugoToken: string }>;
+  }) => Promise<RefreshTokenResult>;
   disconnectDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
@@ -92,6 +89,17 @@ export class DesktopSandboxBridge {
 
   getConnectionId(): string | null {
     return this.connectionId;
+  }
+
+  private terminateClient(): void {
+    const client = this.client;
+    this.client = null;
+    this.connectionId = null;
+    try {
+      client?.disconnect();
+    } catch {
+      // already in a terminal state
+    }
   }
 
   async start(): Promise<string> {
@@ -113,29 +121,20 @@ export class DesktopSandboxBridge {
             "[DesktopSandboxBridge] Cannot refresh token: connectionId is null",
           );
         }
+        let result: RefreshTokenResult;
         try {
-          const result = await this.config.refreshCentrifugoTokenDesktop({
+          result = await this.config.refreshCentrifugoTokenDesktop({
             connectionId: this.connectionId,
           });
-          return result.centrifugoToken;
         } catch (error) {
-          if (isConnectionTerminatedByServer(error)) {
-            const data = readErrorData(error);
+          if (isUnauthenticatedError(error)) {
             const eventProps = {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
-              code: data.code ?? null,
-              message: data.message ?? null,
-              serverConnectionId: data.connectionId ?? null,
-              serverClientVersion: data.clientVersion ?? null,
-              serverStatus: data.status ?? null,
-              disconnectReason: data.disconnectReason ?? null,
-              msSinceDisconnected: data.msSinceDisconnected ?? null,
-              msSinceLastHeartbeat: data.msSinceLastHeartbeat ?? null,
-              msSinceCreated: data.msSinceCreated ?? null,
+              reason: "unauthenticated" as const,
             };
             console.warn(
-              "[DesktopSandboxBridge] Centrifugo refresh aborted — server reports connection terminated; stopping client to break retry loop",
+              "[DesktopSandboxBridge] Centrifugo refresh aborted — user not authenticated; stopping client to break retry loop",
               eventProps,
             );
             try {
@@ -143,14 +142,7 @@ export class DesktopSandboxBridge {
             } catch {
               // posthog not initialized for this user
             }
-            const client = this.client;
-            this.client = null;
-            this.connectionId = null;
-            try {
-              client?.disconnect();
-            } catch {
-              // already in a terminal state
-            }
+            this.terminateClient();
           } else {
             console.error(
               "[DesktopSandboxBridge] Failed to refresh Centrifugo token:",
@@ -159,6 +151,31 @@ export class DesktopSandboxBridge {
           }
           throw error;
         }
+        if (result.ok) return result.centrifugoToken;
+
+        const eventProps = {
+          connectionId: this.connectionId,
+          clientSurface: "desktop_bridge",
+          reason: result.reason,
+          serverConnectionId: result.connectionId,
+          serverClientVersion: result.clientVersion,
+          serverStatus: result.status,
+          disconnectReason: result.disconnectReason,
+          msSinceDisconnected: result.msSinceDisconnected,
+          msSinceLastHeartbeat: result.msSinceLastHeartbeat,
+          msSinceCreated: result.msSinceCreated,
+        };
+        console.warn(
+          "[DesktopSandboxBridge] Centrifugo refresh aborted — server reports connection terminated; stopping client to break retry loop",
+          eventProps,
+        );
+        try {
+          posthog.capture("sandbox_connection_terminated", eventProps);
+        } catch {
+          // posthog not initialized for this user
+        }
+        this.terminateClient();
+        throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });
 

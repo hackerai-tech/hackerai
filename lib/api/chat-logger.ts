@@ -21,7 +21,10 @@ import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
-import { extractErrorDetails } from "@/lib/utils/error-utils";
+import {
+  extractErrorDetails,
+  extractRetryAttempts,
+} from "@/lib/utils/error-utils";
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -194,6 +197,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       },
     ) {
       const details = extractErrorDetails(error);
+      const attempts = extractRetryAttempts(error);
 
       logger.error(
         "Provider streaming error",
@@ -203,6 +207,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
           endpoint: config.endpoint,
           ...context,
           ...details,
+          ...(attempts && { provider_attempts: attempts }),
         },
       );
 
@@ -212,6 +217,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         endpoint: config.endpoint,
         ...context,
         ...details,
+        ...(attempts && { provider_attempts: attempts }),
       });
 
       builder.markProviderError({
@@ -220,6 +226,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         reason: (error as { reason?: string })?.reason,
         message: details.errorMessage as string | undefined,
         retriable: details.isRetryable as boolean | undefined,
+        attempts,
       });
     },
 

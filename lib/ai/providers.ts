@@ -1,5 +1,7 @@
 import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import type { ChatMode, SelectedModel } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
@@ -71,12 +73,11 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "agent-model": or("moonshotai/kimi-k2.6:exacto"),
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
-    "model-grok-4.1": or("x-ai/grok-4.1-fast"),
-    "model-grok-4.3": or("x-ai/grok-4.3"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
-    "model-opus-4.6": or("anthropic/claude-opus-4.6"),
+    "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
+    "model-opus-4.7": or("anthropic/claude-opus-4.7"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
-    "fallback-agent-model": or("x-ai/grok-4.3"),
+    "fallback-agent-model": or("x-ai/grok-4.1-fast"),
     "fallback-ask-model": or("x-ai/grok-4.1-fast"),
     "title-generator-model": or("x-ai/grok-4.1-fast"),
   }) as Record<string, any>;
@@ -92,15 +93,13 @@ export const modelCutoffDates: Record<ModelName, string> &
   "agent-model": "April 2024",
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
-  "model-grok-4.1": "November 2024",
-  "model-grok-4.3": "November 2024",
   "model-gemini-3-flash": "January 2025",
-  "model-opus-4.6": "May 2025",
+  "model-deepseek-v4-flash": "May 2025",
+  "model-opus-4.7": "May 2025",
   "model-kimi-k2.6": "April 2024",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "title-generator-model": "November 2024",
-  "model-codex-local": "April 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -110,16 +109,14 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
-  "model-grok-4.1": "xAI Grok 4.1 Fast",
-  "model-grok-4.3": "xAI Grok 4.3",
   "model-gemini-3-flash": "Google Gemini 3 Flash",
-  "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-deepseek-v4-flash": "DeepSeek V4 Flash",
+  "model-opus-4.7": "Anthropic Claude Opus 4.7",
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model":
     "Auto, an intelligent model router built by HackerAI",
-  "model-codex-local": "OpenAI Codex (Your Account)",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -132,6 +129,27 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
 
 export function isAnthropicModel(modelName: string): boolean {
   return modelName.includes("sonnet") || modelName.includes("opus");
+}
+
+/**
+ * Map a HackerAI tier id to the underlying provider key for a given mode.
+ * Returns `null` for `"auto"` (the caller routes to the auto-router model
+ * key instead). The Pro/Max tiers map to the same model in both modes; only
+ * Lite differs (Gemini 3 Flash for ask, Kimi K2.6 for agent).
+ */
+export function resolveTierToProviderKey(
+  tier: SelectedModel,
+  mode: ChatMode,
+): ModelName | null {
+  if (tier === "auto") return null;
+  switch (tier) {
+    case "hackerai-standard":
+      return isAgentMode(mode) ? "model-kimi-k2.6" : "model-gemini-3-flash";
+    case "hackerai-pro":
+      return "model-sonnet-4.6";
+    case "hackerai-max":
+      return "model-opus-4.7";
+  }
 }
 
 export const myProvider = customProvider({

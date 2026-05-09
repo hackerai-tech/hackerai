@@ -6,6 +6,8 @@ import {
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 
+export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
+
 export function tokenExhaustedAfterSummarization(state: {
   threshold: number;
   getLastStepInputTokens: () => number;

@@ -7,12 +7,10 @@ import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
-import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
-import { CodexToolHandler } from "./tools/CodexToolHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
@@ -224,9 +222,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
 
-    case "tool-update_memory":
-      return <MemoryToolHandler part={part} status={status} />;
-
     case "tool-create_note":
       return (
         <NotesToolHandler part={part} status={status} toolName="create_note" />
@@ -281,13 +276,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
 
     default:
-      // Generic Codex tool handler — matches any tool-codex_* type
-      if (
-        typeof part.type === "string" &&
-        part.type.startsWith("tool-codex_")
-      ) {
-        return <CodexToolHandler part={part} status={status} />;
-      }
       return null;
   }
 }, arePropsEqual);

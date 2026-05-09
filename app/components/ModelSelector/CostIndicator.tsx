@@ -3,32 +3,31 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { ChatMode } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
-type CostTier = "low" | "medium" | "high" | "very-high" | "free";
+type CostTier = "low" | "medium" | "high" | "very-high";
 
-const MODEL_COST_TIER: Record<string, CostTier> = {
-  "gemini-3-flash": "low",
-  "grok-4.1": "low",
-  "grok-4.3": "low",
-  "sonnet-4.6": "high",
-  "opus-4.6": "very-high",
-  "kimi-k2.6": "medium",
-};
-
-export function getCostTier(modelId: string): CostTier {
-  if (modelId.startsWith("codex-local")) return "free";
-  return MODEL_COST_TIER[modelId] || "medium";
+// Cost tier per HackerAI tier id. Standard is mode-aware: in ask it routes
+// through the cheap DeepSeek V4 Flash text path (low), in agent it runs on
+// Kimi K2.6 (medium).
+export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
+  switch (modelId) {
+    case "hackerai-standard":
+      return mode && isAgentMode(mode) ? "medium" : "low";
+    case "hackerai-pro":
+      return "high";
+    case "hackerai-max":
+      return "very-high";
+    default:
+      return "medium";
+  }
 }
 
 const COST_CONFIG: Record<
   CostTier,
   { count: number; label: string; activeClass: string; suffix?: string }
 > = {
-  free: {
-    count: 0,
-    label: "Your account",
-    activeClass: "text-blue-600/80 dark:text-blue-400/80",
-  },
   low: {
     count: 1,
     label: "Low cost",
@@ -54,13 +53,15 @@ const COST_CONFIG: Record<
 
 const MAX_DOLLARS = 3;
 
-export function CostIndicator({ modelId }: { modelId: string }) {
-  const tier = getCostTier(modelId);
+export function CostIndicator({
+  modelId,
+  mode,
+}: {
+  modelId: string;
+  mode?: ChatMode;
+}) {
+  const tier = getCostTier(modelId, mode);
   const config = COST_CONFIG[tier];
-
-  if (tier === "free") {
-    return null;
-  }
 
   return (
     <Tooltip>

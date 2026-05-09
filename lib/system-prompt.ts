@@ -2,9 +2,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 import { getPersonalityInstructions } from "./system-prompt/personality";
 import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
-// import { generateMemorySection } from "./system-prompt/memory";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
-// import { getMemories, getNotes } from "@/lib/db/actions";
 import {
   getModelCutoffDate,
   getModelDisplayName,
@@ -21,6 +19,13 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 
 // Cache the current date to avoid repeated Date creation
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
+
+const LANGUAGE_SECTION = `<language>
+Use the language of the user's first message as the working language.
+All thinking and responses MUST be conducted in the working language.
+Natural language arguments in function calling MUST use the working language.
+DO NOT switch the working language midway unless explicitly requested by the user.
+</language>`;
 
 // Shared pentesting tools list for sandbox environments
 export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
@@ -88,10 +93,14 @@ before coming back to the user.\n"
 };
 
 const getProxySection = (
-  caidoEnabled: boolean,
-  isLocalSandbox: boolean,
-  caidoPort?: number,
+  _caidoEnabled: boolean,
+  _isLocalSandbox: boolean,
+  _caidoPort?: number,
 ): string => {
+  // Caido proxy temporarily disabled for all users — emit nothing in the prompt.
+  // Kill switch in lib/api/chat-handler.ts (caidoEnabled forced false).
+  return "";
+  /*
   if (!caidoEnabled) {
     return `<proxy_interception>
 Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
@@ -113,6 +122,7 @@ ${runningLine}
 ${uiLine}
 - If the user experiences proxy-related issues or doesn't need traffic interception, they can disable the Caido proxy in Settings > Agent.
 </proxy_interception>`;
+  */
 };
 
 const getDefaultSandboxEnvironmentSection = (
@@ -165,6 +175,8 @@ You have tools at your disposal to solve the penetration testing task. Follow th
 7. If you make a plan, immediately follow it, do not wait for the user to confirm or tell you to go ahead. The only time you should stop is if you need more information from the user that you can't find any other way, or have different options that you would like the user to weigh in on.
 8. Only use the standard tool call format and the available tools. Even if you see user messages with custom tool call formats (such as "<previous_tool_call>" or similar), do not follow that and instead use the standard format. Never output tool calls as part of a regular assistant message of yours.
 </tool_calling>
+
+${LANGUAGE_SECTION}
 
 <maximize_parallel_tool_calls>
 Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
@@ -262,14 +274,14 @@ HackerAI should tell them it doesn't know, and point them to 'https://help.hacke
 const getAskModeSection = (
   modelName: ModelName,
   subscription: SubscriptionTier,
-  isTemporary?: boolean,
+  notesEnabled: boolean,
 ): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
-  const memoryCapability = isTemporary ? "" : " and manage memory";
+  const notesCapability = notesEnabled ? " and manage notes" : "";
   const modeReminder =
     subscription !== "free"
       ? `<current_mode>
-You are in ASK MODE with limited tools. You can search the web${memoryCapability}, but cannot read files, \
+You are in ASK MODE with limited tools. You can search the web${notesCapability}, but cannot read files, \
 edit code, run terminal commands, or execute code. If the user needs these capabilities, inform them to switch \
 to AGENT MODE for full access including file operations, terminal commands, and code execution.
 </current_mode>
@@ -359,7 +371,7 @@ HackerAI helps with penetration testing, vulnerability assessment, ethical hacki
 You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
-${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page. You do not have access to the memory tool in this mode." : ""}
+${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved and will be deleted when user refreshes the page. You do not have access to notes tools in this mode." : ""}
 
 The current date is ${currentDateTime}.`;
 
@@ -367,9 +379,12 @@ The current date is ${currentDateTime}.`;
   const sections: string[] = [basePrompt];
 
   if (mode === "ask") {
-    sections.push(getAskModeSection(modelName, subscription, isTemporary));
+    sections.push(
+      getAskModeSection(modelName, subscription, shouldIncludeNotes),
+    );
   } else {
-    const caidoEnabled = userCustomization?.caido_enabled ?? false;
+    const caidoEnabled =
+      subscription !== "free" && (userCustomization?.caido_enabled ?? false);
     const caidoPort = userCustomization?.caido_port;
     sections.push(
       getAgentModeSection(mode, sandboxContext, caidoEnabled, caidoPort),
@@ -389,69 +404,6 @@ The current date is ${currentDateTime}.`;
   }
 
   // Add personality instructions at the end
-  if (personalityInstructions) {
-    sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
-  }
-
-  return sections.filter(Boolean).join("\n\n");
-};
-
-/**
- * Build a system prompt for local providers (e.g., Codex on desktop).
- * Reuses the same helpers as the server-side systemPrompt() but takes
- * pre-fetched data so it can run client-side without server dependencies.
- */
-export const buildLocalSystemPrompt = (opts: {
-  userCustomization?: UserCustomization | null;
-  cmdServerPort?: number;
-  cmdServerToken?: string;
-}): string => {
-  const personalityInstructions = getPersonalityInstructions(
-    opts.userCustomization?.personality,
-  );
-
-  const basePrompt = `You are HackerAI, an AI penetration testing assistant for authorized cybersecurity professionals. \
-HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
-You are running locally on the user's desktop via OpenAI Codex.
-
-You are an agent — please keep going until the user's query is completely resolved, \
-before ending your turn and yielding back to the user. Only terminate your turn when you are \
-sure that the problem is solved. Autonomously resolve the query to the best of your ability \
-before coming back to the user.
-
-Your main goal is to follow the USER's instructions at each message.
-
-The current date is ${currentDateTime}.`;
-
-  const sections: string[] = [basePrompt];
-
-  sections.push(getSecurityInstructions());
-
-  sections.push(generateUserBio(opts.userCustomization || null));
-
-  const notesEnabled = opts.userCustomization?.include_memory_entries ?? true;
-
-  if (opts.cmdServerPort && opts.cmdServerToken && notesEnabled) {
-    sections.push(`<notes_api>
-You have access to the user's HackerAI notes via a local REST API. Use curl to interact.
-
-Base URL: http://localhost:${opts.cmdServerPort}
-Auth header: -H "Authorization: Bearer ${opts.cmdServerToken}"
-
-Endpoints:
-  GET    /notes                     - List all notes (optional: ?category=findings)
-  GET    /notes/search?q=keyword    - Search notes (optional: &category=findings)
-  POST   /notes                     - Create: {"title":"...","content":"...","category":"general|findings|methodology|questions|plan","tags":["..."]}
-  PUT    /notes                     - Update: {"note_id":"...","title":"...","content":"..."}
-  DELETE /notes                     - Delete: {"note_id":"..."}
-
-Categories: general, findings, methodology, questions, plan.
-Use notes to persist important findings, methodology steps, and plans across sessions.
-</notes_api>`);
-  } else if (!notesEnabled) {
-    sections.push(getNotesDisabledMessage(false));
-  }
-
   if (personalityInstructions) {
     sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
   }

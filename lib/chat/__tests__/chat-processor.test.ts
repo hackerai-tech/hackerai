@@ -140,55 +140,75 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
     });
 
-    it("should return ask-model for ask mode (paid)", () => {
-      expect(selectModel("ask", "pro")).toBe("ask-model");
+    it("should return ask-model-free (DeepSeek) for paid ask with no image/PDF", () => {
+      expect(selectModel("ask", "pro")).toBe("ask-model-free");
+    });
+
+    it("should return ask-model (Gemini) for paid ask when an image/PDF is attached", () => {
+      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
     });
 
     it("should return ask-model-free for ask mode (free)", () => {
       expect(selectModel("ask", "free")).toBe("ask-model-free");
     });
 
-    it("should return ask-model for ultra subscription", () => {
-      expect(selectModel("ask", "ultra")).toBe("ask-model");
+    it("should return ask-model-free for ultra subscription with no image/PDF", () => {
+      expect(selectModel("ask", "ultra")).toBe("ask-model-free");
     });
 
-    it("should return ask-model for team subscription", () => {
-      expect(selectModel("ask", "team")).toBe("ask-model");
+    it("should return ask-model-free for team subscription with no image/PDF", () => {
+      expect(selectModel("ask", "team")).toBe("ask-model-free");
     });
   });
 
-  // Model override — enabled for Ask mode (paid users only), always ignored for Agent mode
-  describe("model override for ask mode (paid users)", () => {
-    it("should use selected model override for ask mode", () => {
-      expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe(
+  // Tier override — Pro/Max map to the same provider key in both modes
+  describe("tier override for ask mode (paid users)", () => {
+    it("should map HackerAI Pro to Sonnet 4.6 in ask mode", () => {
+      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should use selected model override for team users in ask mode", () => {
-      expect(selectModel("ask", "team", "sonnet-4.6")).toBe("model-sonnet-4.6");
+    it("should map HackerAI Pro to Sonnet 4.6 for team users", () => {
+      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
+        "model-sonnet-4.6",
+      );
     });
 
-    it("should apply all selectable models in ask mode", () => {
-      expect(selectModel("ask", "pro", "grok-4.1")).toBe("model-grok-4.1");
-      expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
+    it("should map HackerAI Standard to DeepSeek V4 Flash when no image/PDF", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
+        "model-deepseek-v4-flash",
+      );
+    });
+
+    it("should promote HackerAI Standard to Gemini 3 Flash when an image/PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true)).toBe(
         "model-gemini-3-flash",
       );
+    });
+
+    it("should map HackerAI Max to Opus 4.7", () => {
+      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.7");
     });
   });
 
-  // Agent mode allows model override for paid users
-  describe("model override in agent mode", () => {
-    it("should use allowed model override for paid users in agent mode", () => {
-      expect(selectModel("agent", "pro", "grok-4.3")).toBe("model-grok-4.3");
-      expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
-        "model-gemini-3-flash",
+  // Agent mode — Lite resolves to Kimi instead of Gemini
+  describe("tier override in agent mode", () => {
+    it("should map HackerAI Standard to Kimi K2.6 in agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
+        "model-kimi-k2.6",
       );
     });
 
-    it("should allow Sonnet 4.6 in agent mode for paid users", () => {
-      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
+    it("should map HackerAI Pro to Sonnet 4.6 in agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
         "model-sonnet-4.6",
+      );
+    });
+
+    it("should map HackerAI Max to Opus 4.7 in agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-max")).toBe(
+        "model-opus-4.7",
       );
     });
 
@@ -200,14 +220,14 @@ describe("selectModel", () => {
 
   // Free user guard
   describe("free user guard", () => {
-    it("should ignore model override for free users in agent mode", () => {
-      expect(selectModel("agent", "free", "sonnet-4.6")).toBe(
+    it("should ignore tier override for free users in agent mode", () => {
+      expect(selectModel("agent", "free", "hackerai-pro")).toBe(
         "agent-model-free",
       );
     });
 
-    it("should ignore model override for free users in ask mode", () => {
-      expect(selectModel("ask", "free", "sonnet-4.6")).toBe("ask-model-free");
+    it("should ignore tier override for free users in ask mode", () => {
+      expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
     });
   });
 
@@ -217,8 +237,12 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
     });
 
-    it("should treat 'auto' as no override in ask mode", () => {
-      expect(selectModel("ask", "pro", "auto")).toBe("ask-model");
+    it("should treat 'auto' as no override in ask mode (text-only → DeepSeek)", () => {
+      expect(selectModel("ask", "pro", "auto")).toBe("ask-model-free");
+    });
+
+    it("should treat 'auto' as no override in ask mode with image/PDF → Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", true)).toBe("ask-model");
     });
   });
 
@@ -226,7 +250,8 @@ describe("selectModel", () => {
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
       expect(selectModel("agent", "pro", undefined)).toBe("agent-model");
-      expect(selectModel("ask", "pro", undefined)).toBe("ask-model");
+      expect(selectModel("ask", "pro", undefined)).toBe("ask-model-free");
+      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
     });
   });
 });
@@ -235,20 +260,21 @@ describe("selectModel", () => {
 // getMaxStepsForUser - Step limits by mode and subscription
 // ==========================================================================
 describe("getMaxStepsForUser", () => {
-  it("should return 100 steps for agent mode", () => {
+  it("should return 100 steps for agent mode (all tiers)", () => {
     expect(getMaxStepsForUser("agent", "free")).toBe(100);
     expect(getMaxStepsForUser("agent", "pro")).toBe(100);
     expect(getMaxStepsForUser("agent", "ultra")).toBe(100);
+    expect(getMaxStepsForUser("agent", "team")).toBe(100);
   });
 
-  it("should return 5 steps for free ask mode", () => {
-    expect(getMaxStepsForUser("ask", "free")).toBe(5);
+  it("should return 15 steps for free ask mode", () => {
+    expect(getMaxStepsForUser("ask", "free")).toBe(15);
   });
 
-  it("should return 15 steps for paid ask mode", () => {
-    expect(getMaxStepsForUser("ask", "pro")).toBe(15);
-    expect(getMaxStepsForUser("ask", "ultra")).toBe(15);
-    expect(getMaxStepsForUser("ask", "team")).toBe(15);
+  it("should return 100 steps for paid ask mode", () => {
+    expect(getMaxStepsForUser("ask", "pro")).toBe(100);
+    expect(getMaxStepsForUser("ask", "ultra")).toBe(100);
+    expect(getMaxStepsForUser("ask", "team")).toBe(100);
   });
 });
 

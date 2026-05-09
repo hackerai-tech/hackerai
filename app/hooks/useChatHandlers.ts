@@ -2,9 +2,8 @@ import { RefObject, useEffect, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { ChatMessage, ChatStatus } from "@/types";
-import { isCodexLocal } from "@/types/chat";
-import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -77,6 +76,12 @@ export const useChatHandlers = ({
     temporaryChatsEnabledRef.current = temporaryChatsEnabled;
   }, [temporaryChatsEnabled]);
 
+  // Avoid stale closure on chatMode: on mobile, a tap on Regenerate can fire
+  // before React commits the new chatMode after a mode toggle, sending the
+  // previous mode in the request body. Reading from a ref always gets the
+  // latest value at the moment of the click.
+  const chatModeRef = useLatestRef(chatMode);
+
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
   );
@@ -90,7 +95,6 @@ export const useChatHandlers = ({
   const cancelTempStreamMutation = useMutation(
     api.tempStreams.cancelTempStreamFromClient,
   );
-  const saveLocalChatMutation = useMutation(api.chats.saveLocalChat);
 
   /**
    * Helper to stop an active stream, normalize messages, and persist state.
@@ -115,13 +119,7 @@ export const useChatHandlers = ({
       setMessages(normalizedMessages);
     }
 
-    // Local provider models (e.g. codex-local) bypass the server entirely —
-    // skip all Convex stream/save operations since no server-side chat exists.
-    const isLocalProvider = isCodexLocal(selectedModel);
-
-    if (isLocalProvider) {
-      // Nothing to cancel or save server-side
-    } else if (!temporaryChatsEnabledRef.current) {
+    if (!temporaryChatsEnabledRef.current) {
       // Run cancel and save in parallel - they're independent operations
       const lastMessage = normalizedMessages[normalizedMessages.length - 1];
       const savePromise =
@@ -155,15 +153,6 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    // Block sending in Codex chats on web — message stays in the input
-    if (isCodexLocal(selectedModel) && !isTauriEnvironment()) {
-      toast.error("This chat requires the desktop app", {
-        description:
-          "Codex models run locally and need the HackerAI desktop app.",
-      });
-      return;
-    }
 
     setIsAutoResuming(false);
 
@@ -202,10 +191,7 @@ export const useChatHandlers = ({
           stop();
 
           // Cancel the stream in database and save current message state
-          if (
-            !temporaryChatsEnabledRef.current &&
-            !isCodexLocal(selectedModel)
-          ) {
+          if (!temporaryChatsEnabledRef.current) {
             cancelStreamMutation({ chatId }).catch((error) => {
               console.error("Failed to cancel stream:", error);
             });
@@ -262,24 +248,6 @@ export const useChatHandlers = ({
         window.history.replaceState({}, "", `/c/${chatId}`);
       }
 
-      // Local providers: save chat + user message before streaming starts
-      if (isCodexLocal(selectedModel)) {
-        try {
-          const title = input.trim().slice(0, 100) || "Codex Chat";
-          await saveLocalChatMutation({
-            id: chatId,
-            title,
-            selectedModel,
-          });
-        } catch (err) {
-          console.error("[CodexLocal] Failed to pre-save chat:", err);
-          toast.warning("Chat may not be saved", {
-            description:
-              "Failed to save chat metadata. Your conversation may not persist.",
-          });
-        }
-      }
-
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
         const validFiles = uploadedFiles.filter(
@@ -302,7 +270,7 @@ export const useChatHandlers = ({
           },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
@@ -318,7 +286,7 @@ export const useChatHandlers = ({
           { text: input },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
@@ -385,7 +353,7 @@ export const useChatHandlers = ({
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodos,
           regenerate: true,
@@ -397,7 +365,7 @@ export const useChatHandlers = ({
     } else {
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: trimmedMessages,
           todos: cleanedTodos,
           regenerate: true,
@@ -429,7 +397,7 @@ export const useChatHandlers = ({
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodos,
           regenerate: true,
@@ -452,7 +420,7 @@ export const useChatHandlers = ({
 
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: messagesToSend,
           todos: cleanedTodos,
           regenerate: true,
@@ -568,7 +536,7 @@ export const useChatHandlers = ({
     if (!temporaryChatsEnabled) {
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: [],
           todos: cleanedTodosForEdit,
           regenerate: true,
@@ -605,7 +573,7 @@ export const useChatHandlers = ({
 
       regenerate({
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           messages: messagesUpToEdit,
           todos: cleanedTodosForEdit,
           regenerate: true,
@@ -616,6 +584,24 @@ export const useChatHandlers = ({
         },
       });
     }
+  };
+
+  const handleContinue = () => {
+    if (status === "streaming") return;
+    hasManuallyStoppedRef.current = false;
+    sendMessage(
+      { text: "continue", metadata: { isAutoContinue: true } },
+      {
+        body: {
+          mode: chatModeRef.current,
+          isAutoContinue: true,
+          todos,
+          temporary: temporaryChatsEnabled,
+          sandboxPreference,
+          selectedModel,
+        },
+      },
+    );
   };
 
   const handleSendNow = async (messageId: string) => {
@@ -658,7 +644,7 @@ export const useChatHandlers = ({
 
       sendMessage(messagePayload, {
         body: {
-          mode: chatMode,
+          mode: chatModeRef.current,
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
@@ -683,5 +669,6 @@ export const useChatHandlers = ({
     handleRetry,
     handleEditMessage,
     handleSendNow,
+    handleContinue,
   };
 };

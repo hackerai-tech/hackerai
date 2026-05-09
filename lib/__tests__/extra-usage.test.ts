@@ -15,15 +15,15 @@ describe("extra-usage", () => {
     const { pointsToDollars, EXTRA_USAGE_MULTIPLIER } =
       require("../extra-usage") as typeof import("../extra-usage");
 
-    it("should convert points to dollars with 1.1x multiplier", () => {
-      // 10000 points = $1.00 base, * 1.1 = $1.10 (floating point: $1.11)
-      expect(pointsToDollars(10000)).toBe(1.11);
+    it("should convert points to dollars with 1.05x multiplier", () => {
+      // 10000 points = $1.00 base, * 1.05 = $1.05
+      expect(pointsToDollars(10000)).toBe(1.05);
     });
 
     it("should round up to nearest cent", () => {
-      // 1 point = $0.0001 base, * 1.1 = $0.00011 → rounds up to $0.01
+      // 1 point = $0.0001 base, * 1.05 = $0.000105 → rounds up to $0.01
       expect(pointsToDollars(1)).toBe(0.01);
-      // 100 points = $0.01 base, * 1.1 = $0.011 → rounds up to $0.02
+      // 100 points = $0.01 base, * 1.05 = $0.0105 → rounds up to $0.02
       expect(pointsToDollars(100)).toBe(0.02);
     });
 
@@ -32,14 +32,14 @@ describe("extra-usage", () => {
     });
 
     it("should handle large point values", () => {
-      // 1M points = $100 base, * 1.1 = $110 (floating point: $110.01)
-      expect(pointsToDollars(1_000_000)).toBe(110.01);
+      // 1M points = $100 base, * 1.05 = $105
+      expect(pointsToDollars(1_000_000)).toBe(105);
     });
 
     it("should apply EXTRA_USAGE_MULTIPLIER correctly", () => {
-      expect(EXTRA_USAGE_MULTIPLIER).toBe(1.1);
-      // 50000 points = $5.00 base, * 1.1 = $5.50
-      expect(pointsToDollars(50000)).toBe(5.5);
+      expect(EXTRA_USAGE_MULTIPLIER).toBe(1.05);
+      // 50000 points = $5.00 base, * 1.05 = $5.25
+      expect(pointsToDollars(50000)).toBe(5.25);
     });
   });
 

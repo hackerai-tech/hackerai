@@ -4,51 +4,58 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 export interface ModelOption {
   id: SelectedModel;
   label: string;
+  /** Short tagline shown in the hover popup (e.g. "Maximum intelligence for complex work") */
+  description?: string;
+  /** "Powered by …" line shown beneath the description in the hover popup */
+  poweredBy?: string;
   thinking?: boolean;
-  censored?: boolean;
-  /** Desktop-only model using user's own account */
-  localProvider?: boolean;
 }
 
 export const ASK_MODEL_OPTIONS: ModelOption[] = [
-  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
-  { id: "grok-4.1", label: "Grok 4.1" },
-  { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
-  { id: "opus-4.6", label: "Claude Opus 4.6", censored: true },
+  {
+    id: "hackerai-standard",
+    label: "HackerAI Standard",
+    description: "Reliable performance for everyday tasks",
+    poweredBy:
+      "DeepSeek V4 Flash · switches to Gemini 3 Flash for images & PDFs",
+  },
+  {
+    id: "hackerai-pro",
+    label: "HackerAI Pro",
+    description: "Superior performance for most assignments",
+    poweredBy: "Claude Sonnet 4.6",
+  },
+  {
+    id: "hackerai-max",
+    label: "HackerAI Max",
+    description: "Maximum intelligence for complex work",
+    poweredBy: "Claude Opus 4.7",
+  },
 ];
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
-  { id: "kimi-k2.6", label: "Kimi K2.6", thinking: true },
-  { id: "grok-4.3", label: "Grok 4.3", thinking: true },
   {
-    id: "sonnet-4.6",
-    label: "Claude Sonnet 4.6",
+    id: "hackerai-standard",
+    label: "HackerAI Standard",
+    description: "Reliable agent for everyday automation",
+    poweredBy: "Moonshot Kimi K2.6",
     thinking: true,
-    censored: true,
   },
-  { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true, censored: true },
+  {
+    id: "hackerai-pro",
+    label: "HackerAI Pro",
+    description: "Superior performance for most assignments",
+    poweredBy: "Claude Sonnet 4.6",
+    thinking: true,
+  },
+  {
+    id: "hackerai-max",
+    label: "HackerAI Max",
+    description: "Maximum intelligence for complex work",
+    poweredBy: "Claude Opus 4.7",
+    thinking: true,
+  },
 ];
-
-// export const CODEX_LOCAL_OPTIONS: ModelOption[] = [
-//   { id: "codex-local:gpt-5.4", label: "GPT-5.4", localProvider: true },
-//   {
-//     id: "codex-local:gpt-5.4-mini",
-//     label: "GPT-5.4 Mini",
-//     localProvider: true,
-//   },
-//   {
-//     id: "codex-local:gpt-5.3-codex",
-//     label: "GPT-5.3 Codex",
-//     localProvider: true,
-//   },
-//   {
-//     id: "codex-local:gpt-5.2-codex",
-//     label: "GPT-5.2 Codex",
-//     localProvider: true,
-//   },
-//   { id: "codex-local:gpt-5.2", label: "GPT-5.2", localProvider: true },
-// ];
-export const CODEX_LOCAL_OPTIONS: ModelOption[] = [];
 
 export const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
