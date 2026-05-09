@@ -28,7 +28,10 @@ import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
-import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
+import {
+  fetchAgentLongStream,
+  resumeAgentLongStream,
+} from "@/lib/chat/agent-long-transport";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
@@ -329,11 +332,30 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
         if (mode === "agent-long") {
+          // useChat reuses this fetch for both POST sendMessages and GET
+          // reconnectToStream — dispatch on method.
+          if (init?.method === "GET") {
+            return resumeAgentLongStream(
+              typeof input === "string" ? input : input.toString(),
+              init,
+            );
+          }
           return fetchAgentLongStream(init);
         }
         const url =
           input === "/api/chat" && mode === "agent" ? "/api/agent" : input;
         return fetchWithErrorHandlers(url, init);
+      },
+      prepareReconnectToStreamRequest: ({ id, api }) => {
+        // Reconnect endpoint depends on which mode is in flight. The chatMode
+        // ref reflects the user's current selector, but if they navigated
+        // back during a long run, that's the same mode they kicked off in.
+        if (chatModeRef.current === "agent-long") {
+          return {
+            api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
+          };
+        }
+        return { api: `${api}/${id}/stream` };
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
         const {
@@ -1051,7 +1073,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         selectedModel={selectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
-          chatData === undefined ? undefined : !!chatData?.active_stream_id
+          chatData === undefined
+            ? undefined
+            : !!chatData?.active_stream_id || !!chatData?.active_trigger_run_id
         }
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">

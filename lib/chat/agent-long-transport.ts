@@ -9,25 +9,35 @@ import { fetchWithErrorHandlers } from "@/lib/utils";
  *      UIMessage chunks the task emitted).
  *   3. Re-encode each chunk as an SSE `data: ...\n\n` frame so the caller's
  *      `useChat` consumes it identically to a normal streaming response.
+ *
+ * On reconnect (page reload while a run is still executing), useChat fires
+ * a GET against the configured reconnect URL; we route that through
+ * `resumeAgentLongStream`, which fetches the active runId from
+ * /api/agent-long/resume and pipes the same trigger.dev stream. Trigger.dev
+ * streams are durable for 28 days, so a fresh subscription replays every
+ * chunk from the beginning — useChat reconstructs the in-progress
+ * assistant turn without needing a client-side cursor.
  */
 type RunHandle = { runId: string; publicAccessToken: string };
 
-export const fetchAgentLongStream = async (
-  init: RequestInit | undefined,
-): Promise<Response> => {
-  const startResponse = await fetchWithErrorHandlers("/api/agent-long", init);
-  if (!startResponse.ok) return startResponse;
+const sseHeaders: HeadersInit = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+};
 
-  const { runId, publicAccessToken }: RunHandle = await startResponse.json();
-
-  // Lazy import keeps the SDK out of the initial bundle for users who
-  // never select long mode.
-  const { runs, auth } = await import("@trigger.dev/sdk");
-
+const buildSSEResponseFromRun = ({
+  runId,
+  publicAccessToken,
+}: RunHandle): Response => {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        // Lazy import keeps the SDK out of the initial bundle for users who
+        // never select long mode.
+        const { runs, auth } = await import("@trigger.dev/sdk");
+
         // Scope the public token to this single subscription call rather
         // than mutating the global SDK config (which would race across
         // tabs / users).
@@ -82,12 +92,33 @@ export const fetchAgentLongStream = async (
     },
   });
 
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
+  return new Response(stream, { status: 200, headers: sseHeaders });
+};
+
+export const fetchAgentLongStream = async (
+  init: RequestInit | undefined,
+): Promise<Response> => {
+  const startResponse = await fetchWithErrorHandlers("/api/agent-long", init);
+  if (!startResponse.ok) return startResponse;
+
+  const handle: RunHandle = await startResponse.json();
+  return buildSSEResponseFromRun(handle);
+};
+
+export const resumeAgentLongStream = async (
+  url: string,
+  init: RequestInit | undefined,
+): Promise<Response> => {
+  // useChat's reconnectToStream signals "nothing to resume" by treating a
+  // 204 as null. /api/agent-long/resume returns 204 when the chat has no
+  // active run (or the stored run hit a terminal state); pass that through.
+  const response = await fetchWithErrorHandlers(url, {
+    ...init,
+    method: "GET",
   });
+  if (response.status === 204) return response;
+  if (!response.ok) return response;
+
+  const handle: RunHandle = await response.json();
+  return buildSSEResponseFromRun(handle);
 };

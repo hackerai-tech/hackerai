@@ -40,6 +40,7 @@ import {
   saveMessage,
   updateChat,
   getUserCustomization,
+  setActiveTriggerRun,
 } from "@/lib/db/actions";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
@@ -295,6 +296,21 @@ export const agentLongTask = task({
     // `waitForAllStreams`'s default 60s timeout truncate long tool-loop runs.
     const { waitUntilComplete } = streams.pipe("ui", uiStream);
     await waitUntilComplete();
+
+    // Clear the stored runId now that the stream is fully delivered. Without
+    // this, the chat row keeps pointing at a finished run and the resume
+    // endpoint has to round-trip runs.retrieve() to discover that.
+    if (!temporary) {
+      try {
+        await setActiveTriggerRun({ chatId, triggerRunId: null });
+      } catch (error) {
+        // Resume endpoint self-heals on terminal status, so this is best-effort.
+        console.error(
+          "[agent-long] failed to clear active_trigger_run_id:",
+          error,
+        );
+      }
+    }
 
     return {
       chatId,
