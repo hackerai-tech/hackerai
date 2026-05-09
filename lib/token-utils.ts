@@ -13,10 +13,11 @@ export const FILE_TOKEN_PERCENT = 0.5;
 
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
-  opts?: { mode?: "ask" | "agent" },
+  opts?: { mode?: import("@/types").ChatMode },
 ): number => {
   if (subscription === "free") {
-    return opts?.mode === "agent" ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
+    const isAgent = opts?.mode === "agent" || opts?.mode === "agent-long";
+    return isAgent ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
   }
   return MAX_TOKENS_PAID;
 };
@@ -27,7 +28,7 @@ export const getMaxTokensForSubscription = (
  */
 export const getMaxFileTokens = (
   subscription: SubscriptionTier,
-  opts?: { mode?: "ask" | "agent" },
+  opts?: { mode?: import("@/types").ChatMode },
 ): number => {
   return Math.floor(
     getMaxTokensForSubscription(subscription, opts) * FILE_TOKEN_PERCENT,

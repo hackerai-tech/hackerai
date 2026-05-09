@@ -3,9 +3,9 @@ import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails } from "./file";
 
-export type ChatMode = "agent" | "ask";
+export type ChatMode = "agent" | "ask" | "agent-long";
 
-export const CHAT_MODES: readonly ChatMode[] = ["agent", "ask"];
+export const CHAT_MODES: readonly ChatMode[] = ["agent", "ask", "agent-long"];
 
 export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);

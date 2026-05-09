@@ -29,7 +29,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
   const { user } = useAuth();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
 
-  const handleAgentModeClick = () => {
+  const enterAgentVariant = (target: "agent" | "agent-long") => {
     if (!user) {
       navigateToAuth("/login");
       return;
@@ -41,9 +41,9 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       return;
     }
     if (subscription !== "free") {
-      setChatMode("agent");
+      setChatMode(target);
     } else if (hasLocalSandbox) {
-      setChatMode("agent");
+      setChatMode(target);
       if (sandboxPreference === "e2b" || !sandboxPreference) {
         if (defaultLocalSandboxPreference) {
           setSandboxPreference(defaultLocalSandboxPreference);
@@ -57,6 +57,9 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     }
   };
 
+  const handleAgentModeClick = () => enterAgentVariant("agent");
+  const handleAgentLongModeClick = () => enterAgentVariant("agent-long");
+
   return (
     <>
       <div
@@ -67,6 +70,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}
+            onAgentLongModeClick={handleAgentLongModeClick}
             temporaryChatsEnabled={temporaryChatsEnabled}
           />
         </DropdownMenu>

@@ -202,7 +202,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent";
+  defaultModelSlug?: "ask" | "agent" | "agent-long";
   sandboxType?: string;
   selectedModel?: string;
 }) {
@@ -240,7 +240,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent";
+  mode?: import("@/types").ChatMode;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -507,6 +507,38 @@ export async function getUserCustomization({ userId }: { userId: string }) {
     return userCustomization;
   } catch (error) {
     // If no customization found or error, return null
+    return null;
+  }
+}
+
+export async function setActiveTriggerRun({
+  chatId,
+  triggerRunId,
+}: {
+  chatId: string;
+  triggerRunId: string | null;
+}) {
+  try {
+    await convex.mutation(api.chats.setActiveTriggerRun, {
+      serviceKey,
+      chatId,
+      triggerRunId,
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active trigger run",
+    );
+  }
+}
+
+export async function getActiveTriggerRun({ chatId }: { chatId: string }) {
+  try {
+    return await convex.query(api.chats.getActiveTriggerRun, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
     return null;
   }
 }

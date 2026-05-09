@@ -28,6 +28,7 @@ import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
@@ -326,10 +327,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
+        const mode = chatModeRef.current;
+        if (mode === "agent-long") {
+          return fetchAgentLongStream(init);
+        }
         const url =
-          input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
-            : input;
+          input === "/api/chat" && mode === "agent" ? "/api/agent" : input;
         return fetchWithErrorHandlers(url, init);
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
@@ -755,7 +758,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       void updateChatPreferences({
         id: chatId,
         selectedModel,
-        mode: chatMode as "ask" | "agent",
+        mode: chatMode,
       })
         .then(() => {
           if (cancelled) return;
