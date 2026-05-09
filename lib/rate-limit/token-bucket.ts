@@ -257,6 +257,7 @@ export const checkTokenBucketLimit = async (
               resetTimestamp: monthlyCheck.reset,
               subscription,
               trustCapExceeded: true,
+              capReason: "trust_cap",
             });
           }
 
@@ -265,6 +266,7 @@ export const checkTokenBucketLimit = async (
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,
+              capReason: "extra_usage_cap",
             });
           }
 
@@ -292,6 +294,7 @@ export const checkTokenBucketLimit = async (
               subscription,
               autoReloadFailed: true,
               autoReloadFailureReason: reason,
+              capReason: "auto_reload_failed",
             });
           }
 
@@ -299,6 +302,7 @@ export const checkTokenBucketLimit = async (
           throw new ChatSDKError("rate_limit:chat", msg, {
             resetTimestamp: monthlyCheck.reset,
             subscription,
+            capReason: "monthly_exhausted",
           });
         }
 
@@ -307,7 +311,11 @@ export const checkTokenBucketLimit = async (
         throw new ChatSDKError(
           "rate_limit:chat",
           "Extra usage billing is temporarily unavailable. Please try again in a few moments.",
-          { resetTimestamp: monthlyCheck.reset, subscription },
+          {
+            resetTimestamp: monthlyCheck.reset,
+            subscription,
+            capReason: "billing_unavailable",
+          },
         );
       }
 
@@ -317,6 +325,7 @@ export const checkTokenBucketLimit = async (
       throw new ChatSDKError("rate_limit:chat", msg, {
         resetTimestamp: monthlyCheck.reset,
         subscription,
+        capReason: "monthly_exhausted",
       });
     }
 

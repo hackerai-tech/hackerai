@@ -15,6 +15,11 @@ type LogFields = Record<string, unknown> & {
   error?: unknown;
 };
 
+type EventFields = Record<string, unknown> & {
+  userId?: string;
+  $set?: Record<string, unknown>;
+};
+
 function distinctIdFor(userId: unknown): string {
   return typeof userId === "string" && userId.length > 0 ? userId : "system";
 }
@@ -71,6 +76,21 @@ export const phLogger = {
       });
     } catch (telemetryError) {
       console.log(message, { ...fields, telemetryError });
+    }
+  },
+
+  event(name: string, fields: EventFields = {}) {
+    const client = getClient();
+    if (!client) return;
+    try {
+      const { userId, $set, ...rest } = fields;
+      client.capture({
+        distinctId: distinctIdFor(userId),
+        event: name,
+        properties: { ...rest, ...($set && { $set }) },
+      });
+    } catch {
+      // best-effort
     }
   },
 
