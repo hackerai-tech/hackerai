@@ -6,6 +6,7 @@ settings:
 
 overrides:
   axios: 1.15.2
+  e2b>chalk: ^4.1.2
   glob@>=10.0.0 <10.5.0: 10.5.0
   glob@>=11.0.0 <11.1.0: 11.1.0
   js-yaml: 4.1.1
@@ -13933,7 +13934,7 @@ snapshots:
       '@bufbuild/protobuf': 2.6.3
       '@connectrpc/connect': 2.0.0-rc.3(@bufbuild/protobuf@2.6.3)
       '@connectrpc/connect-web': 2.0.0-rc.3(@bufbuild/protobuf@2.6.3)(@connectrpc/connect@2.0.0-rc.3(@bufbuild/protobuf@2.6.3))
-      chalk: 5.6.2
+      chalk: 4.1.2
       compare-versions: 6.1.1
       dockerfile-ast: 0.7.1
       glob: 11.1.0
@@ -14947,7 +14948,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.15.2(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.15.2)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -17148,7 +17149,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.15.2(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.15.2):
     dependencies:
       axios: 1.15.2(debug@4.4.3)
 
