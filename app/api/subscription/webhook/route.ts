@@ -334,7 +334,11 @@ async function handleSubscriptionUpdated(
       to_tier: currentTier,
       direction,
       org_id: orgId,
-      $set: { subscription_tier: currentTier ?? "free" },
+      // Only update the person property when we resolved the new tier. A null
+      // currentTier means Stripe's lookup_key + product fallbacks both failed,
+      // and coercing to "free" would silently move possibly-paid users out of
+      // the paid cohort.
+      ...(currentTier && { $set: { subscription_tier: currentTier } }),
     });
   }
 
