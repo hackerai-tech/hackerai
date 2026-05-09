@@ -36,6 +36,7 @@ export const fetchAgentLongStream = async (
             .subscribeToRun(runId)
             .withStreams<{ ui: unknown }>();
 
+          let sawTerminalChunk = false;
           for await (const part of subscription) {
             if (
               typeof part === "object" &&
@@ -48,7 +49,30 @@ export const fetchAgentLongStream = async (
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
               );
+              // The AI SDK UI message stream emits `finish` (and `abort` /
+              // `error` on early exit) as the very last chunk. Once we've
+              // forwarded it, useChat has everything it needs — close the
+              // SSE response immediately instead of waiting for trigger.dev
+              // to round-trip the run's COMPLETED status, which is what
+              // would otherwise leave the UI stuck in the streaming state.
+              const chunkType = (chunk as { type?: string }).type;
+              if (
+                chunkType === "finish" ||
+                chunkType === "abort" ||
+                chunkType === "error"
+              ) {
+                sawTerminalChunk = true;
+                break;
+              }
             }
+          }
+          if (!sawTerminalChunk) {
+            // Subscription ended without a terminal chunk (run crashed,
+            // was canceled, or the stream was truncated). Synthesize an
+            // abort so useChat exits the streaming state cleanly.
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
+            );
           }
         });
         controller.close();

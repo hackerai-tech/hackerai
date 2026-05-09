@@ -1,4 +1,4 @@
-import { task, metadata } from "@trigger.dev/sdk";
+import { task, streams } from "@trigger.dev/sdk";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -288,7 +288,13 @@ export const agentLongTask = task({
       },
     });
 
-    await metadata.stream("ui", uiStream);
+    // Block run() on the realtime pipe so terminal `data-terminal` chunks (and
+    // every other writer.write) are delivered as they arrive — and the task
+    // doesn't end before late chunks ship. `metadata.stream()` only awaits pipe
+    // *registration*, which would let `run()` return mid-stream and let
+    // `waitForAllStreams`'s default 60s timeout truncate long tool-loop runs.
+    const { waitUntilComplete } = streams.pipe("ui", uiStream);
+    await waitUntilComplete();
 
     return {
       chatId,
