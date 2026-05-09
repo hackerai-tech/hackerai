@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { workos } from "@/app/api/workos";
 import { ConvexHttpClient } from "convex/browser";
@@ -11,7 +11,30 @@ import {
   initProratedBucket,
   clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
+import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionTier } from "@/types";
+
+// Linear ranking used to label tier transitions as upgrade/downgrade. Team is
+// pinned at the top because moves between team and individual plans are rare
+// and analysts can re-bucket from `from_tier`/`to_tier` if needed.
+const TIER_ORDER: readonly SubscriptionTier[] = [
+  "free",
+  "pro",
+  "pro-plus",
+  "ultra",
+  "team",
+];
+
+function tierDirection(
+  from: SubscriptionTier | null,
+  to: SubscriptionTier | null,
+): "upgrade" | "downgrade" | "lateral" {
+  const fi = from ? TIER_ORDER.indexOf(from) : -1;
+  const ti = to ? TIER_ORDER.indexOf(to) : -1;
+  if (ti > fi) return "upgrade";
+  if (ti < fi) return "downgrade";
+  return "lateral";
+}
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -291,7 +314,7 @@ async function handleSubscriptionUpdated(
 
   if (!customerId) return;
 
-  const { userIds } = await resolveUserIdsFromCustomer(customerId);
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
     console.error(
       `[Subscription Webhook] subscription.updated: could not resolve users for customer ${customerId}`,
@@ -303,6 +326,18 @@ async function handleSubscriptionUpdated(
     `[Subscription Webhook] subscription.updated: tier change ${previousTier} → ${currentTier} for ${userIds.length} user(s)`,
   );
 
+  const direction = tierDirection(previousTier, currentTier);
+  for (const uid of userIds) {
+    phLogger.event("subscription_changed", {
+      userId: uid,
+      from_tier: previousTier,
+      to_tier: currentTier,
+      direction,
+      org_id: orgId,
+      $set: { subscription_tier: currentTier ?? "free" },
+    });
+  }
+
   // Stash remaining credits from old tier before deleting, then reset old buckets
   if (previousTier) {
     await Promise.all(
@@ -311,6 +346,44 @@ async function handleSubscriptionUpdated(
     await Promise.all(
       userIds.map((uid) => resetRateLimitBuckets(uid, previousTier)),
     );
+  }
+}
+
+/** Handle customer.subscription.deleted — emit churn analytics for the lapsed paid users. */
+async function handleSubscriptionDeleted(
+  subscription: Stripe.Subscription,
+): Promise<void> {
+  const customerId =
+    typeof subscription.customer === "string"
+      ? subscription.customer
+      : subscription.customer?.id;
+  if (!customerId) return;
+
+  const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
+  const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
+
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  if (userIds.length === 0) {
+    console.error(
+      `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId}`,
+    );
+    return;
+  }
+
+  const cancellationReason = subscription.cancellation_details?.reason ?? null;
+
+  console.log(
+    `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
+  );
+
+  for (const uid of userIds) {
+    phLogger.event("subscription_cancelled", {
+      userId: uid,
+      tier,
+      org_id: orgId,
+      cancellation_reason: cancellationReason,
+      $set: { subscription_tier: "free" },
+    });
   }
 }
 
@@ -324,7 +397,7 @@ async function handleSubscriptionUpdated(
  *
  * Configure in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
- * - Events: invoice.paid, customer.subscription.updated
+ * - Events: invoice.paid, customer.subscription.updated, customer.subscription.deleted
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -399,7 +472,15 @@ export async function POST(req: NextRequest) {
       );
       break;
     }
+    case "customer.subscription.deleted": {
+      await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      break;
+    }
   }
+
+  // Flush queued PostHog events after the response is sent. Webhook handlers
+  // terminate quickly enough that buffered events would otherwise be dropped.
+  after(() => phLogger.flush());
 
   // Mark as processed after successful handling
   try {

@@ -73,11 +73,20 @@ export interface StreamResult {
 export function createChatLogger(config: ChatLoggerConfig) {
   const builder = createWideEventBuilder(config.chatId, config.endpoint);
 
+  // Cache identity/context fields so emitChatError can fire discrete PostHog
+  // events (e.g. monthly_cap_hit) without forcing the call site to thread
+  // them through. Populated by the corresponding setX methods below.
+  let userId: string | undefined;
+  let subscription: string | undefined;
+  let mode: ChatMode | undefined;
+  let monthlyRemainingPercent: number | undefined;
+
   return {
     /**
      * Set initial request details
      */
     setRequestDetails(details: RequestDetails) {
+      mode = details.mode;
       builder.setRequestDetails(details);
     },
 
@@ -85,6 +94,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
      * Set user context
      */
     setUser(user: UserContext) {
+      userId = user.id;
+      subscription = user.subscription;
       builder.setUser(user);
     },
 
@@ -103,15 +114,14 @@ export function createChatLogger(config: ChatLoggerConfig) {
       context: RateLimitContext,
       extraUsageConfig?: ExtraUsageConfig,
     ) {
+      monthlyRemainingPercent = context.monthly
+        ? Math.round((context.monthly.remaining / context.monthly.limit) * 100)
+        : undefined;
       builder.setExtraUsage(extraUsageConfig);
       builder.setRateLimit({
         pointsDeducted: context.pointsDeducted,
         extraUsagePointsDeducted: context.extraUsagePointsDeducted,
-        monthlyRemainingPercent: context.monthly
-          ? Math.round(
-              (context.monthly.remaining / context.monthly.limit) * 100,
-            )
-          : undefined,
+        monthlyRemainingPercent,
         freeRemaining:
           context.subscription === "free" ? context.remaining : undefined,
       });
@@ -255,6 +265,31 @@ export function createChatLogger(config: ChatLoggerConfig) {
         retriable: error.type === "rate_limit",
       });
       logger.info(builder.build());
+
+      // Fire a discrete PostHog event when a paid user is blocked at the
+      // monthly cap. Used to size the cap-hit cohort and correlate against
+      // subscription_changed / subscription_cancelled events.
+      if (
+        error.type === "rate_limit" &&
+        subscription &&
+        subscription !== "free"
+      ) {
+        const capReason =
+          (error.metadata?.capReason as string | undefined) ?? "unknown";
+        phLogger.event("monthly_cap_hit", {
+          userId,
+          subscription,
+          mode,
+          cap_reason: capReason,
+          monthly_remaining_percent: monthlyRemainingPercent,
+          chat_id: config.chatId,
+          endpoint: config.endpoint,
+          $set: {
+            subscription_tier: subscription,
+            last_cap_hit_at: new Date().toISOString(),
+          },
+        });
+      }
     },
 
     /**
