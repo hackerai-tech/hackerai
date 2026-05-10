@@ -35,7 +35,10 @@ const ISO_639_3_TO_1: Record<string, SupportedLang> = {
 
 const FRANC_ALLOWLIST = Object.keys(ISO_639_3_TO_1);
 
-const MIN_LETTER_COUNT = 10;
+// franc-min is unreliable below ~20 letters — short English replies like
+// "yes its mine" misdetect (e.g. as French). 25 lines up with the
+// moderation minLength of 30 and gives franc enough signal.
+const MIN_LETTER_COUNT = 25;
 
 export function detectLang(text: string): SupportedLang {
   const letterCount = (text.match(/\p{L}/gu) ?? []).length;
