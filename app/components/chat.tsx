@@ -1060,7 +1060,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               hasMessages={hasMessages}
               hasActiveChat={isExistingChat}
               chatTitle={chatTitle}
-              id={routeChatId}
+              id={chatId}
               chatData={chatData}
               chatSidebarOpen={chatSidebarOpen}
               isExistingChat={isExistingChat}
