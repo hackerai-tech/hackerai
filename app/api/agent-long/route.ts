@@ -52,9 +52,14 @@ export async function POST(req: NextRequest) {
       rawSelectedModel,
     });
 
+    // Fetch existing chat to: (a) detect isNewChat for title generation,
+    // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
+    //     regenerate/auto-continue and does the ownership check instead.
+    const existingChat = temporary ? null : await getChatById({ id: chatId });
+    const isNewChat =
+      !temporary && !existingChat && !regenerate && !isAutoContinue;
+
     if (!temporary) {
-      const existingChat =
-        regenerate || isAutoContinue ? await getChatById({ id: chatId }) : null;
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
@@ -77,6 +82,8 @@ export async function POST(req: NextRequest) {
       userLocation,
       temporary,
       isAutoContinue,
+      regenerate,
+      isNewChat,
     });
 
     if (!temporary) {
