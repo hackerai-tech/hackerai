@@ -317,20 +317,25 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           </Tooltip>
                         </TooltipProvider>
                       )}
-                      {chatTitle || (hasActiveChat ? "\u00A0" : "New Chat")}
+                      {chatTitle || (isExistingChat ? " " : "New Chat")}
                     </>
                   )}
                 </span>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Share button - only show for existing chats that aren't temporary, hide on mobile */}
-              {isExistingChat && !temporaryChatsEnabled && id && chatTitle && (
+              {/* Share button - always in layout for non-temporary chats (desktop only) so its
+                  size is reserved from the start and doesn't shift the header when title loads */}
+              {!temporaryChatsEnabled && (
                 <button
                   aria-label="Share"
                   data-testid="share-chat-button"
                   onClick={() => setShowShareDialog(true)}
-                  className="relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden"
+                  className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
+                    isExistingChat && id && chatTitle
+                      ? ""
+                      : "invisible pointer-events-none"
+                  }`}
                 >
                   <div className="flex w-full items-center justify-center gap-1.5">
                     <Share className="h-4 w-4 -ms-0.5" />
