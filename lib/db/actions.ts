@@ -514,15 +514,18 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
+  expectedRunId,
 }: {
   chatId: string;
   triggerRunId: string | null;
+  expectedRunId?: string;
 }) {
   try {
     await convex.mutation(api.chats.setActiveTriggerRun, {
       serviceKey,
       chatId,
       triggerRunId,
+      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
     });
   } catch (error) {
     throw new ChatSDKError(

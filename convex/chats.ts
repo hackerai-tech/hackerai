@@ -901,6 +901,7 @@ export const setActiveTriggerRun = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     triggerRunId: v.union(v.string(), v.null()),
+    expectedRunId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -910,6 +911,12 @@ export const setActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return null;
+    if (
+      args.expectedRunId !== undefined &&
+      chat.active_trigger_run_id !== args.expectedRunId
+    ) {
+      return null;
+    }
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
     });

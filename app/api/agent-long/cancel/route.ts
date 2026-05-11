@@ -13,8 +13,14 @@ export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   try {
-    const { chatId }: { chatId: string } = await req.json();
-    if (!chatId) {
+    let body: { chatId?: string };
+    try {
+      body = await req.json();
+    } catch {
+      return new NextResponse("Invalid JSON body", { status: 400 });
+    }
+    const { chatId } = body;
+    if (!chatId || typeof chatId !== "string") {
       return new NextResponse("chatId required", { status: 400 });
     }
 
@@ -32,7 +38,11 @@ export async function POST(req: NextRequest) {
     }
 
     await runs.cancel(runId);
-    await setActiveTriggerRun({ chatId, triggerRunId: null });
+    await setActiveTriggerRun({
+      chatId,
+      triggerRunId: null,
+      expectedRunId: runId,
+    });
 
     return NextResponse.json({ canceled: true, runId });
   } catch (error) {
