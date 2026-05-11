@@ -92,7 +92,6 @@ import {
 import {
   captureToolCalls,
   createChatLogger,
-  shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import { phLogger } from "@/lib/posthog/server";
@@ -837,265 +836,320 @@ export const agentLongTask = task({
               generateMessageId: () => assistantMessageId,
               sendReasoning: true,
               onFinish: async ({ messages: finishedMessages, isAborted }) => {
-                // Retry with fallback if stream only produced step-start (incomplete response)
-                const lastAssistantMessage = finishedMessages
-                  .slice()
-                  .reverse()
-                  .find((m) => m.role === "assistant");
-                const hasOnlyStepStart =
-                  lastAssistantMessage?.parts?.length === 1 &&
-                  lastAssistantMessage.parts[0]?.type === "step-start";
-
-                if (
-                  hasOnlyStepStart &&
-                  !isRetryWithFallback &&
-                  !isAborted &&
-                  isAutoModel
-                ) {
-                  isRetryWithFallback = true;
-                  lastStepInputTokens = 0;
-                  stoppedDueToTokenExhaustion = false;
-                  stoppedDueToElapsedTimeout = false;
-                  stoppedDueToDoomLoop = false;
-                  stoppedDueToBudgetExhaustion = false;
-                  const fallbackStartTime = Date.now();
-                  usageTracker.resetModelLeg();
-                  const retryResult = await createStream(fallbackModel);
-                  const retryMessageId = generateId();
-
-                  writer.merge(
-                    retryResult.toUIMessageStream({
-                      generateMessageId: () => retryMessageId,
-                      sendReasoning: true,
-                      onFinish: async ({
-                        messages: retryMessages,
-                        isAborted: retryAborted,
-                      }) => {
-                        const fallbackCacheRead =
-                          usageTracker.cacheReadTokens - preFallbackCacheRead;
-                        const fallbackCacheWrite =
-                          usageTracker.cacheWriteTokens - preFallbackCacheWrite;
-                        const fallbackCacheTotal =
-                          fallbackCacheRead + fallbackCacheWrite;
-                        chatLogger?.setSandbox(sandboxManager.getSandboxInfo());
-                        chatLogger?.setCacheMetrics({
-                          cacheHitRate:
-                            fallbackCacheTotal > 0
-                              ? fallbackCacheRead / fallbackCacheTotal
-                              : null,
-                          cacheReadTokens: fallbackCacheRead,
-                          cacheWriteTokens: fallbackCacheWrite,
-                        });
-                        captureToolCalls({ posthog, chatLogger, userId, mode });
-                        shutdownPostHog(posthog);
-                        chatLogger?.emitSuccess({
-                          finishReason: streamFinishReason,
-                          wasAborted: retryAborted,
-                          wasPreemptiveTimeout: false,
-                          hadSummarization: hasSummarized(),
-                        });
-
-                        const generatedTitle = await titlePromise;
-                        if (!temporary) {
-                          const mergedTodos = getTodoManager().mergeWith(
-                            baseTodos,
-                            retryMessageId,
-                          );
-                          if (
-                            generatedTitle ||
-                            streamFinishReason ||
-                            mergedTodos.length > 0
-                          ) {
-                            await updateChat({
-                              chatId,
-                              title: generatedTitle,
-                              finishReason: streamFinishReason,
-                              todos: mergedTodos,
-                              defaultModelSlug: "agent-long",
-                              sandboxType:
-                                sandboxManager.getEffectivePreference(),
-                              selectedModel: selectedModelOverride,
-                            });
-                          } else {
-                            await prepareForNewStream({ chatId });
-                          }
-                          const accumulatedFiles =
-                            getFileAccumulator().getAll();
-                          const newFileIds = accumulatedFiles.map(
-                            (f) => f.fileId,
-                          );
-                          for (const msg of retryMessages) {
-                            if (msg.role !== "assistant") continue;
-                            const processed =
-                              summarizationTracker.processMessageForSave(msg);
-                            await saveMessage({
-                              chatId,
-                              userId,
-                              message: processed,
-                              extraFileIds: newFileIds,
-                              usage: streamUsage,
-                              model: responseModel,
-                              generationTimeMs: Date.now() - fallbackStartTime,
-                              finishReason: streamFinishReason,
-                            });
-                          }
-                          sendFileMetadataToStream(accumulatedFiles);
-                        }
-                        await deductAccumulatedUsage();
-                      },
-                    }),
-                  );
-                  return;
-                }
-
-                // User-initiated abort via trigger.dev cancel: clear finish reason
-                // so the client doesn't show spurious "going off course" messages.
-                if (
-                  isAborted &&
-                  triggerSignal.aborted &&
-                  !stoppedDueToBudgetExhaustion &&
-                  !stoppedDueToElapsedTimeout
-                ) {
-                  streamFinishReason = undefined;
-                }
-
-                chatLogger?.setSandbox(sandboxManager.getSandboxInfo());
-                chatLogger?.setCacheMetrics({
-                  cacheHitRate: usageTracker.cacheHitRate,
-                  cacheReadTokens: usageTracker.cacheReadTokens,
-                  cacheWriteTokens: usageTracker.cacheWriteTokens,
+                console.log("[agent-long] onFinish start", {
+                  chatId,
+                  isAborted,
+                  messageCount: finishedMessages.length,
+                  streamFinishReason,
+                  stoppedDueToTokenExhaustion,
+                  stoppedDueToElapsedTimeout,
+                  stoppedDueToDoomLoop,
+                  stoppedDueToBudgetExhaustion,
                 });
-                captureToolCalls({ posthog, chatLogger, userId, mode });
-                shutdownPostHog(posthog);
-                chatLogger?.emitSuccess({
-                  finishReason: streamFinishReason,
-                  wasAborted: isAborted,
-                  wasPreemptiveTimeout: stoppedDueToElapsedTimeout,
-                  hadSummarization: hasSummarized(),
-                });
+                try {
+                  // Retry with fallback if stream only produced step-start (incomplete response)
+                  const lastAssistantMessage = finishedMessages
+                    .slice()
+                    .reverse()
+                    .find((m) => m.role === "assistant");
+                  const hasOnlyStepStart =
+                    lastAssistantMessage?.parts?.length === 1 &&
+                    lastAssistantMessage.parts[0]?.type === "step-start";
 
-                const generatedTitle = await titlePromise;
-
-                if (!temporary) {
-                  const mergedTodos = getTodoManager().mergeWith(
-                    baseTodos,
-                    assistantMessageId,
-                  );
-                  const shouldPersist = regenerate
-                    ? true
-                    : Boolean(
-                        generatedTitle ||
-                        streamFinishReason ||
-                        mergedTodos.length > 0,
-                      );
-
-                  if (shouldPersist) {
-                    await updateChat({
-                      chatId,
-                      title: generatedTitle,
-                      finishReason: streamFinishReason,
-                      todos: mergedTodos,
-                      defaultModelSlug: "agent-long",
-                      sandboxType: sandboxManager.getEffectivePreference(),
-                      selectedModel: selectedModelOverride,
-                    });
-                  } else {
-                    await prepareForNewStream({ chatId });
-                  }
-
-                  const accumulatedFiles = getFileAccumulator().getAll();
-                  const newFileIds = accumulatedFiles.map((f) => f.fileId);
-
-                  let resolvedUsage: Record<string, unknown> | undefined =
-                    streamUsage;
-                  if (!resolvedUsage && isAborted) {
-                    try {
-                      resolvedUsage = (await result.usage) as Record<
-                        string,
-                        unknown
-                      >;
-                    } catch {
-                      // Usage unavailable on abort
-                    }
-                  }
-
-                  // On abort with no files/tools/usage, skip message save (per plan caveat:
-                  // no shouldSkipSave() equivalent — check for empty content instead).
-                  const hasIncompleteToolCalls = finishedMessages.some(
-                    (msg) =>
-                      msg.role === "assistant" &&
-                      msg.parts?.some(
-                        (p: {
-                          type?: string;
-                          state?: string;
-                          toolCallId?: string;
-                        }) =>
-                          p.type?.startsWith("tool-") &&
-                          p.state !== "output-available" &&
-                          p.toolCallId,
-                      ),
-                  );
                   if (
-                    isAborted &&
-                    !triggerSignal.aborted && // don't skip on trigger-initiated cancel
-                    newFileIds.length === 0 &&
-                    !hasIncompleteToolCalls &&
-                    !resolvedUsage
+                    hasOnlyStepStart &&
+                    !isRetryWithFallback &&
+                    !isAborted &&
+                    isAutoModel
                   ) {
-                    await deductAccumulatedUsage();
+                    isRetryWithFallback = true;
+                    lastStepInputTokens = 0;
+                    stoppedDueToTokenExhaustion = false;
+                    stoppedDueToElapsedTimeout = false;
+                    stoppedDueToDoomLoop = false;
+                    stoppedDueToBudgetExhaustion = false;
+                    const fallbackStartTime = Date.now();
+                    usageTracker.resetModelLeg();
+                    const retryResult = await createStream(fallbackModel);
+                    const retryMessageId = generateId();
+
+                    writer.merge(
+                      retryResult.toUIMessageStream({
+                        generateMessageId: () => retryMessageId,
+                        sendReasoning: true,
+                        onFinish: async ({
+                          messages: retryMessages,
+                          isAborted: retryAborted,
+                        }) => {
+                          const fallbackCacheRead =
+                            usageTracker.cacheReadTokens - preFallbackCacheRead;
+                          const fallbackCacheWrite =
+                            usageTracker.cacheWriteTokens -
+                            preFallbackCacheWrite;
+                          const fallbackCacheTotal =
+                            fallbackCacheRead + fallbackCacheWrite;
+                          chatLogger?.setSandbox(
+                            sandboxManager.getSandboxInfo(),
+                          );
+                          chatLogger?.setCacheMetrics({
+                            cacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
+                            cacheReadTokens: fallbackCacheRead,
+                            cacheWriteTokens: fallbackCacheWrite,
+                          });
+                          captureToolCalls({
+                            posthog,
+                            chatLogger,
+                            userId,
+                            mode,
+                          });
+                          posthog?.shutdown();
+                          chatLogger?.emitSuccess({
+                            finishReason: streamFinishReason,
+                            wasAborted: retryAborted,
+                            wasPreemptiveTimeout: false,
+                            hadSummarization: hasSummarized(),
+                          });
+
+                          const generatedTitle = await titlePromise;
+                          if (!temporary) {
+                            const mergedTodos = getTodoManager().mergeWith(
+                              baseTodos,
+                              retryMessageId,
+                            );
+                            if (
+                              generatedTitle ||
+                              streamFinishReason ||
+                              mergedTodos.length > 0
+                            ) {
+                              await updateChat({
+                                chatId,
+                                title: generatedTitle,
+                                finishReason: streamFinishReason,
+                                todos: mergedTodos,
+                                defaultModelSlug: "agent-long",
+                                sandboxType:
+                                  sandboxManager.getEffectivePreference(),
+                                selectedModel: selectedModelOverride,
+                              });
+                            } else {
+                              await prepareForNewStream({ chatId });
+                            }
+                            const accumulatedFiles =
+                              getFileAccumulator().getAll();
+                            const newFileIds = accumulatedFiles.map(
+                              (f) => f.fileId,
+                            );
+                            for (const msg of retryMessages) {
+                              if (msg.role !== "assistant") continue;
+                              const processed =
+                                summarizationTracker.processMessageForSave(msg);
+                              await saveMessage({
+                                chatId,
+                                userId,
+                                message: processed,
+                                extraFileIds: newFileIds,
+                                usage: streamUsage,
+                                model: responseModel,
+                                generationTimeMs:
+                                  Date.now() - fallbackStartTime,
+                                finishReason: streamFinishReason,
+                              });
+                            }
+                            sendFileMetadataToStream(accumulatedFiles);
+                          }
+                          await deductAccumulatedUsage();
+                        },
+                      }),
+                    );
                     return;
                   }
 
-                  for (const message of finishedMessages) {
-                    const processed =
-                      summarizationTracker.processMessageForSave(message);
-                    if (
-                      (!processed.parts || processed.parts.length === 0) &&
-                      newFileIds.length === 0
-                    ) {
-                      continue;
-                    }
-                    await saveMessage({
+                  // User-initiated abort via trigger.dev cancel: clear finish reason
+                  // so the client doesn't show spurious "going off course" messages.
+                  if (
+                    isAborted &&
+                    triggerSignal.aborted &&
+                    !stoppedDueToBudgetExhaustion &&
+                    !stoppedDueToElapsedTimeout
+                  ) {
+                    streamFinishReason = undefined;
+                  }
+
+                  console.log("[agent-long] onFinish: emitting telemetry", {
+                    chatId,
+                  });
+                  chatLogger?.setSandbox(sandboxManager.getSandboxInfo());
+                  chatLogger?.setCacheMetrics({
+                    cacheHitRate: usageTracker.cacheHitRate,
+                    cacheReadTokens: usageTracker.cacheReadTokens,
+                    cacheWriteTokens: usageTracker.cacheWriteTokens,
+                  });
+                  captureToolCalls({ posthog, chatLogger, userId, mode });
+                  posthog?.shutdown();
+                  chatLogger?.emitSuccess({
+                    finishReason: streamFinishReason,
+                    wasAborted: isAborted,
+                    wasPreemptiveTimeout: stoppedDueToElapsedTimeout,
+                    hadSummarization: hasSummarized(),
+                  });
+
+                  console.log("[agent-long] onFinish: awaiting title", {
+                    chatId,
+                  });
+                  const generatedTitle = await titlePromise;
+                  console.log(
+                    "[agent-long] onFinish: title done, calling updateChat/saveMessage",
+                    {
                       chatId,
-                      userId,
-                      message: processed,
-                      extraFileIds: newFileIds,
-                      model: responseModel || configuredModelId,
-                      generationTimeMs: Date.now() - streamStartTime,
-                      finishReason: streamFinishReason,
-                      usage: resolvedUsage ?? streamUsage,
-                      updateOnly:
-                        isAborted && !stoppedDueToElapsedTimeout
-                          ? true
-                          : undefined,
-                      isHidden:
-                        isAutoContinue && processed.role === "user"
-                          ? true
-                          : undefined,
+                      temporary,
+                      generatedTitle,
+                      streamFinishReason,
+                    },
+                  );
+
+                  if (!temporary) {
+                    const mergedTodos = getTodoManager().mergeWith(
+                      baseTodos,
+                      assistantMessageId,
+                    );
+                    const shouldPersist = regenerate
+                      ? true
+                      : Boolean(
+                          generatedTitle ||
+                          streamFinishReason ||
+                          mergedTodos.length > 0,
+                        );
+
+                    if (shouldPersist) {
+                      await updateChat({
+                        chatId,
+                        title: generatedTitle,
+                        finishReason: streamFinishReason,
+                        todos: mergedTodos,
+                        defaultModelSlug: "agent-long",
+                        sandboxType: sandboxManager.getEffectivePreference(),
+                        selectedModel: selectedModelOverride,
+                      });
+                    } else {
+                      await prepareForNewStream({ chatId });
+                    }
+
+                    const accumulatedFiles = getFileAccumulator().getAll();
+                    const newFileIds = accumulatedFiles.map((f) => f.fileId);
+
+                    let resolvedUsage: Record<string, unknown> | undefined =
+                      streamUsage;
+                    if (!resolvedUsage && isAborted) {
+                      try {
+                        resolvedUsage = (await result.usage) as Record<
+                          string,
+                          unknown
+                        >;
+                      } catch {
+                        // Usage unavailable on abort
+                      }
+                    }
+
+                    // On abort with no files/tools/usage, skip message save (per plan caveat:
+                    // no shouldSkipSave() equivalent — check for empty content instead).
+                    const hasIncompleteToolCalls = finishedMessages.some(
+                      (msg) =>
+                        msg.role === "assistant" &&
+                        msg.parts?.some(
+                          (p: {
+                            type?: string;
+                            state?: string;
+                            toolCallId?: string;
+                          }) =>
+                            p.type?.startsWith("tool-") &&
+                            p.state !== "output-available" &&
+                            p.toolCallId,
+                        ),
+                    );
+                    if (
+                      isAborted &&
+                      !triggerSignal.aborted && // don't skip on trigger-initiated cancel
+                      newFileIds.length === 0 &&
+                      !hasIncompleteToolCalls &&
+                      !resolvedUsage
+                    ) {
+                      await deductAccumulatedUsage();
+                      return;
+                    }
+
+                    console.log("[agent-long] onFinish: saving messages", {
+                      chatId,
+                      messageCount: finishedMessages.length,
+                      roles: finishedMessages.map((m) => m.role),
+                      newFileIds: newFileIds.length,
+                    });
+                    for (const message of finishedMessages) {
+                      const processed =
+                        summarizationTracker.processMessageForSave(message);
+                      if (
+                        (!processed.parts || processed.parts.length === 0) &&
+                        newFileIds.length === 0
+                      ) {
+                        continue;
+                      }
+                      await saveMessage({
+                        chatId,
+                        userId,
+                        message: processed,
+                        extraFileIds: newFileIds,
+                        model: responseModel || configuredModelId,
+                        generationTimeMs: Date.now() - streamStartTime,
+                        finishReason: streamFinishReason,
+                        usage: resolvedUsage ?? streamUsage,
+                        updateOnly:
+                          isAborted && !stoppedDueToElapsedTimeout
+                            ? true
+                            : undefined,
+                        isHidden:
+                          isAutoContinue && processed.role === "user"
+                            ? true
+                            : undefined,
+                      });
+                    }
+
+                    sendFileMetadataToStream(accumulatedFiles);
+                  }
+
+                  if (contextUsageOn) {
+                    writeContextUsage(writer, {
+                      usedTokens:
+                        ctxUsage.usedTokens + usageTracker.streamOutputTokens,
+                      maxTokens: ctxUsage.maxTokens,
                     });
                   }
 
-                  sendFileMetadataToStream(accumulatedFiles);
-                }
+                  if (
+                    (stoppedDueToTokenExhaustion ||
+                      stoppedDueToElapsedTimeout ||
+                      streamFinishReason === "tool-calls") &&
+                    !temporary
+                  ) {
+                    writeAutoContinue(writer);
+                  }
 
-                if (contextUsageOn) {
-                  writeContextUsage(writer, {
-                    usedTokens:
-                      ctxUsage.usedTokens + usageTracker.streamOutputTokens,
-                    maxTokens: ctxUsage.maxTokens,
+                  await deductAccumulatedUsage();
+                  console.log("[agent-long] onFinish complete", { chatId });
+                } catch (onFinishError) {
+                  console.error("[agent-long] onFinish threw", {
+                    chatId,
+                    error:
+                      onFinishError instanceof Error
+                        ? {
+                            message: onFinishError.message,
+                            stack: onFinishError.stack,
+                          }
+                        : String(onFinishError),
                   });
+                  throw onFinishError;
                 }
-
-                if (
-                  (stoppedDueToTokenExhaustion ||
-                    stoppedDueToElapsedTimeout ||
-                    streamFinishReason === "tool-calls") &&
-                  !temporary
-                ) {
-                  writeAutoContinue(writer);
-                }
-
-                await deductAccumulatedUsage();
               },
             }),
           );
