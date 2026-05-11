@@ -5,8 +5,11 @@ import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { handleInitialChatAndUserMessage } from "@/lib/db/actions";
-import { setActiveTriggerRun } from "@/lib/db/actions";
+import {
+  getChatById,
+  handleInitialChatAndUserMessage,
+  setActiveTriggerRun,
+} from "@/lib/db/actions";
 import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
 import { coerceSelectedModel } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
@@ -50,12 +53,14 @@ export async function POST(req: NextRequest) {
     });
 
     if (!temporary) {
+      const existingChat =
+        regenerate || isAutoContinue ? await getChatById({ id: chatId }) : null;
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
         messages,
         regenerate,
-        chat: null,
+        chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
       });
     }

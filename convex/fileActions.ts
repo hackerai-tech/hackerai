@@ -186,7 +186,7 @@ const validateTokenLimit = (
   if (totalTokens > maxTokens) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
     });
   }
 };
@@ -402,7 +402,7 @@ const processFileAuto = async (
         if (!skipTokenValidation && fallbackTokens > maxTokens) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
           });
         }
 

@@ -7,7 +7,6 @@ import {
   UIMessage,
 } from "ai";
 import type { Geo } from "@vercel/functions";
-import { v4 as uuidv4 } from "uuid";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
@@ -69,7 +68,7 @@ export const agentLongTask = task({
   id: "agent-long",
   // Long agent runs may legitimately need an hour of tool calls.
   maxDuration: 60 * 60,
-  run: async (payload: AgentLongPayload) => {
+  run: async (payload: AgentLongPayload, { ctx }) => {
     const {
       chatId,
       userId,
@@ -82,7 +81,9 @@ export const agentLongTask = task({
       temporary,
     } = payload;
 
-    const assistantMessageId = uuidv4();
+    // Stable across retries so a failed-then-retried run upserts the same
+    // message record rather than creating a duplicate.
+    const assistantMessageId = ctx.run.id;
     const mode = "agent" as const; // Long mode reuses the agent loop verbatim.
 
     const userCustomization = await getUserCustomization({ userId });

@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { getActiveTriggerRun, setActiveTriggerRun } from "@/lib/db/actions";
+import {
+  getChatById,
+  getActiveTriggerRun,
+  setActiveTriggerRun,
+} from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
 
 export const maxDuration = 30;
@@ -14,8 +18,12 @@ export async function POST(req: NextRequest) {
       return new NextResponse("chatId required", { status: 400 });
     }
 
-    // Auth so a user can't cancel another user's run.
-    await getUserIDAndPro(req);
+    const { userId } = await getUserIDAndPro(req);
+
+    const chat = await getChatById({ id: chatId });
+    if (!chat || chat.user_id !== userId) {
+      return new NextResponse("Forbidden", { status: 403 });
+    }
 
     const runId = await getActiveTriggerRun({ chatId });
     if (!runId) {

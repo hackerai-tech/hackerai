@@ -306,6 +306,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
+  const activeTriggerRunRef = useLatestRef(
+    (chatData as any)?.active_trigger_run_id as string | undefined,
+  );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -347,10 +350,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return fetchWithErrorHandlers(url, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
-        // Reconnect endpoint depends on which mode is in flight. The chatMode
-        // ref reflects the user's current selector, but if they navigated
-        // back during a long run, that's the same mode they kicked off in.
-        if (chatModeRef.current === "agent-long") {
+        // Use the agent-long resume endpoint when there is a stored trigger run
+        // OR the mode selector says agent-long. Checking the stored run id
+        // handles the case where a legacy "agent-long" chat was normalised to
+        // "agent" on load, which would otherwise break reconnect after reload.
+        if (
+          chatModeRef.current === "agent-long" ||
+          !!activeTriggerRunRef.current
+        ) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
           };

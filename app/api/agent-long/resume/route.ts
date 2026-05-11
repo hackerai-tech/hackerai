@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runs, auth } from "@trigger.dev/sdk";
+import { runs, auth, ApiError } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { getActiveTriggerRun, setActiveTriggerRun } from "@/lib/db/actions";
+import {
+  getChatById,
+  getActiveTriggerRun,
+  setActiveTriggerRun,
+} from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
 
 export const maxDuration = 30;
@@ -25,11 +29,16 @@ const TERMINAL_STATUSES = new Set([
 // terminal state — in which case we also clear the stale id.
 export async function GET(req: NextRequest) {
   try {
-    await getUserIDAndPro(req);
+    const { userId } = await getUserIDAndPro(req);
 
     const chatId = req.nextUrl.searchParams.get("chatId");
     if (!chatId) {
       return new NextResponse("chatId required", { status: 400 });
+    }
+
+    const chat = await getChatById({ id: chatId });
+    if (!chat || chat.user_id !== userId) {
+      return new NextResponse("Forbidden", { status: 403 });
     }
 
     const runId = await getActiveTriggerRun({ chatId });
@@ -41,10 +50,14 @@ export async function GET(req: NextRequest) {
     try {
       const run = await runs.retrieve(runId);
       runStatus = run.status;
-    } catch {
-      // Run id no longer exists on trigger.dev (e.g., older than retention).
-      // Treat as terminal so we self-heal the stored id.
-      runStatus = "EXPIRED";
+    } catch (err) {
+      // Only treat a 404 as "run gone" so we self-heal the stored id.
+      // Re-throw transient errors (network, 5xx) to leave the mapping intact.
+      if (err instanceof ApiError && err.status === 404) {
+        runStatus = "EXPIRED";
+      } else {
+        throw err;
+      }
     }
 
     if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
