@@ -42,6 +42,7 @@ import {
   setActiveTriggerRun,
   getMessagesByChatId,
   prepareForNewStream,
+  setConvexUrl,
 } from "@/lib/db/actions";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
@@ -104,6 +105,7 @@ export type AgentLongPayload = {
   isAutoContinue?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
+  convexUrl?: string;
 };
 
 export const agentLongTask = task({
@@ -136,6 +138,13 @@ export const agentLongTask = task({
   },
 
   run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal }) => {
+    // Point the Convex client at the correct per-branch preview deployment.
+    // NEXT_PUBLIC_CONVEX_URL in Trigger.dev's env vars only reflects the
+    // main deployment; preview branches each have their own Convex URL.
+    if (payload.convexUrl) {
+      setConvexUrl(payload.convexUrl);
+    }
+
     const {
       chatId,
       userId,

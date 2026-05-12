@@ -84,6 +84,7 @@ export async function POST(req: NextRequest) {
       isAutoContinue,
       regenerate,
       isNewChat,
+      convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
     });
 
     if (!temporary) {

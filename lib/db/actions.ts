@@ -22,8 +22,14 @@ import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+let convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL ?? "");
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+
+// Called by Trigger.dev tasks to point at the correct per-branch preview deployment.
+// Each task run is an isolated worker process so mutation is safe.
+export function setConvexUrl(url: string) {
+  convex = new ConvexHttpClient(url);
+}
 
 export async function getChatById({ id }: { id: string }) {
   try {
