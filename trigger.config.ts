@@ -21,7 +21,7 @@ export default defineConfig({
   build: {
     // Native modules pulled in by tool dependencies (PTY sessions, sharp via
     // file processing, etc.) must be installed at deploy time, not bundled.
-    external: ["node-pty", "sharp", "@e2b/code-interpreter"],
+    external: ["node-pty", "sharp", "@e2b/code-interpreter", "e2b"],
     extensions: [
       additionalPackages({
         packages: ["node-pty", "sharp"],
