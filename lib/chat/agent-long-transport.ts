@@ -27,6 +27,22 @@ const sseHeaders: HeadersInit = {
   Connection: "keep-alive",
 };
 
+const TERMINAL_RUN_STATUSES = new Set([
+  "COMPLETED",
+  "FAILED",
+  "CRASHED",
+  "CANCELED",
+  "SYSTEM_FAILURE",
+  "TIMED_OUT",
+  "EXPIRED",
+]);
+
+// Maximum time to wait for the first stream event. If the task fails before
+// registering the "ui" stream, withStreams() can hang indefinitely waiting
+// for a stream that never comes. This timeout guarantees the SSE connection
+// always closes and useChat exits streaming state.
+const STREAM_TIMEOUT_MS = 30_000;
+
 const buildSSEResponseFromRun = ({
   runId,
   publicAccessToken,
@@ -34,34 +50,40 @@ const buildSSEResponseFromRun = ({
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // Always close with an abort rather than controller.error() so useChat
+      // reliably exits streaming state even when subscription throws.
+      const sendAbortAndClose = () => {
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
+          );
+        } catch {
+          // controller may already be closed
+        }
+        try {
+          controller.close();
+        } catch {
+          // ignore if already closed
+        }
+      };
+
+      // Timeout guard: if the subscription hangs (e.g. task failed before
+      // registering the stream), force-close after STREAM_TIMEOUT_MS.
+      const timeoutId = setTimeout(sendAbortAndClose, STREAM_TIMEOUT_MS);
+
       try {
-        // Lazy import keeps the SDK out of the initial bundle for users who
-        // never select long mode.
         const { runs, auth } = await import("@trigger.dev/sdk");
 
-        // Scope the public token to this single subscription call rather
-        // than mutating the global SDK config (which would race across
-        // tabs / users).
         await auth.withAuth({ accessToken: publicAccessToken }, async () => {
           const subscription = runs
             .subscribeToRun(runId)
             .withStreams<{ ui: unknown }>();
 
-          const TERMINAL_RUN_STATUSES = new Set([
-            "COMPLETED",
-            "FAILED",
-            "CRASHED",
-            "CANCELED",
-            "SYSTEM_FAILURE",
-            "TIMED_OUT",
-            "EXPIRED",
-          ]);
-
           let sawTerminalChunk = false;
           for await (const part of subscription) {
             // Detect terminal run status (FAILED, CRASHED, etc.) and
-            // immediately synthesize an abort so useChat exits the
-            // streaming state without waiting for the subscription to close.
+            // immediately synthesize an abort so useChat exits streaming
+            // state without waiting for the subscription to fully close.
             if (
               typeof part === "object" &&
               part !== null &&
@@ -69,15 +91,7 @@ const buildSSEResponseFromRun = ({
               typeof (part as { status?: unknown }).status === "string" &&
               TERMINAL_RUN_STATUSES.has((part as { status: string }).status)
             ) {
-              if (!sawTerminalChunk) {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ type: "abort" })}\n\n`,
-                  ),
-                );
-                sawTerminalChunk = true;
-              }
-              break;
+              break; // fall through to !sawTerminalChunk → sendAbortAndClose
             }
 
             if (
@@ -91,12 +105,7 @@ const buildSSEResponseFromRun = ({
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
               );
-              // The AI SDK UI message stream emits `finish` (and `abort` /
-              // `error` on early exit) as the very last chunk. Once we've
-              // forwarded it, useChat has everything it needs — close the
-              // SSE response immediately instead of waiting for trigger.dev
-              // to round-trip the run's COMPLETED status, which is what
-              // would otherwise leave the UI stuck in the streaming state.
+              // finish / abort / error are the last chunks useChat needs.
               const chunkType = (chunk as { type?: string }).type;
               if (
                 chunkType === "finish" ||
@@ -108,18 +117,25 @@ const buildSSEResponseFromRun = ({
               }
             }
           }
+
           if (!sawTerminalChunk) {
-            // Subscription ended without a terminal chunk (run crashed,
-            // was canceled, or the stream was truncated). Synthesize an
-            // abort so useChat exits the streaming state cleanly.
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
-            );
+            // Subscription ended without a terminal UI chunk — run crashed,
+            // was canceled, or failed before registering the stream.
+            sendAbortAndClose();
           }
         });
-        controller.close();
-      } catch (error) {
-        controller.error(error);
+
+        // Normal close path (sawTerminalChunk = true exits loop above).
+        clearTimeout(timeoutId);
+        try {
+          controller.close();
+        } catch {
+          // already closed by sendAbortAndClose
+        }
+      } catch {
+        clearTimeout(timeoutId);
+        // Always send an abort on error so useChat cleans up.
+        sendAbortAndClose();
       }
     },
   });
