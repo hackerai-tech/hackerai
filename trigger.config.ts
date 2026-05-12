@@ -19,9 +19,11 @@ export default defineConfig({
   },
   dirs: ["./trigger"],
   build: {
-    // Native modules pulled in by tool dependencies (PTY sessions, sharp via
-    // file processing, etc.) must be installed at deploy time, not bundled.
-    external: ["node-pty", "sharp", "@e2b/code-interpreter", "e2b"],
+    // Native modules that must be installed at deploy time, not bundled.
+    // @e2b/code-interpreter is pure JS and intentionally NOT listed here —
+    // bundling it lets esbuild convert chalk's ESM to CJS inline, avoiding
+    // the ERR_REQUIRE_ESM crash that occurs when Docker installs it via npm.
+    external: ["node-pty", "sharp"],
     extensions: [
       additionalPackages({
         packages: ["node-pty", "sharp"],
