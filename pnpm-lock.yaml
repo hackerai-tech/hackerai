@@ -128,14 +128,14 @@ importers:
         specifier: ^1.2.2
         version: 1.2.2(@types/react@19.1.9)(react@19.2.5)
       '@trigger.dev/build':
-        specifier: ^4.4.5
-        version: 4.4.5(typescript@6.0.2)
+        specifier: 4.4.6
+        version: 4.4.6(typescript@6.0.2)
       '@trigger.dev/react-hooks':
-        specifier: ^4.4.5
-        version: 4.4.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: 4.4.6
+        version: 4.4.6(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@trigger.dev/sdk':
-        specifier: ^4.4.5
-        version: 4.4.5(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)
+        specifier: 4.4.6
+        version: 4.4.6(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)
       '@upstash/ratelimit':
         specifier: ^2.0.8
         version: 2.0.8(@upstash/redis@1.37.0)
@@ -3984,23 +3984,23 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@trigger.dev/build@4.4.5':
-    resolution: {integrity: sha512-45l8cv59JERkDrC5tADkKVDJriZjPtCtkAHVWvCZXRJMlm93Ao8deTHdtOf++TqdsqdG9Tk5cxhupY1COq4muA==}
+  '@trigger.dev/build@4.4.6':
+    resolution: {integrity: sha512-eHPPaeuFe9GZDndQzP4QUlxocyIJWYSx0FMx1GEiAnEVKwXWUqiW72DRFH7cr9v7IQnI9YbAWRuWvyMPHSVLwg==}
     engines: {node: '>=18.20.0'}
 
-  '@trigger.dev/core@4.4.5':
-    resolution: {integrity: sha512-VI4AjX5ivbm+E8RMdP2kjuo/ph8cTCQTNkZSx6UknnAxyu2mihqPbcYWl2tqZCGbbX/HIlzhEtM2NM3a01Juxg==}
+  '@trigger.dev/core@4.4.6':
+    resolution: {integrity: sha512-oXAjxBNVMiKXUKj1EnHUlO2ULujc4Dy8ad+H/59DYZGY1barkGVzrQAQIpBZo/kDygu7dKGT+F5yBkbIkYjAUw==}
     engines: {node: '>=18.20.0'}
 
-  '@trigger.dev/react-hooks@4.4.5':
-    resolution: {integrity: sha512-csY7tmfg2wNAt3MOLgJ5C94y9Cf0g0f3K8NN5etNiI/48wnKV8PgSrZpARSQczhBoB6pt/cwvB4kiLAG/aVQug==}
+  '@trigger.dev/react-hooks@4.4.6':
+    resolution: {integrity: sha512-Fr4nQIt3sAAPGTbBJfALHzMQUE0O4HPNVz4lRwIwCc3/HAfjPr8uza6e7iagDOWWs68PWtOOayDWQ5Nvbz6QOg==}
     engines: {node: '>=18.20.0'}
     peerDependencies:
       react: ^18.0 || ^19.0 || ^19.0.0-rc
       react-dom: ^18.0 || ^19.0 || ^19.0.0-rc
 
-  '@trigger.dev/sdk@4.4.5':
-    resolution: {integrity: sha512-iXjEWQQy+Dc7WDdjOtGLTlHIcVdcg00GUYL/hTr5FwMlY/Aswvfe0Snfn+7XECtls2tgZTPJ+rnTP4mo77o5eg==}
+  '@trigger.dev/sdk@4.4.6':
+    resolution: {integrity: sha512-FAC5/oES4dClLWlLGvnuNUlhfzWXDA6ResxB7B6/2UohSdxn3yWt9uOtjEL434JiN0xNUCiSAN8KTP1azpOgBg==}
     engines: {node: '>=18.20.0'}
     peerDependencies:
       ai: ^4.2.0 || ^5.0.0 || ^6.0.0
@@ -12433,10 +12433,10 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@trigger.dev/build@4.4.5(typescript@6.0.2)':
+  '@trigger.dev/build@4.4.6(typescript@6.0.2)':
     dependencies:
       '@prisma/config': 6.19.3
-      '@trigger.dev/core': 4.4.5
+      '@trigger.dev/core': 4.4.6
       mlly: 1.8.0
       pkg-types: 1.3.1
       resolve: 1.22.11
@@ -12449,7 +12449,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@trigger.dev/core@4.4.5':
+  '@trigger.dev/core@4.4.6':
     dependencies:
       '@bugsnag/cuid': 3.2.2
       '@electric-sql/client': 1.0.14
@@ -12491,9 +12491,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@trigger.dev/react-hooks@4.4.5(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@trigger.dev/react-hooks@4.4.6(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
-      '@trigger.dev/core': 4.4.5
+      '@trigger.dev/core': 4.4.6
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
       swr: 2.3.5(react@19.2.5)
@@ -12502,11 +12502,11 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@trigger.dev/sdk@4.4.5(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)':
+  '@trigger.dev/sdk@4.4.6(ai@6.0.174(patch_hash=c7b5f3934179d2dbc98a107d740f2509ffcefb86c9856da9e49eed9f56c83455)(zod@4.4.3))(zod@4.4.3)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/semantic-conventions': 1.36.0
-      '@trigger.dev/core': 4.4.5
+      '@trigger.dev/core': 4.4.6
       chalk: 5.6.2
       cronstrue: 2.59.0
       debug: 4.4.3
@@ -14948,7 +14948,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.15.2)
+      retry-axios: 2.6.0(axios@1.15.2(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -17149,7 +17149,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.15.2):
+  retry-axios@2.6.0(axios@1.15.2(debug@4.4.3)):
     dependencies:
       axios: 1.15.2(debug@4.4.3)
 
