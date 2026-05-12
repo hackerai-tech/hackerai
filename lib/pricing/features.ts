@@ -50,7 +50,6 @@ export const proFeatures: Array<PricingFeature> = [
   { icon: Check, text: "Extended limits" },
   { icon: Check, text: "File uploads" },
   { icon: Check, text: "Cloud agents" },
-  { icon: Check, text: "Custom model selection" },
   { icon: Check, text: "Maximum context window" },
 ];
 

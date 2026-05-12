@@ -66,7 +66,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
 }) => {
   return (
     <div
-      className={`border border-border md:min-h-[30rem] md:max-w-96 md:rounded-2xl relative flex flex-1 flex-col justify-center gap-4 rounded-xl px-6 py-6 text-sm bg-background ${customClassName}`}
+      className={`border border-border md:min-h-[30rem] md:max-w-96 md:rounded-2xl relative flex w-full sm:w-[calc(50%-12px)] lg:flex-1 flex-col justify-center gap-4 rounded-xl px-6 py-6 text-sm bg-background ${customClassName}`}
     >
       <div className="relative flex flex-col mt-0">
         <div className="flex flex-col gap-5">
@@ -403,7 +403,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             />
           </div>
 
-          <div className="flex justify-center gap-6 flex-col md:flex-row pb-6">
+          <div className="flex flex-wrap justify-center gap-6 pb-6 px-6">
             {showTeamPlan ? (
               <>
                 {/* Show Free Plan if no subscription, Pro Plan if pro subscription */}
@@ -453,23 +453,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
               </>
             ) : (
               <>
-                {/* Free Plan - only show if user doesn't have a subscription */}
-                {!hasSubscription && (
-                  <PlanCard
-                    planName="Free"
-                    price={0}
-                    description="Try HackerAI"
-                    features={freeFeatures}
-                    buttonText={freeButtonConfig.text}
-                    buttonVariant={freeButtonConfig.variant}
-                    buttonClassName={freeButtonConfig.className}
-                    onButtonClick={freeButtonConfig.onClick}
-                    isButtonDisabled={freeButtonConfig.disabled}
-                    featureHeader={PLAN_HEADERS.free}
-                  />
-                )}
-
-                {/* Pro Plan */}
+                {/* Pro Plan — first on mobile, second on lg+ */}
                 <PlanCard
                   planName="Pro"
                   price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
@@ -482,7 +466,25 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   isButtonDisabled={proButtonConfig.disabled}
                   isButtonLoading={proButtonConfig.loading}
                   featureHeader={PLAN_HEADERS.pro}
+                  customClassName="sm:order-2"
                 />
+
+                {/* Free Plan — second on mobile, first on lg+ */}
+                {!hasSubscription && (
+                  <PlanCard
+                    planName="Free"
+                    price={0}
+                    description="Try HackerAI"
+                    features={freeFeatures}
+                    buttonText={freeButtonConfig.text}
+                    buttonVariant={freeButtonConfig.variant}
+                    buttonClassName={freeButtonConfig.className}
+                    onButtonClick={freeButtonConfig.onClick}
+                    isButtonDisabled={freeButtonConfig.disabled}
+                    featureHeader={PLAN_HEADERS.free}
+                    customClassName="sm:order-1"
+                  />
+                )}
 
                 {/* Pro+ Plan */}
                 <PlanCard
@@ -500,7 +502,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   onButtonClick={proPlusButtonConfig.onClick}
                   isButtonDisabled={proPlusButtonConfig.disabled}
                   isButtonLoading={proPlusButtonConfig.loading}
-                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777] sm:order-3"
                   badgeText="RECOMMENDED"
                   featureHeader={PLAN_HEADERS["pro-plus"]}
                 />
@@ -520,6 +522,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   isButtonLoading={ultraButtonConfig.loading}
                   onButtonClick={ultraButtonConfig.onClick}
                   featureHeader={PLAN_HEADERS.ultra}
+                  customClassName="sm:order-4"
                 />
               </>
             )}
