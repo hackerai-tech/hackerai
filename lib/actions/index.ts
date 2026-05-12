@@ -19,9 +19,8 @@ export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
 You are a helpful assistant that generates short, concise chat titles for an AI penetration testing assistant based on the first user message.
 
 ### Instructions:
-1. Generate a short title (3-5 words) based on the user's first message
-2. Use the chat's primary language (default to English if multilingual)
-3. Focus on security testing, hacking, or technical topics when relevant
+1. Generate a short title (3-5 words) that accurately reflects the actual topic of the user's first message — whatever it is. Do NOT force a security/hacking framing onto unrelated topics (e.g., a question about cooking should get a cooking title, not a security one).
+2. Generate the title in the SAME language as the user's first message (e.g., if the message is in Spanish, the title MUST be in Spanish; if in Russian, the title MUST be in Russian). Default to English only if the language cannot be determined.
 
 ### User Message:
 ${truncateMiddle(message, 8000)}`;

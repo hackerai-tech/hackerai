@@ -242,6 +242,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     Map<string, FileDetails[]>
   >(new Map());
 
+  // Title streamed mid-response so the header updates before Convex persists it
+  const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
+
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
@@ -266,6 +269,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
+    setStreamedTitle(null);
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
@@ -304,8 +308,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     needsConnectionValidation ? undefined : "skip",
   );
 
-  // Derive title from Convex (single source of truth)
-  const chatTitle = chatData?.title ?? null;
+  // Prefer the mid-stream title — the server seeds chatData.title with the
+  // user's first message before generation completes, which would otherwise
+  // flicker into the header on abort.
+  const chatTitle = streamedTitle ?? chatData?.title ?? null;
   const activeTriggerRunRef = useLatestRef(
     (chatData as any)?.active_trigger_run_id as string | undefined,
   );
@@ -492,6 +498,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           dispatchStreaming({ type: "SET_CONTEXT_USAGE", payload: usage });
           break;
         }
+        case "data-title": {
+          const titleData = dataPart.data as { chatTitle?: string };
+          if (titleData?.chatTitle) {
+            setStreamedTitle(titleData.chatTitle);
+          }
+          break;
+        }
         case "data-sandbox-fallback": {
           const fallbackData = dataPart.data as {
             occurred: boolean;
@@ -598,6 +611,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsExistingChat(false);
       wasNewChatRef.current = true;
       setTodos([]);
+      setStreamedTitle(null);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       dispatchStreaming({
@@ -1094,7 +1108,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               hasMessages={hasMessages}
               hasActiveChat={isExistingChat}
               chatTitle={chatTitle}
-              id={routeChatId}
+              id={chatId}
               chatData={chatData}
               chatSidebarOpen={chatSidebarOpen}
               isExistingChat={isExistingChat}

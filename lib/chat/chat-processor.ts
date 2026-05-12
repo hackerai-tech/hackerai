@@ -86,10 +86,12 @@ function hasImageOrPdfAttachment(messages: UIMessage[]): boolean {
 }
 
 /**
- * Adds authorization message to the last user message
- * @param messages - Array of messages to process
+ * Adds authorization message to the last user message.
+ * Language is detected from `moderationText` — the same combined text scored
+ * by moderation — rather than the last message alone, since a short reply
+ * like "yes its mine" doesn't carry enough signal for reliable detection.
  */
-export function addAuthMessage(messages: UIMessage[]) {
+export function addAuthMessage(messages: UIMessage[], moderationText: string) {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
       const message = messages[i];
@@ -102,8 +104,7 @@ export function addAuthMessage(messages: UIMessage[]) {
         (part: any) => part.type === "text",
       ) as Array<{ type: "text"; text: string }>;
 
-      const combinedText = textParts.map((p) => p.text).join(" ");
-      const lang = detectLang(combinedText);
+      const lang = detectLang(moderationText);
       const disclaimer = AUTH_DISCLAIMER[lang];
 
       const firstTextPart = textParts[0];
@@ -596,7 +597,7 @@ export async function processChatMessages({
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages);
+    addAuthMessage(cleanedMessages, moderationResult.moderationText);
   }
 
   return {

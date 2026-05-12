@@ -1,4 +1,4 @@
-import { franc } from "franc-min";
+import { francAll } from "franc-min";
 
 export type SupportedLang =
   | "en"
@@ -35,12 +35,28 @@ const ISO_639_3_TO_1: Record<string, SupportedLang> = {
 
 const FRANC_ALLOWLIST = Object.keys(ISO_639_3_TO_1);
 
-const MIN_LETTER_COUNT = 10;
+// franc-min is unreliable below ~20 letters — short English replies like
+// "yes its mine" misdetect (e.g. as French). 25 lines up with the
+// moderation minLength of 30 and gives franc enough signal.
+const MIN_LETTER_COUNT = 25;
+
+// francAll normalizes the top score to 1.0; runner-ups scale down. A small
+// gap means the text is ambiguous (proper names like "Philip" or
+// "Vladimir" score close on multiple languages' trigrams). When the top
+// match doesn't clearly beat English, prefer English — it's the safe
+// fallback and most users write in it.
+const MIN_CONFIDENCE_MARGIN = 0.05;
 
 export function detectLang(text: string): SupportedLang {
   const letterCount = (text.match(/\p{L}/gu) ?? []).length;
   if (letterCount < MIN_LETTER_COUNT) return "en";
 
-  const code = franc(text, { only: FRANC_ALLOWLIST });
-  return ISO_639_3_TO_1[code] ?? "en";
+  const scores = francAll(text, { only: FRANC_ALLOWLIST });
+  const top = scores[0];
+  if (!top || top[0] === "und") return "en";
+
+  const eng = scores.find(([code]) => code === "eng");
+  if (eng && 1 - eng[1] < MIN_CONFIDENCE_MARGIN) return "en";
+
+  return ISO_639_3_TO_1[top[0]] ?? "en";
 }

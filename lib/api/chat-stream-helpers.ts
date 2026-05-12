@@ -453,7 +453,7 @@ export class SummarizationTracker {
  * with the registry.
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "model-opus-4.7": ["model-kimi-k2.6"],
+  "model-opus-4.6": ["model-kimi-k2.6"],
   "model-sonnet-4.6": ["model-kimi-k2.6"],
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
@@ -706,11 +706,6 @@ export async function refreshNotesInModelMessages(
       subscription: opts.subscription,
     });
     const newNotesContent = generateNotesSection(notes);
-
-    logger.warn("Notes refreshed in model messages (prepareStep)", {
-      userId: opts.userId,
-      noteCount: notes?.length ?? 0,
-    });
 
     // First pass: try to replace (or remove) an existing notes block.
     // replaceNotesBlock handles empty newNotesContent by removing the block.

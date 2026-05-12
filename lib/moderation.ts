@@ -6,11 +6,11 @@ const MODERATION_TOKEN_LIMIT = 512;
 export async function getModerationResult(
   messages: any[],
   isPaidUser: boolean,
-): Promise<{ shouldUncensorResponse: boolean }> {
+): Promise<{ shouldUncensorResponse: boolean; moderationText: string }> {
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
   if (!openaiApiKey) {
-    return { shouldUncensorResponse: false };
+    return { shouldUncensorResponse: false, moderationText: "" };
   }
 
   const openai = new OpenAI({ apiKey: openaiApiKey });
@@ -19,7 +19,7 @@ export async function getModerationResult(
   const targetMessage = findTargetMessage(messages, 30);
 
   if (!targetMessage) {
-    return { shouldUncensorResponse: false };
+    return { shouldUncensorResponse: false, moderationText: "" };
   }
 
   const input = prepareInput(targetMessage);
@@ -33,7 +33,7 @@ export async function getModerationResult(
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
       console.error("Moderation API returned no results");
-      return { shouldUncensorResponse: false };
+      return { shouldUncensorResponse: false, moderationText: input };
     }
 
     const result = moderation.results[0];
@@ -55,10 +55,10 @@ export async function getModerationResult(
     //   shouldUncensorResponse,
     // );
 
-    return { shouldUncensorResponse };
+    return { shouldUncensorResponse, moderationText: input };
   } catch (_error: any) {
     // console.error('Error in getModerationResult:', error);
-    return { shouldUncensorResponse: false };
+    return { shouldUncensorResponse: false, moderationText: "" };
   }
 }
 
