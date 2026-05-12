@@ -156,6 +156,12 @@ export const agentLongTask = task({
     const assistantMessageId = ctx.run.id;
     const mode = "agent" as const;
 
+    // Capture task start time here, before any async setup, so the
+    // elapsedTimeExceeds stop condition counts from task launch rather
+    // than stream launch. Without this, slow setup (>2 min) would cause
+    // the 58-min stop to fire after trigger.dev's 60-min hard SIGKILL.
+    const taskStartTime = Date.now();
+
     // Tag for dashboard filtering; add subscription tier for paid-only queries.
     await tags.add([`user_${userId}`, `chat_${chatId}`]);
     if (subscription !== "free") await tags.add(`sub_${subscription}`);
@@ -458,7 +464,9 @@ export const agentLongTask = task({
             ? new BudgetMonitor(budgetSnapshot, writer, subscription)
             : null;
 
-          const streamStartTime = Date.now();
+          // Use task start time (not stream start time) so the 58-min stop
+          // condition always fires 2 min before the 60-min hard SIGKILL.
+          const streamStartTime = taskStartTime;
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
 
