@@ -61,7 +61,11 @@ export async function GET(req: NextRequest) {
     }
 
     if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
-      await setActiveTriggerRun({ chatId, triggerRunId: null });
+      await setActiveTriggerRun({
+        chatId,
+        triggerRunId: null,
+        expectedRunId: runId,
+      });
       return new NextResponse(null, { status: 204 });
     }
 
