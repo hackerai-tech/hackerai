@@ -1,4 +1,5 @@
-import { task, streams } from "@trigger.dev/sdk";
+import { task, tags, metadata } from "@trigger.dev/sdk";
+import { agentUiStream } from "./streams";
 import { createUIMessageStream, generateId, UIMessage } from "ai";
 import type { Geo } from "@vercel/functions";
 import { countTokens } from "gpt-tokenizer";
@@ -107,8 +108,13 @@ export type AgentLongPayload = {
 
 export const agentLongTask = task({
   id: "agent-long",
-  // Long agent runs may legitimately need an hour of tool calls.
   maxDuration: 60 * 60,
+  // Streaming tasks must not retry: a retry emits new chunks into the same
+  // "ui" stream the client already subscribed to, producing duplicate output.
+  // Provider errors are handled internally via the fallback-model path.
+  retry: { maxAttempts: 1 },
+  // Explicit preset for a 60-min run managing PTY sessions + sandbox.
+  machine: { preset: "medium-1x" },
 
   onCancel: async ({
     ctx,
@@ -149,6 +155,13 @@ export const agentLongTask = task({
     // message record rather than creating a duplicate.
     const assistantMessageId = ctx.run.id;
     const mode = "agent" as const;
+
+    // Tag for dashboard filtering; add subscription tier for paid-only queries.
+    await tags.add([`user_${userId}`, `chat_${chatId}`]);
+    if (subscription !== "free") await tags.add(`sub_${subscription}`);
+
+    // Lifecycle metadata so the dashboard shows progress for long runs.
+    metadata.set("status", "setup").set("chatId", chatId);
 
     const usageRefundTracker = new UsageRefundTracker();
     usageRefundTracker.setUser(userId, subscription);
@@ -841,11 +854,14 @@ export const agentLongTask = task({
         },
       });
 
-      const { waitUntilComplete } = streams.pipe("ui", uiStream);
+      metadata.set("status", "streaming").set("model", selectedModel);
+      const { waitUntilComplete } = agentUiStream.pipe(uiStream);
       await waitUntilComplete();
 
+      metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      metadata.set("status", "failed");
       await usageRefundTracker.refund().catch(() => {});
       chatLogger?.emitUnexpectedError(error);
       await ptySessionManager

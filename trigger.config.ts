@@ -8,7 +8,7 @@ export default defineConfig({
   // Up to one hour per agent-long run.
   maxDuration: 3600,
   retries: {
-    enabledInDev: true,
+    enabledInDev: false,
     default: {
       maxAttempts: 3,
       minTimeoutInMs: 1000,

@@ -1,4 +1,5 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
+import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
 
 /**
  * `fetch` adapter for "agent-long" mode used by the chat transport.
@@ -52,7 +53,7 @@ const buildSSEResponseFromRun = ({
               typeof part === "object" &&
               part !== null &&
               "type" in part &&
-              (part as { type: string }).type === "ui"
+              (part as { type: string }).type === AGENT_UI_STREAM_ID
             ) {
               const chunk = (part as { chunk?: unknown }).chunk;
               if (chunk === undefined) continue;
