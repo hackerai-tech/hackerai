@@ -994,7 +994,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const {
     handleSubmit,
     handleStop,
-    isStopping,
     handleRegenerate,
     handleRetry,
     handleEditMessage,
@@ -1188,7 +1187,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                           <ChatInput
                             onSubmit={handleSubmit}
                             onStop={handleStop}
-                            isStopping={isStopping}
                             onSendNow={handleSendNow}
                             status={status}
                             isCentered={true}

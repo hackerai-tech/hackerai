@@ -28,7 +28,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
-  isStopping?: boolean;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
@@ -49,7 +48,6 @@ interface ChatInputProps {
 export const ChatInput = ({
   onSubmit,
   onStop,
-  isStopping = false,
   onSendNow,
   status,
   isCentered = false,
@@ -237,7 +235,6 @@ export const ChatInput = ({
             isGenerating={isGenerating}
             hideStop={hideStop}
             onStop={onStop}
-            isStopping={isStopping}
             onSubmit={handleSubmit}
             status={status}
             isUploadingFiles={isUploadingFiles}

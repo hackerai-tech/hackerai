@@ -46,7 +46,6 @@ export interface SubmitStopButtonProps {
   isGenerating: boolean;
   hideStop: boolean;
   onStop: () => void;
-  isStopping?: boolean;
   onSubmit: (e: React.FormEvent) => void;
   status: ChatStatus;
   isUploadingFiles: boolean;
@@ -59,7 +58,6 @@ export function SubmitStopButton({
   isGenerating,
   hideStop,
   onStop,
-  isStopping = false,
   onSubmit,
   status,
   isUploadingFiles,
@@ -93,7 +91,6 @@ export function SubmitStopButton({
             <Button
               type="button"
               onClick={onStop}
-              disabled={isStopping}
               variant="ghost"
               className={`${BASE_BUTTON_CLASSES} ${getStopButtonVariantClasses(chatMode)}`}
               aria-label="Stop generation"
