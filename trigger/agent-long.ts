@@ -119,7 +119,10 @@ export const agentLongTask = task({
   }) => {
     const cleanup = runCleanupMap.get(ctx.run.id);
     if (!cleanup) return;
-    await Promise.race([runPromise, new Promise((r) => setTimeout(r, 5000))]);
+    await Promise.race([
+      runPromise.catch(() => undefined),
+      new Promise((r) => setTimeout(r, 5000)),
+    ]);
     await cleanup.usageRefundTracker.refund().catch(() => {});
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await phLogger.flush().catch(() => {});
@@ -856,7 +859,11 @@ export const agentLongTask = task({
       runCleanupMap.delete(ctx.run.id);
       if (!payload.temporary) {
         try {
-          await setActiveTriggerRun({ chatId, triggerRunId: null });
+          await setActiveTriggerRun({
+            chatId,
+            triggerRunId: null,
+            expectedRunId: ctx.run.id,
+          });
         } catch (error) {
           console.error(
             "[agent-long] failed to clear active_trigger_run_id:",
