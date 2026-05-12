@@ -855,6 +855,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Comparing parts.length catches content updates where the ID stays the same.
     const current = messagesRef.current;
+
+    // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
+    // task) hasn't finished persisting the generated messages yet. Once it catches
+    // up, Convex will push the full set and the normal sync below will apply.
+    if (uiMessages.length < current.length) {
+      return;
+    }
+
     if (
       current.length === uiMessages.length &&
       current.every(
