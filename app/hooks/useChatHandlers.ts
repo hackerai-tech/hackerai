@@ -1,4 +1,4 @@
-import { RefObject, useEffect, useRef } from "react";
+import { RefObject, useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -302,7 +302,12 @@ export const useChatHandlers = ({
     }
   };
 
+  const [isStopping, setIsStopping] = useState(false);
+
   const handleStop = async () => {
+    if (isStopping) return;
+    setIsStopping(true);
+
     setIsAutoResuming(false);
 
     // Set manual stop flag to prevent auto-processing of queue
@@ -330,6 +335,8 @@ export const useChatHandlers = ({
       }
     } catch (error) {
       console.error("Error in handleStop:", error);
+    } finally {
+      setIsStopping(false);
     }
   };
 
@@ -680,6 +687,7 @@ export const useChatHandlers = ({
   return {
     handleSubmit,
     handleStop,
+    isStopping,
     handleRegenerate,
     handleRetry,
     handleEditMessage,
