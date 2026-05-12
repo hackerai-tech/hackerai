@@ -1,8 +1,13 @@
+import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk";
 import { additionalPackages } from "@trigger.dev/build/extensions/core";
 
+if (process.env.NODE_ENV !== "production") {
+  config({ path: ".env.local" });
+}
+
 export default defineConfig({
-  project: "proj_fixirhycbcnfdpicejfb",
+  project: process.env.TRIGGER_PROJECT_ID!,
   runtime: "node",
   logLevel: "log",
   // Up to one hour per agent-long run.
