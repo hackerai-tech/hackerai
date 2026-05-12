@@ -194,6 +194,14 @@ export const agentLongTask = task({
 
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
+      console.log(
+        "[agent-long] convex_url=",
+        process.env.NEXT_PUBLIC_CONVEX_URL,
+        "chatId=",
+        chatId,
+        "userId=",
+        userId,
+      );
       const fetched = await getMessagesByChatId({
         chatId,
         userId,
