@@ -846,9 +846,11 @@ export const agentLongTask = task({
                   });
                 }
 
+                // Don't auto-continue on elapsed timeout — a 58-min run is large enough
+                // that the user should explicitly decide whether to continue rather than
+                // silently chaining up to 5 more hour-long runs.
                 if (
                   (state.stoppedDueToTokenExhaustion ||
-                    state.stoppedDueToElapsedTimeout ||
                     state.streamFinishReason === "tool-calls") &&
                   !temporary
                 ) {
