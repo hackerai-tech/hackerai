@@ -707,11 +707,6 @@ export async function refreshNotesInModelMessages(
     });
     const newNotesContent = generateNotesSection(notes);
 
-    logger.warn("Notes refreshed in model messages (prepareStep)", {
-      userId: opts.userId,
-      noteCount: notes?.length ?? 0,
-    });
-
     // First pass: try to replace (or remove) an existing notes block.
     // replaceNotesBlock handles empty newNotesContent by removing the block.
     const result = [...messages];
