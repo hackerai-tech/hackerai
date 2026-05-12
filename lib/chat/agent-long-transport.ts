@@ -47,8 +47,39 @@ const buildSSEResponseFromRun = ({
             .subscribeToRun(runId)
             .withStreams<{ ui: unknown }>();
 
+          const TERMINAL_RUN_STATUSES = new Set([
+            "COMPLETED",
+            "FAILED",
+            "CRASHED",
+            "CANCELED",
+            "SYSTEM_FAILURE",
+            "TIMED_OUT",
+            "EXPIRED",
+          ]);
+
           let sawTerminalChunk = false;
           for await (const part of subscription) {
+            // Detect terminal run status (FAILED, CRASHED, etc.) and
+            // immediately synthesize an abort so useChat exits the
+            // streaming state without waiting for the subscription to close.
+            if (
+              typeof part === "object" &&
+              part !== null &&
+              "status" in part &&
+              typeof (part as { status?: unknown }).status === "string" &&
+              TERMINAL_RUN_STATUSES.has((part as { status: string }).status)
+            ) {
+              if (!sawTerminalChunk) {
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify({ type: "abort" })}\n\n`,
+                  ),
+                );
+                sawTerminalChunk = true;
+              }
+              break;
+            }
+
             if (
               typeof part === "object" &&
               part !== null &&

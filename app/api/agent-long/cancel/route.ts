@@ -37,7 +37,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ canceled: false, reason: "no_active_run" });
     }
 
-    await runs.cancel(runId);
+    // Best-effort cancel — the run may have already failed/completed.
+    // Either way we want to clear the stored id so the UI unblocks.
+    try {
+      await runs.cancel(runId);
+    } catch {
+      // Ignore: run is already in a terminal state.
+    }
     await setActiveTriggerRun({
       chatId,
       triggerRunId: null,
