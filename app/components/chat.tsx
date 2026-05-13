@@ -351,6 +351,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
           return fetchAgentLongStream(init);
         }
+        // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
+        // load — prepareReconnectToStreamRequest already pointed at the resume
+        // URL, so route based on the URL (not on ref state) to be resilient to
+        // stale refs.
+        if (
+          init?.method === "GET" &&
+          (typeof input === "string" ? input : input.toString()).includes(
+            "/api/agent-long/resume",
+          )
+        ) {
+          return resumeAgentLongStream(
+            typeof input === "string" ? input : input.toString(),
+            init,
+          );
+        }
         const url =
           input === "/api/chat" && mode === "agent" ? "/api/agent" : input;
         return fetchWithErrorHandlers(url, init);
@@ -360,10 +375,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         // OR the mode selector says agent-long. Checking the stored run id
         // handles the case where a legacy "agent-long" chat was normalised to
         // "agent" on load, which would otherwise break reconnect after reload.
-        if (
-          chatModeRef.current === "agent-long" ||
-          !!activeTriggerRunRef.current
-        ) {
+        const mode = chatModeRef.current;
+        if (mode === "agent-long" || !!activeTriggerRunRef.current) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
           };
@@ -870,6 +883,25 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           m.id === uiMessages[i].id &&
           (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
       )
+    ) {
+      return;
+    }
+
+    // Don't let Convex reorder messages that already exist locally. The trigger
+    // task's onFinish saves the assistant message after the stream finishes, so
+    // the next user message may land in Convex first (_creationTime ordering).
+    // Local ordering is authoritative; only accept additive/content updates.
+    const currentIdSet = new Set(current.map((m) => m.id));
+    const uiIdSet = new Set(uiMessages.map((m) => m.id));
+    const uiSharedOrder = uiMessages
+      .map((m) => m.id)
+      .filter((id) => currentIdSet.has(id));
+    const currentSharedOrder = current
+      .map((m) => m.id)
+      .filter((id) => uiIdSet.has(id));
+    if (
+      uiSharedOrder.length > 0 &&
+      uiSharedOrder.join("\0") !== currentSharedOrder.join("\0")
     ) {
       return;
     }
