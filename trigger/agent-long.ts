@@ -24,7 +24,6 @@ import {
   isProviderApiError,
   injectNotesIntoMessages,
 } from "@/lib/api/chat-stream-helpers";
-import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
@@ -629,6 +628,8 @@ export const agentLongTask = task({
                   state.stoppedDueToDoomLoop = false;
                   state.stoppedDueToBudgetExhaustion = false;
                   const fallbackStartTime = Date.now();
+                  preFallbackCacheRead = usageTracker.cacheReadTokens;
+                  preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                   usageTracker.resetModelLeg();
                   const retryResult = await createStream(fallbackModel);
                   const retryMessageId = generateId();

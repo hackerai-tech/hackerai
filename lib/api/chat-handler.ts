@@ -728,6 +728,8 @@ export const createChatHandler = (
                     state.stoppedDueToDoomLoop = false;
                     state.stoppedDueToBudgetExhaustion = false;
                     const fallbackStartTime = Date.now();
+                    preFallbackCacheRead = usageTracker.cacheReadTokens;
+                    preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
                     // Discard the failed primary leg's model usage so the
                     // user is only billed for the fallback. Non-model spend
@@ -859,7 +861,7 @@ export const createChatHandler = (
                             fallbackAssistantMessage?.parts?.some(
                               (p) =>
                                 p.type === "text" ||
-                                p.type === "tool-invocation" ||
+                                p.type?.startsWith("tool-") ||
                                 p.type === "reasoning",
                             ) ?? false;
                           const fallbackPartTypes =
