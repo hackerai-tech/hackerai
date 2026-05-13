@@ -83,6 +83,43 @@ const buildSSEResponseFromRun = ({
             .subscribeToRun(runId)
             .withStreams<{ ui: unknown }>();
 
+          // text-delta and reasoning-delta chunks are emitted per-token and
+          // can number in the thousands for long tasks. Forwarding each one
+          // as a separate SSE frame causes the browser to process thousands
+          // of React state updates in rapid succession, freezing the UI.
+          // We buffer consecutive delta chunks and flush them as a single
+          // merged chunk, reducing ~9k events to a few hundred.
+          const DELTA_FLUSH_COUNT = 50; // flush after this many buffered deltas
+          const DELTA_FLUSH_MS = 30; // or after this many ms (live streaming)
+
+          type DeltaBatch = {
+            type: "text-delta" | "reasoning-delta";
+            id: string;
+            delta: string;
+          };
+          const deltaBuffers = new Map<string, DeltaBatch>();
+          let batchedDeltaCount = 0;
+          let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+          const flushDeltaBuffers = () => {
+            if (deltaFlushTimer !== null) {
+              clearTimeout(deltaFlushTimer);
+              deltaFlushTimer = null;
+            }
+            if (deltaBuffers.size === 0) return;
+            for (const batch of deltaBuffers.values()) {
+              try {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify(batch)}\n\n`),
+                );
+              } catch {
+                // controller may already be closed (e.g. timer fired after error)
+              }
+            }
+            deltaBuffers.clear();
+            batchedDeltaCount = 0;
+          };
+
           let sawTerminalChunk = false;
           let firstEventReceived = false;
           for await (const part of subscription) {
@@ -114,11 +151,48 @@ const buildSSEResponseFromRun = ({
             ) {
               const chunk = (part as { chunk?: unknown }).chunk;
               if (chunk === undefined) continue;
+
+              const chunkType = (chunk as { type?: string }).type;
+              const chunkId = (chunk as { id?: string }).id;
+              const chunkDelta = (chunk as { delta?: string }).delta;
+
+              if (
+                (chunkType === "text-delta" ||
+                  chunkType === "reasoning-delta") &&
+                typeof chunkId === "string" &&
+                typeof chunkDelta === "string"
+              ) {
+                const key = `${chunkType}:${chunkId}`;
+                const existing = deltaBuffers.get(key);
+                if (existing) {
+                  existing.delta += chunkDelta;
+                } else {
+                  deltaBuffers.set(key, {
+                    type: chunkType as "text-delta" | "reasoning-delta",
+                    id: chunkId,
+                    delta: chunkDelta,
+                  });
+                }
+                batchedDeltaCount++;
+                if (batchedDeltaCount >= DELTA_FLUSH_COUNT) {
+                  flushDeltaBuffers();
+                } else if (deltaFlushTimer === null) {
+                  deltaFlushTimer = setTimeout(
+                    flushDeltaBuffers,
+                    DELTA_FLUSH_MS,
+                  );
+                }
+                continue;
+              }
+
+              // Non-delta chunk: flush any buffered deltas first so ordering
+              // is preserved (e.g. text-delta before tool-input-start).
+              flushDeltaBuffers();
+
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
               );
               // finish / abort / error are the last chunks useChat needs.
-              const chunkType = (chunk as { type?: string }).type;
               if (
                 chunkType === "finish" ||
                 chunkType === "abort" ||
@@ -129,6 +203,9 @@ const buildSSEResponseFromRun = ({
               }
             }
           }
+
+          // Flush any deltas that didn't trigger a count- or timer-based flush.
+          flushDeltaBuffers();
 
           if (!sawTerminalChunk) {
             // Subscription ended without a terminal UI chunk — run crashed,
