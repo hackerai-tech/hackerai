@@ -197,6 +197,12 @@ export const agentLongTask = task({
 
     runCleanupMap.set(ctx.run.id, { usageRefundTracker, chatLogger, chatId });
 
+    // Set to true once the real UI stream is piped to agentUiStream. If a
+    // pre-stream setup step throws before this, the outer catch emits a
+    // synthetic error stream so the frontend receives a proper error chunk
+    // instead of a silent abort.
+    let streamPiped = false;
+
     try {
       const userCustomization = await getUserCustomization({ userId });
 
@@ -261,34 +267,6 @@ export const agentLongTask = task({
         selectedModel,
       );
 
-      const extraUsageConfig = await buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-      });
-
-      const rateLimitInfo: RateLimitInfo = await checkRateLimit(
-        userId,
-        mode,
-        subscription,
-        estimatedInputTokens,
-        extraUsageConfig,
-        selectedModel,
-        organizationId,
-      );
-
-      usageRefundTracker.recordDeductions(rateLimitInfo);
-      chatLogger.setRateLimit(
-        {
-          pointsDeducted: rateLimitInfo.pointsDeducted,
-          extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
-          monthly: rateLimitInfo.monthly,
-          remaining: rateLimitInfo.remaining,
-          subscription,
-        },
-        extraUsageConfig,
-      );
-
       const posthog = PostHogClient();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
@@ -302,6 +280,15 @@ export const agentLongTask = task({
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
 
+      // Rate limit check happens inside execute so a thrown ChatSDKError
+      // (e.g. "exceeded daily messages") flows through createUIMessageStream's
+      // onError → an error chunk on the UI stream → useChat renders the
+      // friendly message. If we checked it outside, the task would throw
+      // before agentUiStream.pipe() registered the stream, and the frontend
+      // transport would only see a FAILED status with no error message.
+      let rateLimitInfo: RateLimitInfo;
+      let extraUsageConfig: Awaited<ReturnType<typeof buildExtraUsageConfig>>;
+
       const uiStream = createUIMessageStream({
         onError: (error) => {
           if (error instanceof ChatSDKError) {
@@ -312,6 +299,34 @@ export const agentLongTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          extraUsageConfig = await buildExtraUsageConfig({
+            userId,
+            subscription,
+            userCustomization,
+          });
+
+          rateLimitInfo = await checkRateLimit(
+            userId,
+            mode,
+            subscription,
+            estimatedInputTokens,
+            extraUsageConfig,
+            selectedModel,
+            organizationId,
+          );
+
+          usageRefundTracker.recordDeductions(rateLimitInfo);
+          chatLogger?.setRateLimit(
+            {
+              pointsDeducted: rateLimitInfo.pointsDeducted,
+              extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
+              monthly: rateLimitInfo.monthly,
+              remaining: rateLimitInfo.remaining,
+              subscription,
+            },
+            extraUsageConfig,
+          );
+
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
 
           const {
@@ -876,6 +891,7 @@ export const agentLongTask = task({
 
       metadata.set("status", "streaming").set("model", selectedModel);
       const { waitUntilComplete } = agentUiStream.pipe(uiStream);
+      streamPiped = true;
       await waitUntilComplete();
 
       metadata.set("status", "done");
@@ -883,12 +899,46 @@ export const agentLongTask = task({
     } catch (error) {
       metadata.set("status", "failed");
       await usageRefundTracker.refund().catch(() => {});
-      chatLogger?.emitUnexpectedError(error);
+      if (error instanceof ChatSDKError) {
+        chatLogger?.emitChatError(error);
+      } else {
+        chatLogger?.emitUnexpectedError(error);
+      }
       await ptySessionManager
         .closeAll(chatId)
         .catch((err) =>
           console.error("[agent-long] PTY closeAll (outer catch) failed:", err),
         );
+
+      // Pre-stream setup failed (DB fetch, message processing, etc.). Emit a
+      // one-shot UI stream whose onError converts the caught error into the
+      // same friendly error chunk format useChat expects. Without this, the
+      // frontend transport only sees the run go to FAILED and emits a silent
+      // abort, leaving the user stuck on a Stop button with no message.
+      if (!streamPiped) {
+        try {
+          const errorStream = createUIMessageStream({
+            onError: (err) => {
+              if (err instanceof ChatSDKError) {
+                return typeof err.cause === "string" ? err.cause : err.message;
+              }
+              return getUserFriendlyProviderError(err);
+            },
+            execute: async () => {
+              throw error;
+            },
+          });
+          const { waitUntilComplete: waitForErrorStream } =
+            agentUiStream.pipe(errorStream);
+          await waitForErrorStream();
+        } catch (pipeErr) {
+          console.error(
+            "[agent-long] Failed to emit synthetic error stream:",
+            pipeErr,
+          );
+        }
+      }
+
       await phLogger.flush().catch(() => {});
       throw error;
     } finally {
