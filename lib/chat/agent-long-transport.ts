@@ -27,8 +27,12 @@ const sseHeaders: HeadersInit = {
   Connection: "keep-alive",
 };
 
+// Only truly failed/terminated statuses warrant an immediate abort — the
+// task died and no `finish` chunk will ever arrive. Do NOT include
+// "COMPLETED" here: a successful run still has stream chunks (including
+// `finish`) in flight when the status event lands, and breaking early
+// causes a race that closes the frontend stream prematurely.
 const TERMINAL_RUN_STATUSES = new Set([
-  "COMPLETED",
   "FAILED",
   "CRASHED",
   "CANCELED",
@@ -80,7 +84,15 @@ const buildSSEResponseFromRun = ({
             .withStreams<{ ui: unknown }>();
 
           let sawTerminalChunk = false;
+          let firstEventReceived = false;
           for await (const part of subscription) {
+            // Disarm the "no first event" timeout once the subscription is
+            // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
+            // would have its stream force-closed mid-execution.
+            if (!firstEventReceived) {
+              firstEventReceived = true;
+              clearTimeout(timeoutId);
+            }
             // Detect terminal run status (FAILED, CRASHED, etc.) and
             // immediately synthesize an abort so useChat exits streaming
             // state without waiting for the subscription to fully close.
