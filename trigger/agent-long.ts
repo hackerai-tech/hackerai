@@ -681,7 +681,7 @@ export const agentLongTask = task({
                               title: generatedTitle,
                               finishReason: state.streamFinishReason,
                               todos: mergedTodos,
-                              defaultModelSlug: "agent-long",
+                              defaultModelSlug: "agent",
                               sandboxType:
                                 sandboxManager.getEffectivePreference(),
                               selectedModel: selectedModelOverride,
@@ -765,7 +765,7 @@ export const agentLongTask = task({
                       title: generatedTitle,
                       finishReason: state.streamFinishReason,
                       todos: mergedTodos,
-                      defaultModelSlug: "agent-long",
+                      defaultModelSlug: "agent",
                       sandboxType: sandboxManager.getEffectivePreference(),
                       selectedModel: selectedModelOverride,
                     });

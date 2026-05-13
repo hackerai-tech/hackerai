@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     const userLocation = geolocation(req);
 
     assertFreeAgentGates({
-      mode: "agent-long",
+      mode: "agent",
       subscription,
       sandboxPreference,
       rawSelectedModel,

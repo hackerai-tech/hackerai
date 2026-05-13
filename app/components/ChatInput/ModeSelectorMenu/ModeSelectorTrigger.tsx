@@ -2,15 +2,13 @@
 
 import { Button } from "@/components/ui/button";
 import { DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { MessageSquare, Infinity, ChevronDown, Clock } from "lucide-react";
+import { MessageSquare, Infinity, ChevronDown } from "lucide-react";
 import type { ChatMode } from "@/types/chat";
 
 const MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
   ask: "bg-muted hover:bg-muted/50",
   agent:
     "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20",
-  "agent-long":
-    "bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 dark:bg-purple-400/10 dark:text-purple-400 dark:hover:bg-purple-400/20",
 };
 
 const baseClasses =
@@ -33,11 +31,6 @@ export function ModeSelectorTrigger({ chatMode }: ModeSelectorTriggerProps) {
           <>
             <Infinity className="w-3 h-3 md:mr-1" />
             <span className="hidden md:inline">Agent</span>
-          </>
-        ) : chatMode === "agent-long" ? (
-          <>
-            <Clock className="w-3 h-3 md:mr-1" />
-            <span className="hidden md:inline">Agent Long</span>
           </>
         ) : (
           <>

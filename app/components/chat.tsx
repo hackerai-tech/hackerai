@@ -233,6 +233,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Refs to avoid stale closures in callbacks
   const isExistingChatRef = useLatestRef(isExistingChat);
   const chatModeRef = useLatestRef(chatMode);
+  const subscriptionRef = useLatestRef(subscription);
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
@@ -340,7 +341,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
-        if (mode === "agent-long") {
+        const isFreeAgent =
+          mode === "agent" && subscriptionRef.current === "free";
+        if (isFreeAgent) {
           // useChat reuses this fetch for both POST sendMessages and GET
           // reconnectToStream — dispatch on method.
           if (init?.method === "GET") {
@@ -372,11 +375,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the agent-long resume endpoint when there is a stored trigger run
-        // OR the mode selector says agent-long. Checking the stored run id
-        // handles the case where a legacy "agent-long" chat was normalised to
-        // "agent" on load, which would otherwise break reconnect after reload.
-        const mode = chatModeRef.current;
-        if (mode === "agent-long" || !!activeTriggerRunRef.current) {
+        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
+        // when the current user is a free user in agent mode.
+        const isFreeAgent =
+          chatModeRef.current === "agent" && subscriptionRef.current === "free";
+        if (isFreeAgent || !!activeTriggerRunRef.current) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
           };

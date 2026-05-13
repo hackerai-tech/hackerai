@@ -300,7 +300,7 @@ export function isContextUsageEnabled(
   mode?: ChatMode,
 ): boolean {
   if (subscription !== "free") return true;
-  return mode === "agent" || mode === "agent-long";
+  return mode === "agent";
 }
 
 /**

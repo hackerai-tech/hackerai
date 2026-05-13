@@ -16,7 +16,7 @@ export const getMaxTokensForSubscription = (
   opts?: { mode?: import("@/types").ChatMode },
 ): number => {
   if (subscription === "free") {
-    const isAgent = opts?.mode === "agent" || opts?.mode === "agent-long";
+    const isAgent = opts?.mode === "agent";
     return isAgent ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
   }
   return MAX_TOKENS_PAID;

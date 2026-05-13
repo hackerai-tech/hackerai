@@ -81,6 +81,7 @@ export const useChatHandlers = ({
   // previous mode in the request body. Reading from a ref always gets the
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
+  const subscriptionRef = useLatestRef(subscription);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -317,7 +318,8 @@ export const useChatHandlers = ({
       // Fire-and-forget — server-side cancel is idempotent and the client
       // abort already disconnected the realtime stream.
       if (
-        chatModeRef.current === "agent-long" &&
+        chatModeRef.current === "agent" &&
+        subscriptionRef.current === "free" &&
         !temporaryChatsEnabledRef.current
       ) {
         fetch("/api/agent-long/cancel", {

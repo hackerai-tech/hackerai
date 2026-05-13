@@ -14,8 +14,6 @@ const BASE_BUTTON_CLASSES = "rounded-full p-0 w-8 h-8 min-w-0";
 const STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
   agent:
     "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500",
-  "agent-long":
-    "bg-purple-500/10 hover:bg-purple-500/20 text-purple-700 dark:bg-purple-400/10 dark:hover:bg-purple-400/20 dark:text-purple-400 focus-visible:ring-purple-500",
   ask: "bg-muted hover:bg-muted/70 text-foreground",
 };
 
@@ -26,9 +24,6 @@ function getStopButtonVariantClasses(mode: ChatMode): string {
 function getSubmitButtonVariantClasses(mode: ChatMode): string {
   if (mode === "agent") {
     return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
-  }
-  if (mode === "agent-long") {
-    return "bg-purple-500/10 hover:bg-purple-500/20 text-purple-700 dark:bg-purple-400/10 dark:hover:bg-purple-400/20 dark:text-purple-400 focus-visible:ring-purple-500";
   }
   return "";
 }

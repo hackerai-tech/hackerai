@@ -208,7 +208,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent" | "agent-long";
+  defaultModelSlug?: "ask" | "agent";
   sandboxType?: string;
   selectedModel?: string;
 }) {
