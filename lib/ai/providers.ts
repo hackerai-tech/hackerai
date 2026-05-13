@@ -49,9 +49,9 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
-    "fallback-agent-model": or("x-ai/grok-4.1-fast"),
-    "fallback-ask-model": or("x-ai/grok-4.1-fast"),
-    "title-generator-model": or("x-ai/grok-4.1-fast"),
+    "fallback-agent-model": or("x-ai/grok-4.3"),
+    "fallback-ask-model": or("x-ai/grok-4.3"),
+    "title-generator-model": or("deepseek/deepseek-v4-flash"),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -69,9 +69,9 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-flash": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-kimi-k2.6": "April 2024",
-  "fallback-agent-model": "January 2025",
-  "fallback-ask-model": "January 2025",
-  "title-generator-model": "November 2024",
+  "fallback-agent-model": "December 2025",
+  "fallback-ask-model": "December 2025",
+  "title-generator-model": "May 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
