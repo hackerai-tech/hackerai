@@ -1,7 +1,7 @@
 import "server-only";
 
 import { api } from "@/convex/_generated/api";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { UIMessage } from "ai";
 import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
@@ -12,7 +12,6 @@ import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
@@ -135,10 +134,13 @@ const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
 
   try {
-    return await convex.action(api.s3Actions.getFileUrlsByFileIdsAction, {
-      serviceKey,
-      fileIds: fileIds as Id<"files">[],
-    });
+    return await getConvexClient().action(
+      api.s3Actions.getFileUrlsByFileIdsAction,
+      {
+        serviceKey,
+        fileIds: fileIds as Id<"files">[],
+      },
+    );
   } catch (error) {
     console.error("Failed to fetch file URLs:", {
       error: error instanceof Error ? error.message : String(error),
@@ -345,7 +347,7 @@ const addDocumentContentToMessages = async (
   if (!fileIds.length || !messages.length) return;
 
   try {
-    const fileContents = await convex.query(
+    const fileContents = await getConvexClient().query(
       api.fileStorage.getFileContentByFileIds,
       { serviceKey, fileIds },
     );

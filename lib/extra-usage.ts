@@ -1,5 +1,5 @@
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 
 /** Extra usage pricing multiplier */
@@ -49,7 +49,7 @@ export async function getExtraUsageBalance(
   userId: string,
 ): Promise<ExtraUsageBalance | null> {
   try {
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+    const convex = getConvexClient();
     const settings = await convex.query(
       api.extraUsage.getExtraUsageBalanceForBackend,
       {
@@ -110,7 +110,7 @@ export async function refundToBalance(
   }
 
   try {
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+    const convex = getConvexClient();
 
     const result = await convex.mutation(api.extraUsage.refundPoints, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -157,7 +157,7 @@ export async function deductFromBalance(
   }
 
   try {
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+    const convex = getConvexClient();
 
     // Use the Convex action that handles deduction + auto-reload internally
     // Pass points directly to avoid precision loss from dollar conversion

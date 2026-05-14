@@ -1,12 +1,12 @@
 import "server-only";
 
-import { ConvexHttpClient } from "convex/browser";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { AnySandbox } from "@/types";
 import { isE2BSandbox } from "./sandbox-types";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
+import { getConvexClient } from "@/lib/db/convex-client";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 
@@ -20,14 +20,6 @@ export type UploadedFileInfo = {
   s3Key?: string;
   storageId?: Id<"_storage">;
 };
-
-let convexClient: ConvexHttpClient | null = null;
-function getConvexClient(): ConvexHttpClient {
-  if (!convexClient) {
-    convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-  }
-  return convexClient;
-}
 
 /**
  * Extract error message from ConvexError or regular Error
