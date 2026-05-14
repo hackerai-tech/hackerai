@@ -132,7 +132,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
-      - name: Install Rust stable
+      - name: Install Rust stable (Linux, Windows)
+        if: matrix.platform != 'macos-latest'
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
@@ -140,6 +141,24 @@ jobs:
           # Skip the action's built-in cache; swatinem/rust-cache below is
           # already scoped to packages/desktop/src-tauri and covers it.
           cache: false
+
+      - name: Install Rust stable (macOS — bypass rustup-init shim)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          # The standard rust-toolchain actions short-circuit on
+          # `command -v rustup`, but the GitHub-hosted macOS runner ships a
+          # `rustup-init` shim aliased as `rustup`/`cargo`, fooling that
+          # heuristic. The action then skips installing the real toolchain
+          # and `cargo metadata` invokes the shim, which doesn't know
+          # `metadata` and dies with rustup-init's usage screen. Install
+          # rustup directly to bypass the broken detection.
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -fsSL \
+            https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" target add "${{ matrix.target }}"
+          "$HOME/.cargo/bin/cargo" --version
+          "$HOME/.cargo/bin/rustc" --version
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
