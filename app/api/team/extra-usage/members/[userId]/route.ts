@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { workos } from "../../../../workos";
-import { requireAdminOrg } from "../../auth";
+import { requireAdminOrg } from "../../../team-auth";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 

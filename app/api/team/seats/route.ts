@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
-import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { requireAdminOrg } from "../team-auth";
 
 const MAX_SEATS = 999;
 
@@ -53,27 +53,19 @@ type SeatOperationContext = SeatOperationError | SeatOperationSuccess;
 async function getSeatOperationContext(
   req: NextRequest,
 ): Promise<SeatOperationContext> {
-  const { userId, subscription } = await getUserIDAndPro(req);
-
-  if (subscription !== "team") {
-    return { error: { message: "Team subscription required", status: 403 } };
+  const guard = await requireAdminOrg(req);
+  if (!guard.ok) {
+    // Re-derive {message, status} from the NextResponse so the existing
+    // SeatOperationError shape (and call sites) don't need to change.
+    const body = await guard.response.json();
+    return {
+      error: {
+        message: body.error ?? "Forbidden",
+        status: guard.response.status,
+      },
+    };
   }
-
-  const memberships = await workos.userManagement.listOrganizationMemberships({
-    userId,
-    statuses: ["active"],
-  });
-
-  if (!memberships.data || memberships.data.length === 0) {
-    return { error: { message: "No organization found", status: 404 } };
-  }
-
-  const organizationId = memberships.data[0].organizationId;
-  const userMembership = memberships.data.find((m) => m.userId === userId);
-
-  if (userMembership?.role?.slug !== "admin") {
-    return { error: { message: "Only admins can update seats", status: 403 } };
-  }
+  const { userId, organizationId } = guard;
 
   const organization =
     await workos.organizations.getOrganization(organizationId);

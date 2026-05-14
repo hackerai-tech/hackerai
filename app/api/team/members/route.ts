@@ -1,38 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
-import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getTeamMemberConsumed, addOrgRemovedUsage } from "@/lib/rate-limit";
+import { requireTeamOrg } from "../team-auth";
 
 export const GET = async (req: NextRequest) => {
   try {
-    const { userId, subscription } = await getUserIDAndPro(req);
-
-    // Only allow team subscription users to access this endpoint
-    if (subscription !== "team") {
-      return NextResponse.json(
-        { error: "Team subscription required" },
-        { status: 403 },
-      );
-    }
-
-    // Get user's organization
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        userId,
-        statuses: ["active"],
-      },
-    );
-
-    if (!memberships.data || memberships.data.length === 0) {
-      return NextResponse.json(
-        { error: "No organization found" },
-        { status: 404 },
-      );
-    }
-
-    const organizationId = memberships.data[0].organizationId;
-    const isAdmin = memberships.data[0].role?.slug === "admin";
+    const guard = await requireTeamOrg(req);
+    if (!guard.ok) return guard.response;
+    const { userId, organizationId, membership } = guard;
+    const isAdmin = membership.role?.slug === "admin";
 
     // Get organization details, all members, and pending invitations in parallel
     const [organization, allMembers, pendingInvitations] = await Promise.all([
@@ -139,15 +116,9 @@ export const GET = async (req: NextRequest) => {
 
 export const DELETE = async (req: NextRequest) => {
   try {
-    const { userId, subscription } = await getUserIDAndPro(req);
-
-    // Only allow team subscription users to access this endpoint
-    if (subscription !== "team") {
-      return NextResponse.json(
-        { error: "Team subscription required" },
-        { status: 403 },
-      );
-    }
+    const guard = await requireTeamOrg(req);
+    if (!guard.ok) return guard.response;
+    const { userId, organizationId, membership: userMembership } = guard;
 
     const { searchParams } = new URL(req.url);
     const membershipId = searchParams.get("id");
@@ -158,24 +129,6 @@ export const DELETE = async (req: NextRequest) => {
         { status: 400 },
       );
     }
-
-    // Get user's organization
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        userId,
-        statuses: ["active"],
-      },
-    );
-
-    if (!memberships.data || memberships.data.length === 0) {
-      return NextResponse.json(
-        { error: "No organization found" },
-        { status: 404 },
-      );
-    }
-
-    const userMembership = memberships.data[0];
-    const organizationId = userMembership.organizationId;
 
     // Try to get the membership first (it might be an invitation instead)
     let isInvitation = false;

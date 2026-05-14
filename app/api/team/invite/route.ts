@@ -1,51 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { workos } from "../../workos";
-import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { stripe } from "../../stripe";
+import { requireAdminOrg } from "../team-auth";
 
 export const POST = async (req: NextRequest) => {
   try {
-    const { userId, subscription } = await getUserIDAndPro(req);
-
-    // Only allow team subscription users to access this endpoint
-    if (subscription !== "team") {
-      return NextResponse.json(
-        { error: "Team subscription required" },
-        { status: 403 },
-      );
-    }
+    const guard = await requireAdminOrg(req);
+    if (!guard.ok) return guard.response;
+    const { userId, organizationId } = guard;
 
     const body = await req.json();
     const { email } = body;
 
     if (!email || typeof email !== "string") {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
-    }
-
-    // Get user's organization
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        userId,
-        statuses: ["active"],
-      },
-    );
-
-    if (!memberships.data || memberships.data.length === 0) {
-      return NextResponse.json(
-        { error: "No organization found" },
-        { status: 404 },
-      );
-    }
-
-    const userMembership = memberships.data[0];
-    const organizationId = userMembership.organizationId;
-
-    // Check if user is an admin
-    if (userMembership.role?.slug !== "admin") {
-      return NextResponse.json(
-        { error: "Only admins can invite members" },
-        { status: 403 },
-      );
     }
 
     // Get organization to access Stripe customer ID
@@ -144,15 +112,9 @@ export const POST = async (req: NextRequest) => {
 
 export const DELETE = async (req: NextRequest) => {
   try {
-    const { userId, subscription } = await getUserIDAndPro(req);
-
-    // Only allow team subscription users to access this endpoint
-    if (subscription !== "team") {
-      return NextResponse.json(
-        { error: "Team subscription required" },
-        { status: 403 },
-      );
-    }
+    const guard = await requireAdminOrg(req);
+    if (!guard.ok) return guard.response;
+    const { organizationId } = guard;
 
     const { searchParams } = new URL(req.url);
     const invitationId = searchParams.get("id");
@@ -161,32 +123,6 @@ export const DELETE = async (req: NextRequest) => {
       return NextResponse.json(
         { error: "Invitation ID is required" },
         { status: 400 },
-      );
-    }
-
-    // Get user's organization
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        userId,
-        statuses: ["active"],
-      },
-    );
-
-    if (!memberships.data || memberships.data.length === 0) {
-      return NextResponse.json(
-        { error: "No organization found" },
-        { status: 404 },
-      );
-    }
-
-    const userMembership = memberships.data[0];
-    const organizationId = userMembership.organizationId;
-
-    // Check if user is an admin
-    if (userMembership.role?.slug !== "admin") {
-      return NextResponse.json(
-        { error: "Only admins can revoke invitations" },
-        { status: 403 },
       );
     }
 
