@@ -80,7 +80,7 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
-  const teamTab = { id: "Team", label: "Members", icon: Users };
+  const membersTab = { id: "Members", label: "Members", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
   const tabs =
@@ -91,7 +91,7 @@ const SettingsDialog = ({
           localSandboxTab,
           usageTab,
           ...(isTeamAdmin ? [extraUsageTab] : []),
-          teamTab,
+          membersTab,
           accountTab,
         ]
       : subscription !== "free"
@@ -245,7 +245,7 @@ const SettingsDialog = ({
                   </div>
                 )}
 
-                {activeTab === "Team" && <TeamTab />}
+                {activeTab === "Members" && <TeamTab />}
 
                 {activeTab === "Account" && <AccountTab />}
               </div>
