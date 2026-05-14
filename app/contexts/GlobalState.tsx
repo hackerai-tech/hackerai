@@ -18,7 +18,6 @@ import {
   type QueuedMessage,
   type QueueBehavior,
   type SandboxPreference,
-  isChatMode,
 } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
@@ -174,11 +173,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const prevIsMobile = useRef(isMobile);
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
-  const [chatMode, setChatMode] = useState<ChatMode>(() => {
-    const saved = readChatMode();
-    if (!isChatMode(saved)) return "ask";
-    return saved;
-  });
+  const [chatMode, setChatMode] = useState<ChatMode>(
+    () => readChatMode() ?? "ask",
+  );
+  // Whether a saved preference existed at mount — gates the auto-agent default below.
+  const [hadSavedChatModePref] = useState(() => readChatMode() !== null);
+  const autoAgentModeAppliedRef = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -252,6 +252,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       if (firstDesktop) return "desktop";
       return null;
     }, [desktopBridgeActive, localConnections]);
+
+  // First-time agent default when a local sandbox is available; never overrides a saved choice.
+  useEffect(() => {
+    if (autoAgentModeAppliedRef.current) return;
+    if (hadSavedChatModePref) return;
+    if (!hasLocalSandbox) return;
+    autoAgentModeAppliedRef.current = true;
+    setChatMode("agent");
+    toast("Agent mode enabled — local machine connected");
+  }, [hasLocalSandbox, hadSavedChatModePref]);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
