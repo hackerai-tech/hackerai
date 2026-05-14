@@ -1,92 +1,85 @@
 /**
  * Isolated verification that `ptySessionManager.closeAll(chatId)` is invoked
- * from the streamText `onFinish` callback at end of an assistant turn.
+ * from the agent loop's streamText callbacks.
  *
- * We don't stand up the full chat-handler stack here — that would require
- * WorkOS, Convex, Axiom, model providers, etc. Instead we read the
- * `chat-handler.ts` source and assert:
- *   1. it imports the `ptySessionManager` singleton
- *   2. it calls `ptySessionManager.closeAll(chatId)` inside the streamText
- *      `onFinish` block
- *   3. the call is `.catch`-guarded so it cannot throw into the finish path
+ * After the shared-runner refactor, the onFinish/onError/onAbort PTY hooks
+ * live in agent-stream-runner.ts (shared by both chat-handler and agent-long).
+ * The outer-catch backstop remains in chat-handler.ts directly.
  *
- * This is the lightest test that still prevents regression of the
- * contract described in the plan's "Cleanup hook" section.
+ * We read source files and assert structural presence — lighter than a full
+ * integration test, still prevents regression of the cleanup contract.
  */
 
 import fs from "fs";
 import path from "path";
 
-describe("chat-handler — PTY closeAll wired to streamText onFinish", () => {
-  const src = fs.readFileSync(
-    path.resolve(__dirname, "../chat-handler.ts"),
-    "utf8",
-  );
+const chatHandlerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../chat-handler.ts"),
+  "utf8",
+);
 
-  test("imports ptySessionManager singleton", () => {
-    expect(src).toMatch(
+const runnerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-stream-runner.ts"),
+  "utf8",
+);
+
+describe("chat-handler — PTY closeAll wired to streamText onFinish", () => {
+  test("chat-handler imports ptySessionManager singleton", () => {
+    expect(chatHandlerSrc).toMatch(
       /import\s*\{\s*ptySessionManager\s*\}\s*from\s*["']@\/lib\/ai\/tools\/utils\/pty-session-manager["']/,
     );
   });
 
-  test("calls closeAll(chatId) with a .catch guard", () => {
-    // Matches `ptySessionManager\n  .closeAll(chatId)\n  .catch(…)` with any
-    // amount of whitespace in between.
-    expect(src).toMatch(
-      /ptySessionManager\s*\.\s*closeAll\(\s*chatId\s*\)\s*\.\s*catch\s*\(/,
+  test("runner calls closeAll(ctx.chatId) with a .catch guard", () => {
+    expect(runnerSrc).toMatch(
+      /ptySessionManager\s*\.\s*closeAll\(\s*ctx\.chatId\s*\)\s*\.\s*catch\s*\(/,
     );
   });
 
-  test("closeAll is called inside the onError handler", () => {
-    // Find the onError block in the source
-    const onErrorIdx = src.indexOf("onError:");
+  test("runner calls closeAll inside the onError handler", () => {
+    const onErrorIdx = runnerSrc.indexOf("onError:");
     expect(onErrorIdx).toBeGreaterThan(-1);
 
-    // Find a closeAll call after the onError block starts
-    const closeAllAfterOnError = src.indexOf(".closeAll(chatId)", onErrorIdx);
+    const closeAllAfterOnError = runnerSrc.indexOf(
+      ".closeAll(ctx.chatId)",
+      onErrorIdx,
+    );
     expect(closeAllAfterOnError).toBeGreaterThan(onErrorIdx);
 
-    // Verify the closeAll in onError also has a .catch guard
-    expect(src.substring(onErrorIdx)).toMatch(
-      /closeAll\(\s*chatId\s*\)\s*\.\s*catch\s*\(/,
+    expect(runnerSrc.substring(onErrorIdx)).toMatch(
+      /closeAll\(\s*ctx\.chatId\s*\)\s*\.\s*catch\s*\(/,
     );
   });
 
-  test("closeAll is called inside the onAbort handler", () => {
-    const onAbortIdx = src.indexOf("onAbort:");
+  test("runner calls closeAll inside the onAbort handler", () => {
+    const onAbortIdx = runnerSrc.indexOf("onAbort:");
     expect(onAbortIdx).toBeGreaterThan(-1);
 
-    // Find a closeAll call after the onAbort block starts
-    const closeAllAfterOnAbort = src.indexOf(".closeAll(chatId)", onAbortIdx);
+    const closeAllAfterOnAbort = runnerSrc.indexOf(
+      ".closeAll(ctx.chatId)",
+      onAbortIdx,
+    );
     expect(closeAllAfterOnAbort).toBeGreaterThan(onAbortIdx);
 
-    // Verify the closeAll in onAbort also has a .catch guard
-    expect(src.substring(onAbortIdx)).toMatch(
-      /closeAll\(\s*chatId\s*\)\s*\.\s*catch\s*\(/,
+    expect(runnerSrc.substring(onAbortIdx)).toMatch(
+      /closeAll\(\s*ctx\.chatId\s*\)\s*\.\s*catch\s*\(/,
     );
   });
 
-  test("closeAll appears in the outer catch block as a hard backstop", () => {
-    expect(src).toMatch(/closeAll.*outer catch/);
+  test("chat-handler still has closeAll in the outer catch block as a hard backstop", () => {
+    expect(chatHandlerSrc).toMatch(/closeAll.*outer catch/);
   });
 
-  test("closeAll is called inside the streamText onFinish (not toUIMessageStream onFinish)", () => {
-    const streamTextOnFinishIdx = src.indexOf(
+  test("runner calls closeAll inside the streamText onFinish callback", () => {
+    const onFinishIdx = runnerSrc.indexOf(
       "onFinish: async ({ finishReason, usage, response })",
     );
-    expect(streamTextOnFinishIdx).toBeGreaterThan(-1);
+    expect(onFinishIdx).toBeGreaterThan(-1);
 
-    // Find the `.closeAll(chatId)` call site specifically (not the import).
-    const closeAllCallIdx = src.indexOf(".closeAll(chatId)");
-    expect(closeAllCallIdx).toBeGreaterThan(streamTextOnFinishIdx);
-
-    // And it should appear before the *next* onFinish block that follows.
-    const nextOnFinish = src.indexOf(
-      "onFinish",
-      streamTextOnFinishIdx + "onFinish".length,
+    const closeAllCallIdx = runnerSrc.indexOf(
+      ".closeAll(ctx.chatId)",
+      onFinishIdx,
     );
-    if (nextOnFinish !== -1) {
-      expect(closeAllCallIdx).toBeLessThan(nextOnFinish);
-    }
+    expect(closeAllCallIdx).toBeGreaterThan(onFinishIdx);
   });
 });

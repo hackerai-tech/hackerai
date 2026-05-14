@@ -3,26 +3,11 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  stepCountIs,
-  streamText,
   UIMessage,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
-import {
-  tokenExhaustedAfterSummarization,
-  TOKEN_EXHAUSTION_FINISH_REASON,
-  elapsedTimeExceeds,
-  PREEMPTIVE_TIMEOUT_FINISH_REASON,
-  AGENT_MAX_STREAM_DURATION_MS,
-  doomLoopDetected,
-  DOOM_LOOP_FINISH_REASON,
-  BUDGET_EXHAUSTION_FINISH_REASON,
-} from "@/lib/chat/stop-conditions";
-import {
-  detectDoomLoop,
-  generateDoomLoopNudge,
-} from "@/lib/chat/doom-loop-detection";
+import { AGENT_MAX_STREAM_DURATION_MS } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -60,21 +45,13 @@ import {
   countFileAttachments,
   stripImageAttachments,
   sendRateLimitWarnings,
-  buildProviderOptions,
-  getFallbackSlugs,
-  isXaiSafetyError,
   isProviderApiError,
   computeContextUsage,
   writeContextUsage,
   isContextUsageEnabled,
-  runSummarizationStep,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
-  applyPrepareStepReminders,
-  buildSystemPrompt,
-  addCacheBreakpointToLastUserMessage,
-  logOpenRouterFallbackIfFired,
   assertFreeAgentGates,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
@@ -118,12 +95,11 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import {
-  pruneToolOutputs,
-  pruneModelMessages,
-  filterEmptyAssistantMessages,
-} from "@/lib/chat/compaction/prune-tool-outputs";
+  createAgentStream,
+  initAgentStreamState,
+  type AgentStreamContext,
+} from "@/lib/api/agent-stream-runner";
 
 function getStreamContext() {
   try {
@@ -507,20 +483,6 @@ export const createChatHandler = (
           const ctxMaxTokens = contextUsageOn
             ? getMaxTokensForSubscription(subscription, { mode })
             : 0;
-          let ctxUsage = contextUsageOn
-            ? computeContextUsage(
-                truncatedMessages,
-                fileTokens,
-                ctxSystemTokens,
-                ctxMaxTokens,
-              )
-            : {
-                usedTokens: 0,
-                maxTokens: 0,
-              };
-          // Context usage is sent after pruning, summarization, each step, and onFinish
-
-          let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
 
@@ -549,12 +511,18 @@ export const createChatHandler = (
             noteInjectionOpts,
           );
 
-          const hasSummarized = () => summarizationTracker.hasSummarized;
-          let stoppedDueToTokenExhaustion = false;
-          let stoppedDueToPreemptiveTimeout = false;
-          let stoppedDueToDoomLoop = false;
-          let stoppedDueToBudgetExhaustion = false;
-          let lastStepInputTokens = 0;
+          // Mutable stream state — updated in-place by the shared runner.
+          const state = initAgentStreamState(
+            finalMessages,
+            contextUsageOn
+              ? computeContextUsage(
+                  truncatedMessages,
+                  fileTokens,
+                  ctxSystemTokens,
+                  ctxMaxTokens,
+                )
+              : { usedTokens: 0, maxTokens: 0 },
+          );
 
           // Mid-stream budget enforcement (paid users only). Snapshot bucket
           // state once; the monitor emits threshold warnings (80/95/100) and
@@ -575,8 +543,6 @@ export const createChatHandler = (
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
 
-          let streamUsage: Record<string, unknown> | undefined;
-          let responseModel: string | undefined;
           let isRetryWithFallback = false;
           const isAutoModel = [
             "ask-model",
@@ -637,306 +603,47 @@ export const createChatHandler = (
               userId,
               selectedModel,
               selectedModelOverride,
-              responseModel,
+              responseModel: state.responseModel,
               configuredModelId,
               rateLimitInfo,
             });
           };
 
-          // Helper to create streamText with a given model (reused for retry)
-          const createStream = async (modelName: string) => {
-            const requestedLanguageModel =
-              trackedProvider.languageModel(modelName);
-            const requestedSlug = requestedLanguageModel.modelId;
-            return streamText({
-              model: requestedLanguageModel,
-              maxOutputTokens: 30000,
-              system: buildSystemPrompt(currentSystemPrompt, modelName),
-              messages: filterEmptyAssistantMessages(
-                await convertToModelMessages(finalMessages),
-              ),
-              tools,
-              prepareStep: async ({ steps, messages }) => {
-                try {
-                  const stepNumber = steps.length;
-                  const threshold = Math.floor(
-                    getMaxTokensForSubscription(subscription, { mode }) *
-                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
-                  );
-
-                  // Prune old tool outputs to stay within rolling token budget
-                  const pruneResult = pruneToolOutputs(finalMessages);
-                  if (pruneResult.prunedCount > 0) {
-                    finalMessages = pruneResult.messages;
-                  }
-
-                  // Run summarization check on every step (non-temporary chats only)
-                  // but only summarize once
-                  if (!temporary && !hasSummarized()) {
-                    const result = await runSummarizationStep({
-                      messages: finalMessages,
-                      modelMessages: messages,
-                      subscription,
-                      languageModel: trackedProvider.languageModel(modelName),
-                      mode,
-                      writer,
-                      chatId,
-                      fileTokens,
-                      todos: getTodoManager().getAllTodos(),
-                      abortSignal: userStopSignal.signal,
-                      ensureSandbox,
-                      systemPromptTokens,
-                      ctxSystemTokens,
-                      ctxMaxTokens,
-                      providerInputTokens: lastStepInputTokens,
-                      chatSystemPrompt: currentSystemPrompt,
-                      tools,
-                      providerOptions: buildProviderOptions(
-                        isReasoningModel,
-                        userId,
-                        modelName,
-                      ),
-                    });
-
-                    if (
-                      result.needsSummarization &&
-                      result.summarizedMessages
-                    ) {
-                      summarizationTracker.recordSummarization(
-                        steps.length,
-                        result.summarizationUsage,
-                        usageTracker,
-                      );
-                      if (result.contextUsage) {
-                        ctxUsage = result.contextUsage;
-                      }
-                      return {
-                        messages: filterEmptyAssistantMessages(
-                          await convertToModelMessages(
-                            result.summarizedMessages,
-                          ),
-                        ),
-                      };
-                    }
-                  }
-
-                  // Prune old tool-result outputs in model-level messages
-                  // (these accumulate during the agentic loop, up to 100 tool calls)
-                  let currentMessages = messages as Array<
-                    Record<string, unknown>
-                  >;
-                  const modelPrune = pruneModelMessages(currentMessages);
-                  if (modelPrune.prunedCount > 0) {
-                    currentMessages = modelPrune.messages;
-                  }
-
-                  const lastStep = Array.isArray(steps)
-                    ? steps.at(-1)
-                    : undefined;
-                  const toolResults =
-                    (lastStep &&
-                      (lastStep as { toolResults?: unknown[] }).toolResults) ||
-                    [];
-
-                  let updatedMessages = await applyPrepareStepReminders(
-                    currentMessages,
-                    { toolResults, noteInjectionOpts },
-                  );
-
-                  // Doom loop detection: inject nudge as trailing user message
-                  const loopCheck = detectDoomLoop(
-                    steps as unknown as Parameters<typeof detectDoomLoop>[0],
-                  );
-                  if (loopCheck.severity !== "none") {
-                    console.log(
-                      `[doom-loop] severity=${loopCheck.severity} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${steps.length}`,
-                    );
-
-                    if (loopCheck.severity === "warning") {
-                      const nudge = generateDoomLoopNudge(loopCheck);
-                      console.log(
-                        `[doom-loop] Injecting nudge as last user message`,
-                      );
-                      updatedMessages = [
-                        ...updatedMessages,
-                        { role: "user", content: nudge },
-                      ] as typeof updatedMessages;
-                    }
-                  }
-
-                  return {
-                    messages: filterEmptyAssistantMessages(
-                      addCacheBreakpointToLastUserMessage(
-                        updatedMessages,
-                        modelName,
-                      ),
-                    ) as typeof messages,
-                  };
-                } catch (error) {
-                  if (
-                    error instanceof DOMException &&
-                    error.name === "AbortError"
-                  ) {
-                    // Expected when user stops the stream
-                  } else {
-                    console.error("Error in prepareStep:", error);
-                  }
-                  return currentSystemPrompt
-                    ? { system: currentSystemPrompt }
-                    : {};
-                }
-              },
-              abortSignal: userStopSignal.signal,
-              providerOptions: buildProviderOptions(
-                isReasoningModel,
-                userId,
-                modelName,
-              ),
-              stopWhen: [
-                stepCountIs(getMaxStepsForUser(mode, subscription)),
-                tokenExhaustedAfterSummarization({
-                  threshold: Math.floor(
-                    getMaxTokensForSubscription(subscription, { mode }) *
-                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
-                  ),
-                  getLastStepInputTokens: () => lastStepInputTokens,
-                  getHasSummarized: hasSummarized,
-                  onFired: () => {
-                    stoppedDueToTokenExhaustion = true;
-                  },
-                }),
-                elapsedTimeExceeds({
-                  maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
-                  getStartTime: () => streamStartTime,
-                  onFired: () => {
-                    stoppedDueToPreemptiveTimeout = true;
-                  },
-                }),
-                doomLoopDetected({
-                  onFired: () => {
-                    stoppedDueToDoomLoop = true;
-                  },
-                }),
-              ],
-              onChunk: async (chunk) => {
-                if (chunk.chunk.type === "tool-call") {
-                  const sandboxType = sandboxManager.getSandboxType(
-                    chunk.chunk.toolName,
-                  );
-
-                  chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
-                }
-              },
-              onStepFinish: async ({ usage }) => {
-                if (usage) {
-                  usageTracker.accumulateStep(
-                    usage as Parameters<typeof usageTracker.accumulateStep>[0],
-                  );
-                  lastStepInputTokens = usage.inputTokens || 0;
-
-                  if (contextUsageOn) {
-                    writeContextUsage(writer, {
-                      usedTokens:
-                        ctxUsage.usedTokens + usageTracker.streamOutputTokens,
-                      maxTokens: ctxUsage.maxTokens,
-                    });
-                  }
-                }
-
-                if (
-                  budgetMonitor?.checkAfterStep(
-                    usageTracker.computeCostDollars(modelName),
-                  ) === "abort"
-                ) {
-                  stoppedDueToBudgetExhaustion = true;
-                  userStopSignal.abort();
-                }
-              },
-              onFinish: async ({ finishReason, usage, response }) => {
-                // If preemptive timeout triggered, use "timeout" as finish reason
-                if (preemptiveTimeout?.isPreemptive()) {
-                  streamFinishReason = "timeout";
-                } else if (stoppedDueToPreemptiveTimeout) {
-                  streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
-                } else if (stoppedDueToTokenExhaustion) {
-                  streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
-                } else if (stoppedDueToDoomLoop) {
-                  streamFinishReason = DOOM_LOOP_FINISH_REASON;
-                } else if (stoppedDueToBudgetExhaustion) {
-                  streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
-                } else {
-                  streamFinishReason = finishReason;
-                }
-                streamUsage = usage as Record<string, unknown>;
-                responseModel = response?.modelId;
-
-                logOpenRouterFallbackIfFired({
-                  fallbackSlugs: getFallbackSlugs(modelName),
-                  requestedSlug,
-                  responseModel,
-                  chatId,
-                });
-
-                chatLogger!.setStreamResponse(responseModel, streamUsage);
-
-                // Tear down any PTY sessions the model left open at end of
-                // turn. M1 policy: PTYs don't survive a turn. Best-effort —
-                // must never block or throw into the finish path.
-                await ptySessionManager
-                  .closeAll(chatId)
-                  .catch((err) =>
-                    console.error("[chat-handler] PTY closeAll failed:", err),
-                  );
-              },
-              onError: async ({ error }) => {
-                // streamText wraps errors in `{ error }` events. Without this
-                // destructure, the wrapper object reaches getErrorMessage which
-                // JSON.stringifies it and leaks requestBodyValues (system prompt,
-                // user messages) into logs.
-                if (!isXaiSafetyError(error)) {
-                  chatLogger?.recordProviderError(error, {
-                    mode,
-                    model: selectedModel,
-                    userId,
-                    subscription,
-                    isTemporary: temporary,
-                  });
-                }
-                // Refund the upfront deduction only when the provider errored
-                // before producing any tokens. If hasUsage is true, the real
-                // cost will still be reconciled by deductAccumulatedUsage().
-                if (!usageTracker.hasUsage) {
-                  await usageRefundTracker.refund();
-                }
-
-                // Tear down any PTY sessions left open — streamText.onFinish
-                // may not fire on error/abort paths. `closeAll` is idempotent;
-                // calling it here + in onFinish is safe. Best-effort only —
-                // must never propagate back into the stream.
-                await ptySessionManager
-                  .closeAll(chatId)
-                  .catch((err) =>
-                    console.error(
-                      "[chat-handler] PTY closeAll (onError) failed:",
-                      err,
-                    ),
-                  );
-              },
-              onAbort: async () => {
-                // Mirror the onError cleanup for client-initiated aborts.
-                // If this hook is not supported by the current ai SDK it will
-                // simply be ignored; the outer catch block is the hard backstop.
-                await ptySessionManager
-                  .closeAll(chatId)
-                  .catch((err) =>
-                    console.error(
-                      "[chat-handler] PTY closeAll (onAbort) failed:",
-                      err,
-                    ),
-                  );
-              },
-            });
+          // Shared runner context.
+          const streamCtx: AgentStreamContext = {
+            trackedProvider,
+            currentSystemPrompt,
+            tools,
+            mode,
+            userId,
+            subscription,
+            chatId,
+            temporary,
+            fileTokens,
+            noteInjectionOpts,
+            systemPromptTokens,
+            ctxSystemTokens,
+            ctxMaxTokens,
+            streamStartTime,
+            contextUsageOn,
+            isReasoningModel,
+            maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
+            writer,
+            abortController: userStopSignal,
+            summarizationTracker,
+            usageTracker,
+            budgetMonitor,
+            sandboxManager,
+            getTodoManager,
+            ensureSandbox,
+            chatLogger,
+            usageRefundTracker,
+            getHardTimeoutReason: () =>
+              preemptiveTimeout?.isPreemptive() ? "timeout" : null,
           };
+
+          const createStream = (modelName: string) =>
+            createAgentStream(modelName, streamCtx, state);
 
           let result;
           try {
@@ -964,11 +671,11 @@ export const createChatHandler = (
               });
 
               isRetryWithFallback = true;
-              lastStepInputTokens = 0;
-              stoppedDueToTokenExhaustion = false;
-              stoppedDueToPreemptiveTimeout = false;
-              stoppedDueToDoomLoop = false;
-              stoppedDueToBudgetExhaustion = false;
+              state.lastStepInputTokens = 0;
+              state.stoppedDueToTokenExhaustion = false;
+              state.stoppedDueToElapsedTimeout = false;
+              state.stoppedDueToDoomLoop = false;
+              state.stoppedDueToBudgetExhaustion = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               // Discard the failed primary leg's model usage so the user is
@@ -1015,12 +722,14 @@ export const createChatHandler = (
                   // Retry with fallback model if not already retrying (only for auto models)
                   if (!isRetryWithFallback && !isAborted && isAutoModel) {
                     isRetryWithFallback = true;
-                    lastStepInputTokens = 0;
-                    stoppedDueToTokenExhaustion = false;
-                    stoppedDueToPreemptiveTimeout = false;
-                    stoppedDueToDoomLoop = false;
-                    stoppedDueToBudgetExhaustion = false;
+                    state.lastStepInputTokens = 0;
+                    state.stoppedDueToTokenExhaustion = false;
+                    state.stoppedDueToElapsedTimeout = false;
+                    state.stoppedDueToDoomLoop = false;
+                    state.stoppedDueToBudgetExhaustion = false;
                     const fallbackStartTime = Date.now();
+                    preFallbackCacheRead = usageTracker.cacheReadTokens;
+                    preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
                     // Discard the failed primary leg's model usage so the
                     // user is only billed for the fallback. Non-model spend
@@ -1072,10 +781,11 @@ export const createChatHandler = (
                           });
                           shutdownPostHog(posthog);
                           chatLogger!.emitSuccess({
-                            finishReason: streamFinishReason,
+                            finishReason: state.streamFinishReason,
                             wasAborted: retryAborted,
                             wasPreemptiveTimeout: false,
-                            hadSummarization: hasSummarized(),
+                            hadSummarization:
+                              summarizationTracker.hasSummarized,
                           });
 
                           const generatedTitle = await titlePromise;
@@ -1088,13 +798,13 @@ export const createChatHandler = (
 
                             if (
                               generatedTitle ||
-                              streamFinishReason ||
+                              state.streamFinishReason ||
                               mergedTodos.length > 0
                             ) {
                               await updateChat({
                                 chatId,
                                 title: generatedTitle,
-                                finishReason: streamFinishReason,
+                                finishReason: state.streamFinishReason,
                                 todos: mergedTodos,
                                 defaultModelSlug: mode,
                                 sandboxType:
@@ -1123,11 +833,11 @@ export const createChatHandler = (
                                 userId,
                                 message: processed,
                                 extraFileIds: newFileIds,
-                                usage: streamUsage,
-                                model: responseModel,
+                                usage: state.streamUsage,
+                                model: state.responseModel,
                                 generationTimeMs:
                                   Date.now() - fallbackStartTime,
-                                finishReason: streamFinishReason,
+                                finishReason: state.streamFinishReason,
                               });
                             }
 
@@ -1151,7 +861,7 @@ export const createChatHandler = (
                             fallbackAssistantMessage?.parts?.some(
                               (p) =>
                                 p.type === "text" ||
-                                p.type === "tool-invocation" ||
+                                p.type?.startsWith("tool-") ||
                                 p.type === "reasoning",
                             ) ?? false;
                           const fallbackPartTypes =
@@ -1240,7 +950,7 @@ export const createChatHandler = (
                 // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
                 // This prevents showing "going off course" message when user clicks stop
                 if (isAborted && !isPreemptiveAbort) {
-                  streamFinishReason = undefined;
+                  state.streamFinishReason = undefined;
                 }
 
                 // Emit wide event
@@ -1254,10 +964,10 @@ export const createChatHandler = (
                 captureToolCalls({ posthog, chatLogger, userId, mode });
                 shutdownPostHog(posthog);
                 chatLogger!.emitSuccess({
-                  finishReason: streamFinishReason,
+                  finishReason: state.streamFinishReason,
                   wasAborted: isAborted,
                   wasPreemptiveTimeout: isPreemptiveAbort,
-                  hadSummarization: hasSummarized(),
+                  hadSummarization: summarizationTracker.hasSummarized,
                 });
                 logStep("emit_success_event", stepStart);
 
@@ -1282,7 +992,7 @@ export const createChatHandler = (
                     ? true
                     : Boolean(
                         generatedTitle ||
-                        streamFinishReason ||
+                        state.streamFinishReason ||
                         mergedTodos.length > 0,
                       );
 
@@ -1292,7 +1002,7 @@ export const createChatHandler = (
                     await updateChat({
                       chatId,
                       title: generatedTitle,
-                      finishReason: streamFinishReason,
+                      finishReason: state.streamFinishReason,
                       todos: mergedTodos,
                       defaultModelSlug: mode,
                       sandboxType: sandboxManager.getEffectivePreference(),
@@ -1327,11 +1037,11 @@ export const createChatHandler = (
                       ),
                   );
 
-                  // On abort, streamText.onFinish may not have fired yet, so streamUsage
+                  // On abort, streamText.onFinish may not have fired yet, so state.streamUsage
                   // could be undefined. Await usage from result to ensure we capture it.
                   // This must happen BEFORE we decide whether to skip saving.
                   let resolvedUsage: Record<string, unknown> | undefined =
-                    streamUsage;
+                    state.streamUsage;
                   if (!resolvedUsage && isAborted) {
                     try {
                       resolvedUsage = (await result.usage) as Record<
@@ -1377,7 +1087,7 @@ export const createChatHandler = (
                     }
 
                     // Use resolvedUsage which was already awaited above on abort
-                    // Falls back to streamUsage for non-abort cases
+                    // Falls back to state.streamUsage for non-abort cases
                     // On user-initiated abort, use updateOnly as safety net:
                     // only patch existing messages (add files/usage), don't create new ones.
                     // This prevents orphan messages when Redis skipSave signal was missed.
@@ -1386,10 +1096,10 @@ export const createChatHandler = (
                       userId,
                       message: processedMessage,
                       extraFileIds: newFileIds,
-                      model: responseModel || configuredModelId,
+                      model: state.responseModel || configuredModelId,
                       generationTimeMs: Date.now() - streamStartTime,
-                      finishReason: streamFinishReason,
-                      usage: resolvedUsage ?? streamUsage,
+                      finishReason: state.streamFinishReason,
+                      usage: resolvedUsage ?? state.streamUsage,
                       updateOnly:
                         isAborted && !isPreemptiveAbort ? true : undefined,
                       isHidden:
@@ -1435,15 +1145,16 @@ export const createChatHandler = (
                 if (contextUsageOn) {
                   writeContextUsage(writer, {
                     usedTokens:
-                      ctxUsage.usedTokens + usageTracker.streamOutputTokens,
-                    maxTokens: ctxUsage.maxTokens,
+                      state.ctxUsage.usedTokens +
+                      usageTracker.streamOutputTokens,
+                    maxTokens: state.ctxUsage.maxTokens,
                   });
                 }
 
                 if (
-                  (stoppedDueToTokenExhaustion ||
-                    stoppedDueToPreemptiveTimeout ||
-                    streamFinishReason === "tool-calls") &&
+                  (state.stoppedDueToTokenExhaustion ||
+                    state.stoppedDueToElapsedTimeout ||
+                    state.streamFinishReason === "tool-calls") &&
                   isAgentMode(mode) &&
                   !temporary
                 ) {

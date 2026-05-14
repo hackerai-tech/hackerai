@@ -78,7 +78,7 @@ export const truncateMessagesWithFileTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
-  mode?: "ask" | "agent",
+  mode?: import("@/types").ChatMode,
 ): Promise<{
   messages: UIMessage[];
   fileTokens: Record<Id<"files">, number>;

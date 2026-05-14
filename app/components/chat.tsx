@@ -28,6 +28,11 @@ import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import {
+  fetchAgentLongStream,
+  resumeAgentLongStream,
+} from "@/lib/chat/agent-long-transport";
+import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
@@ -229,6 +234,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Refs to avoid stale closures in callbacks
   const isExistingChatRef = useLatestRef(isExistingChat);
   const chatModeRef = useLatestRef(chatMode);
+  const subscriptionRef = useLatestRef(subscription);
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
@@ -308,6 +314,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatData?.title ?? null;
+  const activeTriggerRunRef = useLatestRef(
+    (chatData as any)?.active_trigger_run_id as string | undefined,
+  );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -332,11 +341,51 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
+        const mode = chatModeRef.current;
+        const isFreeAgent =
+          mode === "agent" && subscriptionRef.current === "free";
+        if (isFreeAgent) {
+          // useChat reuses this fetch for both POST sendMessages and GET
+          // reconnectToStream — dispatch on method.
+          if (init?.method === "GET") {
+            return resumeAgentLongStream(
+              typeof input === "string" ? input : input.toString(),
+              init,
+            );
+          }
+          return fetchAgentLongStream(init);
+        }
+        // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
+        // load — prepareReconnectToStreamRequest already pointed at the resume
+        // URL, so route based on the URL (not on ref state) to be resilient to
+        // stale refs.
+        if (
+          init?.method === "GET" &&
+          (typeof input === "string" ? input : input.toString()).includes(
+            "/api/agent-long/resume",
+          )
+        ) {
+          return resumeAgentLongStream(
+            typeof input === "string" ? input : input.toString(),
+            init,
+          );
+        }
         const url =
-          input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
-            : input;
+          input === "/api/chat" && mode === "agent" ? "/api/agent" : input;
         return fetchWithErrorHandlers(url, init);
+      },
+      prepareReconnectToStreamRequest: ({ id, api }) => {
+        // Use the agent-long resume endpoint when there is a stored trigger run
+        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
+        // when the current user is a free user in agent mode.
+        const isFreeAgent =
+          chatModeRef.current === "agent" && subscriptionRef.current === "free";
+        if (isFreeAgent || !!activeTriggerRunRef.current) {
+          return {
+            api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
+          };
+        }
+        return { api: `${api}/${id}/stream` };
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
         const {
@@ -352,7 +401,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
         const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
-          return msgs.map((msg) => {
+          const messagesWithoutHeartbeats =
+            stripAgentLongHeartbeatPartsFromMessages(msgs);
+          return messagesWithoutHeartbeats.map((msg) => {
             if (!msg.parts || msg.parts.length === 0) return msg;
             const strippedParts = msg.parts.map((part: any) => {
               if (part.type === "file" && "url" in part) {
@@ -769,7 +820,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       void updateChatPreferences({
         id: chatId,
         selectedModel,
-        mode: chatMode as "ask" | "agent",
+        mode: chatMode,
       })
         .then(() => {
           if (cancelled) return;
@@ -823,6 +874,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Comparing parts.length catches content updates where the ID stays the same.
     const current = messagesRef.current;
+
+    // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
+    // task) hasn't finished persisting the generated messages yet. Once it catches
+    // up, Convex will push the full set and the normal sync below will apply.
+    if (uiMessages.length < current.length) {
+      return;
+    }
+
     if (
       current.length === uiMessages.length &&
       current.every(
@@ -830,6 +889,25 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           m.id === uiMessages[i].id &&
           (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
       )
+    ) {
+      return;
+    }
+
+    // Don't let Convex reorder messages that already exist locally. The trigger
+    // task's onFinish saves the assistant message after the stream finishes, so
+    // the next user message may land in Convex first (_creationTime ordering).
+    // Local ordering is authoritative; only accept additive/content updates.
+    const currentIdSet = new Set(current.map((m) => m.id));
+    const uiIdSet = new Set(uiMessages.map((m) => m.id));
+    const uiSharedOrder = uiMessages
+      .map((m) => m.id)
+      .filter((id) => currentIdSet.has(id));
+    const currentSharedOrder = current
+      .map((m) => m.id)
+      .filter((id) => uiIdSet.has(id));
+    if (
+      uiSharedOrder.length > 0 &&
+      uiSharedOrder.join("\0") !== currentSharedOrder.join("\0")
     ) {
       return;
     }
@@ -1062,7 +1140,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         selectedModel={selectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
-          chatData === undefined ? undefined : !!chatData?.active_stream_id
+          chatData === undefined
+            ? undefined
+            : !!chatData?.active_stream_id || !!chatData?.active_trigger_run_id
         }
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">

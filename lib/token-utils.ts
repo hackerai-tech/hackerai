@@ -12,12 +12,9 @@ export const MAX_TOKENS_PAID = 200000;
 export const FILE_TOKEN_PERCENT = 0.5;
 
 export const getMaxTokensForSubscription = (
-  subscription: SubscriptionTier,
-  opts?: { mode?: "ask" | "agent" },
+  _subscription?: SubscriptionTier,
+  _opts?: { mode?: import("@/types").ChatMode },
 ): number => {
-  if (subscription === "free") {
-    return opts?.mode === "agent" ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
-  }
   return MAX_TOKENS_PAID;
 };
 
@@ -27,7 +24,7 @@ export const getMaxTokensForSubscription = (
  */
 export const getMaxFileTokens = (
   subscription: SubscriptionTier,
-  opts?: { mode?: "ask" | "agent" },
+  opts?: { mode?: import("@/types").ChatMode },
 ): number => {
   return Math.floor(
     getMaxTokensForSubscription(subscription, opts) * FILE_TOKEN_PERCENT,
@@ -114,7 +111,7 @@ const getMessageTokenCountWithFiles = (
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
   fileTokens: Record<Id<"files">, number> = {},
-  maxTokens: number = MAX_TOKENS_FREE,
+  maxTokens: number = MAX_TOKENS_PAID,
 ): UIMessage[] => {
   if (messages.length === 0) return messages;
 

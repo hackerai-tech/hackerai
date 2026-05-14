@@ -22,8 +22,14 @@ import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+let convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL ?? "");
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+
+// Called by Trigger.dev tasks to point at the correct per-branch preview deployment.
+// Each task run is an isolated worker process so mutation is safe.
+export function setConvexUrl(url: string) {
+  convex = new ConvexHttpClient(url);
+}
 
 export async function getChatById({ id }: { id: string }) {
   try {
@@ -240,7 +246,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent";
+  mode?: import("@/types").ChatMode;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -507,6 +513,41 @@ export async function getUserCustomization({ userId }: { userId: string }) {
     return userCustomization;
   } catch (error) {
     // If no customization found or error, return null
+    return null;
+  }
+}
+
+export async function setActiveTriggerRun({
+  chatId,
+  triggerRunId,
+  expectedRunId,
+}: {
+  chatId: string;
+  triggerRunId: string | null;
+  expectedRunId?: string;
+}) {
+  try {
+    await convex.mutation(api.chats.setActiveTriggerRun, {
+      serviceKey,
+      chatId,
+      triggerRunId,
+      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active trigger run",
+    );
+  }
+}
+
+export async function getActiveTriggerRun({ chatId }: { chatId: string }) {
+  try {
+    return await convex.query(api.chats.getActiveTriggerRun, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
     return null;
   }
 }

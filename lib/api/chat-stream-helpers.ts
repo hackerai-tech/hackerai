@@ -297,7 +297,7 @@ export function computeContextUsage(
 
 export function isContextUsageEnabled(
   subscription: SubscriptionTier,
-  mode?: "ask" | "agent",
+  mode?: ChatMode,
 ): boolean {
   if (subscription !== "free") return true;
   return mode === "agent";
