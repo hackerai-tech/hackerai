@@ -115,16 +115,15 @@ export const ChatInput = ({
     prevHasLocalSandboxRef.current = hasLocalSandbox;
 
     if (!isFreeAgent) return;
-    // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where hasLocalSandbox starts as false.
-    if (!hasLocalSandbox) {
+    // Only force-switch on a real disconnect (true → false). On initial mount the
+    // Convex query is still loading and hasLocalSandbox is transiently false —
+    // flipping mode here would clobber the saved "agent" preference.
+    if (!hasLocalSandbox && wasConnected) {
       setChatMode("ask");
-      if (wasConnected) {
-        toast.info("Local sandbox disconnected. Switched to Ask mode.", {
-          description: "Reconnect your sandbox to use Agent mode.",
-          duration: 5000,
-        });
-      }
+      toast.info("Local sandbox disconnected. Switched to Ask mode.", {
+        description: "Reconnect your sandbox to use Agent mode.",
+        duration: 5000,
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent, hasLocalSandbox]);

@@ -184,8 +184,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     null,
   );
 
-  // Persist chat mode preference to localStorage on change
+  // Persist chat mode preference to localStorage on change.
+  // Skip the initial-mount write so the fallback "ask" doesn't get committed
+  // before the auto-agent-mode effect (below) has a chance to fire.
+  const isInitialChatModePersistRef = useRef(true);
   useEffect(() => {
+    if (isInitialChatModePersistRef.current) {
+      isInitialChatModePersistRef.current = false;
+      return;
+    }
     writeChatMode(chatMode);
   }, [chatMode]);
 
