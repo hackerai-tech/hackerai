@@ -2,7 +2,7 @@ import "server-only";
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import {
@@ -22,18 +22,13 @@ import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
-let convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL ?? "");
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
-// Called by Trigger.dev tasks to point at the correct per-branch preview deployment.
-// Each task run is an isolated worker process so mutation is safe.
-export function setConvexUrl(url: string) {
-  convex = new ConvexHttpClient(url);
-}
+export { setConvexUrl };
 
 export async function getChatById({ id }: { id: string }) {
   try {
-    const selectedChat = await convex.query(api.chats.getChatById, {
+    const selectedChat = await getConvexClient().query(api.chats.getChatById, {
       serviceKey,
       id,
     });
@@ -53,7 +48,7 @@ export async function saveChat({
   title: string;
 }) {
   try {
-    return await convex.mutation(api.chats.saveChat, {
+    return await getConvexClient().mutation(api.chats.saveChat, {
       serviceKey,
       id,
       userId,
@@ -104,7 +99,7 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
 
-    return await convex.mutation(api.messages.saveMessage, {
+    return await getConvexClient().mutation(api.messages.saveMessage, {
       serviceKey,
       id: message.id,
       chatId,
@@ -213,7 +208,7 @@ export async function updateChat({
   selectedModel?: string;
 }) {
   try {
-    return await convex.mutation(api.chats.updateChat, {
+    return await getConvexClient().mutation(api.chats.updateChat, {
       serviceKey,
       chatId,
       title,
@@ -282,12 +277,15 @@ export async function getMessagesByChatId({
             page: UIMessage[];
             isDone: boolean;
             continueCursor: string | null;
-          } = await convex.query(api.messages.getMessagesPageForBackend, {
-            serviceKey,
-            chatId,
-            userId,
-            paginationOpts: { numItems: PAGE_SIZE, cursor },
-          });
+          } = await getConvexClient().query(
+            api.messages.getMessagesPageForBackend,
+            {
+              serviceKey,
+              chatId,
+              userId,
+              paginationOpts: { numItems: PAGE_SIZE, cursor },
+            },
+          );
           const { page, isDone, continueCursor: nextCursor } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
@@ -503,7 +501,7 @@ export async function getMessagesByChatId({
 
 export async function getUserCustomization({ userId }: { userId: string }) {
   try {
-    const userCustomization = await convex.query(
+    const userCustomization = await getConvexClient().query(
       api.userCustomization.getUserCustomizationForBackend,
       {
         serviceKey,
@@ -527,7 +525,7 @@ export async function setActiveTriggerRun({
   expectedRunId?: string;
 }) {
   try {
-    await convex.mutation(api.chats.setActiveTriggerRun, {
+    await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
       serviceKey,
       chatId,
       triggerRunId,
@@ -543,7 +541,7 @@ export async function setActiveTriggerRun({
 
 export async function getActiveTriggerRun({ chatId }: { chatId: string }) {
   try {
-    return await convex.query(api.chats.getActiveTriggerRun, {
+    return await getConvexClient().query(api.chats.getActiveTriggerRun, {
       serviceKey,
       chatId,
     });
@@ -560,7 +558,7 @@ export async function startStream({
   streamId: string;
 }) {
   try {
-    await convex.mutation(api.chatStreams.startStream, {
+    await getConvexClient().mutation(api.chatStreams.startStream, {
       serviceKey,
       chatId,
       streamId,
@@ -573,7 +571,7 @@ export async function startStream({
 
 export async function prepareForNewStream({ chatId }: { chatId: string }) {
   try {
-    await convex.mutation(api.chatStreams.prepareForNewStream, {
+    await getConvexClient().mutation(api.chatStreams.prepareForNewStream, {
       serviceKey,
       chatId,
     });
@@ -588,10 +586,13 @@ export async function prepareForNewStream({ chatId }: { chatId: string }) {
 
 export async function getCancellationStatus({ chatId }: { chatId: string }) {
   try {
-    const status = await convex.query(api.chatStreams.getCancellationStatus, {
-      serviceKey,
-      chatId,
-    });
+    const status = await getConvexClient().query(
+      api.chatStreams.getCancellationStatus,
+      {
+        serviceKey,
+        chatId,
+      },
+    );
     return status;
   } catch (error) {
     // Silently return null on error for cancellation checks
@@ -608,7 +609,7 @@ export async function startTempStream({
   userId: string;
 }) {
   try {
-    await convex.mutation(api.tempStreams.startTempStream, {
+    await getConvexClient().mutation(api.tempStreams.startTempStream, {
       serviceKey,
       chatId,
       userId,
@@ -624,10 +625,13 @@ export async function getTempCancellationStatus({
   chatId: string;
 }) {
   try {
-    return await convex.query(api.tempStreams.getTempCancellationStatus, {
-      serviceKey,
-      chatId,
-    });
+    return await getConvexClient().query(
+      api.tempStreams.getTempCancellationStatus,
+      {
+        serviceKey,
+        chatId,
+      },
+    );
   } catch (error) {
     return null;
   }
@@ -639,10 +643,13 @@ export async function deleteTempStreamForBackend({
   chatId: string;
 }) {
   try {
-    await convex.mutation(api.tempStreams.deleteTempStreamForBackend, {
-      serviceKey,
-      chatId,
-    });
+    await getConvexClient().mutation(
+      api.tempStreams.deleteTempStreamForBackend,
+      {
+        serviceKey,
+        chatId,
+      },
+    );
   } catch (error) {
     // Best-effort cleanup
   }
@@ -658,7 +665,7 @@ export async function saveChatSummary({
   summaryUpToMessageId: string;
 }) {
   try {
-    await convex.mutation(api.chats.saveLatestSummary, {
+    await getConvexClient().mutation(api.chats.saveLatestSummary, {
       serviceKey,
       chatId,
       summaryText,
@@ -687,10 +694,13 @@ export async function saveChatSummary({
 
 export async function getLatestSummary({ chatId }: { chatId: string }) {
   try {
-    const summary = await convex.query(api.chats.getLatestSummaryForBackend, {
-      serviceKey,
-      chatId,
-    });
+    const summary = await getConvexClient().query(
+      api.chats.getLatestSummaryForBackend,
+      {
+        serviceKey,
+        chatId,
+      },
+    );
     return summary;
   } catch (error) {
     console.error("[DB Actions] Failed to get latest summary:", error);
@@ -716,14 +726,17 @@ export async function createNote({
   tags?: string[];
 }) {
   try {
-    const result = await convex.mutation(api.notes.createNoteForBackend, {
-      serviceKey,
-      userId,
-      title,
-      content,
-      category,
-      tags,
-    });
+    const result = await getConvexClient().mutation(
+      api.notes.createNoteForBackend,
+      {
+        serviceKey,
+        userId,
+        title,
+        content,
+        category,
+        tags,
+      },
+    );
     return result;
   } catch (error) {
     throw new ChatSDKError(
@@ -745,13 +758,16 @@ export async function listNotes({
   search?: string;
 }) {
   try {
-    const result = await convex.query(api.notes.listNotesForBackend, {
-      serviceKey,
-      userId,
-      category,
-      tags,
-      search,
-    });
+    const result = await getConvexClient().query(
+      api.notes.listNotesForBackend,
+      {
+        serviceKey,
+        userId,
+        category,
+        tags,
+        search,
+      },
+    );
     return result;
   } catch (error) {
     throw new ChatSDKError(
@@ -775,14 +791,17 @@ export async function updateNote({
   tags?: string[];
 }) {
   try {
-    const result = await convex.mutation(api.notes.updateNoteForBackend, {
-      serviceKey,
-      userId,
-      noteId,
-      title,
-      content,
-      tags,
-    });
+    const result = await getConvexClient().mutation(
+      api.notes.updateNoteForBackend,
+      {
+        serviceKey,
+        userId,
+        noteId,
+        title,
+        content,
+        tags,
+      },
+    );
     return result;
   } catch (error) {
     throw new ChatSDKError(
@@ -800,11 +819,14 @@ export async function deleteNote({
   noteId: string;
 }) {
   try {
-    const result = await convex.mutation(api.notes.deleteNoteForBackend, {
-      serviceKey,
-      userId,
-      noteId,
-    });
+    const result = await getConvexClient().mutation(
+      api.notes.deleteNoteForBackend,
+      {
+        serviceKey,
+        userId,
+        noteId,
+      },
+    );
     return result;
   } catch (error) {
     throw new ChatSDKError(
@@ -822,7 +844,7 @@ export async function getNotes({
   subscription: SubscriptionTier;
 }) {
   try {
-    const notes = await convex.query(api.notes.getNotesForBackend, {
+    const notes = await getConvexClient().query(api.notes.getNotesForBackend, {
       serviceKey,
       userId,
       subscription,
@@ -856,7 +878,7 @@ export async function logUsageRecord({
   costDollars: number;
 }) {
   try {
-    await convex.mutation(api.usageLogs.logUsage, {
+    await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       user_id: userId,
       model,

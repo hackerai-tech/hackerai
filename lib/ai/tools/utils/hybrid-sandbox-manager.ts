@@ -8,7 +8,7 @@ import type {
 import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
@@ -45,7 +45,6 @@ export class HybridSandboxManager implements SandboxManager {
   private isLocal = false;
   private currentConnectionId: string | null = null;
   private currentConnectionName: string | null = null;
-  private convex: ConvexHttpClient;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
@@ -60,11 +59,6 @@ export class HybridSandboxManager implements SandboxManager {
     private onBoot?: (info: SandboxBootInfo) => void,
   ) {
     this.sandbox = initialSandbox || null;
-    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-    if (!convexUrl) {
-      throw new Error("NEXT_PUBLIC_CONVEX_URL environment variable is not set");
-    }
-    this.convex = new ConvexHttpClient(convexUrl);
   }
 
   recordHealthFailure(): boolean {
@@ -184,7 +178,7 @@ export class HybridSandboxManager implements SandboxManager {
    */
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
-      const connections = await this.convex.query(
+      const connections = await getConvexClient().query(
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,
