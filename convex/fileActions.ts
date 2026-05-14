@@ -186,7 +186,7 @@ const validateTokenLimit = (
   if (totalTokens > maxTokens) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
     });
   }
 };
@@ -402,7 +402,7 @@ const processFileAuto = async (
         if (!skipTokenValidation && fallbackTokens > maxTokens) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
           });
         }
 
@@ -587,7 +587,9 @@ export const saveFile = action({
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
     skipTokenValidation: v.optional(v.boolean()),
-    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    mode: v.optional(
+      v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
+    ),
   },
   returns: v.object({
     url: v.string(),
@@ -653,7 +655,9 @@ export const saveFile = action({
     // Agent mode: files are accessed in sandbox, no token counting needed
     // Ask mode: files are included in context, token counting required
     const shouldSkipTokenValidation =
-      args.skipTokenValidation || args.mode === "agent";
+      args.skipTokenValidation ||
+      args.mode === "agent" ||
+      args.mode === "agent-long";
 
     // Check if paid tier (free tier cannot upload)
     const hasPaidEntitlement =

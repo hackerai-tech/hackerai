@@ -55,7 +55,7 @@ interface MessagesProps {
     status: "started" | "completed";
     message: string;
   } | null;
-  mode?: "ask" | "agent";
+  mode?: import("@/types").ChatMode;
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;

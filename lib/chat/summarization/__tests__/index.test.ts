@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
 import type { Todo } from "@/types";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "../constants";
-import { MAX_TOKENS_FREE } from "@/lib/token-utils";
+import { MAX_TOKENS_PAID } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
@@ -26,11 +26,11 @@ const { checkAndSummarizeIfNeeded } =
 const { isSummaryMessage, extractSummaryText } =
   require("../helpers") as typeof import("../helpers");
 
-const FREE_THRESHOLD = Math.floor(
-  MAX_TOKENS_FREE * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+const THRESHOLD = Math.floor(
+  MAX_TOKENS_PAID * SUMMARIZATION_THRESHOLD_PERCENTAGE,
 );
 
-const TOKENS_PER_ABOVE_MSG = Math.ceil(FREE_THRESHOLD / 4) + 500;
+const TOKENS_PER_ABOVE_MSG = Math.ceil(THRESHOLD / 4) + 500;
 
 const createMessageWithTokens = (
   id: string,

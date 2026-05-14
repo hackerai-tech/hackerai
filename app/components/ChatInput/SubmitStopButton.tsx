@@ -22,9 +22,10 @@ function getStopButtonVariantClasses(mode: ChatMode): string {
 }
 
 function getSubmitButtonVariantClasses(mode: ChatMode): string {
-  return mode === "agent"
-    ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-    : "";
+  if (mode === "agent") {
+    return "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500";
+  }
+  return "";
 }
 
 function getSendButtonTooltip(

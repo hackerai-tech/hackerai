@@ -160,7 +160,6 @@ async function configureConvexDashboard(
   console.log("   - AWS_S3_* variables (if using S3 storage)");
   console.log("   - REDIS_URL (if using Redis for stream resumption)");
   console.log("   - STRIPE_* variables (if using Stripe payments)");
-  console.log("   - LOCAL_SANDBOX_SESSION_SECRET (if using local sandbox)");
   return await question(
     "\nHit enter after you have added the required environment variables to Convex Dashboard",
   );
@@ -226,15 +225,6 @@ XAI_API_KEY=${envVars.XAI_API_KEY}
 # Sign up at: https://e2b.dev/
 E2B_API_KEY=${envVars.E2B_API_KEY}
 E2B_TEMPLATE=terminal-agent-sandbox
-
-# =============================================================================
-# LOCAL SANDBOX (Optional - Alternative to E2B)
-# =============================================================================
-# Secret for signing session tokens (HMAC-SHA256)
-# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-# ⚠️ IMPORTANT: Set this in Convex Dashboard → Environment Variables
-#               OR run: npx convex env set LOCAL_SANDBOX_SESSION_SECRET <value>
-# LOCAL_SANDBOX_SESSION_SECRET=
 
 # =============================================================================
 # WEB SEARCH & SCRAPING (Optional)

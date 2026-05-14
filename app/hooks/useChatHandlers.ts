@@ -81,6 +81,7 @@ export const useChatHandlers = ({
   // previous mode in the request body. Reading from a ref always gets the
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
+  const subscriptionRef = useLatestRef(subscription);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -313,6 +314,22 @@ export const useChatHandlers = ({
 
     try {
       await stopActiveStream();
+      // For agent-long, also tell the server to cancel the trigger.dev run.
+      // Fire-and-forget — server-side cancel is idempotent and the client
+      // abort already disconnected the realtime stream.
+      if (
+        chatModeRef.current === "agent" &&
+        subscriptionRef.current === "free" &&
+        !temporaryChatsEnabledRef.current
+      ) {
+        fetch("/api/agent-long/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId }),
+        }).catch((error) => {
+          console.error("Failed to cancel trigger.dev run:", error);
+        });
+      }
     } catch (error) {
       console.error("Error in handleStop:", error);
     }
