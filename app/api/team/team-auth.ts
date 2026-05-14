@@ -20,7 +20,7 @@ export async function requireTeamOrg(
   | { ok: true; organizationId: string; userId: string; membership: Membership }
   | { ok: false; response: NextResponse }
 > {
-  const { userId, subscription } = await getUserIDAndPro(req);
+  const { userId, subscription, organizationId } = await getUserIDAndPro(req);
 
   if (subscription !== "team") {
     return {
@@ -32,12 +32,27 @@ export async function requireTeamOrg(
     };
   }
 
+  // Use the active org from the session rather than picking an arbitrary one
+  // — a user can belong to multiple orgs and we must operate on the one they
+  // are currently authenticated against.
+  if (!organizationId) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "No active organization" },
+        { status: 403 },
+      ),
+    };
+  }
+
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    organizationId,
     statuses: ["active"],
   });
 
-  if (!memberships.data || memberships.data.length === 0) {
+  const membership = memberships.data?.[0];
+  if (!membership) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -47,10 +62,9 @@ export async function requireTeamOrg(
     };
   }
 
-  const membership = memberships.data[0];
   return {
     ok: true,
-    organizationId: membership.organizationId,
+    organizationId,
     userId,
     membership,
   };

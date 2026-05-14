@@ -3,7 +3,9 @@ import {
   it,
   expect,
   jest,
+  beforeAll,
   beforeEach,
+  afterAll,
   afterEach,
 } from "@jest/globals";
 
@@ -40,7 +42,17 @@ jest.mock("../lib/logger", () => ({
 }));
 
 const SERVICE_KEY = "test-service-key";
-process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
+const ORIGINAL_SERVICE_KEY = process.env.CONVEX_SERVICE_ROLE_KEY;
+beforeAll(() => {
+  process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
+});
+afterAll(() => {
+  if (ORIGINAL_SERVICE_KEY === undefined) {
+    delete process.env.CONVEX_SERVICE_ROLE_KEY;
+  } else {
+    process.env.CONVEX_SERVICE_ROLE_KEY = ORIGINAL_SERVICE_KEY;
+  }
+});
 
 const ORG_ID = "org_123";
 const USER_ID = "user_abc";
