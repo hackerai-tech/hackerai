@@ -43,7 +43,15 @@ export const PATCH = async (
       );
     }
 
-    const body = await req.json();
+    let body: {
+      monthlyLimitDollars?: number | null;
+      disabled?: boolean;
+    };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
 
     await convex.mutation(api.teamExtraUsage.updateTeamMemberUsage, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

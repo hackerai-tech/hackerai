@@ -49,6 +49,7 @@ export const TeamExtraUsageSection = () => {
   const [pool, setPool] = useState<Pool | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const [showBuyDialog, setShowBuyDialog] = useState(false);
@@ -58,6 +59,7 @@ export const TeamExtraUsageSection = () => {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(false);
     try {
       const res = await fetch("/api/team/extra-usage");
       if (!res.ok) throw new Error(await res.text());
@@ -67,6 +69,7 @@ export const TeamExtraUsageSection = () => {
     } catch (err) {
       console.error("Failed to load team extra usage:", err);
       toast.error("Failed to load team extra usage");
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -197,10 +200,30 @@ export const TeamExtraUsageSection = () => {
     toast.success("Auto-reload disabled");
   };
 
-  if (loading || !pool) {
+  if (loading) {
     return (
       <section className="flex flex-col gap-6">
         <p className="text-sm text-muted-foreground">Loading team usage…</p>
+      </section>
+    );
+  }
+
+  if (!pool) {
+    return (
+      <section className="flex flex-col gap-3 items-start">
+        <p className="text-sm text-muted-foreground">
+          {loadError
+            ? "Couldn't load team usage."
+            : "No team usage data available."}
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void load()}
+          disabled={loading}
+        >
+          Retry
+        </Button>
       </section>
     );
   }
@@ -484,7 +507,7 @@ const MemberSpendLimitDialog = ({
 }) => {
   const [limitInput, setLimitInput] = useState<string>(
     member.monthlyLimitDollars != null
-      ? String(Math.round(member.monthlyLimitDollars))
+      ? String(member.monthlyLimitDollars)
       : "",
   );
   const [disabled, setDisabled] = useState<boolean>(member.disabled);

@@ -16,8 +16,13 @@ export const POST = async (req: NextRequest) => {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;
 
-    const body = await req.json();
-    const amountDollars = body?.amountDollars;
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const amountDollars = (body as { amountDollars?: unknown })?.amountDollars;
 
     if (
       typeof amountDollars !== "number" ||

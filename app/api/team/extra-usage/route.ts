@@ -80,7 +80,18 @@ export const POST = async (req: NextRequest) => {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;
 
-    const body = await req.json();
+    let body: {
+      enabled?: boolean;
+      autoReloadEnabled?: boolean;
+      autoReloadThresholdDollars?: number;
+      autoReloadAmountDollars?: number;
+      monthlyCapDollars?: number | null;
+    };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
 
     await convex.mutation(api.teamExtraUsage.updateTeamExtraUsageSettings, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
