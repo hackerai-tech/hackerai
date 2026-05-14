@@ -1,5 +1,6 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
+import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
 
 /**
  * `fetch` adapter for "agent-long" mode used by the chat transport.
@@ -100,6 +101,7 @@ const buildSSEResponseFromRun = ({
           const deltaBuffers = new Map<string, DeltaBatch>();
           let batchedDeltaCount = 0;
           let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+          const toolInputDedup = createToolInputDedupFilter();
 
           const flushDeltaBuffers = () => {
             if (deltaFlushTimer !== null) {
@@ -188,6 +190,14 @@ const buildSSEResponseFromRun = ({
               // Non-delta chunk: flush any buffered deltas first so ordering
               // is preserved (e.g. text-delta before tool-input-start).
               flushDeltaBuffers();
+
+              if (
+                toolInputDedup.shouldDrop(
+                  chunk as { type?: string; toolCallId?: string },
+                )
+              ) {
+                continue;
+              }
 
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),

@@ -32,6 +32,7 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
+import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
@@ -400,7 +401,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
         const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
-          return msgs.map((msg) => {
+          const messagesWithoutHeartbeats =
+            stripAgentLongHeartbeatPartsFromMessages(msgs);
+          return messagesWithoutHeartbeats.map((msg) => {
             if (!msg.parts || msg.parts.length === 0) return msg;
             const strippedParts = msg.parts.map((part: any) => {
               if (part.type === "file" && "url" in part) {
