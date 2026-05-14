@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 /// Check if a path is executable (Unix: has execute permission).
 #[cfg(not(windows))]
 fn is_executable(path: &std::path::Path) -> bool {
@@ -139,8 +137,8 @@ pub fn build_command(
             // Rust's std `Command::arg` applies on Windows. Use `raw_arg`
             // to pass the command line through verbatim, wrapped in the
             // outer quotes that `cmd /C` expects, so embedded quoted paths
-            // like `"C:\temp\foo"` survive intact.
-            use std::os::windows::process::CommandExt;
+            // like `"C:\temp\foo"` survive intact. tokio's Command exposes
+            // raw_arg natively on Windows, no CommandExt import needed.
             cmd.arg(config.flag);
             cmd.raw_arg(format!("\"{}\"", command));
         } else {
@@ -177,6 +175,7 @@ pub fn build_command(
 pub async fn graceful_kill(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     {
+        use std::time::Duration;
         if let Some(pid) = child.id() {
             // Send SIGTERM first for graceful shutdown
             unsafe {
