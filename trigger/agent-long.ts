@@ -398,25 +398,15 @@ export const agentLongTask = task({
             userCustomization,
           });
 
-          // TEST: bypass daily limit for free users on agent-long.
-          if (subscription === "free") {
-            rateLimitInfo = {
-              remaining: Number.MAX_SAFE_INTEGER,
-              limit: Number.MAX_SAFE_INTEGER,
-              resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-              rateLimitSkipped: true,
-            };
-          } else {
-            rateLimitInfo = await checkRateLimit(
-              userId,
-              mode,
-              subscription,
-              estimatedInputTokens,
-              extraUsageConfig,
-              selectedModel,
-              organizationId,
-            );
-          }
+          rateLimitInfo = await checkRateLimit(
+            userId,
+            mode,
+            subscription,
+            estimatedInputTokens,
+            extraUsageConfig,
+            selectedModel,
+            organizationId,
+          );
 
           usageRefundTracker.recordDeductions(rateLimitInfo);
           chatLogger?.setRateLimit(
