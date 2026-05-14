@@ -8,7 +8,10 @@ if (process.env.NODE_ENV !== "production") {
 
 export default defineConfig({
   project: process.env.TRIGGER_PROJECT_ID!,
-  runtime: "node",
+  // centrifuge-js relies on globalThis.WebSocket, which is only stable on
+  // Node 22+. The default "node" runtime is older and would throw
+  // "WebSocket constructor not found" when CentrifugoSandbox connects.
+  runtime: "node-22",
   logLevel: "log",
   // Up to one hour per agent-long run.
   maxDuration: 3600,
