@@ -76,7 +76,9 @@ export const TeamExtraUsageSection = () => {
     void load();
   }, [load]);
 
-  const updatePool = async (patch: Record<string, unknown>) => {
+  const updatePool = async (
+    patch: Record<string, unknown>,
+  ): Promise<boolean> => {
     setBusy(true);
     try {
       const res = await fetch("/api/team/extra-usage", {
@@ -89,11 +91,13 @@ export const TeamExtraUsageSection = () => {
         throw new Error(body.error || "Failed");
       }
       await load();
+      return true;
     } catch (err) {
       console.error("Failed to update pool:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to update settings",
       );
+      return false;
     } finally {
       setBusy(false);
     }
@@ -102,7 +106,7 @@ export const TeamExtraUsageSection = () => {
   const updateMember = async (
     userId: string,
     patch: { monthlyLimitDollars?: number | null; disabled?: boolean },
-  ) => {
+  ): Promise<boolean> => {
     setBusy(true);
     try {
       const res = await fetch(
@@ -118,18 +122,21 @@ export const TeamExtraUsageSection = () => {
         throw new Error(body.error || "Failed");
       }
       await load();
+      return true;
     } catch (err) {
       console.error("Failed to update member:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to update member",
       );
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
   const handleTogglePool = async (enabled: boolean) => {
-    await updatePool({ enabled });
+    const ok = await updatePool({ enabled });
+    if (!ok) return;
     toast.success(
       enabled ? "Team extra usage enabled" : "Team extra usage disabled",
     );
@@ -159,7 +166,8 @@ export const TeamExtraUsageSection = () => {
   };
 
   const handleSaveSpendingLimit = async (limitDollars: number | null) => {
-    await updatePool({ monthlyCapDollars: limitDollars });
+    const ok = await updatePool({ monthlyCapDollars: limitDollars });
+    if (!ok) return;
     setShowSpendingLimitDialog(false);
     toast.success(
       limitDollars
@@ -172,17 +180,19 @@ export const TeamExtraUsageSection = () => {
     thresholdDollars: number,
     amountDollars: number,
   ) => {
-    await updatePool({
+    const ok = await updatePool({
       autoReloadEnabled: true,
       autoReloadThresholdDollars: thresholdDollars,
       autoReloadAmountDollars: amountDollars,
     });
+    if (!ok) return;
     setShowAutoReloadDialog(false);
     toast.success("Auto-reload enabled");
   };
 
   const handleTurnOffAutoReload = async () => {
-    await updatePool({ autoReloadEnabled: false });
+    const ok = await updatePool({ autoReloadEnabled: false });
+    if (!ok) return;
     setShowAutoReloadDialog(false);
     toast.success("Auto-reload disabled");
   };
@@ -443,7 +453,8 @@ export const TeamExtraUsageSection = () => {
           isLoading={busy}
           onClose={() => setMemberDialog(null)}
           onSave={async (patch) => {
-            await updateMember(memberDialog.userId, patch);
+            const ok = await updateMember(memberDialog.userId, patch);
+            if (!ok) return;
             setMemberDialog(null);
             toast.success("Member updated");
           }}

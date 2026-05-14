@@ -19,9 +19,13 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json();
     const amountDollars = body?.amountDollars;
 
-    if (typeof amountDollars !== "number") {
+    if (
+      typeof amountDollars !== "number" ||
+      !Number.isFinite(amountDollars) ||
+      amountDollars <= 0
+    ) {
       return NextResponse.json(
-        { error: "amountDollars is required" },
+        { error: "amountDollars must be a positive number" },
         { status: 400 },
       );
     }

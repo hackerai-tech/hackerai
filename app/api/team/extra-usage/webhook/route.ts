@@ -70,10 +70,9 @@ export async function POST(req: NextRequest) {
           "[Team Extra Usage Webhook] Invalid metadata in checkout session:",
           session.id,
         );
-        return NextResponse.json(
-          { error: "Invalid session metadata" },
-          { status: 400 },
-        );
+        // Ack receipt — malformed metadata won't heal on retry, and 4xx would
+        // cause Stripe to redeliver for ~3 days.
+        return NextResponse.json({ received: true });
       }
 
       try {
