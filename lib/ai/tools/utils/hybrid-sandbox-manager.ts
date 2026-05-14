@@ -46,6 +46,7 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionId: string | null = null;
   private currentConnectionName: string | null = null;
   private convex: ConvexHttpClient;
+  private convexUrl: string;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
@@ -64,7 +65,13 @@ export class HybridSandboxManager implements SandboxManager {
     if (!convexUrl) {
       throw new Error("NEXT_PUBLIC_CONVEX_URL environment variable is not set");
     }
+    this.convexUrl = convexUrl;
     this.convex = new ConvexHttpClient(convexUrl);
+    console.log("[agent-long-convex-debug] HybridSandboxManager constructed", {
+      userID,
+      sandboxPreference,
+      capturedConvexUrl: convexUrl,
+    });
   }
 
   recordHealthFailure(): boolean {
@@ -191,9 +198,19 @@ export class HybridSandboxManager implements SandboxManager {
           userId: this.userID,
         },
       );
+      console.log("[agent-long-convex-debug] listConnections result", {
+        userID: this.userID,
+        queriedConvexUrl: this.convexUrl,
+        connectionCount: connections.length,
+        connectionIds: connections.map((c) => c.connectionId),
+      });
       return connections;
     } catch (error) {
-      console.error(`[${this.userID}] Failed to list connections:`, error);
+      console.error("[agent-long-convex-debug] listConnections error", {
+        userID: this.userID,
+        queriedConvexUrl: this.convexUrl,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }

@@ -233,8 +233,18 @@ export const agentLongTask = task({
     // Point the Convex client at the correct per-branch preview deployment.
     // NEXT_PUBLIC_CONVEX_URL in Trigger.dev's env vars only reflects the
     // main deployment; preview branches each have their own Convex URL.
+    console.log("[agent-long-convex-debug] task start", {
+      chatId: payload.chatId,
+      userId: payload.userId,
+      envNextPublicConvexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+      payloadConvexUrl: payload.convexUrl,
+      sandboxPreference: payload.sandboxPreference,
+    });
     if (payload.convexUrl) {
       setConvexUrl(payload.convexUrl);
+      console.log("[agent-long-convex-debug] setConvexUrl applied", {
+        appliedUrl: payload.convexUrl,
+      });
     }
 
     const {
