@@ -133,9 +133,13 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          toolchain: stable
+          target: ${{ matrix.target }}
+          # Skip the action's built-in cache; swatinem/rust-cache below is
+          # already scoped to packages/desktop/src-tauri and covers it.
+          cache: false
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
