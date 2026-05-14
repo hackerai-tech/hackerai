@@ -1,4 +1,3 @@
- 
 /**
  * Generated `api` utility.
  *
@@ -29,6 +28,8 @@ import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
 import type * as sharedChats from "../sharedChats.js";
+import type * as teamExtraUsage from "../teamExtraUsage.js";
+import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
 import type * as tempStreams from "../tempStreams.js";
 import type * as usageLogs from "../usageLogs.js";
 import type * as userCustomization from "../userCustomization.js";
@@ -62,6 +63,8 @@ declare const fullApi: ApiFromModules<{
   s3Cleanup: typeof s3Cleanup;
   s3Utils: typeof s3Utils;
   sharedChats: typeof sharedChats;
+  teamExtraUsage: typeof teamExtraUsage;
+  teamExtraUsageActions: typeof teamExtraUsageActions;
   tempStreams: typeof tempStreams;
   usageLogs: typeof usageLogs;
   userCustomization: typeof userCustomization;

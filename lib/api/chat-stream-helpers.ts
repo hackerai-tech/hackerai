@@ -43,7 +43,10 @@ import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { ChatSDKError } from "@/lib/errors";
-import { getExtraUsageBalance } from "@/lib/extra-usage";
+import {
+  getExtraUsageBalance,
+  getTeamExtraUsageState,
+} from "@/lib/extra-usage";
 import { systemPrompt } from "@/lib/system-prompt";
 import { countTokens } from "gpt-tokenizer";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -864,9 +867,34 @@ export async function buildExtraUsageConfig(args: {
   userId: string;
   subscription: SubscriptionTier;
   userCustomization: UserCustomization | null | undefined;
+  organizationId?: string;
 }): Promise<ExtraUsageConfig | undefined> {
-  const { userId, subscription, userCustomization } = args;
+  const { userId, subscription, userCustomization, organizationId } = args;
   if (subscription === "free") return undefined;
+
+  // Team users: extra usage is org-funded and admin-controlled. Personal
+  // extra_usage settings are ignored — overflow routes through the team pool.
+  if (subscription === "team") {
+    if (!organizationId) return undefined;
+    const state = await getTeamExtraUsageState(organizationId, userId);
+    if (!state) {
+      console.warn(
+        `[chat-handler] getTeamExtraUsageState returned null for org ${organizationId}, using optimistic extra usage config`,
+      );
+      return { enabled: true, hasBalance: true, autoReloadEnabled: false };
+    }
+    if (!state.enabled || state.memberDisabled) return undefined;
+    if (state.balanceDollars > 0 || state.autoReloadEnabled) {
+      return {
+        enabled: true,
+        hasBalance: state.balanceDollars > 0,
+        balanceDollars: state.balanceDollars,
+        autoReloadEnabled: state.autoReloadEnabled,
+      };
+    }
+    return undefined;
+  }
+
   if (!(userCustomization?.extra_usage_enabled ?? false)) return undefined;
 
   const balanceInfo = await getExtraUsageBalance(userId);

@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { TeamDialogs, ManageSeatsDialog } from "./TeamDialogs";
 import { TeamMembersList } from "./TeamMembersList";
+import { TeamExtraUsageSection } from "./TeamExtraUsageSection";
 import { clientLogout } from "@/lib/utils/logout";
 
 interface TeamMember {
@@ -402,6 +403,13 @@ const TeamTab = () => {
                   {totalUsedSeats} of {teamInfo.totalSeats} seats in use.
                 </span>
               )}
+            </div>
+          )}
+
+          {/* Team extra usage admin controls */}
+          {isAdmin && (
+            <div className="mt-6 border-t pt-6">
+              <TeamExtraUsageSection />
             </div>
           )}
         </>

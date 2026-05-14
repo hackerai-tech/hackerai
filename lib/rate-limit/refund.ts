@@ -10,14 +10,20 @@ export class UsageRefundTracker {
   private extraUsagePointsDeducted = 0;
   private userId: string | undefined;
   private subscription: SubscriptionTier | undefined;
+  private organizationId: string | undefined;
   private hasRefunded = false;
 
   /**
    * Set user context for refunds.
    */
-  setUser(userId: string, subscription: SubscriptionTier): void {
+  setUser(
+    userId: string,
+    subscription: SubscriptionTier,
+    organizationId?: string,
+  ): void {
     this.userId = userId;
     this.subscription = subscription;
+    this.organizationId = organizationId;
   }
 
   /**
@@ -54,6 +60,7 @@ export class UsageRefundTracker {
         this.subscription,
         this.pointsDeducted,
         this.extraUsagePointsDeducted,
+        this.organizationId,
       );
       this.hasRefunded = true;
     } catch (error) {
