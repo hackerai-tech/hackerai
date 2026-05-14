@@ -616,6 +616,11 @@ async fn execute_stream_command(
 
 /// Start a local HTTP server for dev mode auth callbacks.
 /// This replaces deep links which don't work in `tauri dev` on macOS.
+/// Only compiled in debug builds — matches the cfg-gated call site at the
+/// bottom of `run()`. Without this gate, release builds error out with
+/// `dead_code` under `actions-rust-lang/setup-rust-toolchain@v1`'s
+/// `RUSTFLAGS=-D warnings`.
+#[cfg(debug_assertions)]
 async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
