@@ -3,6 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
@@ -97,6 +98,25 @@ export const useChatHandlers = ({
     api.tempStreams.cancelTempStreamFromClient,
   );
 
+  // Mirrors the routing rule in app/components/chat.tsx: web users in agent
+  // mode (and Tauri free users) run on Trigger.dev. Persistent chats only —
+  // temporary chats use the legacy Redis pub/sub cancel path.
+  const shouldCancelTriggerRun = () =>
+    chatModeRef.current === "agent" &&
+    !temporaryChatsEnabledRef.current &&
+    (!isTauriEnvironment() || subscriptionRef.current === "free");
+
+  const cancelTriggerRun = () => {
+    if (!shouldCancelTriggerRun()) return;
+    fetch("/api/agent-long/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId }),
+    }).catch((error) => {
+      console.error("Failed to cancel trigger.dev run:", error);
+    });
+  };
+
   /**
    * Helper to stop an active stream, normalize messages, and persist state.
    * Returns the normalized messages array.
@@ -190,6 +210,10 @@ export const useChatHandlers = ({
         } else if (queueBehavior === "stop-and-send") {
           // Immediately stop current stream and send right away
           stop();
+
+          // Cancel the trigger.dev run for agent-long streams so the prior
+          // run stops burning compute instead of finishing in the background.
+          cancelTriggerRun();
 
           // Cancel the stream in database and save current message state
           if (!temporaryChatsEnabledRef.current) {
@@ -312,24 +336,13 @@ export const useChatHandlers = ({
     // Clear any active status indicators immediately
     onStopCallback?.();
 
+    // Fire the trigger.dev cancel in parallel with stopActiveStream so the
+    // Trigger.dev API round-trip overlaps the Convex cancel/save instead of
+    // sequencing after it.
+    cancelTriggerRun();
+
     try {
       await stopActiveStream();
-      // For agent-long, also tell the server to cancel the trigger.dev run.
-      // Fire-and-forget — server-side cancel is idempotent and the client
-      // abort already disconnected the realtime stream.
-      if (
-        chatModeRef.current === "agent" &&
-        subscriptionRef.current === "free" &&
-        !temporaryChatsEnabledRef.current
-      ) {
-        fetch("/api/agent-long/cancel", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chatId }),
-        }).catch((error) => {
-          console.error("Failed to cancel trigger.dev run:", error);
-        });
-      }
     } catch (error) {
       console.error("Error in handleStop:", error);
     }

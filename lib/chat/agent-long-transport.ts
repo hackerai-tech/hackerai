@@ -48,10 +48,10 @@ const TERMINAL_RUN_STATUSES = new Set([
 // always closes and useChat exits streaming state.
 const STREAM_TIMEOUT_MS = 30_000;
 
-const buildSSEResponseFromRun = ({
-  runId,
-  publicAccessToken,
-}: RunHandle): Response => {
+const buildSSEResponseFromRun = (
+  { runId, publicAccessToken }: RunHandle,
+  signal?: AbortSignal,
+): Response => {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -75,6 +75,13 @@ const buildSSEResponseFromRun = ({
       // Timeout guard: if the subscription hangs (e.g. task failed before
       // registering the stream), force-close after STREAM_TIMEOUT_MS.
       const timeoutId = setTimeout(sendAbortAndClose, STREAM_TIMEOUT_MS);
+
+      // Short-circuit if the consumer already aborted before we got here.
+      if (signal?.aborted) {
+        clearTimeout(timeoutId);
+        sendAbortAndClose();
+        return;
+      }
 
       try {
         const { runs, auth } = await import("@trigger.dev/sdk");
@@ -122,9 +129,29 @@ const buildSSEResponseFromRun = ({
             batchedDeltaCount = 0;
           };
 
+          // Race subscription.next() against the consumer's abort signal so
+          // Stop closes the local stream in one tick, even when the LLM is
+          // mid-step and no chunks are flowing.
+          const iter = subscription[Symbol.asyncIterator]();
+          const abortSentinel = Symbol("aborted");
+          const abortPromise = new Promise<typeof abortSentinel>((resolve) => {
+            if (!signal) return; // never resolves — Promise.race ignores it
+            const onAbort = () => resolve(abortSentinel);
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+
           let sawTerminalChunk = false;
+          let userAborted = false;
           let firstEventReceived = false;
-          for await (const part of subscription) {
+          while (true) {
+            const next = await Promise.race([iter.next(), abortPromise]);
+            if (next === abortSentinel) {
+              userAborted = true;
+              break;
+            }
+            if (next.done) break;
+            const part = next.value;
+
             // Disarm the "no first event" timeout once the subscription is
             // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
             // would have its stream force-closed mid-execution.
@@ -217,6 +244,12 @@ const buildSSEResponseFromRun = ({
           // Flush any deltas that didn't trigger a count- or timer-based flush.
           flushDeltaBuffers();
 
+          if (userAborted) {
+            // Release the trigger.dev subscription so it doesn't keep
+            // streaming chunks into a dead controller.
+            await iter.return?.(undefined).catch(() => undefined);
+          }
+
           if (!sawTerminalChunk) {
             // Subscription ended without a terminal UI chunk — run crashed,
             // was canceled, or failed before registering the stream.
@@ -249,7 +282,7 @@ export const fetchAgentLongStream = async (
   if (!startResponse.ok) return startResponse;
 
   const handle: RunHandle = await startResponse.json();
-  return buildSSEResponseFromRun(handle);
+  return buildSSEResponseFromRun(handle, init?.signal ?? undefined);
 };
 
 export const resumeAgentLongStream = async (
@@ -267,5 +300,5 @@ export const resumeAgentLongStream = async (
   if (!response.ok) return response;
 
   const handle: RunHandle = await response.json();
-  return buildSSEResponseFromRun(handle);
+  return buildSSEResponseFromRun(handle, init?.signal ?? undefined);
 };
