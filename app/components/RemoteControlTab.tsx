@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -18,12 +18,17 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import type {
+  ChatMode,
+  SandboxPreference,
+  SelectedModel,
+  SubscriptionTier,
+} from "@/types/chat";
 
 interface LocalConnection {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
-  containerId?: string;
   osInfo?: {
     platform: string;
     arch: string;
@@ -31,6 +36,7 @@ interface LocalConnection {
     hostname: string;
   };
   lastSeen: number;
+  isDesktop: boolean;
 }
 
 interface CommandBlockProps {
@@ -80,14 +86,115 @@ const CommandBlock = ({
   </div>
 );
 
+interface UseAutoSelectNewRemoteConnectionArgs {
+  connections: LocalConnection[] | undefined;
+  chatMode: ChatMode;
+  setChatMode: (mode: ChatMode) => void;
+  subscription: SubscriptionTier;
+  sandboxPreference: SandboxPreference;
+  setSandboxPreference: (preference: SandboxPreference) => void;
+  selectedModel: SelectedModel;
+  setSelectedModel: (model: SelectedModel) => void;
+  temporaryChatsEnabled: boolean;
+}
+
+function useAutoSelectNewRemoteConnection({
+  connections,
+  chatMode,
+  setChatMode,
+  subscription,
+  sandboxPreference,
+  setSandboxPreference,
+  selectedModel,
+  setSelectedModel,
+  temporaryChatsEnabled,
+}: UseAutoSelectNewRemoteConnectionArgs) {
+  const previousRemoteConnectionIdsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    if (connections === undefined) return;
+
+    const remoteConnections = connections.filter((conn) => !conn.isDesktop);
+    const currentIds = new Set(
+      remoteConnections.map((conn) => conn.connectionId),
+    );
+    const previousIds = previousRemoteConnectionIdsRef.current;
+    previousRemoteConnectionIdsRef.current = currentIds;
+
+    // Treat the first loaded query result as baseline so existing connections
+    // do not hijack the user's saved mode on settings open or page load.
+    if (previousIds === null) return;
+
+    const newConnection = remoteConnections.find(
+      (conn) => !previousIds.has(conn.connectionId),
+    );
+    if (!newConnection) return;
+
+    if (sandboxPreference !== newConnection.connectionId) {
+      setSandboxPreference(newConnection.connectionId);
+    }
+
+    if (temporaryChatsEnabled) {
+      toast.info("Local sandbox connected", {
+        description: "Turn off temporary chat to use Agent mode.",
+      });
+      return;
+    }
+
+    if (subscription === "free" && selectedModel !== "auto") {
+      setSelectedModel("auto");
+    }
+
+    if (chatMode !== "agent") {
+      setChatMode("agent");
+      toast.success("Local sandbox connected. Switched to Agent mode.");
+    } else {
+      toast.success("Local sandbox connected.");
+    }
+  }, [
+    chatMode,
+    connections,
+    sandboxPreference,
+    selectedModel,
+    setChatMode,
+    setSandboxPreference,
+    setSelectedModel,
+    subscription,
+    temporaryChatsEnabled,
+  ]);
+}
+
 const RemoteControlTab = () => {
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [isLoadingToken, setIsLoadingToken] = useState(false);
 
+  const {
+    chatMode,
+    setChatMode,
+    subscription,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel,
+    temporaryChatsEnabled,
+  } = useGlobalState();
+
   const connections = useQuery(api.localSandbox.listConnections);
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
+
+  useAutoSelectNewRemoteConnection({
+    chatMode,
+    connections,
+    sandboxPreference,
+    selectedModel,
+    setChatMode,
+    setSandboxPreference,
+    setSelectedModel,
+    subscription,
+    temporaryChatsEnabled,
+  });
 
   const handleGetToken = async () => {
     setIsLoadingToken(true);
