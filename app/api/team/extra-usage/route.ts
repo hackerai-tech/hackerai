@@ -21,16 +21,18 @@ export const GET = async (req: NextRequest) => {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         organizationId: guard.organizationId,
       }),
-      workos.userManagement.listOrganizationMemberships({
-        organizationId: guard.organizationId,
-        statuses: ["active"],
-      }),
+      workos.userManagement
+        .listOrganizationMemberships({
+          organizationId: guard.organizationId,
+          statuses: ["active"],
+        })
+        .then((p) => p.autoPagination()),
     ]);
 
     const usageByUserId = new Map(adminView.members.map((m) => [m.userId, m]));
 
     const members = await Promise.all(
-      memberships.data.map(async (m) => {
+      memberships.map(async (m) => {
         const user = await workos.userManagement.getUser(m.userId);
         const usage = usageByUserId.get(m.userId);
         return {
