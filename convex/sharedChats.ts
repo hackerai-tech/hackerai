@@ -328,6 +328,8 @@ export const forkSharedChat = mutation({
         source_message_id: msg.id,
         update_time: Date.now(),
         model: msg.model,
+        mode: msg.mode,
+        generation_started_at: msg.generation_started_at,
         generation_time_ms: msg.generation_time_ms,
         finish_reason: msg.finish_reason,
         usage: msg.usage,

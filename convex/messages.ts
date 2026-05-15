@@ -183,6 +183,8 @@ export const saveMessage = mutation({
     parts: v.array(v.any()),
     fileIds: v.optional(v.array(v.id("files"))),
     model: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
+    generationStartedAt: v.optional(v.number()),
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
@@ -245,6 +247,15 @@ export const saveMessage = mutation({
         if (args.model && !existingMessage.model) {
           patch.model = args.model;
         }
+        if (args.mode && !existingMessage.mode) {
+          patch.mode = args.mode;
+        }
+        if (
+          args.generationStartedAt &&
+          !existingMessage.generation_started_at
+        ) {
+          patch.generation_started_at = args.generationStartedAt;
+        }
         if (args.generationTimeMs && !existingMessage.generation_time_ms) {
           patch.generation_time_ms = args.generationTimeMs;
         }
@@ -294,6 +305,8 @@ export const saveMessage = mutation({
         file_ids: args.fileIds,
         update_time: Date.now(),
         model: args.model,
+        mode: args.mode,
+        generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: args.usage,
@@ -356,6 +369,9 @@ export const getMessagesByChatId = query({
           }),
           v.null(),
         ),
+        generation_time_ms: v.optional(v.number()),
+        generation_started_at: v.optional(v.number()),
+        mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
         fileDetails: v.optional(
           v.array(
             v.object({
@@ -468,6 +484,9 @@ export const getMessagesByChatId = query({
           parts: message.parts,
           source_message_id: message.source_message_id,
           feedback,
+          mode: message.mode,
+          generation_started_at: message.generation_started_at,
+          generation_time_ms: message.generation_time_ms,
           fileDetails,
         });
       }
@@ -522,6 +541,8 @@ export const saveAssistantMessage = mutation({
     ),
     parts: v.array(v.any()),
     model: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
+    generationStartedAt: v.optional(v.number()),
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
@@ -569,6 +590,8 @@ export const saveAssistantMessage = mutation({
         content: content || undefined,
         update_time: Date.now(),
         model: args.model,
+        mode: args.mode,
+        generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: args.usage,
@@ -728,6 +751,13 @@ export const getLastAssistantMessage = query({
       id: v.string(),
       role: v.literal("assistant"),
       parts: v.array(v.any()),
+      metadata: v.optional(
+        v.object({
+          generationStartedAt: v.optional(v.number()),
+          generationTimeMs: v.optional(v.number()),
+          mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
+        }),
+      ),
     }),
     v.null(),
   ),
@@ -756,6 +786,20 @@ export const getLastAssistantMessage = query({
         id: message.id,
         role: message.role,
         parts: message.parts,
+        metadata:
+          message.mode ||
+          typeof message.generation_started_at === "number" ||
+          typeof message.generation_time_ms === "number"
+            ? {
+                ...(message.mode ? { mode: message.mode } : {}),
+                ...(typeof message.generation_started_at === "number"
+                  ? { generationStartedAt: message.generation_started_at }
+                  : {}),
+                ...(typeof message.generation_time_ms === "number"
+                  ? { generationTimeMs: message.generation_time_ms }
+                  : {}),
+              }
+            : undefined,
       };
     } catch (error) {
       console.error("Failed to get last assistant message:", error);
@@ -1120,6 +1164,8 @@ export const branchChat = mutation({
           source_message_id: msg.id,
           update_time: Date.now(),
           model: msg.model,
+          mode: msg.mode,
+          generation_started_at: msg.generation_started_at,
           generation_time_ms: msg.generation_time_ms,
           finish_reason: msg.finish_reason,
           usage: msg.usage,

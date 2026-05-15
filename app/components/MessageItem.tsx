@@ -1,4 +1,11 @@
-import { memo, useMemo, useCallback, Fragment } from "react";
+import {
+  memo,
+  useMemo,
+  useCallback,
+  useEffect,
+  useState,
+  Fragment,
+} from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -7,12 +14,18 @@ import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  WorkedFor,
+  WorkedForContent,
+  WorkedForTrigger,
+} from "@/components/ai-elements/worked-for";
 import { FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
 
@@ -69,6 +82,7 @@ function areMessageItemPropsEqual(
   if (prev.lastAssistantMessageIndex !== next.lastAssistantMessageIndex)
     return false;
   if (prev.finishReason !== next.finishReason) return false;
+  if (prev.mode !== next.mode) return false;
   if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
     return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
@@ -84,6 +98,21 @@ function areMessageItemPropsEqual(
     const prevLastPart = prev.message.parts[prev.message.parts.length - 1];
     const nextLastPart = next.message.parts[next.message.parts.length - 1];
     if (prevLastPart !== nextLastPart) return false;
+    // generationTimeMs arrives in message-metadata after the last text-delta;
+    // parts may be unchanged but metadata needs to trigger a re-render so the
+    // "Worked for X" pill shows the duration.
+    if (prev.message.metadata?.mode !== next.message.metadata?.mode)
+      return false;
+    if (
+      prev.message.metadata?.generationStartedAt !==
+      next.message.metadata?.generationStartedAt
+    )
+      return false;
+    if (
+      prev.message.metadata?.generationTimeMs !==
+      next.message.metadata?.generationTimeMs
+    )
+      return false;
   }
 
   return true;
@@ -148,11 +177,70 @@ export const MessageItem = memo(function MessageItem({
   );
 
   // Memoize part filtering - only recompute when parts change
-  const { fileParts, nonFileParts } = useMemo(() => {
-    const files = message.parts.filter((part) => part.type === "file");
-    const nonFiles = message.parts.filter((part) => part.type !== "file");
-    return { fileParts: files, nonFileParts: nonFiles };
-  }, [message.parts]);
+  const { fileParts, nonFileParts, workParts, trailingTextParts } =
+    useMemo(() => {
+      const files = message.parts.filter((part) => part.type === "file");
+      const nonFiles = message.parts.filter((part) => part.type !== "file");
+      // Find the trailing run of contiguous text parts at the end of nonFiles.
+      // Everything before it counts as "work" (reasoning, tool calls, data,
+      // intermediate text). This split powers the Codex-style collapse:
+      // the work is hidden behind a "Worked for X" pill, the final text stays
+      // visible below.
+      let trailingStart = nonFiles.length;
+      for (let i = nonFiles.length - 1; i >= 0; i--) {
+        if ((nonFiles[i] as { type?: string }).type === "text") {
+          trailingStart = i;
+        } else {
+          break;
+        }
+      }
+      return {
+        fileParts: files,
+        nonFileParts: nonFiles,
+        workParts: nonFiles.slice(0, trailingStart),
+        trailingTextParts: nonFiles.slice(trailingStart),
+      };
+    }, [message.parts]);
+
+  const isStreamingThisMessage =
+    message.role === "assistant" &&
+    isLastAssistantMessage &&
+    effectiveStatus === "streaming";
+
+  const generationTimeMs =
+    typeof message.metadata?.generationTimeMs === "number"
+      ? message.metadata.generationTimeMs
+      : undefined;
+  const generationStartedAt =
+    typeof message.metadata?.generationStartedAt === "number"
+      ? message.metadata.generationStartedAt
+      : undefined;
+  const [streamedMessageId, setStreamedMessageId] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!isStreamingThisMessage) return;
+
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setStreamedMessageId(message.id);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isStreamingThisMessage, message.id]);
+  const isAwaitingGenerationTime =
+    message.role === "assistant" &&
+    isLastAssistantMessage &&
+    effectiveStatus === "ready" &&
+    streamedMessageId === message.id &&
+    generationTimeMs === undefined;
+  const shouldShowWorkingTimer =
+    isStreamingThisMessage || isAwaitingGenerationTime;
+  const shouldUseWorkedFor = message.metadata?.mode === "agent";
 
   // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
   const terminalOutputByToolCallId = useMemo(() => {
@@ -182,6 +270,22 @@ export const MessageItem = memo(function MessageItem({
     if (isUser || !effectiveFileDetails) return [];
     return effectiveFileDetails.filter((f) => f.url || f.storageId || f.s3Key);
   }, [isUser, effectiveFileDetails]);
+
+  const renderAssistantPart = (
+    part: ChatMessage["parts"][number],
+    partIndex: number,
+  ) => (
+    <MessagePartHandler
+      key={`${message.id}-${partIndex}`}
+      message={message}
+      part={part}
+      partIndex={partIndex}
+      status={effectiveStatus}
+      isLastMessage={isLastMessage}
+      terminalOutputByToolCallId={terminalOutputByToolCallId}
+      sharedFileDetails={effectiveFileDetails}
+    />
+  );
 
   const shouldShowBranchIndicator = Boolean(
     branchedFromChatId &&
@@ -307,9 +411,8 @@ export const MessageItem = memo(function MessageItem({
                       />
                     ))}
                   </div>
-                ) : (
-                  // For assistant messages, render all parts in original order
-                  message.parts.map((part, partIndex) => (
+                ) : !shouldUseWorkedFor ? (
+                  nonFileParts.map((part, partIndex) => (
                     <MessagePartHandler
                       key={`${message.id}-${partIndex}`}
                       message={message}
@@ -321,6 +424,71 @@ export const MessageItem = memo(function MessageItem({
                       sharedFileDetails={effectiveFileDetails}
                     />
                   ))
+                ) : shouldShowWorkingTimer ? (
+                  <>
+                    {workParts.length > 0 && (
+                      <WorkedFor key="working" hasWork defaultOpen>
+                        <WorkedForTrigger
+                          isTiming
+                          startedAt={generationStartedAt}
+                        />
+                        <WorkedForContent>
+                          {workParts.map(renderAssistantPart)}
+                        </WorkedForContent>
+                      </WorkedFor>
+                    )}
+                    {trailingTextParts.length > 0 && (
+                      <div
+                        className={
+                          workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
+                        }
+                      >
+                        {trailingTextParts.map((part, partIndex) =>
+                          renderAssistantPart(
+                            part,
+                            workParts.length + partIndex,
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : trailingTextParts.length === 0 ? (
+                  // No final text output (e.g. run ended mid-tool or was
+                  // aborted before a summary). Don't hide the work behind a
+                  // "Worked for" pill — that would leave the user with an
+                  // empty-looking message. Render the parts inline.
+                  nonFileParts.map((part, partIndex) => (
+                    <MessagePartHandler
+                      key={`${message.id}-${partIndex}`}
+                      message={message}
+                      part={part}
+                      partIndex={partIndex}
+                      status={effectiveStatus}
+                      isLastMessage={isLastMessage}
+                      terminalOutputByToolCallId={terminalOutputByToolCallId}
+                      sharedFileDetails={effectiveFileDetails}
+                    />
+                  ))
+                ) : (
+                  <>
+                    {workParts.length > 0 && (
+                      <WorkedFor key="worked" hasWork>
+                        <WorkedForTrigger durationMs={generationTimeMs} />
+                        <WorkedForContent lazy>
+                          {() => workParts.map(renderAssistantPart)}
+                        </WorkedForContent>
+                      </WorkedFor>
+                    )}
+                    <div
+                      className={
+                        workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
+                      }
+                    >
+                      {trailingTextParts.map((part, partIndex) =>
+                        renderAssistantPart(part, workParts.length + partIndex),
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             )}

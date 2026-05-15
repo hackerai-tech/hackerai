@@ -284,6 +284,9 @@ export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 export const messageMetadataSchema = z.object({
   feedbackType: z.enum(["positive", "negative"]).optional(),
   isAutoContinue: z.boolean().optional(),
+  mode: z.enum(["agent", "ask"]).optional(),
+  generationStartedAt: z.number().optional(),
+  generationTimeMs: z.number().optional(),
 });
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
