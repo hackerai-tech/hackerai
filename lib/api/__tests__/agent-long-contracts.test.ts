@@ -31,6 +31,16 @@ const resumeSrc = fs.readFileSync(
   "utf8",
 );
 
+const routeSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/api/agent-long/route.ts"),
+  "utf8",
+);
+
+const taskSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/agent-long.ts"),
+  "utf8",
+);
+
 describe("agent-long-transport — STREAM_TIMEOUT_MS guard", () => {
   test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
     expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
@@ -89,5 +99,32 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns 204 when no active run ID is stored", () => {
     expect(resumeSrc).toMatch(/status:\s*204/);
+  });
+});
+
+describe("agent-long task — Trigger.dev dashboard error visibility", () => {
+  test("runs are triggered with filterable queued metadata and tags", () => {
+    expect(routeSrc).toMatch(/tags:\s*triggerTags/);
+    expect(routeSrc).toMatch(/metadata:\s*{/);
+    expect(routeSrc).toMatch(/status:\s*"queued"/);
+    expect(routeSrc).toMatch(/loginRequired:\s*false/);
+  });
+
+  test("stream errors are rethrown after the UI error chunk is flushed", () => {
+    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const streamErrorIdx = taskSrc.indexOf("if (streamError)", waitIdx);
+    const throwIdx = taskSrc.indexOf("throw streamError", streamErrorIdx);
+    expect(waitIdx).toBeGreaterThan(-1);
+    expect(streamErrorIdx).toBeGreaterThan(waitIdx);
+    expect(throwIdx).toBeGreaterThan(streamErrorIdx);
+  });
+
+  test("task catch records structured metadata for dashboard filtering", () => {
+    expect(taskSrc).toMatch(/recordAgentLongFailureForDashboard/);
+    expect(taskSrc).toMatch(/errorCategory/);
+    expect(taskSrc).toMatch(/loginRequired/);
+    expect(taskSrc).toMatch(/login_required/);
+    expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
+    expect(taskSrc).toMatch(/metadata\.flush\(\)/);
   });
 });
