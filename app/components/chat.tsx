@@ -32,6 +32,7 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
@@ -342,9 +343,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
-        const isFreeAgent =
-          mode === "agent" && subscriptionRef.current === "free";
-        if (isFreeAgent) {
+        const useTriggerAgent =
+          mode === "agent" &&
+          (!isTauriEnvironment() || subscriptionRef.current === "free");
+        if (useTriggerAgent) {
           // useChat reuses this fetch for both POST sendMessages and GET
           // reconnectToStream — dispatch on method.
           if (init?.method === "GET") {
@@ -377,10 +379,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the agent-long resume endpoint when there is a stored trigger run
         // (covers legacy "agent-long" chats normalised to "agent" on load) OR
-        // when the current user is a free user in agent mode.
-        const isFreeAgent =
-          chatModeRef.current === "agent" && subscriptionRef.current === "free";
-        if (isFreeAgent || !!activeTriggerRunRef.current) {
+        // when the current run is using Trigger.dev for agent mode.
+        const useTriggerAgent =
+          chatModeRef.current === "agent" &&
+          (!isTauriEnvironment() || subscriptionRef.current === "free");
+        if (useTriggerAgent || !!activeTriggerRunRef.current) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
           };
