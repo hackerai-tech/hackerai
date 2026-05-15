@@ -44,6 +44,7 @@ import {
   deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   saveMessage,
   updateChat,
@@ -482,6 +483,8 @@ export const agentLongTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          await assertUserCanMakeCostIncurringRequest(userId);
+
           extraUsageConfig = await buildExtraUsageConfig({
             userId,
             subscription,
