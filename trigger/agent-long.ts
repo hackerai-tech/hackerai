@@ -345,8 +345,8 @@ export const agentLongTask = task({
   // "ui" stream the client already subscribed to, producing duplicate output.
   // Provider errors are handled internally via the fallback-model path.
   retry: { maxAttempts: 1 },
-  // Right-sized from observed production CPU/memory usage while preserving 1 vCPU.
-  machine: { preset: "small-2x" },
+  // Right-sized from observed production CPU/memory usage.
+  machine: { preset: "small-1x" },
 
   onCancel: async ({
     ctx,
