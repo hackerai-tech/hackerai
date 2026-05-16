@@ -195,6 +195,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         let timeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
+        let commandPublishInFlight = false;
+        let cancelRequested = false;
+        let cancelPublishStarted = false;
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -243,10 +246,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
         const publishCancel = () => {
           if (settled) return;
+          cancelRequested = true;
           if (!publishedCommand || !subscription) {
+            if (commandPublishInFlight) return;
             resolveCanceled();
             return;
           }
+          if (cancelPublishStarted) return;
+          cancelPublishStarted = true;
 
           subscription
             .publish({
@@ -349,6 +356,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
         subscription.on("subscribed", () => {
+          if (settled) return;
           tSubscribed = Date.now();
           const commandMessage: CommandMessage = {
             type: "command",
@@ -362,16 +370,23 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
             targetConnectionId: this.connectionInfo.connectionId,
           };
 
+          commandPublishInFlight = true;
           subscription!
             .publish(commandMessage)
             .then(() => {
+              commandPublishInFlight = false;
               tPublished = Date.now();
               publishedCommand = true;
-              if (opts?.signal?.aborted) {
+              if (cancelRequested || opts?.signal?.aborted) {
                 publishCancel();
               }
             })
             .catch((err: unknown) => {
+              commandPublishInFlight = false;
+              if (cancelRequested || opts?.signal?.aborted) {
+                resolveCanceled();
+                return;
+              }
               if (!settled) {
                 settled = true;
                 cleanup();

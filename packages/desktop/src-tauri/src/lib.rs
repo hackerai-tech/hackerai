@@ -65,6 +65,60 @@ struct ExecResponse {
     exit_code: i32,
 }
 
+async fn wait_with_output_or_kill_on_timeout(
+    mut child: tokio::process::Child,
+    timeout: Duration,
+    timeout_ms: u64,
+) -> Result<std::process::Output, String> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr".to_string())?;
+
+    let stdout_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).await.map(|_| output)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).await.map(|_| output)
+    });
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("Process error: {}", e));
+        }
+        Err(_) => {
+            platform::graceful_kill(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("Command timed out after {}ms", timeout_ms));
+        }
+    };
+
+    let stdout = match stdout_task.await {
+        Ok(Ok(output)) => output,
+        _ => Vec::new(),
+    };
+    let stderr = match stderr_task.await {
+        Ok(Ok(output)) => output,
+        _ => Vec::new(),
+    };
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 #[derive(Deserialize)]
 struct FileReadRequest {
     path: String,
@@ -303,11 +357,7 @@ async fn handle_execute(body: &str) -> Result<String, String> {
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
 
     let timeout = Duration::from_millis(req.timeout_ms);
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
-        Err(_) => return Err(format!("Command timed out after {}ms", req.timeout_ms)),
-    };
+    let output = wait_with_output_or_kill_on_timeout(child, timeout, req.timeout_ms).await?;
 
     // Truncate output to 1MB to prevent huge responses
     const MAX_OUTPUT: usize = 1024 * 1024;
@@ -526,11 +576,8 @@ async fn execute_command(
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
-        Err(_) => return Err(format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000))),
-    };
+    let timeout_ms = timeout_ms.unwrap_or(30000);
+    let output = wait_with_output_or_kill_on_timeout(child, timeout, timeout_ms).await?;
     const MAX_OUTPUT: usize = 1024 * 1024;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

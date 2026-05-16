@@ -780,6 +780,16 @@ class LocalSandboxClient {
     }, 1000).unref();
   }
 
+  private terminateActiveStreamCommands(): void {
+    for (const [commandId, proc] of this.activeStreamCommands) {
+      console.log(
+        chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+      );
+      this.terminateProcessTree(proc);
+    }
+    this.activeStreamCommands.clear();
+  }
+
   private async streamCommand(
     commandId: string,
     fullCommand: string,
@@ -906,6 +916,7 @@ class LocalSandboxClient {
 
       proc.on("error", (error) => {
         if (timeoutId) clearTimeout(timeoutId);
+        this.activeStreamCommands.delete(commandId);
         this.publishToChannel({
           type: "error",
           commandId,
@@ -1050,6 +1061,9 @@ class LocalSandboxClient {
 
     // Stop all PTY sessions
     this.processRunner.stopAll();
+
+    // Stop all active streamed commands before dropping the realtime connection.
+    this.terminateActiveStreamCommands();
 
     // Disconnect Centrifugo
     if (this.subscription) {
