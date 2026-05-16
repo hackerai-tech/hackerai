@@ -161,6 +161,35 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  user_suspensions: defineTable({
+    user_id: v.string(),
+    status: v.union(v.literal("active"), v.literal("resolved")),
+    category: v.union(
+      v.literal("early_fraud_warning"),
+      v.literal("dispute_fraudulent"),
+      v.literal("dispute_billing_hold"),
+    ),
+    source: v.literal("stripe"),
+    source_id: v.string(),
+    source_reason: v.optional(v.string()),
+    stripe_customer_id: v.string(),
+    stripe_charge_id: v.optional(v.string()),
+    workos_organization_id: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    source_created_at: v.optional(v.number()),
+    resolved_at: v.optional(v.number()),
+    resolved_reason: v.optional(v.string()),
+  })
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_user_status_source_created", [
+      "user_id",
+      "status",
+      "source_created_at",
+    ])
+    .index("by_user_and_source", ["user_id", "source_id"])
+    .index("by_customer_and_status", ["stripe_customer_id", "status"]),
+
   memories: defineTable({
     user_id: v.string(),
     memory_id: v.string(),

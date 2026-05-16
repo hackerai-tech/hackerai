@@ -12,6 +12,7 @@ import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type {
   ChatMode,
   Todo,
@@ -162,6 +163,7 @@ export const createChatHandler = (
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
+      await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 

@@ -16,6 +16,12 @@ describe("getSuspensionMessage", () => {
     expect(msg).toContain(SUPPORT_URL);
   });
 
+  it("uses the billing hold label for disputed-payment holds", () => {
+    const msg = getSuspensionMessage("dispute_billing_hold:dp_123");
+    expect(msg).toContain("a payment dispute under review");
+    expect(msg).toContain(SUPPORT_URL);
+  });
+
   it("falls back to the generic label when the reason is missing", () => {
     expect(getSuspensionMessage(undefined)).toContain("suspicious activity");
     expect(getSuspensionMessage(null)).toContain("suspicious activity");

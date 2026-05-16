@@ -5,6 +5,7 @@ import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   getChatById,
   handleInitialChatAndUserMessage,
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest) {
       coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
 
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+    await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
 
     assertFreeAgentGates({
