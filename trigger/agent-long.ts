@@ -110,6 +110,22 @@ const truncateForTriggerMetadata = (value: string) =>
 const sanitizeTriggerTagValue = (value: string) =>
   value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
 
+const OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS = [
+  /rate limiting service .*not configured/i,
+  /rate limiting service unavailable/i,
+  /extra usage billing is temporarily unavailable/i,
+];
+
+const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
+  if (!(error instanceof ChatSDKError)) return false;
+  if (error.type !== "rate_limit" || error.surface !== "chat") return false;
+
+  const cause = typeof error.cause === "string" ? error.cause : error.message;
+  return !OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS.some((pattern) =>
+    pattern.test(cause),
+  );
+};
+
 const classifyAgentLongError = (error: unknown) => {
   const details = extractErrorDetails(error);
   const errorMessage = truncateForTriggerMetadata(
@@ -177,6 +193,39 @@ const recordAgentLongFailureForDashboard = async (
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
+    ...summary,
+  });
+
+  await metadata.flush();
+};
+
+const recordAgentLongHandledRateLimitForDashboard = async (
+  error: ChatSDKError,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+  },
+) => {
+  const summary = classifyAgentLongError(error);
+  metadata
+    .set("status", "rate_limited")
+    .set("blockedCategory", "rate_limit")
+    .set("blockedCode", summary.code ?? "rate_limit:chat")
+    .set("blockedMessage", summary.message)
+    .set("blockedAt", new Date().toISOString());
+
+  if (summary.statusCode) metadata.set("blockedStatusCode", summary.statusCode);
+
+  await tags.add([
+    "rate_limited",
+    `blocked_code_${sanitizeTriggerTagValue(summary.code ?? "rate_limit_chat")}`,
+  ]);
+
+  triggerLogger.info("[agent-long] run rate limited", {
+    chatId: context.chatId,
+    userId: context.userId,
+    runId: context.runId,
     ...summary,
   });
 
@@ -1111,6 +1160,23 @@ export const agentLongTask = task({
       await waitUntilComplete();
 
       if (streamError) {
+        if (isHandledUserRateLimitError(streamError)) {
+          await recordAgentLongHandledRateLimitForDashboard(streamError, {
+            chatId,
+            userId,
+            runId: ctx.run.id,
+          }).catch((metadataError) => {
+            metadata.set("status", "rate_limited");
+            console.error(
+              "[agent-long] failed to record rate limit metadata:",
+              metadataError,
+            );
+          });
+          await usageRefundTracker.refund().catch(() => {});
+          chatLogger?.emitChatError(streamError);
+          await phLogger.flush().catch(() => {});
+          return { chatId, assistantMessageId };
+        }
         throw streamError;
       }
 

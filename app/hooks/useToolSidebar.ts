@@ -37,8 +37,13 @@ export function useToolSidebar({
   typeGuard,
   disabled = false,
 }: UseToolSidebarOptions): UseToolSidebarResult {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
+  const {
+    openSidebar,
+    closeSidebar,
+    sidebarOpen,
+    sidebarContent,
+    updateSidebarContent,
+  } = useGlobalState();
 
   const isSidebarActive =
     !disabled &&
@@ -58,9 +63,15 @@ export function useToolSidebar({
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         handleOpenInSidebar();
+        return;
+      }
+
+      if (e.key === "Escape" && isSidebarActive) {
+        e.preventDefault();
+        closeSidebar();
       }
     },
-    [handleOpenInSidebar],
+    [closeSidebar, handleOpenInSidebar, isSidebarActive],
   );
 
   // Auto-update sidebar content in real-time when active

@@ -110,12 +110,32 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
-  test("stream errors are rethrown after the UI error chunk is flushed", () => {
+  test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (streamError)", waitIdx);
-    const throwIdx = taskSrc.indexOf("throw streamError", streamErrorIdx);
+    const handledRateLimitIdx = taskSrc.indexOf(
+      "isHandledUserRateLimitError(streamError)",
+      streamErrorIdx,
+    );
+    const returnIdx = taskSrc.indexOf(
+      "return { chatId, assistantMessageId }",
+      handledRateLimitIdx,
+    );
     expect(waitIdx).toBeGreaterThan(-1);
     expect(streamErrorIdx).toBeGreaterThan(waitIdx);
+    expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
+    expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
+  });
+
+  test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
+    const streamErrorIdx = taskSrc.indexOf("if (streamError)");
+    const handledRateLimitIdx = taskSrc.indexOf(
+      "isHandledUserRateLimitError(streamError)",
+      streamErrorIdx,
+    );
+    const throwIdx = taskSrc.indexOf("throw streamError", handledRateLimitIdx);
+    expect(streamErrorIdx).toBeGreaterThan(-1);
+    expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
     expect(throwIdx).toBeGreaterThan(streamErrorIdx);
   });
 
