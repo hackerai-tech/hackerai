@@ -65,6 +65,89 @@ struct ExecResponse {
     exit_code: i32,
 }
 
+async fn wait_with_output_or_kill_on_timeout(
+    mut child: tokio::process::Child,
+    timeout: Duration,
+    timeout_ms: u64,
+) -> Result<std::process::Output, String> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr".to_string())?;
+    let child_pid = child.id();
+    let started_at = tokio::time::Instant::now();
+
+    let stdout_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stdout.read_to_end(&mut output).await.map(|_| output)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stderr.read_to_end(&mut output).await.map(|_| output)
+    });
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("Process error: {}", e));
+        }
+        Err(_) => {
+            platform::graceful_kill(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("Command timed out after {}ms", timeout_ms));
+        }
+    };
+
+    let stdout_abort = stdout_task.abort_handle();
+    let stderr_abort = stderr_task.abort_handle();
+    let remaining = timeout
+        .checked_sub(started_at.elapsed())
+        .unwrap_or_else(|| Duration::from_millis(0));
+    let drain_timeout = if remaining.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        remaining
+    };
+
+    let drain_result = tokio::time::timeout(drain_timeout, async {
+        let stdout = match stdout_task.await {
+            Ok(Ok(output)) => output,
+            _ => Vec::new(),
+        };
+        let stderr = match stderr_task.await {
+            Ok(Ok(output)) => output,
+            _ => Vec::new(),
+        };
+        (stdout, stderr)
+    })
+    .await;
+
+    let (stdout, stderr) = match drain_result {
+        Ok(output) => output,
+        Err(_) => {
+            if let Some(pid) = child_pid {
+                platform::cancel_process_tree(pid).await;
+            }
+            stdout_abort.abort();
+            stderr_abort.abort();
+            return Err(format!("Command timed out after {}ms", timeout_ms));
+        }
+    };
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 #[derive(Deserialize)]
 struct FileReadRequest {
     path: String,
@@ -303,11 +386,7 @@ async fn handle_execute(body: &str) -> Result<String, String> {
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
 
     let timeout = Duration::from_millis(req.timeout_ms);
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
-        Err(_) => return Err(format!("Command timed out after {}ms", req.timeout_ms)),
-    };
+    let output = wait_with_output_or_kill_on_timeout(child, timeout, req.timeout_ms).await?;
 
     // Truncate output to 1MB to prevent huge responses
     const MAX_OUTPUT: usize = 1024 * 1024;
@@ -514,6 +593,8 @@ enum StreamEvent {
     Error { message: String },
 }
 
+type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
+
 #[tauri::command]
 async fn execute_command(
     command: String,
@@ -524,11 +605,8 @@ async fn execute_command(
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
-        Err(_) => return Err(format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000))),
-    };
+    let timeout_ms = timeout_ms.unwrap_or(30000);
+    let output = wait_with_output_or_kill_on_timeout(child, timeout, timeout_ms).await?;
     const MAX_OUTPUT: usize = 1024 * 1024;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -551,6 +629,8 @@ async fn execute_command(
 
 #[tauri::command]
 async fn execute_stream_command(
+    state: tauri::State<'_, StreamCommandState>,
+    command_id: String,
     command: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
@@ -559,6 +639,11 @@ async fn execute_stream_command(
 ) -> Result<(), String> {
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    if let Some(pid) = child.id() {
+        if let Ok(mut commands) = state.lock() {
+            commands.insert(command_id.clone(), pid);
+        }
+    }
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -611,7 +696,29 @@ async fn execute_stream_command(
             let _ = on_event.send(StreamEvent::Error { message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)) });
         }
     }
+    if let Ok(mut commands) = state.lock() {
+        commands.remove(&command_id);
+    }
     Ok(())
+}
+
+#[tauri::command]
+async fn cancel_stream_command(
+    state: tauri::State<'_, StreamCommandState>,
+    command_id: String,
+) -> Result<bool, String> {
+    let pid = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned".to_string())?
+        .get(&command_id)
+        .copied();
+
+    if let Some(pid) = pid {
+        platform::cancel_process_tree(pid).await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Start a local HTTP server for dev mode auth callbacks.
@@ -993,7 +1100,7 @@ async fn execute_pty_kill(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, cancel_stream_command, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1018,6 +1125,7 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new())) as StreamCommandState)
         .setup(|app| {
             #[cfg(desktop)]
             {

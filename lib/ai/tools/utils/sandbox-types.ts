@@ -57,6 +57,7 @@ export interface CommonSandboxInterface {
         background?: boolean;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
+        signal?: AbortSignal;
       },
     ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   };

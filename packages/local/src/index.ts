@@ -185,6 +185,12 @@ interface CentrifugoCommandMessage {
   targetConnectionId?: string;
 }
 
+interface CentrifugoCommandCancelMessage {
+  type: "command_cancel";
+  commandId: string;
+  targetConnectionId?: string;
+}
+
 interface CentrifugoStdoutMessage {
   type: "stdout";
   commandId: string;
@@ -340,6 +346,7 @@ class LocalSandboxClient {
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
   private processRunner: ProcessRunner;
+  private activeStreamCommands: Map<string, ChildProcess> = new Map();
 
   constructor(private config: Config) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
@@ -544,6 +551,7 @@ class LocalSandboxClient {
 
       const message = ctx.data as
         | CentrifugoCommandMessage
+        | CentrifugoCommandCancelMessage
         | CentrifugoPtyIncomingMessage;
 
       // Gate on targetConnectionId for all message types that carry it
@@ -564,6 +572,10 @@ class LocalSandboxClient {
               console.error(chalk.red(`Error handling command: ${errorMsg}`));
             },
           );
+          break;
+
+        case "command_cancel":
+          this.handleCommandCancel(message as CentrifugoCommandCancelMessage);
           break;
 
         case "pty_create":
@@ -727,6 +739,57 @@ class LocalSandboxClient {
     }
   }
 
+  private handleCommandCancel(msg: CentrifugoCommandCancelMessage): void {
+    const proc = this.activeStreamCommands.get(msg.commandId);
+    if (!proc) {
+      return;
+    }
+    this.terminateProcessTree(proc);
+  }
+
+  private terminateProcessTree(proc: ChildProcess): void {
+    const pid = proc.pid;
+    if (!pid) {
+      proc.kill("SIGKILL");
+      return;
+    }
+
+    if (os.platform() === "win32") {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    }
+
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      proc.kill("SIGTERM");
+    }
+
+    setTimeout(() => {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        return;
+      }
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        proc.kill("SIGKILL");
+      }
+    }, 1000).unref();
+  }
+
+  private terminateActiveStreamCommands(): void {
+    for (const [commandId, proc] of this.activeStreamCommands) {
+      console.log(
+        chalk.yellow(`[CMD] Terminating active command ${commandId}`),
+      );
+      this.terminateProcessTree(proc);
+    }
+    this.activeStreamCommands.clear();
+  }
+
   private async streamCommand(
     commandId: string,
     fullCommand: string,
@@ -748,18 +811,15 @@ class LocalSandboxClient {
       );
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
         stdio: ["ignore", "pipe", "pipe"],
+        detached: os.platform() !== "win32",
         ...spawnSpec.options,
       });
+      this.activeStreamCommands.set(commandId, proc);
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
           killed = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) {
-              proc.kill("SIGKILL");
-            }
-          }, 2000);
+          this.terminateProcessTree(proc);
         }, commandTimeout);
       }
 
@@ -798,6 +858,7 @@ class LocalSandboxClient {
 
       proc.on("close", (code) => {
         if (timeoutId) clearTimeout(timeoutId);
+        this.activeStreamCommands.delete(commandId);
 
         const duration = Date.now() - startTime;
         const exitCode = killed ? 124 : (code ?? 1);
@@ -855,6 +916,7 @@ class LocalSandboxClient {
 
       proc.on("error", (error) => {
         if (timeoutId) clearTimeout(timeoutId);
+        this.activeStreamCommands.delete(commandId);
         this.publishToChannel({
           type: "error",
           commandId,
@@ -999,6 +1061,9 @@ class LocalSandboxClient {
 
     // Stop all PTY sessions
     this.processRunner.stopAll();
+
+    // Stop all active streamed commands before dropping the realtime connection.
+    this.terminateActiveStreamCommands();
 
     // Disconnect Centrifugo
     if (this.subscription) {

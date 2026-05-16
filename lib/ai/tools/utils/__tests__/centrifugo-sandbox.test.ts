@@ -214,6 +214,99 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("commands.run cancellation", () => {
+    it("publishes command_cancel and resolves with exitCode 130 when aborted", async () => {
+      const sandbox = createSandbox();
+      const abortController = new AbortController();
+
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 5000,
+        signal: abortController.signal,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      const client = mockClients[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          commandId: FIXED_UUID,
+          command: "sleep 999",
+        }),
+      );
+
+      abortController.abort();
+      await jest.advanceTimersByTimeAsync(0);
+
+      await expect(promise).resolves.toMatchObject({
+        exitCode: 130,
+      });
+      expect(sub.publish).toHaveBeenCalledWith({
+        type: "command_cancel",
+        commandId: FIXED_UUID,
+        targetConnectionId: "conn-1",
+      });
+      expect(sub.unsubscribe).toHaveBeenCalled();
+      expect(client.disconnect).toHaveBeenCalled();
+    });
+
+    it("publishes command_cancel when aborted while command publish is in flight", async () => {
+      const sandbox = createSandbox();
+      const abortController = new AbortController();
+
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs: 5000,
+        signal: abortController.signal,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      let resolveCommandPublish!: () => void;
+      sub.publish = jest.fn((msg: { type: string }) => {
+        if (msg.type === "command") {
+          return new Promise<void>((resolve) => {
+            resolveCommandPublish = resolve;
+          });
+        }
+        return Promise.resolve();
+      });
+
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          commandId: FIXED_UUID,
+        }),
+      );
+
+      abortController.abort();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "command_cancel" }),
+      );
+
+      resolveCommandPublish();
+      await jest.advanceTimersByTimeAsync(0);
+
+      await expect(promise).resolves.toMatchObject({
+        exitCode: 130,
+      });
+      expect(sub.publish).toHaveBeenCalledWith({
+        type: "command_cancel",
+        commandId: FIXED_UUID,
+        targetConnectionId: "conn-1",
+      });
+    });
+  });
+
   describe("commands.run error message", () => {
     it("resolves with exitCode -1 when type is error", async () => {
       const sandbox = createSandbox();
