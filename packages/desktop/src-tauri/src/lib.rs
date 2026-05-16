@@ -78,6 +78,8 @@ async fn wait_with_output_or_kill_on_timeout(
         .stderr
         .take()
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
+    let child_pid = child.id();
+    let started_at = tokio::time::Instant::now();
 
     let stdout_task = tokio::spawn(async move {
         let mut output = Vec::new();
@@ -103,13 +105,40 @@ async fn wait_with_output_or_kill_on_timeout(
         }
     };
 
-    let stdout = match stdout_task.await {
-        Ok(Ok(output)) => output,
-        _ => Vec::new(),
+    let stdout_abort = stdout_task.abort_handle();
+    let stderr_abort = stderr_task.abort_handle();
+    let remaining = timeout
+        .checked_sub(started_at.elapsed())
+        .unwrap_or_else(|| Duration::from_millis(0));
+    let drain_timeout = if remaining.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        remaining
     };
-    let stderr = match stderr_task.await {
-        Ok(Ok(output)) => output,
-        _ => Vec::new(),
+
+    let drain_result = tokio::time::timeout(drain_timeout, async {
+        let stdout = match stdout_task.await {
+            Ok(Ok(output)) => output,
+            _ => Vec::new(),
+        };
+        let stderr = match stderr_task.await {
+            Ok(Ok(output)) => output,
+            _ => Vec::new(),
+        };
+        (stdout, stderr)
+    })
+    .await;
+
+    let (stdout, stderr) = match drain_result {
+        Ok(output) => output,
+        Err(_) => {
+            if let Some(pid) = child_pid {
+                platform::cancel_process_tree(pid).await;
+            }
+            stdout_abort.abort();
+            stderr_abort.abort();
+            return Err(format!("Command timed out after {}ms", timeout_ms));
+        }
     };
 
     Ok(std::process::Output {
