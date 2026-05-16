@@ -143,7 +143,13 @@ describe("UsageRefundTracker", () => {
 
       await tracker.refund();
 
-      expect(mockRefundUsage).toHaveBeenCalledWith("user-123", "pro", 100, 50);
+      expect(mockRefundUsage).toHaveBeenCalledWith(
+        "user-123",
+        "pro",
+        100,
+        50,
+        undefined,
+      );
     });
 
     it("should be idempotent - only refund once", async () => {

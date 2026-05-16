@@ -409,7 +409,7 @@ export const agentLongTask = task({
     metadata.set("status", "setup").set("chatId", chatId);
 
     const usageRefundTracker = new UsageRefundTracker();
-    usageRefundTracker.setUser(userId, subscription);
+    usageRefundTracker.setUser(userId, subscription, organizationId);
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
@@ -538,6 +538,7 @@ export const agentLongTask = task({
             userId,
             subscription,
             userCustomization,
+            organizationId,
           });
 
           rateLimitInfo = await checkRateLimit(

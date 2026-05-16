@@ -161,6 +161,42 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  // Team-shared extra usage pool. Admin funds it; any member of the org draws
+  // from it for overflow once the team subscription bucket is exhausted.
+  // Same units as extra_usage (points; auto-reload amount in dollars).
+  team_extra_usage: defineTable({
+    organization_id: v.string(),
+    enabled: v.optional(v.boolean()),
+    balance_points: v.number(),
+    auto_reload_enabled: v.optional(v.boolean()),
+    auto_reload_threshold_points: v.optional(v.number()),
+    auto_reload_amount_dollars: v.optional(v.number()),
+    monthly_cap_points: v.optional(v.number()),
+    monthly_spent_points: v.optional(v.number()),
+    monthly_reset_date: v.optional(v.string()),
+    first_successful_charge_at: v.optional(v.number()),
+    cumulative_spend_dollars: v.optional(v.number()),
+    override_monthly_cap_dollars: v.optional(v.number()),
+    auto_reload_consecutive_failures: v.optional(v.number()),
+    auto_reload_disabled_reason: v.optional(v.string()),
+    updated_at: v.number(),
+  }).index("by_org", ["organization_id"]),
+
+  // Per-member usage tracking and admin-set limits within the team pool.
+  // monthly_limit_points = null means no per-member cap (only team cap applies).
+  // disabled = true blocks the member entirely from drawing on the team pool.
+  team_member_usage: defineTable({
+    organization_id: v.string(),
+    user_id: v.string(),
+    monthly_limit_points: v.optional(v.number()),
+    monthly_spent_points: v.optional(v.number()),
+    monthly_reset_date: v.optional(v.string()),
+    disabled: v.optional(v.boolean()),
+    updated_at: v.number(),
+  })
+    .index("by_org", ["organization_id"])
+    .index("by_org_user", ["organization_id", "user_id"]),
+
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),

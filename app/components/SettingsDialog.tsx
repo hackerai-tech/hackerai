@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Settings,
   X,
@@ -25,6 +25,7 @@ import { AgentsTab } from "@/app/components/AgentsTab";
 import { RemoteControlTab } from "@/app/components/RemoteControlTab";
 import { UsageTab } from "@/app/components/UsageTab";
 import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
+import { TeamExtraUsageSection } from "@/app/components/TeamExtraUsageSection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -45,6 +46,18 @@ const SettingsDialog = ({
   const [showNotesDialog, setShowNotesDialog] = useState(false);
   const isMobile = useIsMobile();
   const { subscription } = useGlobalState();
+  const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // Only consulted when subscription === "team"; tabs() condition gates
+    // any other read, so a stale value after switching tier is harmless and
+    // will be overwritten the next time the user becomes a team member.
+    if (subscription !== "team") return;
+    fetch("/api/team/members")
+      .then((res) => res.json())
+      .then((data) => setIsTeamAdmin(data.isAdmin ?? false))
+      .catch(() => setIsTeamAdmin(false));
+  }, [subscription]);
 
   // Base tabs visible to all users
   const baseTabs = [
@@ -67,12 +80,20 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
-  const teamTab = { id: "Team", label: "Team", icon: Users };
+  const membersTab = { id: "Members", label: "Members", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
   const tabs =
     subscription === "team"
-      ? [...baseTabs, agentsTab, localSandboxTab, usageTab, teamTab, accountTab]
+      ? [
+          ...baseTabs,
+          agentsTab,
+          localSandboxTab,
+          usageTab,
+          ...(isTeamAdmin ? [extraUsageTab] : []),
+          membersTab,
+          accountTab,
+        ]
       : subscription !== "free"
         ? [
             ...baseTabs,
@@ -84,17 +105,26 @@ const SettingsDialog = ({
           ]
         : [...baseTabs, agentsTab, localSandboxTab, accountTab];
 
+  const canShowInitialTab = initialTab
+    ? tabs.some((t) => t.id === initialTab)
+    : false;
   const [prevInitialTab, setPrevInitialTab] = useState<string | null>(null);
+  const [prevCanShowInitialTab, setPrevCanShowInitialTab] = useState(false);
 
   if (
     initialTab &&
-    tabs.some((t) => t.id === initialTab) &&
-    ((open && !prevOpen) || (open && initialTab !== prevInitialTab))
+    canShowInitialTab &&
+    ((open && !prevOpen) ||
+      (open && initialTab !== prevInitialTab) ||
+      (open && canShowInitialTab !== prevCanShowInitialTab))
   ) {
     setActiveTab(initialTab);
   }
   if (initialTab !== prevInitialTab) {
     setPrevInitialTab(initialTab ?? null);
+  }
+  if (canShowInitialTab !== prevCanShowInitialTab) {
+    setPrevCanShowInitialTab(canShowInitialTab);
   }
   if (open !== prevOpen) {
     setPrevOpen(open);
@@ -216,11 +246,15 @@ const SettingsDialog = ({
 
                 {activeTab === "Extra Usage" && (
                   <div className="space-y-2">
-                    <ExtraUsageSection />
+                    {subscription === "team" ? (
+                      <TeamExtraUsageSection />
+                    ) : (
+                      <ExtraUsageSection />
+                    )}
                   </div>
                 )}
 
-                {activeTab === "Team" && <TeamTab />}
+                {activeTab === "Members" && <TeamTab />}
 
                 {activeTab === "Account" && <AccountTab />}
               </div>

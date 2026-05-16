@@ -4,6 +4,7 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -45,6 +46,7 @@ interface PlanCardProps {
   badgeClassName?: string;
   footerNote?: string;
   featureHeader?: string | null;
+  headerAction?: React.ReactNode;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
@@ -63,21 +65,27 @@ const PlanCard: React.FC<PlanCardProps> = ({
   badgeClassName = "",
   footerNote,
   featureHeader,
+  headerAction,
 }) => {
   return (
     <div
-      className={`border border-border md:min-h-[30rem] md:max-w-96 md:rounded-2xl relative flex w-full sm:w-[calc(50%-12px)] lg:flex-1 flex-col justify-center gap-4 rounded-xl px-6 py-6 text-sm bg-background ${customClassName}`}
+      className={`border border-border md:min-h-[30rem] md:rounded-2xl relative flex w-full min-w-0 flex-col justify-center gap-4 rounded-xl px-6 py-6 text-sm bg-background ${customClassName}`}
     >
       <div className="relative flex flex-col mt-0">
         <div className="flex flex-col gap-5">
-          <div className="flex items-center gap-2 justify-between text-[28px] font-medium">
-            {planName}
-            {badgeText ? (
-              <Badge
-                className={`ms-1 border-none rounded-4xl px-2 pt-1.5 pb-1.25 text-[11px] font-semibold bg-[#DCDBFF] text-[#615EEB] dark:bg-[#444378] dark:text-[#B9B7FF] ${badgeClassName}`}
-              >
-                {badgeText}
-              </Badge>
+          <div className="flex min-h-10 items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-[28px] font-medium leading-tight">
+              <span>{planName}</span>
+              {badgeText ? (
+                <Badge
+                  className={`border-none rounded-4xl px-2 pt-1.5 pb-1.25 text-[11px] font-semibold bg-[#DCDBFF] text-[#615EEB] dark:bg-[#444378] dark:text-[#B9B7FF] ${badgeClassName}`}
+                >
+                  {badgeText}
+                </Badge>
+              ) : null}
+            </div>
+            {headerAction ? (
+              <div className="shrink-0 pt-0.5">{headerAction}</div>
             ) : null}
           </div>
           <div className="flex items-end gap-1.5">
@@ -143,13 +151,61 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
+type PremiumPlan = "pro-plus" | "ultra";
+
+interface PremiumPlanSelectorProps {
+  value: PremiumPlan;
+  onChange: (value: PremiumPlan) => void;
+}
+
+const PremiumPlanSelector: React.FC<PremiumPlanSelectorProps> = ({
+  value,
+  onChange,
+}) => {
+  const options: Array<{ value: PremiumPlan; label: string }> = [
+    { value: "pro-plus", label: "Pro+" },
+    { value: "ultra", label: "Ultra" },
+  ];
+
+  return (
+    <div
+      className="inline-flex items-center rounded-full bg-muted p-1"
+      role="radiogroup"
+      aria-label="Premium plan tier"
+    >
+      {options.map((option) => {
+        const isSelected = value === option.value;
+
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={isSelected}
+            className={cn(
+              "min-w-16 rounded-full px-3 py-1.5 text-sm font-medium transition",
+              isSelected
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
-  const [showTeamPlan, setShowTeamPlan] = React.useState(false);
+  const [selectedPremiumPlan, setSelectedPremiumPlan] =
+    React.useState<PremiumPlan>("pro-plus");
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
     plan: string;
@@ -163,6 +219,14 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       onClose();
     }
   }, [isOpen, subscription, onClose]);
+
+  React.useEffect(() => {
+    if (isOpen && subscription === "pro-plus") {
+      setSelectedPremiumPlan("ultra");
+    } else if (isOpen) {
+      setSelectedPremiumPlan("pro-plus");
+    }
+  }, [isOpen, subscription]);
 
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
@@ -336,7 +400,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             ? "Upgrade to Ultra"
             : "Get Ultra",
         disabled: upgradeLoading,
-        className: "",
+        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
           handleUpgradeClick(
@@ -350,7 +414,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       return {
         text: "Get Ultra",
         disabled: false,
-        className: "",
+        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () => navigateToAuth("/login"),
       };
@@ -363,6 +427,29 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const ultraButtonConfig = getUltraButtonConfig();
 
   const hasSubscription = subscription !== "free";
+  const premiumButtonConfig =
+    selectedPremiumPlan === "pro-plus"
+      ? proPlusButtonConfig
+      : ultraButtonConfig;
+  const premiumPlanName = selectedPremiumPlan === "pro-plus" ? "Pro+" : "Ultra";
+  const premiumPrice =
+    selectedPremiumPlan === "pro-plus"
+      ? isYearly
+        ? PRICING["pro-plus"].yearly
+        : PRICING["pro-plus"].monthly
+      : isYearly
+        ? PRICING.ultra.yearly
+        : PRICING.ultra.monthly;
+  const premiumDescription =
+    selectedPremiumPlan === "pro-plus"
+      ? "For power users who need more"
+      : "Get the most out of HackerAI";
+  const premiumFeatures =
+    selectedPremiumPlan === "pro-plus" ? proPlusFeatures : ultraFeatures;
+  const premiumFeatureHeader =
+    selectedPremiumPlan === "pro-plus"
+      ? PLAN_HEADERS["pro-plus"]
+      : PLAN_HEADERS.ultra;
 
   return (
     <>
@@ -403,139 +490,76 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             />
           </div>
 
-          <div className="flex flex-wrap justify-center gap-6 pb-6 px-6">
-            {showTeamPlan ? (
-              <>
-                {/* Show Free Plan if no subscription, Pro Plan if pro subscription */}
-                {!hasSubscription ? (
-                  <PlanCard
-                    planName="Free"
-                    price={0}
-                    description="Try HackerAI"
-                    features={freeFeatures}
-                    buttonText={freeButtonConfig.text}
-                    buttonVariant={freeButtonConfig.variant}
-                    buttonClassName={freeButtonConfig.className}
-                    onButtonClick={freeButtonConfig.onClick}
-                    isButtonDisabled={freeButtonConfig.disabled}
-                    featureHeader={PLAN_HEADERS.free}
-                  />
-                ) : subscription === "pro" ? (
-                  <PlanCard
-                    planName="Pro"
-                    price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
-                    description="For everyday productivity"
-                    features={proFeatures}
-                    buttonText={proButtonConfig.text}
-                    buttonVariant={proButtonConfig.variant}
-                    buttonClassName={proButtonConfig.className}
-                    onButtonClick={proButtonConfig.onClick}
-                    isButtonDisabled={proButtonConfig.disabled}
-                    isButtonLoading={proButtonConfig.loading}
-                    featureHeader={PLAN_HEADERS.pro}
-                  />
-                ) : null}
-
-                {/* Team Plan */}
-                <PlanCard
-                  planName="Team"
-                  price={isYearly ? PRICING.team.yearly : PRICING.team.monthly}
-                  description="Supercharge your team with a secure, collaborative workspace"
-                  features={teamFeatures}
-                  buttonText={
-                    subscription === "pro" ? "Upgrade to Team" : "Get Team"
-                  }
-                  buttonVariant={"default"}
-                  onButtonClick={handleTeamClick}
-                  isButtonDisabled={false}
-                  featureHeader={PLAN_HEADERS.team}
-                />
-              </>
-            ) : (
-              <>
-                {/* Pro Plan — first on mobile, second on lg+ */}
-                <PlanCard
-                  planName="Pro"
-                  price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
-                  description="For everyday productivity"
-                  features={proFeatures}
-                  buttonText={proButtonConfig.text}
-                  buttonVariant={proButtonConfig.variant}
-                  buttonClassName={proButtonConfig.className}
-                  onButtonClick={proButtonConfig.onClick}
-                  isButtonDisabled={proButtonConfig.disabled}
-                  isButtonLoading={proButtonConfig.loading}
-                  featureHeader={PLAN_HEADERS.pro}
-                  customClassName="sm:order-2"
-                />
-
-                {/* Free Plan — second on mobile, first on lg+ */}
-                {!hasSubscription && (
-                  <PlanCard
-                    planName="Free"
-                    price={0}
-                    description="Try HackerAI"
-                    features={freeFeatures}
-                    buttonText={freeButtonConfig.text}
-                    buttonVariant={freeButtonConfig.variant}
-                    buttonClassName={freeButtonConfig.className}
-                    onButtonClick={freeButtonConfig.onClick}
-                    isButtonDisabled={freeButtonConfig.disabled}
-                    featureHeader={PLAN_HEADERS.free}
-                    customClassName="sm:order-1"
-                  />
-                )}
-
-                {/* Pro+ Plan */}
-                <PlanCard
-                  planName="Pro+"
-                  price={
-                    isYearly
-                      ? PRICING["pro-plus"].yearly
-                      : PRICING["pro-plus"].monthly
-                  }
-                  description="For power users who need more"
-                  features={proPlusFeatures}
-                  buttonText={proPlusButtonConfig.text}
-                  buttonVariant={proPlusButtonConfig.variant}
-                  buttonClassName={proPlusButtonConfig.className}
-                  onButtonClick={proPlusButtonConfig.onClick}
-                  isButtonDisabled={proPlusButtonConfig.disabled}
-                  isButtonLoading={proPlusButtonConfig.loading}
-                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777] sm:order-3"
-                  badgeText="RECOMMENDED"
-                  featureHeader={PLAN_HEADERS["pro-plus"]}
-                />
-
-                {/* Ultra Plan */}
-                <PlanCard
-                  planName="Ultra"
-                  price={
-                    isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly
-                  }
-                  description="Get the most out of HackerAI"
-                  features={ultraFeatures}
-                  buttonText={ultraButtonConfig.text}
-                  buttonVariant={ultraButtonConfig.variant}
-                  buttonClassName={ultraButtonConfig.className}
-                  isButtonDisabled={ultraButtonConfig.disabled}
-                  isButtonLoading={ultraButtonConfig.loading}
-                  onButtonClick={ultraButtonConfig.onClick}
-                  featureHeader={PLAN_HEADERS.ultra}
-                  customClassName="sm:order-4"
-                />
-              </>
-            )}
-          </div>
-
-          <div className="flex justify-center pb-8">
-            <Button
-              variant="secondary"
-              className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
-              onClick={() => setShowTeamPlan((prev) => !prev)}
+          <div className="px-6 pb-8">
+            <div
+              className={cn(
+                "mx-auto grid w-full max-w-[88rem] grid-cols-1 gap-6 md:grid-cols-2",
+                hasSubscription ? "xl:grid-cols-3" : "xl:grid-cols-4",
+              )}
             >
-              {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
-            </Button>
+              {!hasSubscription && (
+                <PlanCard
+                  planName="Free"
+                  price={0}
+                  description="Try HackerAI"
+                  features={freeFeatures}
+                  buttonText={freeButtonConfig.text}
+                  buttonVariant={freeButtonConfig.variant}
+                  buttonClassName={freeButtonConfig.className}
+                  onButtonClick={freeButtonConfig.onClick}
+                  isButtonDisabled={freeButtonConfig.disabled}
+                  featureHeader={PLAN_HEADERS.free}
+                />
+              )}
+
+              <PlanCard
+                planName="Pro"
+                price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
+                description="For everyday productivity"
+                features={proFeatures}
+                buttonText={proButtonConfig.text}
+                buttonVariant={proButtonConfig.variant}
+                buttonClassName={proButtonConfig.className}
+                onButtonClick={proButtonConfig.onClick}
+                isButtonDisabled={proButtonConfig.disabled}
+                isButtonLoading={proButtonConfig.loading}
+                featureHeader={PLAN_HEADERS.pro}
+              />
+
+              <PlanCard
+                planName={premiumPlanName}
+                price={premiumPrice}
+                description={premiumDescription}
+                features={premiumFeatures}
+                buttonText={premiumButtonConfig.text}
+                buttonVariant={premiumButtonConfig.variant}
+                buttonClassName={premiumButtonConfig.className}
+                onButtonClick={premiumButtonConfig.onClick}
+                isButtonDisabled={premiumButtonConfig.disabled}
+                isButtonLoading={premiumButtonConfig.loading}
+                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                badgeText="RECOMMENDED"
+                featureHeader={premiumFeatureHeader}
+                headerAction={
+                  <PremiumPlanSelector
+                    value={selectedPremiumPlan}
+                    onChange={setSelectedPremiumPlan}
+                  />
+                }
+              />
+
+              <PlanCard
+                planName="Team"
+                price={isYearly ? PRICING.team.yearly : PRICING.team.monthly}
+                description="Supercharge your team with a secure, collaborative workspace"
+                features={teamFeatures}
+                buttonText={hasSubscription ? "Upgrade to Team" : "Get Team"}
+                buttonVariant="default"
+                onButtonClick={handleTeamClick}
+                isButtonDisabled={false}
+                featureHeader={PLAN_HEADERS.team}
+              />
+            </div>
           </div>
         </DialogContent>
       </Dialog>

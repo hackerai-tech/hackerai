@@ -164,7 +164,7 @@ export const createChatHandler = (
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
       await assertUserCanMakeCostIncurringRequest(userId);
-      usageRefundTracker.setUser(userId, subscription);
+      usageRefundTracker.setUser(userId, subscription, organizationId);
       const userLocation = geolocation(req);
 
       // Add user context to logger (only region, not full location for privacy)
@@ -284,6 +284,7 @@ export const createChatHandler = (
         userId,
         subscription,
         userCustomization,
+        organizationId,
       });
 
       const rateLimitInfo: RateLimitInfo =
@@ -600,6 +601,7 @@ export const createChatHandler = (
               providerCost,
               selectedModel,
               usageTracker.nonModelCost,
+              organizationId,
             );
             usageTracker.log({
               userId,

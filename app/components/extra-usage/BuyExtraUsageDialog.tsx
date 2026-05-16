@@ -19,6 +19,10 @@ type BuyExtraUsageDialogProps = {
   onOpenChange: (open: boolean) => void;
   onPurchase: (amountDollars: number) => Promise<void>;
   isLoading: boolean;
+  title?: string;
+  description?: string;
+  lineItemLabel?: string;
+  paymentMethodMode?: "personal" | "checkout";
 };
 
 /** Format card brand name for display */
@@ -44,12 +48,19 @@ type ContentProps = {
   onPurchase: (amountDollars: number) => Promise<void>;
   isLoading: boolean;
   onClose: () => void;
+  title: string;
+  description: string;
+  lineItemLabel: string;
+  paymentMethodMode: "personal" | "checkout";
 };
 
 const BuyExtraUsageDialogContent = ({
   onPurchase,
   isLoading,
-  onClose,
+  title,
+  description,
+  lineItemLabel,
+  paymentMethodMode,
 }: ContentProps) => {
   const [purchaseAmount, setPurchaseAmount] = useState<string>("15");
   const [paymentMethod, setPaymentMethod] = useState<{
@@ -57,7 +68,9 @@ const BuyExtraUsageDialogContent = ({
     last4: string | null;
     brand: string | null;
   } | null>(null);
-  const [loadingPaymentMethod, setLoadingPaymentMethod] = useState(true);
+  const [loadingPaymentMethod, setLoadingPaymentMethod] = useState(
+    paymentMethodMode === "personal",
+  );
 
   const createBillingPortalSession = useAction(
     api.extraUsageActions.createBillingPortalSession,
@@ -66,6 +79,10 @@ const BuyExtraUsageDialogContent = ({
 
   // Fetch payment method on mount
   useEffect(() => {
+    if (paymentMethodMode === "checkout") {
+      return;
+    }
+
     getPaymentStatus({})
       .then((result) => {
         setPaymentMethod({
@@ -80,7 +97,7 @@ const BuyExtraUsageDialogContent = ({
       .finally(() => {
         setLoadingPaymentMethod(false);
       });
-  }, [getPaymentStatus]);
+  }, [getPaymentStatus, paymentMethodMode]);
 
   const handleEditPaymentMethod = async () => {
     try {
@@ -116,12 +133,12 @@ const BuyExtraUsageDialogContent = ({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Buy extra usage</DialogTitle>
+        <DialogTitle>{title}</DialogTitle>
       </DialogHeader>
       <div className="flex flex-col gap-5 pt-4">
         <div>
           <label className="block text-muted-foreground text-sm mb-3">
-            Get extra usage to keep using HackerAI when you hit a limit.
+            {description}
           </label>
           <Input
             placeholder="$15"
@@ -147,7 +164,7 @@ const BuyExtraUsageDialogContent = ({
         <div className="space-y-2">
           <hr className="mb-5 border-border" />
           <div className="flex justify-between text-sm">
-            <span>Extra usage</span>
+            <span>{lineItemLabel}</span>
             <span>${formatWithCommas(String(parsedAmount))}</span>
           </div>
           <div className="flex justify-between pt-2 text-sm font-medium">
@@ -159,7 +176,12 @@ const BuyExtraUsageDialogContent = ({
           <div className="flex items-center justify-between p-5 border border-border rounded-lg">
             <span className="font-medium text-sm">Payment method</span>
             <div className="flex items-center gap-3">
-              {loadingPaymentMethod ? (
+              {paymentMethodMode === "checkout" ? (
+                <p className="text-sm flex items-center gap-2">
+                  <CreditCard className="h-5 w-5" />
+                  Team billing account
+                </p>
+              ) : loadingPaymentMethod ? (
                 <p className="text-sm text-muted-foreground">Loading...</p>
               ) : paymentMethod?.hasPaymentMethod && paymentMethod.last4 ? (
                 <p className="text-sm flex items-center gap-2">
@@ -173,15 +195,17 @@ const BuyExtraUsageDialogContent = ({
                   Link by Stripe
                 </p>
               )}
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground"
-                aria-label="Edit payment method"
-                tabIndex={0}
-                onClick={handleEditPaymentMethod}
-              >
-                <Pencil className="h-4 w-4" />
-              </button>
+              {paymentMethodMode === "personal" && (
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label="Edit payment method"
+                  tabIndex={0}
+                  onClick={handleEditPaymentMethod}
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -204,6 +228,10 @@ const BuyExtraUsageDialog = ({
   onOpenChange,
   onPurchase,
   isLoading,
+  title = "Buy extra usage",
+  description = "Get extra usage to keep using HackerAI when you hit a limit.",
+  lineItemLabel = "Extra usage",
+  paymentMethodMode = "personal",
 }: BuyExtraUsageDialogProps) => {
   const handleOpenChange = (newOpen: boolean) => {
     onOpenChange(newOpen);
@@ -217,6 +245,10 @@ const BuyExtraUsageDialog = ({
             onPurchase={onPurchase}
             isLoading={isLoading}
             onClose={() => onOpenChange(false)}
+            title={title}
+            description={description}
+            lineItemLabel={lineItemLabel}
+            paymentMethodMode={paymentMethodMode}
           />
         )}
       </DialogContent>

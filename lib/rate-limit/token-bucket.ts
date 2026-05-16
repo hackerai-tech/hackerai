@@ -6,7 +6,12 @@ import type {
   ExtraUsageConfig,
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
-import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
+import {
+  deductFromBalance,
+  refundToBalance,
+  deductFromTeamBalance,
+  refundToTeamBalance,
+} from "@/lib/extra-usage";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 // =============================================================================
@@ -233,7 +238,12 @@ export const checkTokenBucketLimit = async (
         extraUsageConfig?.enabled &&
         (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
       ) {
-        const deductResult = await deductFromBalance(userId, shortfall);
+        // Team users draw from the org's shared pool with per-member caps;
+        // everyone else hits their personal balance.
+        const isTeamPool = subscription === "team" && !!organizationId;
+        const deductResult = isTeamPool
+          ? await deductFromTeamBalance(organizationId!, userId, shortfall)
+          : await deductFromBalance(userId, shortfall);
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -249,6 +259,36 @@ export const checkTokenBucketLimit = async (
         // Deduction failed - check why
         if (deductResult.insufficientFunds) {
           const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
+
+          // Team-pool specific: admin disabled this member's pool access.
+          if (deductResult.memberDisabled) {
+            const msg = `Your team admin has paused your access to team extra usage. Ask them to re-enable it to continue beyond your subscription limit.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              capReason: "team_member_disabled",
+            });
+          }
+
+          // Team-pool specific: admin disabled the pool entirely.
+          if (deductResult.poolDisabled) {
+            const msg = `Your team's extra usage pool is disabled.\n\nYour subscription limit resets ${resetTime}. Ask your team admin to enable team extra usage to continue.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              capReason: "team_pool_disabled",
+            });
+          }
+
+          // Team-pool specific: this member hit their per-member monthly cap.
+          if (deductResult.memberCapExceeded) {
+            const msg = `You've hit your team-set monthly spending limit.\n\nYour limit resets ${resetTime}. Ask your team admin to raise your limit to continue.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              capReason: "team_member_cap",
+            });
+          }
 
           if (deductResult.trustCapExceeded) {
             const capAmount = deductResult.trustCapDollars ?? 100;
@@ -365,6 +405,7 @@ export const deductUsage = async (
   providerCostDollars?: number,
   modelName?: string,
   nonModelCostDollars: number = 0,
+  organizationId?: string,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -441,7 +482,12 @@ export const deductUsage = async (
       extraUsageConfig?.enabled &&
       (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
     ) {
-      await deductFromBalance(userId, fromExtraUsage);
+      const isTeamPool = subscription === "team" && !!organizationId;
+      if (isTeamPool) {
+        await deductFromTeamBalance(organizationId!, userId, fromExtraUsage);
+      } else {
+        await deductFromBalance(userId, fromExtraUsage);
+      }
     }
   } catch (error) {
     console.error("Failed to deduct usage:", error);
@@ -849,6 +895,7 @@ export const refundUsage = async (
   subscription: SubscriptionTier,
   pointsDeducted: number,
   extraUsagePointsDeducted: number,
+  organizationId?: string,
 ): Promise<void> => {
   const refundPromises: Promise<void>[] = [];
 
@@ -859,8 +906,15 @@ export const refundUsage = async (
   }
 
   if (extraUsagePointsDeducted > 0) {
+    const isTeamPool = subscription === "team" && !!organizationId;
     refundPromises.push(
-      refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
+      isTeamPool
+        ? refundToTeamBalance(
+            organizationId!,
+            userId,
+            extraUsagePointsDeducted,
+          ).then(() => {})
+        : refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
     );
   }
 
