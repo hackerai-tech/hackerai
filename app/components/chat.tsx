@@ -605,7 +605,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
-        toast.error(error.message);
+        toast.error(
+          typeof error.cause === "string" ? error.cause : error.message,
+        );
       }
     },
   });
