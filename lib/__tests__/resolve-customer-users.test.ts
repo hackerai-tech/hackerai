@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 
 const mockRetrieveCustomer = jest.fn();
 const mockListMemberships = jest.fn();
@@ -23,6 +30,10 @@ describe("resolveUserIdsFromCustomer", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("uses WorkOS autoPagination so all active org members are returned", async () => {
