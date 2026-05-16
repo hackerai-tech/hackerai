@@ -105,17 +105,26 @@ const SettingsDialog = ({
           ]
         : [...baseTabs, agentsTab, localSandboxTab, accountTab];
 
+  const canShowInitialTab = initialTab
+    ? tabs.some((t) => t.id === initialTab)
+    : false;
   const [prevInitialTab, setPrevInitialTab] = useState<string | null>(null);
+  const [prevCanShowInitialTab, setPrevCanShowInitialTab] = useState(false);
 
   if (
     initialTab &&
-    tabs.some((t) => t.id === initialTab) &&
-    ((open && !prevOpen) || (open && initialTab !== prevInitialTab))
+    canShowInitialTab &&
+    ((open && !prevOpen) ||
+      (open && initialTab !== prevInitialTab) ||
+      (open && canShowInitialTab !== prevCanShowInitialTab))
   ) {
     setActiveTab(initialTab);
   }
   if (initialTab !== prevInitialTab) {
     setPrevInitialTab(initialTab ?? null);
+  }
+  if (canShowInitialTab !== prevCanShowInitialTab) {
+    setPrevCanShowInitialTab(canShowInitialTab);
   }
   if (open !== prevOpen) {
     setPrevOpen(open);

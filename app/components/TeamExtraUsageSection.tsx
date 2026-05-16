@@ -448,6 +448,10 @@ export const TeamExtraUsageSection = () => {
         onOpenChange={setShowBuyDialog}
         onPurchase={handlePurchase}
         isLoading={busy}
+        title="Buy team extra usage"
+        description="Fund a shared pool that team members can use when they hit the team subscription limit."
+        lineItemLabel="Team extra usage"
+        paymentMethodMode="checkout"
       />
 
       <AdjustSpendingLimitDialog
