@@ -149,6 +149,14 @@ pub fn build_command(
     #[cfg(not(windows))]
     {
         cmd.arg(config.flag).arg(command);
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
 
     if let Some(cwd) = cwd {
@@ -178,14 +186,13 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
         use std::time::Duration;
         if let Some(pid) = child.id() {
             // Send SIGTERM first for graceful shutdown
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGTERM);
-            }
+            terminate_process_group(pid, libc::SIGTERM);
             // Wait up to 2 seconds for the process to exit
             match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
                 Ok(_) => return,
                 Err(_) => {
                     // Process didn't exit in time, escalate to SIGKILL
+                    terminate_process_group(pid, libc::SIGKILL);
                     let _ = child.kill().await;
                 }
             }
@@ -202,4 +209,35 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
 
     // Reap the process to avoid zombies
     let _ = child.wait().await;
+}
+
+#[cfg(unix)]
+fn terminate_process_group(pid: u32, signal: libc::c_int) {
+    let pid = pid as libc::pid_t;
+    unsafe {
+        // build_command places each command in a fresh session, making the
+        // child pid also the process-group id. Kill the group so pipelines and
+        // shell grandchildren stop together.
+        if libc::kill(-pid, signal) == -1 {
+            let _ = libc::kill(pid, signal);
+        }
+    }
+}
+
+/// Best-effort external cancellation for a streaming command by process id.
+pub async fn cancel_process_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        terminate_process_group(pid, libc::SIGTERM);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        terminate_process_group(pid, libc::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+    }
 }

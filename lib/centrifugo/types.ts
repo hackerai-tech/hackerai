@@ -10,6 +10,12 @@ export interface CommandMessage {
   targetConnectionId?: string;
 }
 
+export interface CommandCancelMessage {
+  type: "command_cancel";
+  commandId: string;
+  targetConnectionId?: string;
+}
+
 export interface StdoutMessage {
   type: "stdout";
   commandId: string;
@@ -98,6 +104,7 @@ export interface PtyErrorMessage {
 /** Command-only response subset — used by one-shot command execution. */
 export type CommandResponseMessage =
   | CommandMessage
+  | CommandCancelMessage
   | StdoutMessage
   | StderrMessage
   | ExitMessage

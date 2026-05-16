@@ -514,6 +514,8 @@ enum StreamEvent {
     Error { message: String },
 }
 
+type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
+
 #[tauri::command]
 async fn execute_command(
     command: String,
@@ -551,6 +553,8 @@ async fn execute_command(
 
 #[tauri::command]
 async fn execute_stream_command(
+    state: tauri::State<'_, StreamCommandState>,
+    command_id: String,
     command: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
@@ -559,6 +563,11 @@ async fn execute_stream_command(
 ) -> Result<(), String> {
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    if let Some(pid) = child.id() {
+        if let Ok(mut commands) = state.lock() {
+            commands.insert(command_id.clone(), pid);
+        }
+    }
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -611,7 +620,29 @@ async fn execute_stream_command(
             let _ = on_event.send(StreamEvent::Error { message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)) });
         }
     }
+    if let Ok(mut commands) = state.lock() {
+        commands.remove(&command_id);
+    }
     Ok(())
+}
+
+#[tauri::command]
+async fn cancel_stream_command(
+    state: tauri::State<'_, StreamCommandState>,
+    command_id: String,
+) -> Result<bool, String> {
+    let pid = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned".to_string())?
+        .get(&command_id)
+        .copied();
+
+    if let Some(pid) = pid {
+        platform::cancel_process_tree(pid).await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Start a local HTTP server for dev mode auth callbacks.
@@ -993,7 +1024,7 @@ async fn execute_pty_kill(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, cancel_stream_command, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1018,6 +1049,7 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new())) as StreamCommandState)
         .setup(|app| {
             #[cfg(desktop)]
             {

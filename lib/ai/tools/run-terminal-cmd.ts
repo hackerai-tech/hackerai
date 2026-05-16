@@ -479,6 +479,21 @@ In using these tools, adhere to the following guidelines:
               // from the killed process might trigger retries
               resolved = true;
 
+              if (isCentrifugoSandbox(sandboxInstance)) {
+                const result = handler ? handler.getResult() : { output: "" };
+                if (handler) {
+                  handler.cleanup();
+                }
+                resolve({
+                  result: {
+                    output: result.output,
+                    exitCode: 130,
+                    error: "Command execution aborted by user",
+                  },
+                });
+                return;
+              }
+
               // Try to get PID from execution object first (cheap, no shell call)
               if (!processId && execution && (execution as any)?.pid) {
                 processId = (execution as any).pid;
@@ -592,6 +607,9 @@ In using these tools, adhere to the following guidelines:
                   },
               caidoEnvVars,
             );
+            const runOptions = isCentrifugoSandbox(sandboxInstance)
+              ? { ...commonOptions, signal: abortSignal }
+              : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
@@ -642,7 +660,7 @@ In using these tools, adhere to the following guidelines:
                     const result = await sandboxInstance.commands.run(
                       effectiveCommand,
                       {
-                        ...commonOptions,
+                        ...runOptions,
                         background: true,
                       },
                     );
@@ -665,10 +683,7 @@ In using these tools, adhere to the following guidelines:
                 )
               : retryWithBackoff(
                   () =>
-                    sandboxInstance.commands.run(
-                      effectiveCommand,
-                      commonOptions,
-                    ),
+                    sandboxInstance.commands.run(effectiveCommand, runOptions),
                   {
                     maxRetries: 6,
                     baseDelayMs: 500,

@@ -3,6 +3,7 @@ import posthog from "posthog-js";
 import {
   sandboxChannel,
   type SandboxMessage,
+  type CommandCancelMessage,
   type CommandMessage,
   type PtyCreateMessage,
   type PtyInputMessage,
@@ -81,6 +82,7 @@ export class DesktopSandboxBridge {
   private client: Centrifuge | null = null;
   private subscription: Subscription | null = null;
   private connectionId: string | null = null;
+  private activeCommands = new Set<string>();
   private config: DesktopBridgeConfig;
 
   constructor(config: DesktopBridgeConfig) {
@@ -203,6 +205,17 @@ export class DesktopSandboxBridge {
           });
           break;
 
+        case "command_cancel":
+          this.handleCommandCancel(message as CommandCancelMessage).catch(
+            (err) => {
+              console.error(
+                "[DesktopSandboxBridge] Command cancel failed:",
+                err,
+              );
+            },
+          );
+          break;
+
         case "pty_create":
           this.handlePtyCreate(message as PtyCreateMessage).catch((err) => {
             console.error("[DesktopSandboxBridge] PTY create failed:", err);
@@ -317,6 +330,7 @@ export class DesktopSandboxBridge {
 
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
+    this.activeCommands.add(commandId);
 
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
@@ -327,6 +341,7 @@ export class DesktopSandboxBridge {
       };
 
       await invoke("execute_stream_command", {
+        commandId,
         command: command.command,
         cwd: command.cwd,
         env: command.env,
@@ -339,7 +354,19 @@ export class DesktopSandboxBridge {
         commandId,
         message: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      this.activeCommands.delete(commandId);
     }
+  }
+
+  private async handleCommandCancel(
+    command: CommandCancelMessage,
+  ): Promise<void> {
+    if (!this.activeCommands.has(command.commandId)) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("cancel_stream_command", {
+      commandId: command.commandId,
+    });
   }
 
   private async forwardChunk(

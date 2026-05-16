@@ -13,6 +13,7 @@ import { validateDownloadUrl } from "./path-validation";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
+  "command_cancel",
   "stdout",
   "stderr",
   "exit",
@@ -62,6 +63,8 @@ function parseSandboxMessage(data: unknown): CommandResponseMessage | null {
         console.warn("Invalid command message: missing command", msg);
         return null;
       }
+      break;
+    case "command_cancel":
       break;
   }
 
@@ -163,6 +166,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
         displayName?: string;
+        signal?: AbortSignal;
       },
     ): Promise<{
       stdout: string;
@@ -190,6 +194,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
+        let publishedCommand = false;
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -222,7 +227,49 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           if (idx !== -1) {
             this.activeClients.splice(idx, 1);
           }
+          opts?.signal?.removeEventListener("abort", handleAbort);
         };
+
+        const resolveCanceled = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({
+            stdout,
+            stderr,
+            exitCode: 130,
+          });
+        };
+
+        const publishCancel = () => {
+          if (settled) return;
+          if (!publishedCommand || !subscription) {
+            resolveCanceled();
+            return;
+          }
+
+          subscription
+            .publish({
+              type: "command_cancel",
+              commandId,
+              targetConnectionId: this.connectionInfo.connectionId,
+            })
+            .catch(() => {
+              // The run is being aborted already; resolve locally even if the
+              // remote relay disappeared before it accepted the cancel message.
+            })
+            .finally(resolveCanceled);
+        };
+
+        const handleAbort = () => {
+          publishCancel();
+        };
+
+        if (opts?.signal?.aborted) {
+          resolveCanceled();
+          return;
+        }
+        opts?.signal?.addEventListener("abort", handleAbort, { once: true });
 
         // Set up timeout
         timeoutId = setTimeout(() => {
@@ -319,6 +366,10 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
             .publish(commandMessage)
             .then(() => {
               tPublished = Date.now();
+              publishedCommand = true;
+              if (opts?.signal?.aborted) {
+                publishCancel();
+              }
             })
             .catch((err: unknown) => {
               if (!settled) {
