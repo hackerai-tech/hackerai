@@ -16,20 +16,13 @@ export const getActiveByUser = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const suspensions = await ctx.db
+    return await ctx.db
       .query("user_suspensions")
-      .withIndex("by_user_and_status", (q) =>
+      .withIndex("by_user_status_source_created", (q) =>
         q.eq("user_id", args.userId).eq("status", "active"),
       )
-      .collect();
-
-    return (
-      suspensions.sort(
-        (a, b) =>
-          (b.source_created_at ?? b.created_at) -
-          (a.source_created_at ?? a.created_at),
-      )[0] ?? null
-    );
+      .order("desc")
+      .first();
   },
 });
 
@@ -66,7 +59,7 @@ export const upsertActive = mutation({
       stripe_charge_id: args.stripeChargeId,
       workos_organization_id: args.workosOrganizationId,
       updated_at: now,
-      source_created_at: args.sourceCreatedAt,
+      source_created_at: args.sourceCreatedAt ?? now,
       resolved_at: undefined,
       resolved_reason: undefined,
     };

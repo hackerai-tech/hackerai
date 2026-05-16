@@ -60,26 +60,38 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
       ([field, value]) => row[field as keyof SuspensionRow] === value,
     );
 
+  const withIndex = jest.fn((_indexName: string, predicate: any) => {
+    const filters: Record<string, unknown> = {};
+    const q = {
+      eq: jest.fn((field: string, value: unknown) => {
+        filters[field] = value;
+        return q;
+      }),
+    };
+    predicate(q);
+
+    const filteredRows = () =>
+      rows.filter((row) => matchesFilters(row, filters));
+
+    return {
+      order: jest.fn((direction: "asc" | "desc") => ({
+        first: async () => {
+          const sorted = [...filteredRows()].sort(
+            (a, b) => (a.source_created_at ?? 0) - (b.source_created_at ?? 0),
+          );
+          if (direction === "desc") sorted.reverse();
+          return sorted[0] ?? null;
+        },
+      })),
+      first: async () => filteredRows()[0] ?? null,
+    };
+  });
+
   const ctx: any = {
+    __withIndex: withIndex,
     db: {
       query: jest.fn(() => ({
-        withIndex: jest.fn((_indexName: string, predicate: any) => {
-          const filters: Record<string, unknown> = {};
-          const q = {
-            eq: jest.fn((field: string, value: unknown) => {
-              filters[field] = value;
-              return q;
-            }),
-          };
-          predicate(q);
-
-          return {
-            collect: async () =>
-              rows.filter((row) => matchesFilters(row, filters)),
-            first: async () =>
-              rows.find((row) => matchesFilters(row, filters)) ?? null,
-          };
-        }),
+        withIndex,
       })),
       insert: jest.fn(
         async (_table: string, doc: Omit<SuspensionRow, "_id">) => {
@@ -222,6 +234,10 @@ describe("userSuspensions", () => {
     });
 
     expect(result.source_id).toBe("dp_newer");
+    expect(ctx.__withIndex).toHaveBeenCalledWith(
+      "by_user_status_source_created",
+      expect.any(Function),
+    );
   });
 
   it("resolves by source so the suspension is no longer active", async () => {

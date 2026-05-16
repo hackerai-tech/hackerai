@@ -26,12 +26,15 @@ export async function resolveUserIdsFromCustomer(
       },
     );
 
-    if (!memberships.data || memberships.data.length === 0) {
+    const allMemberships = await memberships.autoPagination();
+    const userIds = allMemberships.map((membership) => membership.userId);
+
+    if (userIds.length === 0) {
       console.error(`[${logPrefix}] No active memberships for org ${orgId}`);
       return { userIds: [], orgId };
     }
 
-    return { userIds: memberships.data.map((m) => m.userId), orgId };
+    return { userIds, orgId };
   } catch (error) {
     console.error(
       `[${logPrefix}] Failed to resolve users for customer ${customerId}:`,

@@ -182,6 +182,11 @@ export default defineSchema({
     resolved_reason: v.optional(v.string()),
   })
     .index("by_user_and_status", ["user_id", "status"])
+    .index("by_user_status_source_created", [
+      "user_id",
+      "status",
+      "source_created_at",
+    ])
     .index("by_user_and_source", ["user_id", "source_id"])
     .index("by_customer_and_status", ["stripe_customer_id", "status"]),
 

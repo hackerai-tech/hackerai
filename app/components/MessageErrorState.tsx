@@ -118,7 +118,11 @@ export const MessageErrorState = ({
                 variant="default"
                 size="sm"
                 onClick={() =>
-                  window.open("https://help.hackerai.co/", "_blank")
+                  window.open(
+                    "https://help.hackerai.co/",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
                 }
               >
                 Contact Support
@@ -146,7 +150,11 @@ export const MessageErrorState = ({
                 variant="default"
                 size="sm"
                 onClick={() =>
-                  window.open("https://help.hackerai.co/", "_blank")
+                  window.open(
+                    "https://help.hackerai.co/",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
                 }
               >
                 Contact Support
