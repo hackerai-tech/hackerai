@@ -68,6 +68,7 @@ export const MessageErrorState = ({
     subscription === "pro" ||
     subscription === "pro-plus";
   const isTrustCapExceeded = metadata?.trustCapExceeded === true;
+  const isSuspensionError = metadata?.suspensionCategory !== undefined;
 
   return (
     <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
@@ -117,7 +118,11 @@ export const MessageErrorState = ({
                 variant="default"
                 size="sm"
                 onClick={() =>
-                  window.open("https://help.hackerai.co/", "_blank")
+                  window.open(
+                    "https://help.hackerai.co/",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
                 }
               >
                 Contact Support
@@ -140,14 +145,32 @@ export const MessageErrorState = ({
           </>
         ) : (
           <>
-            {canReconnect && (
-              <Button variant="default" size="sm" onClick={onReconnect}>
-                Reconnect
+            {isSuspensionError ? (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  window.open(
+                    "https://help.hackerai.co/",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
+                }
+              >
+                Contact Support
               </Button>
+            ) : (
+              <>
+                {canReconnect && (
+                  <Button variant="default" size="sm" onClick={onReconnect}>
+                    Reconnect
+                  </Button>
+                )}
+                <Button variant="destructive" size="sm" onClick={onRetry}>
+                  Retry
+                </Button>
+              </>
             )}
-            <Button variant="destructive" size="sm" onClick={onRetry}>
-              Retry
-            </Button>
           </>
         )}
       </div>

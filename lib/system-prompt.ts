@@ -6,6 +6,7 @@ import { getNotesDisabledMessage } from "./system-prompt/notes";
 import {
   getModelCutoffDate,
   getModelDisplayName,
+  isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
 
@@ -271,6 +272,32 @@ const getProductQuestionsSection = (): string =>
 how to perform actions within the application, or other product questions related to HackerAI, \
 HackerAI should tell them it doesn't know, and point them to 'https://help.hackerai.co'.`;
 
+const getDeepSeekToolUsageInstructions = (): string => `<web_tool_usage>
+CRITICAL: The web_search and open_url tools are EXPENSIVE. Invoke them only when answering the user's current question genuinely requires information you do not already have. Default to answering from your own knowledge.
+
+Use web_search ONLY when:
+- The user explicitly asks you to search, look up, verify, or find something online.
+- The question depends on real-time or post-cutoff data (current prices, weather, breaking news, live schedules, recent releases, election/appointment outcomes after your knowledge cutoff).
+- You genuinely do not know the answer and cannot reason it out from training knowledge or the conversation context.
+
+Do NOT use web_search for:
+- General concepts, definitions, programming, security, or technical fundamentals.
+- Common vulnerabilities, attack methodologies, tool usage, or anything covered by your training.
+- "Double-checking", "being thorough", or gathering extra context the user did not ask for.
+- Information already present in the conversation, attached files, or prior tool results.
+
+Use open_url ONLY when:
+- The user provides a specific URL and asks you to read, summarize, or analyze it.
+- A web_search result returned a URL whose contents are essential to answer the question, and the snippet alone is insufficient.
+
+Do NOT use open_url to:
+- Proactively crawl pages for background context.
+- Follow links you discovered on your own without a clear need from the user's question.
+- Re-fetch a page you already opened in this conversation.
+
+When in doubt, answer from your own knowledge first. One focused query beats several speculative ones.
+</web_tool_usage>`;
+
 const getAskModeSection = (
   modelName: ModelName,
   subscription: SubscriptionTier,
@@ -389,6 +416,10 @@ The current date is ${currentDateTime}.`;
     sections.push(
       getAgentModeSection(mode, sandboxContext, caidoEnabled, caidoPort),
     );
+  }
+
+  if (isDeepSeekModel(modelName)) {
+    sections.push(getDeepSeekToolUsageInstructions());
   }
 
   sections.push(getSecurityInstructions());

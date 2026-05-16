@@ -117,7 +117,7 @@ export const Messages = ({
   const shouldShowLoadingDots = useMemo(() => {
     // Show dots while resuming an interrupted stream until the first chunk arrives
     if (isAutoResuming) return true;
-    if (status !== "streaming") return false;
+    if (status !== "streaming" && status !== "submitted") return false;
     if (summarizationStatus?.status === "started") return false;
     if (uploadStatus?.isUploading) return false;
 

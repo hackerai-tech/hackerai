@@ -1,4 +1,9 @@
-import { task, tags, metadata } from "@trigger.dev/sdk";
+import {
+  task,
+  tags,
+  metadata,
+  logger as triggerLogger,
+} from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
 import {
   createUIMessageStream,
@@ -39,6 +44,7 @@ import {
   deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   saveMessage,
   updateChat,
@@ -93,6 +99,89 @@ import {
 const AGENT_LONG_MAX_DURATION_MS = 58 * 60 * 1000;
 
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
+
+const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
+
+const truncateForTriggerMetadata = (value: string) =>
+  value.length > MAX_TRIGGER_ERROR_MESSAGE_LENGTH
+    ? `${value.slice(0, MAX_TRIGGER_ERROR_MESSAGE_LENGTH)}...`
+    : value;
+
+const sanitizeTriggerTagValue = (value: string) =>
+  value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+
+const classifyAgentLongError = (error: unknown) => {
+  const details = extractErrorDetails(error);
+  const errorMessage = truncateForTriggerMetadata(
+    typeof details.errorMessage === "string"
+      ? details.errorMessage
+      : "Unknown error occurred",
+  );
+
+  if (error instanceof ChatSDKError) {
+    const code = `${error.type}:${error.surface}`;
+    return {
+      category: error.type === "unauthorized" ? "login_required" : "chat_error",
+      code,
+      name: "ChatSDKError",
+      message: errorMessage,
+      loginRequired: error.type === "unauthorized",
+      statusCode: error.statusCode,
+    };
+  }
+
+  return {
+    category: isProviderApiError(error) ? "provider_error" : "unexpected_error",
+    code: typeof details.errorCode === "string" ? details.errorCode : undefined,
+    name:
+      typeof details.errorName === "string"
+        ? details.errorName
+        : "UnknownError",
+    message: errorMessage,
+    loginRequired: false,
+    statusCode:
+      typeof details.statusCode === "number" ? details.statusCode : undefined,
+  };
+};
+
+const recordAgentLongFailureForDashboard = async (
+  error: unknown,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+    phase: "setup" | "streaming";
+  },
+) => {
+  const summary = classifyAgentLongError(error);
+  metadata
+    .set("status", "failed")
+    .set("errorCategory", summary.category)
+    .set("errorName", summary.name)
+    .set("errorMessage", summary.message)
+    .set("loginRequired", summary.loginRequired)
+    .set("failedPhase", context.phase)
+    .set("failedAt", new Date().toISOString());
+
+  if (summary.code) metadata.set("errorCode", summary.code);
+  if (summary.statusCode) metadata.set("errorStatusCode", summary.statusCode);
+
+  const errorTags = [`error_${summary.category}`];
+  if (summary.code) {
+    errorTags.push(`error_code_${sanitizeTriggerTagValue(summary.code)}`);
+  }
+  await tags.add(errorTags);
+
+  triggerLogger.error("[agent-long] run failed", {
+    chatId: context.chatId,
+    userId: context.userId,
+    runId: context.runId,
+    phase: context.phase,
+    ...summary,
+  });
+
+  await metadata.flush();
+};
 
 const withAgentLongStreamHeartbeat = (
   source: ReadableStream<AgentLongUiStreamPart>,
@@ -207,8 +296,8 @@ export const agentLongTask = task({
   // "ui" stream the client already subscribed to, producing duplicate output.
   // Provider errors are handled internally via the fallback-model path.
   retry: { maxAttempts: 1 },
-  // Explicit preset for a 60-min run managing PTY sessions + sandbox.
-  machine: { preset: "medium-1x" },
+  // Right-sized from observed production CPU/memory usage while preserving 1 vCPU.
+  machine: { preset: "small-2x" },
 
   onCancel: async ({
     ctx,
@@ -271,7 +360,7 @@ export const agentLongTask = task({
     metadata.set("status", "setup").set("chatId", chatId);
 
     const usageRefundTracker = new UsageRefundTracker();
-    usageRefundTracker.setUser(userId, subscription);
+    usageRefundTracker.setUser(userId, subscription, organizationId);
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
@@ -382,8 +471,10 @@ export const agentLongTask = task({
       let rateLimitInfo: RateLimitInfo;
       let extraUsageConfig: Awaited<ReturnType<typeof buildExtraUsageConfig>>;
 
+      let streamError: unknown;
       const uiStream = createUIMessageStream({
         onError: (error) => {
+          streamError ??= error;
           if (error instanceof ChatSDKError) {
             return typeof error.cause === "string"
               ? error.cause
@@ -392,10 +483,13 @@ export const agentLongTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          await assertUserCanMakeCostIncurringRequest(userId);
+
           extraUsageConfig = await buildExtraUsageConfig({
             userId,
             subscription,
             userCustomization,
+            organizationId,
           });
 
           rateLimitInfo = await checkRateLimit(
@@ -1017,10 +1111,25 @@ export const agentLongTask = task({
       streamPiped = true;
       await waitUntilComplete();
 
+      if (streamError) {
+        throw streamError;
+      }
+
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
-      metadata.set("status", "failed");
+      await recordAgentLongFailureForDashboard(error, {
+        chatId,
+        userId,
+        runId: ctx.run.id,
+        phase: streamPiped ? "streaming" : "setup",
+      }).catch((metadataError) => {
+        metadata.set("status", "failed");
+        console.error(
+          "[agent-long] failed to record run error metadata:",
+          metadataError,
+        );
+      });
       await usageRefundTracker.refund().catch(() => {});
       if (error instanceof ChatSDKError) {
         chatLogger?.emitChatError(error);

@@ -3,8 +3,14 @@ import { stripe } from "@/app/api/stripe";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
+import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+type SuspensionCategory =
+  | "early_fraud_warning"
+  | "dispute_fraudulent"
+  | "dispute_billing_hold";
 
 // =============================================================================
 // Helpers
@@ -187,6 +193,41 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
     : (charge.customer?.id ?? null);
 }
 
+const resolveUserIdsFromCustomer = (customerId: string) =>
+  resolveStripeCustomerUsers(customerId, "Fraud Webhook");
+
+async function suspendCustomerUsers({
+  customerId,
+  category,
+  sourceId,
+  sourceReason,
+  chargeId,
+  sourceCreatedUnix,
+}: {
+  customerId: string;
+  category: SuspensionCategory;
+  sourceId: string;
+  sourceReason?: string;
+  chargeId?: string | null;
+  sourceCreatedUnix: number;
+}): Promise<void> {
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+
+  for (const userId of userIds) {
+    await convex.mutation(api.userSuspensions.upsertActive, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userId,
+      category,
+      sourceId,
+      sourceReason,
+      stripeCustomerId: customerId,
+      stripeChargeId: chargeId ?? undefined,
+      workosOrganizationId: orgId ?? undefined,
+      sourceCreatedAt: sourceCreatedUnix * 1000,
+    });
+  }
+}
+
 /**
  * Block a fraudulent user without deleting anything.
  *
@@ -203,18 +244,31 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
 async function blockFraudulentUser(
   customerId: string,
   chargeId: string | null,
-  reason: string,
+  metadataReason: string,
+  suspension: {
+    category: SuspensionCategory;
+    sourceId: string;
+    sourceReason?: string;
+  },
   asOfUnix: number,
 ): Promise<void> {
   await cancelAllSubscriptions(customerId, asOfUnix);
   await detachAllPaymentMethods(customerId, asOfUnix);
-  await markCustomerBlocked(customerId, reason);
+  await markCustomerBlocked(customerId, metadataReason);
   if (chargeId) {
     await reportChargeFraudulent(chargeId);
   }
+  await suspendCustomerUsers({
+    customerId,
+    category: suspension.category,
+    sourceId: suspension.sourceId,
+    sourceReason: suspension.sourceReason,
+    chargeId,
+    sourceCreatedUnix: asOfUnix,
+  });
 
   console.log(
-    `[Fraud Webhook] Blocked customer ${customerId}: subscriptions cancelled, payment methods detached, marked as blocked (${reason})`,
+    `[Fraud Webhook] Blocked customer ${customerId}: subscriptions cancelled, payment methods detached, marked as blocked (${metadataReason})`,
   );
 }
 
@@ -259,6 +313,11 @@ async function handleEarlyFraudWarning(
       customerId,
       chargeId,
       `early_fraud_warning:${warning.fraud_type}`,
+      {
+        category: "early_fraud_warning",
+        sourceId: warning.id,
+        sourceReason: warning.fraud_type,
+      },
       warning.created,
     );
   }
@@ -268,8 +327,9 @@ async function handleEarlyFraudWarning(
  * Handle charge.dispute.created
  *
  * Fraudulent disputes: block the user (cancel subs, detach cards, flag).
- * Non-fraudulent disputes (unrecognized, duplicate, etc.): cancel subscription
- * only — the customer may be legitimate and confused.
+ * Non-fraudulent disputes (unrecognized, duplicate, etc.): cancel subscription,
+ * detach payment methods, and pause cost-incurring usage. The customer may be
+ * legitimate and confused, so we don't mark the Stripe customer as blocked.
  *
  * No refund call: when a dispute is created, Stripe automatically debits the
  * disputed amount (plus a non-refundable dispute fee) from the merchant
@@ -304,6 +364,11 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       customerId,
       chargeId,
       `dispute_fraudulent:${dispute.id}`,
+      {
+        category: "dispute_fraudulent",
+        sourceId: dispute.id,
+        sourceReason: dispute.reason,
+      },
       dispute.created,
     );
   } else {
@@ -312,9 +377,18 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // dispute fee + ratio impact, and the disputed card is likely to file
     // again. Stop all future charges on this card: cancel subscriptions
     // AND detach payment methods. Don't mark blocked — the customer can
-    // still re-subscribe with a different card if they want to continue.
+    // still re-subscribe with a different card, while app usage remains paused
+    // until support resolves the suspension.
     await cancelAllSubscriptions(customerId, dispute.created);
     await detachAllPaymentMethods(customerId, dispute.created);
+    await suspendCustomerUsers({
+      customerId,
+      category: "dispute_billing_hold",
+      sourceId: dispute.id,
+      sourceReason: dispute.reason,
+      chargeId,
+      sourceCreatedUnix: dispute.created,
+    });
     console.log(
       `[Fraud Webhook] Cancelled subscriptions and detached payment methods for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );

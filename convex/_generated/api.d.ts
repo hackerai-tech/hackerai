@@ -1,4 +1,4 @@
- 
+/* eslint-disable */
 /**
  * Generated `api` utility.
  *
@@ -35,6 +35,7 @@ import type * as tempStreams from "../tempStreams.js";
 import type * as usageLogs from "../usageLogs.js";
 import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
+import type * as userSuspensions from "../userSuspensions.js";
 
 import type {
   ApiFromModules,
@@ -70,6 +71,7 @@ declare const fullApi: ApiFromModules<{
   usageLogs: typeof usageLogs;
   userCustomization: typeof userCustomization;
   userDeletion: typeof userDeletion;
+  userSuspensions: typeof userSuspensions;
 }>;
 
 /**

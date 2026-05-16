@@ -103,6 +103,14 @@ export function isAnthropicModel(modelName: string): boolean {
   return modelName.includes("sonnet") || modelName.includes("opus");
 }
 
+export function isDeepSeekModel(modelName: string): boolean {
+  return (
+    modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
+    modelName === "model-deepseek-v4-flash"
+  );
+}
+
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model

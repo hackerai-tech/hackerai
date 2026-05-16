@@ -5,6 +5,7 @@ import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   getChatById,
   handleInitialChatAndUserMessage,
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest) {
       coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
 
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+    await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
 
     assertFreeAgentGates({
@@ -70,22 +72,38 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const handle = await tasks.trigger<typeof agentLongTask>("agent-long", {
-      chatId,
-      userId,
-      subscription,
-      organizationId,
-      messages,
-      baseTodos: Array.isArray(todos) ? todos : [],
-      sandboxPreference,
-      selectedModel: selectedModelOverride,
-      userLocation,
-      temporary,
-      isAutoContinue,
-      regenerate,
-      isNewChat,
-      convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
-    });
+    const triggerTags = [`user_${userId}`, `chat_${chatId}`];
+    if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
+
+    const handle = await tasks.trigger<typeof agentLongTask>(
+      "agent-long",
+      {
+        chatId,
+        userId,
+        subscription,
+        organizationId,
+        messages,
+        baseTodos: Array.isArray(todos) ? todos : [],
+        sandboxPreference,
+        selectedModel: selectedModelOverride,
+        userLocation,
+        temporary,
+        isAutoContinue,
+        regenerate,
+        isNewChat,
+        convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+      },
+      {
+        tags: triggerTags,
+        metadata: {
+          status: "queued",
+          chatId,
+          userId,
+          subscription,
+          loginRequired: false,
+        },
+      },
+    );
 
     if (!temporary) {
       await setActiveTriggerRun({ chatId, triggerRunId: handle.id });

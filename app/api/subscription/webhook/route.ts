@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { workos } from "@/app/api/workos";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
@@ -12,6 +11,7 @@ import {
   clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
+import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import type { SubscriptionTier } from "@/types";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
@@ -55,46 +55,8 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
 // Helpers
 // =============================================================================
 
-/** Resolve all active WorkOS user IDs and org ID from a Stripe customer ID. */
-async function resolveUserIdsFromCustomer(
-  customerId: string,
-): Promise<{ userIds: string[]; orgId: string | null }> {
-  try {
-    const customerData = await stripe.customers.retrieve(customerId);
-    if (customerData.deleted) return { userIds: [], orgId: null };
-
-    const customer = customerData as Stripe.Customer;
-    const orgId = customer.metadata?.workOSOrganizationId ?? null;
-    if (!orgId) {
-      console.error(
-        `[Subscription Webhook] Customer ${customerId} missing workOSOrganizationId metadata`,
-      );
-      return { userIds: [], orgId: null };
-    }
-
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        organizationId: orgId,
-        statuses: ["active"],
-      },
-    );
-
-    if (!memberships.data || memberships.data.length === 0) {
-      console.error(
-        `[Subscription Webhook] No active memberships for org ${orgId}`,
-      );
-      return { userIds: [], orgId };
-    }
-
-    return { userIds: memberships.data.map((m) => m.userId), orgId };
-  } catch (error) {
-    console.error(
-      `[Subscription Webhook] Failed to resolve users for customer ${customerId}:`,
-      error,
-    );
-    return { userIds: [], orgId: null };
-  }
-}
+const resolveUserIdsFromCustomer = (customerId: string) =>
+  resolveStripeCustomerUsers(customerId, "Subscription Webhook");
 
 /** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
 function tierFromProductName(name: string): SubscriptionTier | null {
