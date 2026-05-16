@@ -9,7 +9,7 @@
  * Runs commands directly on the host OS (no Docker isolation).
  *
  * Usage:
- *   npx @hackerai/local --token TOKEN --name "My Machine"
+ *   npx @hackerai/local --token TOKEN
  */
 
 import { ConvexHttpClient } from "convex/browser";
@@ -1060,12 +1060,12 @@ ${chalk.yellow("Usage:")}
 
 ${chalk.yellow("Options:")}
   --token TOKEN       Authentication token from Settings (required)
-  --name NAME         Connection name (default: hostname)
+  --name NAME         Optional connection name fallback (default: hostname)
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
 
 ${chalk.yellow("Examples:")}
-  npx @hackerai/local --token hsb_abc123 --name "My Laptop"
+  npx @hackerai/local --token hsb_abc123
   npx @hackerai/local --token hsb_abc123 --name "Work PC"
 
 ${chalk.red("⚠️  Security Warning:")}

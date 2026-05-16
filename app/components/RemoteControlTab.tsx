@@ -367,10 +367,10 @@ const RemoteControlTab = () => {
         <CommandBlock
           label="Connect Machine"
           warning
-          command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
+          command={`${runCommand} --token ${showToken && token ? token : "<token>"}${convexUrlFlag}`}
           onCopy={() =>
             handleCopyCommand(
-              `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
+              `${runCommand} --token ${token || "YOUR_TOKEN"}${convexUrlFlag}`,
             )
           }
         />

@@ -18,7 +18,7 @@ hackerai-local --token YOUR_TOKEN
 ## Usage
 
 ```bash
-npx @hackerai/local@latest --token hsb_abc123 --name "My Laptop"
+npx @hackerai/local@latest --token hsb_abc123
 ```
 
 Commands run directly on your host OS. The client connects to HackerAI and relays commands in real-time.
@@ -28,7 +28,7 @@ Commands run directly on your host OS. The client connects to HackerAI and relay
 | Option             | Description                                            |
 | ------------------ | ------------------------------------------------------ |
 | `--token TOKEN`    | Authentication token from HackerAI Settings (required) |
-| `--name NAME`      | Connection name shown in HackerAI (default: hostname)  |
+| `--name NAME`      | Optional connection name fallback (default: hostname)  |
 | `--convex-url URL` | Override backend URL (for development)                 |
 | `--help, -h`       | Show help message                                      |
 
