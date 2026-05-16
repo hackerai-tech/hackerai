@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
@@ -98,13 +99,15 @@ export const useChatHandlers = ({
     api.tempStreams.cancelTempStreamFromClient,
   );
 
-  // Mirrors the routing rule in app/components/chat.tsx: web users in agent
-  // mode (and Tauri free users) run on Trigger.dev. Persistent chats only —
-  // temporary chats use the legacy Redis pub/sub cancel path.
+  // Mirrors the transport routing rule in app/components/chat.tsx. Persistent
+  // chats only; temporary chats use the legacy Redis pub/sub cancel path.
   const shouldCancelTriggerRun = () =>
-    chatModeRef.current === "agent" &&
     !temporaryChatsEnabledRef.current &&
-    (!isTauriEnvironment() || subscriptionRef.current === "free");
+    shouldUseAgentLongForAgent({
+      mode: chatModeRef.current,
+      subscription: subscriptionRef.current,
+      isTauri: isTauriEnvironment(),
+    });
 
   const cancelTriggerRun = () => {
     if (!shouldCancelTriggerRun()) return;

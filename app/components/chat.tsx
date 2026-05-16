@@ -32,6 +32,7 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
+import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
@@ -343,9 +344,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
-        const useTriggerAgent =
-          mode === "agent" &&
-          (!isTauriEnvironment() || subscriptionRef.current === "free");
+        const useTriggerAgent = shouldUseAgentLongForAgent({
+          mode,
+          subscription: subscriptionRef.current,
+          isTauri: isTauriEnvironment(),
+        });
         if (useTriggerAgent) {
           // useChat reuses this fetch for both POST sendMessages and GET
           // reconnectToStream — dispatch on method.
@@ -380,9 +383,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         // Use the agent-long resume endpoint when there is a stored trigger run
         // (covers legacy "agent-long" chats normalised to "agent" on load) OR
         // when the current run is using Trigger.dev for agent mode.
-        const useTriggerAgent =
-          chatModeRef.current === "agent" &&
-          (!isTauriEnvironment() || subscriptionRef.current === "free");
+        const useTriggerAgent = shouldUseAgentLongForAgent({
+          mode: chatModeRef.current,
+          subscription: subscriptionRef.current,
+          isTauri: isTauriEnvironment(),
+        });
         if (useTriggerAgent || !!activeTriggerRunRef.current) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
