@@ -112,6 +112,37 @@ describe("WorkedFor", () => {
     expect(screen.getByText("Hidden work")).toBeVisible();
   });
 
+  it("auto-collapses when timing finishes", () => {
+    const { rerender } = render(
+      <WorkedFor hasWork isTiming>
+        <WorkedForTrigger isTiming />
+        <WorkedForContent>Hidden work</WorkedForContent>
+      </WorkedFor>,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /working for 1s/i }),
+    ).toBeDisabled();
+    expect(screen.getByText("Hidden work")).toBeVisible();
+
+    rerender(
+      <WorkedFor hasWork isTiming={false}>
+        <WorkedForTrigger durationMs={1_000} />
+        <WorkedForContent>Hidden work</WorkedForContent>
+      </WorkedFor>,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /worked for 1s/i }),
+    ).not.toBeDisabled();
+    const hiddenWork = screen.queryByText("Hidden work");
+    if (hiddenWork) {
+      expect(hiddenWork).not.toBeVisible();
+    } else {
+      expect(hiddenWork).not.toBeInTheDocument();
+    }
+  });
+
   it("does not render lazy content until opened", () => {
     const renderContent = jest.fn(() => "Hidden work");
 

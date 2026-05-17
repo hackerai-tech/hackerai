@@ -117,6 +117,66 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
+  it("renders stopped agent work inline when there is no final text", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "output-available",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationStartedAt: 1_000,
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+      status: "ready",
+    });
+
+    expect(screen.queryByRole("button", { name: /worked for/i })).toBeNull();
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+
+  it("keeps regenerated final text visible when stream metadata trails it", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "output-available",
+          },
+          {
+            type: "text",
+            text: "regenerated final answer",
+          },
+          {
+            type: "data-context-usage",
+            data: {},
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 1_500,
+        },
+      } as unknown as ChatMessage,
+      status: "ready",
+    });
+
+    expect(
+      screen.getByRole("button", { name: /worked for 2s/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+    expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
+  });
+
   it("keeps saved message mode stable when the current picker mode changes", () => {
     const { rerender } = renderMessageItem({ mode: "ask" });
 

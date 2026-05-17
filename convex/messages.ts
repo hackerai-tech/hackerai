@@ -251,12 +251,15 @@ export const saveMessage = mutation({
           patch.mode = args.mode;
         }
         if (
-          args.generationStartedAt &&
-          !existingMessage.generation_started_at
+          typeof args.generationStartedAt === "number" &&
+          typeof existingMessage.generation_started_at !== "number"
         ) {
           patch.generation_started_at = args.generationStartedAt;
         }
-        if (args.generationTimeMs && !existingMessage.generation_time_ms) {
+        if (
+          typeof args.generationTimeMs === "number" &&
+          typeof existingMessage.generation_time_ms !== "number"
+        ) {
           patch.generation_time_ms = args.generationTimeMs;
         }
         if (args.finishReason && !existingMessage.finish_reason) {

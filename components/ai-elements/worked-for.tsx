@@ -50,6 +50,7 @@ export const useWorkedFor = () => {
 
 export type WorkedForProps = ComponentProps<typeof Collapsible> & {
   hasWork: boolean;
+  isTiming?: boolean;
 };
 
 type ScrollSnapshot = {
@@ -82,6 +83,7 @@ const now = () => Date.now();
 export function WorkedFor({
   className,
   hasWork,
+  isTiming = false,
   open,
   defaultOpen = false,
   onOpenChange,
@@ -95,6 +97,7 @@ export function WorkedFor({
   });
   const scrollSnapshotRef = useRef<ScrollSnapshot | null>(null);
   const restoreTokenRef = useRef(0);
+  const wasTimingRef = useRef(isTiming);
 
   const captureScrollPosition = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return;
@@ -158,6 +161,18 @@ export function WorkedFor({
     },
     [restoreCapturedScrollPosition, setIsOpen],
   );
+
+  useEffect(() => {
+    const wasTiming = wasTimingRef.current;
+
+    if (isTiming) {
+      setIsOpen(true);
+    } else if (wasTiming) {
+      setIsOpen(false);
+    }
+
+    wasTimingRef.current = isTiming;
+  }, [isTiming, setIsOpen]);
 
   const contextValue = useMemo(
     () => ({
@@ -270,8 +285,8 @@ export function WorkedForTrigger({
     <CollapsibleTrigger
       disabled={!canToggle}
       className={cn(
-        "flex items-center gap-2 text-foreground text-sm transition-opacity border-b border-border pb-3 w-full",
-        canToggle && "hover:opacity-80",
+        "flex items-center gap-2 text-muted-foreground text-sm transition-colors border-b border-border pb-3 w-full",
+        canToggle && "hover:text-foreground",
         !canToggle && "cursor-default",
         className,
       )}
@@ -310,13 +325,7 @@ export function WorkedForContent({
 
   return (
     <CollapsibleContent
-      className={cn(
-        "mt-2 space-y-3",
-        "data-[state=closed]:animate-out data-[state=open]:animate-in",
-        "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
-        "data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2",
-        className,
-      )}
+      className={cn("worked-for-content mt-2 space-y-3", className)}
       {...props}
     >
       {shouldRenderChildren

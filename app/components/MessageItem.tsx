@@ -1,11 +1,4 @@
-import {
-  memo,
-  useMemo,
-  useCallback,
-  useEffect,
-  useState,
-  Fragment,
-} from "react";
+import { memo, useMemo, useCallback, Fragment } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -13,6 +6,7 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
+import { splitWorkedForParts } from "./worked-for-parts";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   WorkedFor,
@@ -177,30 +171,10 @@ export const MessageItem = memo(function MessageItem({
   );
 
   // Memoize part filtering - only recompute when parts change
-  const { fileParts, nonFileParts, workParts, trailingTextParts } =
-    useMemo(() => {
-      const files = message.parts.filter((part) => part.type === "file");
-      const nonFiles = message.parts.filter((part) => part.type !== "file");
-      // Find the trailing run of contiguous text parts at the end of nonFiles.
-      // Everything before it counts as "work" (reasoning, tool calls, data,
-      // intermediate text). This split powers the Codex-style collapse:
-      // the work is hidden behind a "Worked for X" pill, the final text stays
-      // visible below.
-      let trailingStart = nonFiles.length;
-      for (let i = nonFiles.length - 1; i >= 0; i--) {
-        if ((nonFiles[i] as { type?: string }).type === "text") {
-          trailingStart = i;
-        } else {
-          break;
-        }
-      }
-      return {
-        fileParts: files,
-        nonFileParts: nonFiles,
-        workParts: nonFiles.slice(0, trailingStart),
-        trailingTextParts: nonFiles.slice(trailingStart),
-      };
-    }, [message.parts]);
+  const { fileParts, nonFileParts, workParts, trailingTextParts } = useMemo(
+    () => splitWorkedForParts(message.parts),
+    [message.parts],
+  );
 
   const isStreamingThisMessage =
     message.role === "assistant" &&
@@ -215,31 +189,7 @@ export const MessageItem = memo(function MessageItem({
     typeof message.metadata?.generationStartedAt === "number"
       ? message.metadata.generationStartedAt
       : undefined;
-  const [streamedMessageId, setStreamedMessageId] = useState<string | null>(
-    null,
-  );
-  useEffect(() => {
-    if (!isStreamingThisMessage) return;
-
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) {
-        setStreamedMessageId(message.id);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isStreamingThisMessage, message.id]);
-  const isAwaitingGenerationTime =
-    message.role === "assistant" &&
-    isLastAssistantMessage &&
-    effectiveStatus === "ready" &&
-    streamedMessageId === message.id &&
-    generationTimeMs === undefined;
-  const shouldShowWorkingTimer =
-    isStreamingThisMessage || isAwaitingGenerationTime;
+  const shouldShowWorkingTimer = isStreamingThisMessage;
   const shouldUseWorkedFor = message.metadata?.mode === "agent";
 
   // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
@@ -325,14 +275,13 @@ export const MessageItem = memo(function MessageItem({
   // Memoize editable files for MessageEditor
   const editableFiles = useMemo(() => {
     return fileParts
-      .filter((part) => part.type === "file" && (part as any).fileId)
+      .filter((part) => part.fileId)
       .map((part) => {
-        const filePart = part as any;
         return {
-          fileId: filePart.fileId as string,
-          name: filePart.name || filePart.filename || "File",
-          mediaType: filePart.mediaType,
-          url: filePart.url || getCachedUrl(filePart.fileId as string),
+          fileId: part.fileId as string,
+          name: part.name || part.filename || "File",
+          mediaType: part.mediaType,
+          url: part.url || getCachedUrl(part.fileId as string),
         } as EditableFile;
       });
   }, [fileParts, getCachedUrl]);
@@ -427,7 +376,12 @@ export const MessageItem = memo(function MessageItem({
                 ) : shouldShowWorkingTimer ? (
                   <>
                     {workParts.length > 0 && (
-                      <WorkedFor key="working" hasWork defaultOpen>
+                      <WorkedFor
+                        key="work"
+                        hasWork
+                        defaultOpen
+                        isTiming={shouldShowWorkingTimer}
+                      >
                         <WorkedForTrigger
                           isTiming
                           startedAt={generationStartedAt}
@@ -453,10 +407,8 @@ export const MessageItem = memo(function MessageItem({
                     )}
                   </>
                 ) : trailingTextParts.length === 0 ? (
-                  // No final text output (e.g. run ended mid-tool or was
-                  // aborted before a summary). Don't hide the work behind a
-                  // "Worked for" pill — that would leave the user with an
-                  // empty-looking message. Render the parts inline.
+                  // If a run stops before producing final text, keep the work
+                  // visible inline instead of leaving only a collapsed header.
                   nonFileParts.map((part, partIndex) => (
                     <MessagePartHandler
                       key={`${message.id}-${partIndex}`}
@@ -472,22 +424,31 @@ export const MessageItem = memo(function MessageItem({
                 ) : (
                   <>
                     {workParts.length > 0 && (
-                      <WorkedFor key="worked" hasWork>
+                      <WorkedFor
+                        key="work"
+                        hasWork
+                        isTiming={shouldShowWorkingTimer}
+                      >
                         <WorkedForTrigger durationMs={generationTimeMs} />
-                        <WorkedForContent lazy>
+                        <WorkedForContent>
                           {() => workParts.map(renderAssistantPart)}
                         </WorkedForContent>
                       </WorkedFor>
                     )}
-                    <div
-                      className={
-                        workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
-                      }
-                    >
-                      {trailingTextParts.map((part, partIndex) =>
-                        renderAssistantPart(part, workParts.length + partIndex),
-                      )}
-                    </div>
+                    {trailingTextParts.length > 0 && (
+                      <div
+                        className={
+                          workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
+                        }
+                      >
+                        {trailingTextParts.map((part, partIndex) =>
+                          renderAssistantPart(
+                            part,
+                            workParts.length + partIndex,
+                          ),
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
