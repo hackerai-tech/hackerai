@@ -19,10 +19,7 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
-import {
-  ContextUsageIndicator,
-  type ContextUsageData,
-} from "../ContextUsageIndicator";
+import { type ContextUsageData } from "../ContextUsageIndicator";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface ChatInputProps {
@@ -95,9 +92,7 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
-    !isMobile &&
-    (subscription !== "free" || isAgentMode(chatMode)) &&
-    !!contextUsage;
+    (subscription !== "free" || isAgentMode(chatMode)) && !!contextUsage;
   const isAgent = isAgentMode(chatMode);
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
@@ -241,8 +236,9 @@ export const ChatInput = ({
             input={input}
             uploadedFiles={uploadedFiles}
             chatMode={chatMode}
-            contextUsage={!isAgent ? contextUsage : undefined}
-            showContextIndicator={!isAgent && showContextIndicator}
+            contextUsage={contextUsage}
+            showContextIndicator={showContextIndicator}
+            contextUsageVariant={isMobile ? "compact-popover" : "tooltip"}
           />
         </div>
 
@@ -259,11 +255,6 @@ export const ChatInput = ({
               value={sandboxPreference}
               onChange={setSandboxPreference}
             />
-            {showContextIndicator && contextUsage && (
-              <div className="ml-auto">
-                <ContextUsageIndicator {...contextUsage} />
-              </div>
-            )}
           </div>
         )}
 

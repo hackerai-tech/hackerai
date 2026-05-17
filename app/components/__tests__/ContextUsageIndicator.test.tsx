@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ContextUsageIndicator } from "../ContextUsageIndicator";
 
 describe("ContextUsageIndicator", () => {
@@ -22,6 +23,12 @@ describe("ContextUsageIndicator", () => {
       const indicator = screen.getByTestId("context-usage-indicator");
       expect(indicator.textContent).toBe("");
     });
+
+    it("uses a passive hover target by default", () => {
+      render(<ContextUsageIndicator {...defaultProps} />);
+      const indicator = screen.getByTestId("context-usage-indicator");
+      expect(indicator.tagName).toBe("DIV");
+    });
   });
 
   describe("Zero tokens state", () => {
@@ -41,6 +48,27 @@ describe("ContextUsageIndicator", () => {
         "aria-label",
         "Context usage: 8.0k of 100k tokens",
       );
+    });
+  });
+
+  describe("Compact popover", () => {
+    it("opens a short mobile-friendly message on click", async () => {
+      const user = userEvent.setup();
+
+      render(
+        <ContextUsageIndicator
+          usedTokens={189833}
+          maxTokens={258000}
+          variant="compact-popover"
+        />,
+      );
+
+      await user.click(screen.getByTestId("context-usage-indicator"));
+
+      expect(screen.getByText("Context window:")).toBeInTheDocument();
+      expect(
+        screen.getByText("26% left (189,833 used / 258,000)"),
+      ).toBeInTheDocument();
     });
   });
 });
