@@ -7,8 +7,13 @@ import type { AnySandbox } from "@/types";
 import { isE2BSandbox } from "./sandbox-types";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
+import { MAX_GENERATED_FILE_SIZE_BYTES } from "@/lib/constants/s3";
+import { logger } from "@/lib/logger";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
+const MAX_GENERATED_FILE_SIZE_MB =
+  MAX_GENERATED_FILE_SIZE_BYTES / (1024 * 1024);
+const SANDBOX_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type UploadedFileInfo = {
   url: string;
@@ -36,11 +41,121 @@ function extractErrorMessage(error: unknown): string {
   return "An unexpected error occurred";
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+async function getSandboxFileSize(
+  sandbox: AnySandbox,
+  fullPath: string,
+): Promise<number> {
+  const quotedPath = shellQuote(fullPath);
+  const statResult = await sandbox.commands.run(
+    `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
+    { displayName: "" } as { displayName?: string },
+  );
+
+  let fileSize = parseInt(statResult.stdout.trim(), 10);
+  if (!isNaN(fileSize) && statResult.exitCode === 0) {
+    return fileSize;
+  }
+
+  // Windows cmd.exe fallback: %~zI expands to the file size.
+  const escapedForCmd = fullPath.replace(/"/g, '\\"');
+  const winResult = await sandbox.commands.run(
+    `for %I in ("${escapedForCmd}") do @echo %~zI`,
+    { displayName: "" } as { displayName?: string },
+  );
+  fileSize = parseInt(winResult.stdout.trim(), 10);
+  if (!isNaN(fileSize) && winResult.exitCode === 0) {
+    return fileSize;
+  }
+
+  throw new Error(
+    `Failed to get file size for ${fullPath}: ${
+      statResult.stderr || winResult.stderr || "stat command failed"
+    }`,
+  );
+}
+
+function assertSandboxFileSizeAllowed(fileName: string, size: number): void {
+  if (size <= MAX_GENERATED_FILE_SIZE_BYTES) return;
+
+  throw new Error(
+    `File "${fileName}" exceeds the maximum generated file size limit of ${MAX_GENERATED_FILE_SIZE_MB} MB. Current size: ${(size / (1024 * 1024)).toFixed(2)} MB`,
+  );
+}
+
+function getSandboxLogType(sandbox: AnySandbox): "e2b" | "centrifugo" {
+  return isE2BSandbox(sandbox) ? "e2b" : "centrifugo";
+}
+
+function errorToLog(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    };
+  }
+  return { message: String(error) };
+}
+
+async function uploadGeneratedFileFromSandboxToUrl(args: {
+  sandbox: AnySandbox;
+  fullPath: string;
+  uploadUrl: string;
+  mediaType: string;
+}): Promise<void> {
+  const { sandbox, fullPath, uploadUrl, mediaType } = args;
+
+  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
+    await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
+    return;
+  }
+
+  let result: Awaited<ReturnType<typeof sandbox.commands.run>>;
+  try {
+    result = await sandbox.commands.run(
+      `curl -fsSL -X PUT -H "Content-Type: ${mediaType.replace(/"/g, '\\"')}" --data-binary @${shellQuote(fullPath)} "$UPLOAD_URL"`,
+      {
+        timeoutMs: SANDBOX_UPLOAD_TIMEOUT_MS,
+        envVars: { UPLOAD_URL: uploadUrl },
+      } as { timeoutMs?: number; envVars?: Record<string, string> },
+    );
+  } catch (error) {
+    logger.error(
+      "sandbox_generated_file_upload_failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "sandbox_generated_file_upload_failed",
+        service: "chat-handler",
+        sandbox_type: getSandboxLogType(sandbox),
+        media_type: mediaType,
+        error: errorToLog(error),
+      },
+    );
+    throw error;
+  }
+
+  if (result.exitCode !== 0) {
+    logger.error("sandbox_generated_file_upload_failed", undefined, {
+      event: "sandbox_generated_file_upload_failed",
+      service: "chat-handler",
+      sandbox_type: getSandboxLogType(sandbox),
+      media_type: mediaType,
+      exit_code: result.exitCode,
+      stderr: result.stderr?.slice(0, 500),
+    });
+    throw new Error(
+      `Failed to upload file ${fullPath}: ${result.stderr || result.stdout || "upload command failed"}`,
+    );
+  }
+}
+
 export async function uploadSandboxFileToConvex(args: {
   sandbox: AnySandbox;
   userId: string;
   fullPath: string;
-  skipTokenValidation?: boolean;
 }): Promise<UploadedFileInfo> {
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
@@ -56,116 +171,49 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   const { sandbox, userId, fullPath } = args;
-  const convex = getConvexClient();
-
   const mediaType = DEFAULT_MEDIA_TYPE;
   const name = fullPath.split("/").pop() || "file";
-
-  // For CentrifugoSandbox, always upload directly from sandbox to S3
-  // This avoids data corruption and size limits when piping through Convex commands
-  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
-    const { uploadUrl, s3Key } = await generateS3UploadUrl(
-      name,
-      mediaType,
-      userId,
-    );
-
-    // Upload directly from sandbox to S3
-    await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
-
-    // Get file size — try POSIX stat first, then Windows cmd.exe fallback
-    // Linux: stat -c%s, macOS: stat -f%z, Windows: for %~z
-    const statResult = await sandbox.commands.run(
-      `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}" 2>/dev/null`,
-      { displayName: "" } as { displayName?: string },
-    );
-    let fileSize = parseInt(statResult.stdout.trim(), 10);
-    if (isNaN(fileSize) || statResult.exitCode !== 0) {
-      // Windows cmd.exe fallback: %~zI expands to the file size
-      const winResult = await sandbox.commands.run(
-        `for %I in ("${fullPath}") do @echo %~zI`,
-        { displayName: "" } as { displayName?: string },
-      );
-      fileSize = parseInt(winResult.stdout.trim(), 10);
-      if (isNaN(fileSize) || winResult.exitCode !== 0) {
-        throw new Error(
-          `Failed to get file size for ${fullPath}: ${statResult.stderr || winResult.stderr || "stat command failed"}`,
-        );
-      }
-    }
-
-    try {
-      const saved = await convex.action(api.fileActions.saveFile, {
-        s3Key,
-        name,
-        mediaType,
-        size: fileSize,
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        skipTokenValidation: args.skipTokenValidation,
-      });
-
-      return {
-        ...saved,
-        name,
-        mediaType,
-        s3Key,
-      } as UploadedFileInfo;
-    } catch (error) {
-      throw new Error(extractErrorMessage(error));
-    }
-  }
-
-  // E2B Sandbox: use downloadUrl to fetch file, then upload to storage
-  let blob: Blob;
-
-  if (isE2BSandbox(sandbox)) {
-    const downloadUrl = await sandbox.downloadUrl(fullPath, {
-      useSignatureExpiration: 30_000, // 30 seconds
+  const fileSize = await getSandboxFileSize(sandbox, fullPath);
+  if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
+    logger.warn("sandbox_generated_file_too_large", {
+      event: "sandbox_generated_file_too_large",
+      service: "chat-handler",
+      user_id: userId,
+      file_name: name,
+      media_type: mediaType,
+      size_bytes: fileSize,
+      limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
+      sandbox_type: getSandboxLogType(sandbox),
     });
-
-    const fileRes = await fetch(downloadUrl);
-    if (!fileRes.ok) {
-      throw new Error(
-        `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
-      );
-    }
-
-    blob = await fileRes.blob();
-  } else {
-    // Fallback for unknown sandbox types
-    throw new Error("Unsupported sandbox type for file upload");
   }
+  assertSandboxFileSizeAllowed(name, fileSize);
+  const convex = getConvexClient();
 
-  // S3 upload path
   const { uploadUrl, s3Key } = await generateS3UploadUrl(
     name,
     mediaType,
     userId,
   );
 
-  const uploadRes = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": mediaType },
-    body: blob,
+  await uploadGeneratedFileFromSandboxToUrl({
+    sandbox,
+    fullPath,
+    uploadUrl,
+    mediaType,
   });
 
-  if (!uploadRes.ok) {
-    throw new Error(
-      `S3 upload failed for ${fullPath}: ${uploadRes.status} ${uploadRes.statusText}`,
-    );
-  }
-
   try {
-    const saved = await convex.action(api.fileActions.saveFile, {
-      s3Key,
-      name,
-      mediaType,
-      size: blob.size,
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      skipTokenValidation: args.skipTokenValidation,
-    });
+    const saved = await convex.action(
+      api.fileActions.saveSandboxGeneratedFile,
+      {
+        s3Key,
+        name,
+        mediaType,
+        size: fileSize,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+      },
+    );
 
     return {
       ...saved,
@@ -174,6 +222,20 @@ export async function uploadSandboxFileToConvex(args: {
       s3Key,
     } as UploadedFileInfo;
   } catch (error) {
+    logger.error(
+      "sandbox_generated_file_metadata_save_failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "sandbox_generated_file_metadata_save_failed",
+        service: "chat-handler",
+        user_id: userId,
+        file_name: name,
+        media_type: mediaType,
+        size_bytes: fileSize,
+        sandbox_type: getSandboxLogType(sandbox),
+        error: errorToLog(error),
+      },
+    );
     // Re-throw with properly extracted error message
     throw new Error(extractErrorMessage(error));
   }

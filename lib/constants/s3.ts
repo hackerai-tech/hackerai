@@ -19,5 +19,8 @@ export const getS3UrlExpirationBufferSeconds = (): number => {
 // Maximum file size (20 MB)
 export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
+// Maximum assistant-generated downloadable artifact size (250 MB)
+export const MAX_GENERATED_FILE_SIZE_BYTES = 250 * 1024 * 1024;
+
 // S3 key prefix for user files
 export const S3_USER_FILES_PREFIX = "users";
