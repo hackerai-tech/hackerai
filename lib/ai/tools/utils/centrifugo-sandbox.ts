@@ -329,11 +329,25 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
               });
               break;
             case "error":
+              console.warn(
+                "[local-command]",
+                JSON.stringify({
+                  event: "local_command_error_received",
+                  service: "web",
+                  command_id: commandId,
+                  connection_id: this.connectionInfo.connectionId,
+                  stdout_length: stdout.length,
+                  stderr_length: stderr.length,
+                  message: message.message,
+                }),
+              );
               settled = true;
               cleanup();
               resolve({
                 stdout,
-                stderr: stderr + message.message,
+                stderr: stderr
+                  ? `${stderr}\n${message.message}`
+                  : message.message,
                 exitCode: -1,
               });
               break;

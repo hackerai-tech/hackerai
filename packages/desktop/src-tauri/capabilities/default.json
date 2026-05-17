@@ -15,6 +15,7 @@
         { "path": "https://**", "scheme": "https" }
       ]
     },
+    "allow-desktop-command-bridge",
     "os:default",
     "process:default",
     "updater:default",
