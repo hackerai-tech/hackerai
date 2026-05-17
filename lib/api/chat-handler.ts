@@ -695,6 +695,19 @@ export const createChatHandler = (
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
+              messageMetadata: ({ part }) => {
+                if (part.type === "start") {
+                  return { mode, generationStartedAt: streamStartTime };
+                }
+
+                if (part.type === "finish") {
+                  return {
+                    mode,
+                    generationStartedAt: streamStartTime,
+                    generationTimeMs: Date.now() - streamStartTime,
+                  };
+                }
+              },
               onFinish: async ({ messages, isAborted }) => {
                 // Check if stream finished with only step-start (indicates incomplete response)
                 const lastAssistantMessage = messages
@@ -746,6 +759,22 @@ export const createChatHandler = (
                     writer.merge(
                       retryResult.toUIMessageStream({
                         generateMessageId: () => retryMessageId,
+                        messageMetadata: ({ part }) => {
+                          if (part.type === "start") {
+                            return {
+                              mode,
+                              generationStartedAt: fallbackStartTime,
+                            };
+                          }
+
+                          if (part.type === "finish") {
+                            return {
+                              mode,
+                              generationStartedAt: fallbackStartTime,
+                              generationTimeMs: Date.now() - fallbackStartTime,
+                            };
+                          }
+                        },
                         onFinish: async ({
                           messages: retryMessages,
                           isAborted: retryAborted,
@@ -839,6 +868,8 @@ export const createChatHandler = (
                                 extraFileIds: newFileIds,
                                 usage: state.streamUsage,
                                 model: state.responseModel,
+                                mode,
+                                generationStartedAt: fallbackStartTime,
                                 generationTimeMs:
                                   Date.now() - fallbackStartTime,
                                 finishReason: state.streamFinishReason,
@@ -1101,6 +1132,11 @@ export const createChatHandler = (
                       message: processedMessage,
                       extraFileIds: newFileIds,
                       model: state.responseModel || configuredModelId,
+                      mode,
+                      generationStartedAt:
+                        processedMessage.role === "assistant"
+                          ? streamStartTime
+                          : undefined,
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: state.streamFinishReason,
                       usage: resolvedUsage ?? state.streamUsage,

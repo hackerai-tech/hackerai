@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ChatSDKError, ErrorCode } from "./errors";
-import { ChatMessage } from "@/types/chat";
+import { ChatMessage, type ChatMode } from "@/types/chat";
 import { UIMessagePart } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
 
@@ -13,6 +13,9 @@ export interface MessageRecord {
   feedback?: {
     feedbackType: "positive" | "negative";
   } | null;
+  mode?: ChatMode;
+  generation_started_at?: number;
+  generation_time_ms?: number;
   fileDetails?: Array<{
     fileId: Id<"files">;
     name: string;
@@ -60,9 +63,24 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
       return part;
     }),
     sourceMessageId: message.source_message_id,
-    metadata: message.feedback
-      ? { feedbackType: message.feedback.feedbackType }
-      : undefined,
+    metadata:
+      message.feedback ||
+      message.mode ||
+      typeof message.generation_started_at === "number" ||
+      typeof message.generation_time_ms === "number"
+        ? {
+            ...(message.feedback
+              ? { feedbackType: message.feedback.feedbackType }
+              : {}),
+            ...(message.mode ? { mode: message.mode } : {}),
+            ...(typeof message.generation_started_at === "number"
+              ? { generationStartedAt: message.generation_started_at }
+              : {}),
+            ...(typeof message.generation_time_ms === "number"
+              ? { generationTimeMs: message.generation_time_ms }
+              : {}),
+          }
+        : undefined,
     fileDetails: message.fileDetails,
   }));
 }

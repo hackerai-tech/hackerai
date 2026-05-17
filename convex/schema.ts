@@ -81,6 +81,8 @@ export default defineSchema({
     source_message_id: v.optional(v.string()),
     update_time: v.number(),
     model: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
+    generation_started_at: v.optional(v.number()),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     usage: v.optional(v.any()),

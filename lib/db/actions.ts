@@ -21,6 +21,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import type { ChatMode } from "@/types/chat";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
@@ -64,6 +65,8 @@ export async function saveMessage({
   message,
   extraFileIds,
   model,
+  mode,
+  generationStartedAt,
   generationTimeMs,
   finishReason,
   usage,
@@ -79,6 +82,8 @@ export async function saveMessage({
   };
   extraFileIds?: Array<Id<"files">>;
   model?: string;
+  mode?: ChatMode;
+  generationStartedAt?: number;
   generationTimeMs?: number;
   finishReason?: string;
   usage?: Record<string, unknown>;
@@ -108,6 +113,8 @@ export async function saveMessage({
       parts: fixedParts,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
+      mode,
+      generationStartedAt,
       generationTimeMs,
       finishReason,
       usage,

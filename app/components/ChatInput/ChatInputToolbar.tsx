@@ -17,12 +17,14 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
   contextUsage?: ContextUsageData;
   showContextIndicator?: boolean;
+  contextUsageVariant?: "tooltip" | "compact-popover";
 }
 
 export function ChatInputToolbar({
   onAttachClick,
   contextUsage,
   showContextIndicator = false,
+  contextUsageVariant = "tooltip",
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
@@ -41,7 +43,10 @@ export function ChatInputToolbar({
       />
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
         {showContextIndicator && contextUsage && (
-          <ContextUsageIndicator {...contextUsage} />
+          <ContextUsageIndicator
+            {...contextUsage}
+            variant={contextUsageVariant}
+          />
         )}
         <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>

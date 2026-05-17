@@ -861,6 +861,19 @@ export const agentLongTask = task({
               result.toUIMessageStream({
                 generateMessageId: () => assistantMessageId,
                 sendReasoning: true,
+                messageMetadata: ({ part }) => {
+                  if (part.type === "start") {
+                    return { mode, generationStartedAt: streamStartTime };
+                  }
+
+                  if (part.type === "finish") {
+                    return {
+                      mode,
+                      generationStartedAt: streamStartTime,
+                      generationTimeMs: Date.now() - streamStartTime,
+                    };
+                  }
+                },
                 onFinish: async ({ messages: finishedMessages, isAborted }) => {
                   // Retry with fallback if stream only produced step-start (incomplete response)
                   const lastAssistantMessage = finishedMessages
@@ -900,6 +913,23 @@ export const agentLongTask = task({
                         retryResult.toUIMessageStream({
                           generateMessageId: () => retryMessageId,
                           sendReasoning: true,
+                          messageMetadata: ({ part }) => {
+                            if (part.type === "start") {
+                              return {
+                                mode,
+                                generationStartedAt: fallbackStartTime,
+                              };
+                            }
+
+                            if (part.type === "finish") {
+                              return {
+                                mode,
+                                generationStartedAt: fallbackStartTime,
+                                generationTimeMs:
+                                  Date.now() - fallbackStartTime,
+                              };
+                            }
+                          },
                           onFinish: async ({
                             messages: retryMessages,
                             isAborted: retryAborted,
@@ -967,6 +997,8 @@ export const agentLongTask = task({
                               const newFileIds = accumulatedFiles.map(
                                 (f) => f.fileId,
                               );
+                              const fallbackGenerationTimeMs =
+                                Date.now() - fallbackStartTime;
                               for (const msg of retryMessages) {
                                 if (msg.role !== "assistant") continue;
                                 const processed = stripAgentLongHeartbeatParts(
@@ -981,11 +1013,20 @@ export const agentLongTask = task({
                                   extraFileIds: newFileIds,
                                   usage: state.streamUsage,
                                   model: state.responseModel,
-                                  generationTimeMs:
-                                    Date.now() - fallbackStartTime,
+                                  mode,
+                                  generationStartedAt: fallbackStartTime,
+                                  generationTimeMs: fallbackGenerationTimeMs,
                                   finishReason: state.streamFinishReason,
                                 });
                               }
+                              writer.write({
+                                type: "message-metadata",
+                                messageMetadata: {
+                                  mode,
+                                  generationStartedAt: fallbackStartTime,
+                                  generationTimeMs: fallbackGenerationTimeMs,
+                                },
+                              });
                               sendFileMetadataToStream(accumulatedFiles);
                             }
                             await deductAccumulatedUsage();
@@ -1093,6 +1134,8 @@ export const agentLongTask = task({
                       return;
                     }
 
+                    const finalGenerationTimeMs = Date.now() - streamStartTime;
+                    let savedAssistantMessage = false;
                     for (const message of finishedMessages) {
                       const processed = stripAgentLongHeartbeatParts(
                         summarizationTracker.processMessageForSave(message),
@@ -1109,7 +1152,12 @@ export const agentLongTask = task({
                         message: processed,
                         extraFileIds: newFileIds,
                         model: state.responseModel || configuredModelId,
-                        generationTimeMs: Date.now() - streamStartTime,
+                        mode,
+                        generationStartedAt:
+                          processed.role === "assistant"
+                            ? streamStartTime
+                            : undefined,
+                        generationTimeMs: finalGenerationTimeMs,
                         finishReason: state.streamFinishReason,
                         usage: resolvedUsage ?? state.streamUsage,
                         updateOnly:
@@ -1120,6 +1168,20 @@ export const agentLongTask = task({
                           isAutoContinue && processed.role === "user"
                             ? true
                             : undefined,
+                      });
+                      if (processed.role === "assistant") {
+                        savedAssistantMessage = true;
+                      }
+                    }
+
+                    if (savedAssistantMessage) {
+                      writer.write({
+                        type: "message-metadata",
+                        messageMetadata: {
+                          mode,
+                          generationStartedAt: streamStartTime,
+                          generationTimeMs: finalGenerationTimeMs,
+                        },
                       });
                     }
 

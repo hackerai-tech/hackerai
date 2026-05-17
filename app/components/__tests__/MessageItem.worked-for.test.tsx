@@ -1,0 +1,234 @@
+import { render, screen } from "@testing-library/react";
+import { MessageItem } from "../MessageItem";
+import type { ChatMessage, ChatMode, ChatStatus } from "@/types";
+
+jest.mock("../MessagePartHandler", () => ({
+  MessagePartHandler: ({ part }: { part: any }) => (
+    <div data-testid={`part-${part.type}`}>
+      {part.text ?? part.input ?? part.type}
+    </div>
+  ),
+}));
+
+jest.mock("../MessageActions", () => ({
+  MessageActions: () => <div data-testid="message-actions" />,
+}));
+
+jest.mock("../FilePartRenderer", () => ({
+  FilePartRenderer: () => <div data-testid="file-part" />,
+}));
+
+jest.mock("../MessageEditor", () => ({
+  MessageEditor: () => <div data-testid="message-editor" />,
+}));
+
+jest.mock("../FeedbackInput", () => ({
+  FeedbackInput: () => <div data-testid="feedback-input" />,
+}));
+
+jest.mock("../BranchIndicator", () => ({
+  BranchIndicator: () => <div data-testid="branch-indicator" />,
+}));
+
+jest.mock("../FinishReasonNotice", () => ({
+  FinishReasonNotice: () => null,
+}));
+
+const assistantMessage = {
+  id: "assistant-1",
+  role: "assistant",
+  parts: [
+    {
+      type: "tool-shell",
+      input: "ran command",
+      state: "output-available",
+    },
+    {
+      type: "text",
+      text: "final answer",
+    },
+  ],
+  metadata: {
+    mode: "agent",
+    generationTimeMs: 1_500,
+  },
+} as unknown as ChatMessage;
+
+const renderMessageItem = ({
+  mode,
+  message = assistantMessage,
+  status = "ready",
+}: {
+  mode: ChatMode;
+  message?: ChatMessage;
+  status?: ChatStatus;
+}) =>
+  render(
+    <MessageItem
+      message={message}
+      index={0}
+      messagesLength={1}
+      lastAssistantMessageIndex={0}
+      status={status}
+      isHovered={false}
+      isEditing={false}
+      feedbackInputMessageId={null}
+      mode={mode}
+      branchBoundaryIndex={undefined}
+      onMouseEnter={jest.fn()}
+      onMouseLeave={jest.fn()}
+      onStartEdit={jest.fn()}
+      onSaveEdit={jest.fn()}
+      onCancelEdit={jest.fn()}
+      onRegenerate={jest.fn()}
+      onFeedback={jest.fn()}
+      onFeedbackSubmit={jest.fn()}
+      onFeedbackCancel={jest.fn()}
+      onShowAllFiles={jest.fn()}
+      getCachedUrl={jest.fn()}
+    />,
+  );
+
+describe("MessageItem WorkedFor rendering", () => {
+  it("renders work inline for messages generated in ask mode", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        metadata: {
+          mode: "ask",
+          generationTimeMs: 1_500,
+        },
+      } as ChatMessage,
+    });
+
+    expect(screen.queryByText(/worked for/i)).not.toBeInTheDocument();
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+  });
+
+  it("shows Worked for for messages generated in agent mode", () => {
+    renderMessageItem({ mode: "ask" });
+
+    expect(
+      screen.getByRole("button", { name: /worked for 2s/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+  });
+
+  it("renders stopped agent work inline when there is no final text", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "output-available",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationStartedAt: 1_000,
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+      status: "ready",
+    });
+
+    expect(screen.queryByRole("button", { name: /worked for/i })).toBeNull();
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+
+  it("keeps regenerated final text visible when stream metadata trails it", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "tool-shell",
+            input: "ran command",
+            state: "output-available",
+          },
+          {
+            type: "text",
+            text: "regenerated final answer",
+          },
+          {
+            type: "data-context-usage",
+            data: {},
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 1_500,
+        },
+      } as unknown as ChatMessage,
+      status: "ready",
+    });
+
+    expect(
+      screen.getByRole("button", { name: /worked for 2s/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+    expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
+  });
+
+  it("keeps saved message mode stable when the current picker mode changes", () => {
+    const { rerender } = renderMessageItem({ mode: "ask" });
+
+    expect(
+      screen.getByRole("button", { name: /worked for 2s/i }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <MessageItem
+        message={assistantMessage}
+        index={0}
+        messagesLength={1}
+        lastAssistantMessageIndex={0}
+        status="ready"
+        isHovered={false}
+        isEditing={false}
+        feedbackInputMessageId={null}
+        mode="agent"
+        branchBoundaryIndex={undefined}
+        onMouseEnter={jest.fn()}
+        onMouseLeave={jest.fn()}
+        onStartEdit={jest.fn()}
+        onSaveEdit={jest.fn()}
+        onCancelEdit={jest.fn()}
+        onRegenerate={jest.fn()}
+        onFeedback={jest.fn()}
+        onFeedbackSubmit={jest.fn()}
+        onFeedbackCancel={jest.fn()}
+        onShowAllFiles={jest.fn()}
+        getCachedUrl={jest.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /worked for 2s/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+  });
+
+  it("renders legacy messages without saved mode inline", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        metadata: {
+          generationTimeMs: 1_500,
+        },
+      } as ChatMessage,
+    });
+
+    expect(screen.queryByText(/worked for/i)).not.toBeInTheDocument();
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+});

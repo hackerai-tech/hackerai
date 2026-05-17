@@ -6,13 +6,20 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
+import { splitWorkedForParts } from "./worked-for-parts";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  WorkedFor,
+  WorkedForContent,
+  WorkedForTrigger,
+} from "@/components/ai-elements/worked-for";
 import { FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
 
@@ -69,6 +76,7 @@ function areMessageItemPropsEqual(
   if (prev.lastAssistantMessageIndex !== next.lastAssistantMessageIndex)
     return false;
   if (prev.finishReason !== next.finishReason) return false;
+  if (prev.mode !== next.mode) return false;
   if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
     return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
@@ -84,6 +92,21 @@ function areMessageItemPropsEqual(
     const prevLastPart = prev.message.parts[prev.message.parts.length - 1];
     const nextLastPart = next.message.parts[next.message.parts.length - 1];
     if (prevLastPart !== nextLastPart) return false;
+    // generationTimeMs arrives in message-metadata after the last text-delta;
+    // parts may be unchanged but metadata needs to trigger a re-render so the
+    // "Worked for X" pill shows the duration.
+    if (prev.message.metadata?.mode !== next.message.metadata?.mode)
+      return false;
+    if (
+      prev.message.metadata?.generationStartedAt !==
+      next.message.metadata?.generationStartedAt
+    )
+      return false;
+    if (
+      prev.message.metadata?.generationTimeMs !==
+      next.message.metadata?.generationTimeMs
+    )
+      return false;
   }
 
   return true;
@@ -148,11 +171,26 @@ export const MessageItem = memo(function MessageItem({
   );
 
   // Memoize part filtering - only recompute when parts change
-  const { fileParts, nonFileParts } = useMemo(() => {
-    const files = message.parts.filter((part) => part.type === "file");
-    const nonFiles = message.parts.filter((part) => part.type !== "file");
-    return { fileParts: files, nonFileParts: nonFiles };
-  }, [message.parts]);
+  const { fileParts, nonFileParts, workParts, trailingTextParts } = useMemo(
+    () => splitWorkedForParts(message.parts),
+    [message.parts],
+  );
+
+  const isStreamingThisMessage =
+    message.role === "assistant" &&
+    isLastAssistantMessage &&
+    effectiveStatus === "streaming";
+
+  const generationTimeMs =
+    typeof message.metadata?.generationTimeMs === "number"
+      ? message.metadata.generationTimeMs
+      : undefined;
+  const generationStartedAt =
+    typeof message.metadata?.generationStartedAt === "number"
+      ? message.metadata.generationStartedAt
+      : undefined;
+  const shouldShowWorkingTimer = isStreamingThisMessage;
+  const shouldUseWorkedFor = message.metadata?.mode === "agent";
 
   // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
   const terminalOutputByToolCallId = useMemo(() => {
@@ -182,6 +220,22 @@ export const MessageItem = memo(function MessageItem({
     if (isUser || !effectiveFileDetails) return [];
     return effectiveFileDetails.filter((f) => f.url || f.storageId || f.s3Key);
   }, [isUser, effectiveFileDetails]);
+
+  const renderAssistantPart = (
+    part: ChatMessage["parts"][number],
+    partIndex: number,
+  ) => (
+    <MessagePartHandler
+      key={`${message.id}-${partIndex}`}
+      message={message}
+      part={part}
+      partIndex={partIndex}
+      status={effectiveStatus}
+      isLastMessage={isLastMessage}
+      terminalOutputByToolCallId={terminalOutputByToolCallId}
+      sharedFileDetails={effectiveFileDetails}
+    />
+  );
 
   const shouldShowBranchIndicator = Boolean(
     branchedFromChatId &&
@@ -221,14 +275,13 @@ export const MessageItem = memo(function MessageItem({
   // Memoize editable files for MessageEditor
   const editableFiles = useMemo(() => {
     return fileParts
-      .filter((part) => part.type === "file" && (part as any).fileId)
+      .filter((part) => part.fileId)
       .map((part) => {
-        const filePart = part as any;
         return {
-          fileId: filePart.fileId as string,
-          name: filePart.name || filePart.filename || "File",
-          mediaType: filePart.mediaType,
-          url: filePart.url || getCachedUrl(filePart.fileId as string),
+          fileId: part.fileId as string,
+          name: part.name || part.filename || "File",
+          mediaType: part.mediaType,
+          url: part.url || getCachedUrl(part.fileId as string),
         } as EditableFile;
       });
   }, [fileParts, getCachedUrl]);
@@ -307,9 +360,8 @@ export const MessageItem = memo(function MessageItem({
                       />
                     ))}
                   </div>
-                ) : (
-                  // For assistant messages, render all parts in original order
-                  message.parts.map((part, partIndex) => (
+                ) : !shouldUseWorkedFor ? (
+                  nonFileParts.map((part, partIndex) => (
                     <MessagePartHandler
                       key={`${message.id}-${partIndex}`}
                       message={message}
@@ -321,6 +373,83 @@ export const MessageItem = memo(function MessageItem({
                       sharedFileDetails={effectiveFileDetails}
                     />
                   ))
+                ) : shouldShowWorkingTimer ? (
+                  <>
+                    {workParts.length > 0 && (
+                      <WorkedFor
+                        key="work"
+                        hasWork
+                        defaultOpen
+                        isTiming={shouldShowWorkingTimer}
+                      >
+                        <WorkedForTrigger
+                          isTiming
+                          startedAt={generationStartedAt}
+                        />
+                        <WorkedForContent>
+                          {workParts.map(renderAssistantPart)}
+                        </WorkedForContent>
+                      </WorkedFor>
+                    )}
+                    {trailingTextParts.length > 0 && (
+                      <div
+                        className={
+                          workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
+                        }
+                      >
+                        {trailingTextParts.map((part, partIndex) =>
+                          renderAssistantPart(
+                            part,
+                            workParts.length + partIndex,
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : trailingTextParts.length === 0 ? (
+                  // If a run stops before producing final text, keep the work
+                  // visible inline instead of leaving only a collapsed header.
+                  nonFileParts.map((part, partIndex) => (
+                    <MessagePartHandler
+                      key={`${message.id}-${partIndex}`}
+                      message={message}
+                      part={part}
+                      partIndex={partIndex}
+                      status={effectiveStatus}
+                      isLastMessage={isLastMessage}
+                      terminalOutputByToolCallId={terminalOutputByToolCallId}
+                      sharedFileDetails={effectiveFileDetails}
+                    />
+                  ))
+                ) : (
+                  <>
+                    {workParts.length > 0 && (
+                      <WorkedFor
+                        key="work"
+                        hasWork
+                        isTiming={shouldShowWorkingTimer}
+                      >
+                        <WorkedForTrigger durationMs={generationTimeMs} />
+                        <WorkedForContent>
+                          {() => workParts.map(renderAssistantPart)}
+                        </WorkedForContent>
+                      </WorkedFor>
+                    )}
+                    {trailingTextParts.length > 0 && (
+                      <div
+                        className={
+                          workParts.length > 0 ? "mt-4 space-y-3" : "space-y-3"
+                        }
+                      >
+                        {trailingTextParts.map((part, partIndex) =>
+                          renderAssistantPart(
+                            part,
+                            workParts.length + partIndex,
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

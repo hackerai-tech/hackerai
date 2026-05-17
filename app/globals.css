@@ -210,10 +210,58 @@
   }
 }
 
+@keyframes worked-for-content-open {
+  from {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-0.375rem);
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes worked-for-content-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    height: 0;
+    opacity: 0;
+    transform: translateY(-0.375rem);
+  }
+}
+
 .animate-text-shimmer {
   animation-name: text-shimmer;
   animation-iteration-count: infinite;
   animation-timing-function: linear;
+}
+
+.worked-for-content {
+  overflow: hidden;
+  transform-origin: top;
+  will-change: height, opacity, transform;
+}
+
+.worked-for-content[data-state="open"] {
+  animation: worked-for-content-open 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.worked-for-content[data-state="closed"] {
+  animation: worked-for-content-close 360ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .worked-for-content[data-state="open"],
+  .worked-for-content[data-state="closed"] {
+    animation-duration: 1ms;
+    transform: none;
+  }
 }
 
 /* Scrollbar Styles */

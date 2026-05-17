@@ -138,14 +138,43 @@ export const useChatHandlers = ({
     const { messages: normalizedMessages, hasChanges } =
       normalizeMessages(messages);
 
+    const stopTime = Date.now();
+    const normalizedLastMessage =
+      normalizedMessages[normalizedMessages.length - 1];
+    const generationStartedAt =
+      typeof normalizedLastMessage?.metadata?.generationStartedAt === "number"
+        ? normalizedLastMessage.metadata.generationStartedAt
+        : undefined;
+    const generationTimeMs =
+      generationStartedAt !== undefined
+        ? Math.max(0, stopTime - generationStartedAt)
+        : undefined;
+    const stoppedMessages =
+      normalizedLastMessage?.role === "assistant" &&
+      generationTimeMs !== undefined
+        ? [
+            ...normalizedMessages.slice(0, -1),
+            {
+              ...normalizedLastMessage,
+              metadata: {
+                ...normalizedLastMessage.metadata,
+                mode:
+                  normalizedLastMessage.metadata?.mode ?? chatModeRef.current,
+                generationStartedAt,
+                generationTimeMs,
+              },
+            },
+          ]
+        : normalizedMessages;
+
     // Update local state if changes were made
-    if (hasChanges) {
-      setMessages(normalizedMessages);
+    if (hasChanges || stoppedMessages !== normalizedMessages) {
+      setMessages(stoppedMessages);
     }
 
     if (!temporaryChatsEnabledRef.current) {
       // Run cancel and save in parallel - they're independent operations
-      const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+      const lastMessage = stoppedMessages[stoppedMessages.length - 1];
       const savePromise =
         !options?.skipSave && lastMessage?.role === "assistant"
           ? saveAssistantMessage({
@@ -153,6 +182,9 @@ export const useChatHandlers = ({
               chatId,
               role: lastMessage.role,
               parts: lastMessage.parts,
+              mode: lastMessage.metadata?.mode ?? chatModeRef.current,
+              generationStartedAt,
+              generationTimeMs,
             }).catch((error) => {
               console.error("Failed to save message on stop:", error);
             })

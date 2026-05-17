@@ -63,6 +63,27 @@ describe("utils", () => {
       expect(result[0].metadata).toBeUndefined();
     });
 
+    it("should convert generation timing metadata", () => {
+      const messages: MessageRecord[] = [
+        {
+          id: "msg1",
+          role: "assistant",
+          parts: [{ type: "text", text: "Done" }],
+          mode: "agent",
+          generation_started_at: 1_000,
+          generation_time_ms: 2_500,
+        },
+      ];
+
+      const result = convertToUIMessages(messages);
+
+      expect(result[0].metadata).toEqual({
+        mode: "agent",
+        generationStartedAt: 1_000,
+        generationTimeMs: 2_500,
+      });
+    });
+
     it("should handle messages with file details", () => {
       const messages: MessageRecord[] = [
         {
