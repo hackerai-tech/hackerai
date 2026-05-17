@@ -161,6 +161,28 @@ describe("uploadSandboxFileToConvex", () => {
     });
   });
 
+  test("derives the file name from Windows-style paths", async () => {
+    const sandbox = makeSandbox(1234);
+
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "C:\\Users\\user\\report.txt",
+    });
+
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.txt",
+      "application/octet-stream",
+      "u1",
+    );
+    expect(mockConvexAction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "report.txt",
+      }),
+    );
+  });
+
   test("uploads allowed E2B files from the sandbox without downloading into memory", async () => {
     const sandbox = makeSandbox(4321, true);
 

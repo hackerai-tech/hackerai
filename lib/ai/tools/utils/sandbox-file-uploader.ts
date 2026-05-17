@@ -100,6 +100,10 @@ function errorToLog(error: unknown) {
   return { message: String(error) };
 }
 
+function getFileNameFromPath(fullPath: string): string {
+  return fullPath.split(/[/\\]/).pop() || "file";
+}
+
 async function uploadGeneratedFileFromSandboxToUrl(args: {
   sandbox: AnySandbox;
   fullPath: string;
@@ -172,7 +176,7 @@ export async function uploadSandboxFileToConvex(args: {
 
   const { sandbox, userId, fullPath } = args;
   const mediaType = DEFAULT_MEDIA_TYPE;
-  const name = fullPath.split("/").pop() || "file";
+  const name = getFileNameFromPath(fullPath);
   const fileSize = await getSandboxFileSize(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
