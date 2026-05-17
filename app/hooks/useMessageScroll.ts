@@ -1,5 +1,6 @@
 import { useStickToBottom } from "use-stick-to-bottom";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
 
 export const useMessageScroll = () => {
   const stickToBottom = useStickToBottom({
@@ -28,6 +29,30 @@ export const useMessageScroll = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stickToBottom.scrollToBottom, stickToBottom.scrollRef],
   );
+
+  useEffect(() => {
+    const scrollContainer = stickToBottom.scrollRef.current;
+    window.addEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      stickToBottom.stopScroll,
+    );
+
+    scrollContainer?.addEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      stickToBottom.stopScroll,
+    );
+
+    return () => {
+      window.removeEventListener(
+        STICKY_BOTTOM_ESCAPE_EVENT,
+        stickToBottom.stopScroll,
+      );
+      scrollContainer?.removeEventListener(
+        STICKY_BOTTOM_ESCAPE_EVENT,
+        stickToBottom.stopScroll,
+      );
+    };
+  }, [stickToBottom.scrollRef, stickToBottom.stopScroll]);
 
   return {
     scrollRef: stickToBottom.scrollRef,

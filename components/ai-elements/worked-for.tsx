@@ -6,6 +6,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
 import { cn } from "@/lib/utils";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
@@ -57,6 +58,7 @@ type ScrollSnapshot = {
   element: HTMLElement;
   scrollLeft: number;
   scrollTop: number;
+  wasAtBottom: boolean;
 };
 
 const getScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
@@ -79,6 +81,22 @@ const getScrollableAncestor = (element: HTMLElement): HTMLElement | null => {
 };
 
 const now = () => Date.now();
+const AUTO_COLLAPSE_DELAY_MS = 700;
+const SCROLL_RESTORE_MS = 450;
+const BOTTOM_SCROLL_RESTORE_MS = 1_100;
+// Mobile browser chrome and smooth resize timing can make "at bottom" read
+// slightly off even when the user is visually anchored at the bottom.
+const BOTTOM_SCROLL_THRESHOLD_PX = 96;
+
+const escapeStickyBottom = (snapshot: ScrollSnapshot) => {
+  if (!snapshot.wasAtBottom) return;
+
+  window.dispatchEvent(new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT));
+
+  snapshot.element.dispatchEvent(
+    new CustomEvent(STICKY_BOTTOM_ESCAPE_EVENT, { bubbles: true }),
+  );
+};
 
 export function WorkedFor({
   className,
@@ -98,6 +116,14 @@ export function WorkedFor({
   const scrollSnapshotRef = useRef<ScrollSnapshot | null>(null);
   const restoreTokenRef = useRef(0);
   const wasTimingRef = useRef(isTiming);
+  const autoCollapseTimeoutRef = useRef<number | null>(null);
+
+  const clearAutoCollapseTimeout = useCallback(() => {
+    if (autoCollapseTimeoutRef.current === null) return;
+
+    window.clearTimeout(autoCollapseTimeoutRef.current);
+    autoCollapseTimeoutRef.current = null;
+  }, []);
 
   const captureScrollPosition = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return;
@@ -110,6 +136,11 @@ export function WorkedFor({
       element: scrollElement,
       scrollLeft: scrollElement.scrollLeft,
       scrollTop: scrollElement.scrollTop,
+      wasAtBottom:
+        scrollElement.scrollHeight -
+          scrollElement.scrollTop -
+          scrollElement.clientHeight <=
+        BOTTOM_SCROLL_THRESHOLD_PX,
     };
   }, []);
 
@@ -120,6 +151,9 @@ export function WorkedFor({
     const token = restoreTokenRef.current + 1;
     restoreTokenRef.current = token;
     const start = now();
+    const restoreForMs = snapshot.wasAtBottom
+      ? BOTTOM_SCROLL_RESTORE_MS
+      : SCROLL_RESTORE_MS;
     const cancelRestore = () => {
       restoreTokenRef.current += 1;
       scrollSnapshotRef.current = null;
@@ -140,7 +174,7 @@ export function WorkedFor({
       snapshot.element.scrollTop = snapshot.scrollTop;
       snapshot.element.scrollLeft = snapshot.scrollLeft;
 
-      if (now() - start < 450) {
+      if (now() - start < restoreForMs) {
         requestAnimationFrame(restore);
         return;
       }
@@ -156,23 +190,35 @@ export function WorkedFor({
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      const snapshot = scrollSnapshotRef.current;
+      clearAutoCollapseTimeout();
+      if (nextOpen && snapshot) {
+        escapeStickyBottom(snapshot);
+      }
       setIsOpen(nextOpen);
       restoreCapturedScrollPosition();
     },
-    [restoreCapturedScrollPosition, setIsOpen],
+    [clearAutoCollapseTimeout, restoreCapturedScrollPosition, setIsOpen],
   );
 
   useEffect(() => {
     const wasTiming = wasTimingRef.current;
 
     if (isTiming) {
+      clearAutoCollapseTimeout();
       setIsOpen(true);
     } else if (wasTiming) {
-      setIsOpen(false);
+      clearAutoCollapseTimeout();
+      autoCollapseTimeoutRef.current = window.setTimeout(() => {
+        autoCollapseTimeoutRef.current = null;
+        setIsOpen(false);
+      }, AUTO_COLLAPSE_DELAY_MS);
     }
 
     wasTimingRef.current = isTiming;
-  }, [isTiming, setIsOpen]);
+  }, [clearAutoCollapseTimeout, isTiming, setIsOpen]);
+
+  useEffect(() => clearAutoCollapseTimeout, [clearAutoCollapseTimeout]);
 
   const contextValue = useMemo(
     () => ({
@@ -216,6 +262,7 @@ export function WorkedForTrigger({
   onClick,
   onKeyDown,
   onPointerDown,
+  onTouchStart,
   ...props
 }: WorkedForTriggerProps) {
   const { isOpen, hasWork, captureScrollPosition } = useWorkedFor();
@@ -264,6 +311,12 @@ export function WorkedForTrigger({
       captureScrollPosition(event.currentTarget);
     }
   };
+  const handleTouchStart: WorkedForTriggerProps["onTouchStart"] = (event) => {
+    onTouchStart?.(event);
+    if (!event.defaultPrevented && canToggle) {
+      captureScrollPosition(event.currentTarget);
+    }
+  };
   const handleKeyDown: WorkedForTriggerProps["onKeyDown"] = (event) => {
     onKeyDown?.(event);
     if (
@@ -293,6 +346,7 @@ export function WorkedForTrigger({
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
+      onTouchStart={handleTouchStart}
       {...props}
     >
       <span>{text}</span>

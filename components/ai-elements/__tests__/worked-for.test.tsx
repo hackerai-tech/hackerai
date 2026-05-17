@@ -5,6 +5,51 @@ import {
   WorkedForTrigger,
   formatDuration,
 } from "../worked-for";
+import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
+
+function renderScrollableWorkedFor({
+  scrollTop = 260,
+  scrollHeight = 1_200,
+  clientHeight = 200,
+}: {
+  scrollTop?: number;
+  scrollHeight?: number;
+  clientHeight?: number;
+} = {}) {
+  render(
+    <div data-testid="scroll-container">
+      <div style={{ height: 400 }} />
+      <WorkedFor hasWork>
+        <WorkedForTrigger durationMs={1_000} />
+        <WorkedForContent>
+          <div style={{ height: 800 }}>Hidden work</div>
+        </WorkedForContent>
+      </WorkedFor>
+    </div>,
+  );
+
+  const scrollContainer = screen.getByTestId("scroll-container");
+  Object.defineProperties(scrollContainer, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+  });
+  Object.defineProperty(scrollContainer, "scrollTop", {
+    configurable: true,
+    writable: true,
+    value: scrollTop,
+  });
+  Object.defineProperty(scrollContainer, "scrollLeft", {
+    configurable: true,
+    writable: true,
+    value: 0,
+  });
+  const trigger = screen.getByRole("button", { name: /worked for 1s/i });
+  const getComputedStyleSpy = jest
+    .spyOn(window, "getComputedStyle")
+    .mockReturnValue({ overflowY: "auto" } as CSSStyleDeclaration);
+
+  return { scrollContainer, trigger, getComputedStyleSpy };
+}
 
 describe("formatDuration", () => {
   it("rounds sub-second durations up to 1s", () => {
@@ -113,6 +158,7 @@ describe("WorkedFor", () => {
   });
 
   it("auto-collapses when timing finishes", () => {
+    jest.useFakeTimers();
     const { rerender } = render(
       <WorkedFor hasWork isTiming>
         <WorkedForTrigger isTiming />
@@ -135,12 +181,20 @@ describe("WorkedFor", () => {
     expect(
       screen.getByRole("button", { name: /worked for 1s/i }),
     ).not.toBeDisabled();
+
+    expect(screen.getByText("Hidden work")).toBeVisible();
+
+    act(() => {
+      jest.advanceTimersByTime(700);
+    });
+
     const hiddenWork = screen.queryByText("Hidden work");
     if (hiddenWork) {
       expect(hiddenWork).not.toBeVisible();
     } else {
       expect(hiddenWork).not.toBeInTheDocument();
     }
+    jest.useRealTimers();
   });
 
   it("does not render lazy content until opened", () => {
@@ -173,37 +227,8 @@ describe("WorkedFor", () => {
         return 1;
       });
 
-    render(
-      <div data-testid="scroll-container">
-        <div style={{ height: 400 }} />
-        <WorkedFor hasWork>
-          <WorkedForTrigger durationMs={1_000} />
-          <WorkedForContent>
-            <div style={{ height: 800 }}>Hidden work</div>
-          </WorkedForContent>
-        </WorkedFor>
-      </div>,
-    );
-
-    const scrollContainer = screen.getByTestId("scroll-container");
-    Object.defineProperties(scrollContainer, {
-      clientHeight: { configurable: true, value: 200 },
-      scrollHeight: { configurable: true, value: 1_200 },
-    });
-    Object.defineProperty(scrollContainer, "scrollTop", {
-      configurable: true,
-      writable: true,
-      value: 260,
-    });
-    Object.defineProperty(scrollContainer, "scrollLeft", {
-      configurable: true,
-      writable: true,
-      value: 0,
-    });
-    const trigger = screen.getByRole("button", { name: /worked for 1s/i });
-    const getComputedStyleSpy = jest
-      .spyOn(window, "getComputedStyle")
-      .mockReturnValue({ overflowY: "auto" } as CSSStyleDeclaration);
+    const { scrollContainer, trigger, getComputedStyleSpy } =
+      renderScrollableWorkedFor();
     fireEvent.pointerDown(trigger);
     scrollContainer.scrollTop = 900;
 
@@ -212,6 +237,85 @@ describe("WorkedFor", () => {
     });
 
     expect(scrollContainer.scrollTop).toBe(260);
+    getComputedStyleSpy.mockRestore();
+    requestAnimationFrameSpy.mockRestore();
+    dateNowSpy.mockRestore();
+  });
+
+  it("keeps restoring longer when opening from the bottom of the scroll container", () => {
+    let now = 0;
+    let frameCount = 0;
+    const dateNowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+
+    const escapeStickyBottomListener = jest.fn();
+    const windowEscapeStickyBottomListener = jest.fn();
+    const { scrollContainer, trigger, getComputedStyleSpy } =
+      renderScrollableWorkedFor({ scrollTop: 1_000 });
+    scrollContainer.addEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      escapeStickyBottomListener,
+    );
+    window.addEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      windowEscapeStickyBottomListener,
+    );
+    const requestAnimationFrameSpy = jest
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCount += 1;
+        now += 500;
+        scrollContainer.scrollTop = 1_500;
+        callback(now);
+        return frameCount;
+      });
+
+    fireEvent.pointerDown(trigger);
+
+    act(() => {
+      fireEvent.click(trigger);
+    });
+
+    expect(scrollContainer.scrollTop).toBe(1_000);
+    expect(frameCount).toBe(3);
+    expect(escapeStickyBottomListener).toHaveBeenCalled();
+    expect(windowEscapeStickyBottomListener).toHaveBeenCalled();
+
+    scrollContainer.removeEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      escapeStickyBottomListener,
+    );
+    window.removeEventListener(
+      STICKY_BOTTOM_ESCAPE_EVENT,
+      windowEscapeStickyBottomListener,
+    );
+    getComputedStyleSpy.mockRestore();
+    requestAnimationFrameSpy.mockRestore();
+    dateNowSpy.mockRestore();
+  });
+
+  it("captures the pre-open scroll position from touch interactions", () => {
+    let now = 0;
+    const dateNowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+    const requestAnimationFrameSpy = jest
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        now += 500;
+        callback(now);
+        return 1;
+      });
+
+    const { scrollContainer, trigger, getComputedStyleSpy } =
+      renderScrollableWorkedFor({ scrollTop: 1_000 });
+
+    fireEvent.touchStart(trigger);
+    scrollContainer.scrollTop = 1_500;
+
+    act(() => {
+      fireEvent.click(trigger);
+    });
+
+    expect(scrollContainer.scrollTop).toBe(1_000);
+
     getComputedStyleSpy.mockRestore();
     requestAnimationFrameSpy.mockRestore();
     dateNowSpy.mockRestore();
