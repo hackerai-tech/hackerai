@@ -335,7 +335,8 @@ describe("forwardChunk", () => {
     await startBridgeAndForwardChunks([{ type: "exit" }]);
 
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("exit chunk missing exitCode"),
+      "[desktop-bridge]",
+      expect.stringContaining("desktop_stream_exit_code_missing"),
     );
     warnSpy.mockRestore();
   });

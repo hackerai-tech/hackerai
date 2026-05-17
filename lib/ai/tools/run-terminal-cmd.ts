@@ -713,6 +713,9 @@ In using these tools, adhere to the following guidelines:
                   const finalResult = handler
                     ? handler.getResult(processId ?? undefined)
                     : { output: "" };
+                  const sandboxOutput = [exec.stdout, exec.stderr]
+                    .filter(Boolean)
+                    .join("\n");
 
                   // Track background processes with their output files
                   if (is_background && processId) {
@@ -729,7 +732,8 @@ In using these tools, adhere to the following guidelines:
                   }
 
                   // Save full output to file when truncated (show path at top so AI sees it first)
-                  let outputWithSaveInfo = finalResult.output || "";
+                  let outputWithSaveInfo =
+                    finalResult.output || sandboxOutput || "";
                   if (!is_background && handler) {
                     const saveMsg = await saveTruncatedOutput({
                       handler,
@@ -750,6 +754,10 @@ In using these tools, adhere to the following guidelines:
                       : {
                           exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
+                          error:
+                            exec.exitCode === -1 && exec.stderr
+                              ? exec.stderr
+                              : undefined,
                         },
                   });
                 }

@@ -349,10 +349,20 @@ export class DesktopSandboxBridge {
         onEvent: channel,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        "[desktop-bridge]",
+        JSON.stringify({
+          event: "desktop_stream_command_failed",
+          service: "desktop_bridge",
+          command_id: commandId,
+          message,
+        }),
+      );
       await this.publishResult({
         type: "error",
         commandId,
-        message: error instanceof Error ? error.message : String(error),
+        message,
       });
     } finally {
       this.activeCommands.delete(commandId);
@@ -395,7 +405,12 @@ export class DesktopSandboxBridge {
       case "exit":
         if (chunk.exitCode === undefined) {
           console.warn(
-            `[desktop-bridge] exit chunk missing exitCode for command ${commandId}, defaulting to -1`,
+            "[desktop-bridge]",
+            JSON.stringify({
+              event: "desktop_stream_exit_code_missing",
+              service: "desktop_bridge",
+              command_id: commandId,
+            }),
           );
         }
         await this.publishResult({
@@ -405,6 +420,15 @@ export class DesktopSandboxBridge {
         });
         break;
       case "error":
+        console.error(
+          "[desktop-bridge]",
+          JSON.stringify({
+            event: "desktop_stream_error_chunk_received",
+            service: "desktop_bridge",
+            command_id: commandId,
+            message: chunk.message || "Unknown error",
+          }),
+        );
         await this.publishResult({
           type: "error",
           commandId,
