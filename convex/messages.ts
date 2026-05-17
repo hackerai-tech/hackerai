@@ -5,6 +5,7 @@ import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
+import { convexLogger } from "./lib/logger";
 
 /**
  * Extract text content from message parts for search and display
@@ -1038,7 +1039,7 @@ export const branchChat = mutation({
   args: {
     messageId: v.string(),
   },
-  returns: v.string(),
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -1053,11 +1054,19 @@ export const branchChat = mutation({
         .first();
 
       if (!message) {
-        throw new Error("Message not found");
+        convexLogger.warn("branch_chat_message_missing", {
+          user_id: user.subject,
+          message_id: args.messageId,
+        });
+        return null;
       }
 
       if (message.user_id !== user.subject) {
-        throw new Error("Unauthorized: Message does not belong to user");
+        convexLogger.warn("branch_chat_message_access_denied", {
+          user_id: user.subject,
+          message_id: args.messageId,
+        });
+        return null;
       }
 
       const chatExists: boolean = await ctx.runQuery(
@@ -1069,7 +1078,12 @@ export const branchChat = mutation({
       );
 
       if (!chatExists) {
-        throw new Error("Chat not found");
+        convexLogger.warn("branch_chat_chat_missing_or_denied", {
+          user_id: user.subject,
+          message_id: args.messageId,
+          chat_id: message.chat_id,
+        });
+        return null;
       }
 
       // Get original chat to copy title
@@ -1079,7 +1093,12 @@ export const branchChat = mutation({
         .first();
 
       if (!originalChat) {
-        throw new Error("Original chat not found");
+        convexLogger.warn("branch_chat_original_chat_missing", {
+          user_id: user.subject,
+          message_id: args.messageId,
+          chat_id: message.chat_id,
+        });
+        return null;
       }
 
       // Get all messages up to and including this message using index range

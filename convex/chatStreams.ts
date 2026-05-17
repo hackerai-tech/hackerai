@@ -2,6 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
+import { convexLogger } from "./lib/logger";
 
 /**
  * Start a stream by setting active_stream_id and clearing canceled_at (backend only)
@@ -24,7 +25,11 @@ export const startStream = mutation({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      convexLogger.warn("chat_stream_start_chat_missing", {
+        chat_id: args.chatId,
+        stream_id: args.streamId,
+      });
+      return null;
     }
 
     await ctx.db.patch(chat._id, {
@@ -57,7 +62,10 @@ export const prepareForNewStream = mutation({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      convexLogger.warn("chat_stream_prepare_chat_missing", {
+        chat_id: args.chatId,
+      });
+      return null;
     }
 
     // Only patch if either field needs to be cleared.

@@ -34,10 +34,15 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
 
         // For positive feedback, save immediately
         try {
-          await createFeedback({
+          const feedbackId = await createFeedback({
             feedback_type: "positive",
             message_id: messageId,
           });
+
+          if (!feedbackId) {
+            toast.error("That message is no longer available.");
+            return;
+          }
 
           // Update local message state and merge metadata
           setMessages(
@@ -74,10 +79,15 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
 
         // Save negative feedback immediately without details and show input
         try {
-          await createFeedback({
+          const feedbackId = await createFeedback({
             feedback_type: "negative",
             message_id: messageId,
           });
+
+          if (!feedbackId) {
+            toast.error("That message is no longer available.");
+            return;
+          }
 
           // Update local message state and merge metadata
           setMessages(
@@ -117,11 +127,17 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
 
       try {
         // Update the existing negative feedback with details
-        await createFeedback({
+        const feedbackId = await createFeedback({
           feedback_type: "negative",
           feedback_details: details,
           message_id: feedbackInputMessageId,
         });
+
+        if (!feedbackId) {
+          toast.error("That message is no longer available.");
+          setFeedbackInputMessageId(null);
+          return;
+        }
 
         // Local state already shows negative feedback, just hide the input
         setFeedbackInputMessageId(null);
