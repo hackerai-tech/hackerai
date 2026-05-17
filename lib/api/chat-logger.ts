@@ -204,6 +204,58 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Record Anthropic prompt repair before provider call.
+     */
+    recordAnthropicPromptRepair(repair: {
+      action: "appended_continue" | "trimmed";
+      reason:
+        | "useful_assistant_tail"
+        | "no_useful_content"
+        | "dangling_tool_call";
+      trailingAssistantContentTypes?: string[];
+      model: string;
+    }) {
+      builder.recordAnthropicPromptRepair(repair);
+      phLogger.event("anthropic_prompt_repaired", {
+        userId,
+        chat_id: config.chatId,
+        endpoint: config.endpoint,
+        mode,
+        subscription,
+        model: repair.model,
+        action: repair.action,
+        reason: repair.reason,
+        trailing_assistant_content_types: repair.trailingAssistantContentTypes,
+      });
+    },
+
+    /**
+     * Record that OpenRouter served a configured fallback model.
+     */
+    recordModelFallback(fallback: {
+      requested: string | undefined;
+      served: string;
+      chain: string[];
+      model: string;
+    }) {
+      builder.recordModelFallback({
+        served: fallback.served,
+        chain: fallback.chain,
+      });
+      phLogger.event("model_fallback_served", {
+        userId,
+        chat_id: config.chatId,
+        endpoint: config.endpoint,
+        mode,
+        subscription,
+        configured_model: fallback.model,
+        requested_model: fallback.requested,
+        served_model: fallback.served,
+        fallback_chain: fallback.chain,
+      });
+    },
+
+    /**
      * Set cache metrics for the wide event
      */
     setCacheMetrics(metrics: {

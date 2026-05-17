@@ -447,9 +447,9 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Chain ordering: prefer a same-provider fallback first to preserve context
- * window and behavior, then cross to a different provider so an Anthropic
- * outage that takes down Opus and Sonnet together still has somewhere to go.
+ * Claude chats are repaired for Anthropic-compatible message shapes before
+ * this fallback can fire. If Opus/Sonnet still fails due to provider-side
+ * issues, Kimi preserves agent availability.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
