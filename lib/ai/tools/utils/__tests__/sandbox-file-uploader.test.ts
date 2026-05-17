@@ -196,11 +196,16 @@ describe("uploadSandboxFileToConvex", () => {
     expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining("curl -fsSL -X PUT"),
+      expect.stringContaining(
+        "curl -fsSL -X PUT -H 'Content-Type: application/octet-stream'",
+      ),
       expect.objectContaining({
-        envVars: { UPLOAD_URL: "https://s3.example/upload" },
+        timeoutMs: expect.any(Number),
       }),
     );
+    const uploadCommand = (sandbox.commands.run as jest.Mock).mock.calls[1][0];
+    expect(uploadCommand).toContain("'https://s3.example/upload'");
+    expect(uploadCommand).not.toContain("UPLOAD_URL");
     expect(mockConvexAction).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

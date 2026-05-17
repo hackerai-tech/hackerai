@@ -92,9 +92,23 @@ function getSandboxLogType(sandbox: AnySandbox): "e2b" | "centrifugo" {
 
 function errorToLog(error: unknown) {
   if (error instanceof Error) {
+    const commandError = error as Error & {
+      exitCode?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+    };
     return {
       name: error.name,
       message: error.message,
+      ...(typeof commandError.exitCode === "number"
+        ? { exit_code: commandError.exitCode }
+        : {}),
+      ...(typeof commandError.stderr === "string" && commandError.stderr
+        ? { stderr: commandError.stderr.slice(0, 500) }
+        : {}),
+      ...(typeof commandError.stdout === "string" && commandError.stdout
+        ? { stdout: commandError.stdout.slice(0, 500) }
+        : {}),
     };
   }
   return { message: String(error) };
@@ -120,11 +134,10 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   let result: Awaited<ReturnType<typeof sandbox.commands.run>>;
   try {
     result = await sandbox.commands.run(
-      `curl -fsSL -X PUT -H "Content-Type: ${mediaType.replace(/"/g, '\\"')}" --data-binary @${shellQuote(fullPath)} "$UPLOAD_URL"`,
+      `curl -fsSL -X PUT -H ${shellQuote(`Content-Type: ${mediaType}`)} --data-binary @${shellQuote(fullPath)} ${shellQuote(uploadUrl)}`,
       {
         timeoutMs: SANDBOX_UPLOAD_TIMEOUT_MS,
-        envVars: { UPLOAD_URL: uploadUrl },
-      } as { timeoutMs?: number; envVars?: Record<string, string> },
+      } as { timeoutMs?: number },
     );
   } catch (error) {
     logger.error(
