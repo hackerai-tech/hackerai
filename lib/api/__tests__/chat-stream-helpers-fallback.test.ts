@@ -17,8 +17,7 @@ jest.mock("@/lib/logger", () => ({
 }));
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
-// If the registry slug for a model changes, update both places intentionally —
-// that's the point of this test.
+// If the registry slug for a model changes, update both places intentionally.
 const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
@@ -34,6 +33,14 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-sonnet-4.6");
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("keeps fallback for free auto agent model", () => {
+    const opts = buildProviderOptions(false, "user-1", "agent-model-free");
+    expect(opts.openrouter).toMatchObject({
+      models: ["x-ai/grok-4.3"],
       user: "user-1",
     });
   });

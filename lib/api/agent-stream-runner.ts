@@ -17,6 +17,7 @@ import {
   convertToModelMessages,
   stepCountIs,
   streamText,
+  type ModelMessage,
   type UIMessage,
   type UIMessageStreamWriter,
   type ToolSet,
@@ -47,9 +48,11 @@ import {
 } from "@/lib/chat/doom-loop-detection";
 import {
   filterEmptyAssistantMessages,
+  repairAnthropicModelMessagesWithTelemetry,
   pruneToolOutputs,
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
+import { isAnthropicModel } from "@/lib/ai/providers";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
@@ -164,12 +167,29 @@ export async function createAgentStream(
 ) {
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  const prepareProviderMessages = (
+    messages: ModelMessage[],
+  ): ModelMessage[] => {
+    const nonEmptyMessages = filterEmptyAssistantMessages(messages);
+    if (!isAnthropicModel(modelName)) return nonEmptyMessages;
+
+    const repair = repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
+    if (repair.action !== "none") {
+      ctx.chatLogger?.recordAnthropicPromptRepair({
+        action: repair.action,
+        reason: repair.reason,
+        trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
+        model: modelName,
+      });
+    }
+    return repair.messages as ModelMessage[];
+  };
 
   return streamText({
     model: requestedLanguageModel,
     maxOutputTokens: 30000,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
-    messages: filterEmptyAssistantMessages(
+    messages: prepareProviderMessages(
       await convertToModelMessages(state.finalMessages),
     ),
     tools: ctx.tools,
@@ -228,7 +248,7 @@ export async function createAgentStream(
               state.ctxUsage = result.contextUsage;
             }
             return {
-              messages: filterEmptyAssistantMessages(
+              messages: prepareProviderMessages(
                 await convertToModelMessages(result.summarizedMessages),
               ),
             };
@@ -269,8 +289,11 @@ export async function createAgentStream(
         }
 
         return {
-          messages: filterEmptyAssistantMessages(
-            addCacheBreakpointToLastUserMessage(updatedMessages, modelName),
+          messages: prepareProviderMessages(
+            addCacheBreakpointToLastUserMessage(
+              updatedMessages,
+              modelName,
+            ) as ModelMessage[],
           ) as typeof messages,
         };
       } catch (error) {
@@ -365,12 +388,21 @@ export async function createAgentStream(
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
 
+      const fallbackSlugs = getFallbackSlugs(modelName);
       logOpenRouterFallbackIfFired({
-        fallbackSlugs: getFallbackSlugs(modelName),
+        fallbackSlugs,
         requestedSlug,
         responseModel: state.responseModel,
         chatId: ctx.chatId,
       });
+      if (state.responseModel && fallbackSlugs.includes(state.responseModel)) {
+        ctx.chatLogger?.recordModelFallback({
+          requested: requestedSlug,
+          served: state.responseModel,
+          chain: fallbackSlugs,
+          model: modelName,
+        });
+      }
       ctx.chatLogger?.setStreamResponse(state.responseModel, state.streamUsage);
 
       await ptySessionManager

@@ -66,6 +66,20 @@ export interface ChatWideEvent {
   model?: {
     configured: string;
     actual?: string;
+    fallback_triggered?: boolean;
+    fallback_chain?: string[];
+  };
+
+  prompt_repair?: {
+    anthropic?: {
+      count: number;
+      last_action: "appended_continue" | "trimmed";
+      last_reason:
+        | "useful_assistant_tail"
+        | "no_useful_content"
+        | "dangling_tool_call";
+      last_content_types?: string[];
+    };
   };
 
   // Stream execution
@@ -182,6 +196,7 @@ export class WideEventBuilder {
   private event: Partial<ChatWideEvent>;
   private toolCalls: Array<{ name: string; sandbox_type?: string }> = [];
   private streamStartTime?: number;
+  private anthropicPromptRepairCount = 0;
 
   constructor(
     requestId: string,
@@ -301,6 +316,43 @@ export class WideEventBuilder {
     } else {
       this.event.model = { configured: actual, actual };
     }
+    return this;
+  }
+
+  /**
+   * Record that OpenRouter served a configured fallback model.
+   */
+  recordModelFallback(fallback: { served: string; chain: string[] }): this {
+    if (!this.event.model) {
+      this.event.model = { configured: fallback.served };
+    }
+    this.event.model.actual = fallback.served;
+    this.event.model.fallback_triggered = true;
+    this.event.model.fallback_chain = fallback.chain;
+    return this;
+  }
+
+  /**
+   * Record Anthropic prompt repairs that prevent unsupported assistant prefill.
+   */
+  recordAnthropicPromptRepair(repair: {
+    action: "appended_continue" | "trimmed";
+    reason:
+      | "useful_assistant_tail"
+      | "no_useful_content"
+      | "dangling_tool_call";
+    trailingAssistantContentTypes?: string[];
+  }): this {
+    this.anthropicPromptRepairCount += 1;
+    this.event.prompt_repair = {
+      ...this.event.prompt_repair,
+      anthropic: {
+        count: this.anthropicPromptRepairCount,
+        last_action: repair.action,
+        last_reason: repair.reason,
+        last_content_types: repair.trailingAssistantContentTypes,
+      },
+    };
     return this;
   }
 
