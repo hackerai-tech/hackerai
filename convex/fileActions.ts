@@ -35,6 +35,7 @@ import {
   MAX_IMAGE_SIZE,
 } from "../lib/utils/file-utils";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
+import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -956,5 +957,115 @@ export const saveFile = action({
       fileId,
       tokens: tokenSize,
     };
+  },
+});
+
+/**
+ * Save metadata for an assistant-generated sandbox artifact.
+ *
+ * These files are download-only artifacts produced by tools like
+ * get_terminal_files, not prompt attachments. Avoid fetching or parsing the
+ * object here so large generated archives do not consume Convex memory.
+ */
+export const saveSandboxGeneratedFile = action({
+  args: {
+    s3Key: v.string(),
+    name: v.string(),
+    mediaType: v.string(),
+    size: v.number(),
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.object({
+    url: v.string(),
+    fileId: v.id("files"),
+    tokens: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    await checkFileUploadRateLimit(args.userId, false);
+
+    const cleanupUploadedObject = async (stage: string) => {
+      try {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.s3Cleanup.deleteS3ObjectAction,
+          {
+            s3Key: args.s3Key,
+          },
+        );
+      } catch (deleteError) {
+        convexLogger.warn("file_upload_storage_cleanup_failed", {
+          userId: args.userId,
+          fileName: args.name,
+          stage,
+          s3Key: args.s3Key,
+          error:
+            deleteError instanceof Error
+              ? { name: deleteError.name, message: deleteError.message }
+              : String(deleteError),
+        });
+      }
+    };
+
+    if (args.size > MAX_GENERATED_FILE_SIZE_BYTES) {
+      convexLogger.warn("sandbox_generated_file_too_large", {
+        event: "sandbox_generated_file_too_large",
+        service: "convex-file-actions",
+        user_id: args.userId,
+        file_name: args.name,
+        media_type: args.mediaType,
+        size_bytes: args.size,
+        limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
+      });
+      await cleanupUploadedObject("oversized_generated_artifact");
+      throw new ConvexError({
+        code: "GENERATED_FILE_SIZE_EXCEEDED",
+        message: `File "${args.name}" exceeds the maximum generated file size limit of ${MAX_GENERATED_FILE_SIZE_BYTES / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+      });
+    }
+
+    try {
+      const fileUrl = await generateS3DownloadUrl(args.s3Key);
+      const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
+        s3Key: args.s3Key,
+        userId: args.userId,
+        name: args.name,
+        mediaType: args.mediaType,
+        size: args.size,
+        fileTokenSize: 0,
+      })) as Id<"files">;
+
+      return {
+        url: fileUrl,
+        fileId,
+        tokens: 0,
+      };
+    } catch (error) {
+      convexLogger.error("sandbox_generated_file_metadata_save_failed", {
+        event: "sandbox_generated_file_metadata_save_failed",
+        service: "convex-file-actions",
+        user_id: args.userId,
+        file_name: args.name,
+        media_type: args.mediaType,
+        size_bytes: args.size,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
+      await cleanupUploadedObject("generated_artifact_save_failed");
+
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "GENERATED_FILE_SAVE_FAILED",
+        message: `Failed to save generated file ${args.name}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      });
+    }
   },
 });
