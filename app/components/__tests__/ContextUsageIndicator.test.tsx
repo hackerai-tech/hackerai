@@ -29,6 +29,13 @@ describe("ContextUsageIndicator", () => {
       const indicator = screen.getByTestId("context-usage-indicator");
       expect(indicator.tagName).toBe("DIV");
     });
+
+    it("keeps the passive desktop target keyboard-focusable", () => {
+      render(<ContextUsageIndicator {...defaultProps} />);
+      const indicator = screen.getByTestId("context-usage-indicator");
+
+      expect(indicator).toHaveAttribute("tabIndex", "0");
+    });
   });
 
   describe("Zero tokens state", () => {

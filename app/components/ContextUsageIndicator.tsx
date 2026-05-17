@@ -81,7 +81,8 @@ const ContextUsageHoverTrigger = forwardRef<
 >(({ usedTokens, maxTokens, dashOffset, ...props }, ref) => (
   <div
     ref={ref}
-    className="flex items-center h-7 px-1 cursor-default"
+    tabIndex={0}
+    className="flex items-center h-7 px-1 cursor-default rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
     aria-label={`Context usage: ${formatTokenCount(usedTokens)} of ${formatTokenCount(maxTokens)} tokens`}
     data-testid="context-usage-indicator"
     {...props}
