@@ -1,5 +1,6 @@
 import { mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
+import { convexLogger } from "./lib/logger";
 
 export const createFeedback = mutation({
   args: {
@@ -7,7 +8,7 @@ export const createFeedback = mutation({
     feedback_details: v.optional(v.string()),
     message_id: v.string(),
   },
-  returns: v.id("feedback"),
+  returns: v.union(v.id("feedback"), v.null()),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -25,11 +26,16 @@ export const createFeedback = mutation({
       .unique();
 
     if (!message) {
-      throw new ConvexError({
-        code: "MESSAGE_NOT_FOUND",
-        message: "Message not found",
+      convexLogger.warn("feedback_message_missing", {
+        user_id: user.subject,
+        message_id: args.message_id,
       });
+      return null;
     } else if (message.user_id !== user.subject) {
+      convexLogger.warn("feedback_message_access_denied", {
+        user_id: user.subject,
+        message_id: args.message_id,
+      });
       throw new ConvexError({
         code: "ACCESS_DENIED",
         message:

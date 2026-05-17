@@ -1086,11 +1086,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const handleBranchMessage = async (messageId: string) => {
     try {
       const newChatId = await branchChatMutation({ messageId });
+      if (!newChatId) {
+        toast.error("That message is no longer available to branch.");
+        return;
+      }
       initializeChat(newChatId);
       router.push(`/c/${newChatId}`);
     } catch (error) {
       console.error("Failed to branch chat:", error);
-      throw error;
+      toast.error("Failed to branch chat. Please try again.");
     }
   };
 

@@ -30,7 +30,10 @@ import type {
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
-import { isSupportedImageMediaType } from "../lib/utils/file-utils";
+import {
+  isSupportedImageMediaType,
+  MAX_IMAGE_SIZE,
+} from "../lib/utils/file-utils";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
@@ -712,6 +715,39 @@ export const saveFile = action({
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
         message: `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+      });
+    }
+
+    if (
+      isSupportedImageMediaType(args.mediaType) &&
+      args.size > MAX_IMAGE_SIZE
+    ) {
+      try {
+        if (args.s3Key) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        } else if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
+      } catch (deleteError) {
+        convexLogger.warn("file_upload_storage_cleanup_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          stage: "oversized_image",
+          s3Key: args.s3Key,
+          storageId: args.storageId,
+          error:
+            deleteError instanceof Error
+              ? { name: deleteError.name, message: deleteError.message }
+              : String(deleteError),
+        });
+      }
+      throw new ConvexError({
+        code: "IMAGE_SIZE_EXCEEDED",
+        message: `Image "${args.name}" exceeds the maximum image size limit of ${MAX_IMAGE_SIZE / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 

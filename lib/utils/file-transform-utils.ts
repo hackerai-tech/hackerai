@@ -11,8 +11,10 @@ import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
+import { logger } from "@/lib/logger";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
 
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
   messages.some((msg: any) =>
@@ -54,6 +56,34 @@ const convertUrlToBase64DataUrl = async (
   }
 };
 
+const probeContentLength = async (url: string): Promise<number | null> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const length = response.headers.get("content-length");
+    if (!length) return null;
+    const parsed = Number(length);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const imageOmittedText = (
+  name: unknown,
+  sizeBytes: number,
+  limitBytes: number,
+) =>
+  `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: ${(sizeBytes / (1024 * 1024)).toFixed(1)} MB exceeds the ${limitBytes / (1024 * 1024)} MB per-image limit]`;
+
 /**
  * Replace image file parts whose declared size exceeds Anthropic's 5 MiB
  * per-image limit with a short text note. Without this, the model call fails
@@ -72,10 +102,13 @@ const replaceOversizedImageParts = (messages: UIMessage[]) => {
       ) {
         return part;
       }
-      const sizeMb = ((part as any).size / (1024 * 1024)).toFixed(1);
       return {
         type: "text",
-        text: `[Image "${(part as any).name ?? "unnamed"}" omitted: ${sizeMb} MB exceeds the ${MAX_IMAGE_SIZE / (1024 * 1024)} MB per-image limit]`,
+        text: imageOmittedText(
+          (part as any).name,
+          (part as any).size,
+          MAX_IMAGE_SIZE,
+        ),
       };
     });
   });
@@ -175,7 +208,7 @@ const applyUrlsToFileParts = async (
     }
   });
 
-  for (const [_, file] of filesToProcess) {
+  for (const [fileId, file] of filesToProcess) {
     if (!file.url) continue;
 
     // Only convert PDFs to base64 in "ask" mode for inline viewing.
@@ -187,9 +220,59 @@ const applyUrlsToFileParts = async (
           )
         : file.url;
 
+    const firstPart = file.positions.length
+      ? (messages[file.positions[0].messageIndex].parts![
+          file.positions[0].partIndex
+        ] as any)
+      : null;
+    const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
+    const probedImageSize =
+      isSupportedImage && typeof firstPart?.size !== "number"
+        ? await probeContentLength(file.url)
+        : null;
+    const effectiveImageSize =
+      typeof firstPart?.size === "number" ? firstPart.size : probedImageSize;
+    const imageLimit =
+      effectiveImageSize != null &&
+      effectiveImageSize > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
+        ? MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
+        : MAX_IMAGE_SIZE;
+    const shouldOmitImage =
+      isSupportedImage &&
+      effectiveImageSize != null &&
+      effectiveImageSize > imageLimit;
+
+    if (shouldOmitImage) {
+      logger.warn("image_attachment_omitted_before_provider_call", {
+        event: "image_attachment_omitted_before_provider_call",
+        service: "chat-handler",
+        file_id: fileId,
+        media_type: file.mediaType,
+        size_bytes: effectiveImageSize,
+        limit_bytes: imageLimit,
+        size_source:
+          typeof firstPart?.size === "number"
+            ? "message_part"
+            : "content_length",
+        mode,
+      });
+    }
+
     file.positions.forEach(({ messageIndex, partIndex }) => {
       const filePart = messages[messageIndex].parts![partIndex] as any;
-      if (filePart.type === "file") filePart.url = finalUrl;
+      if (filePart.type !== "file") return;
+      if (shouldOmitImage) {
+        messages[messageIndex].parts![partIndex] = {
+          type: "text",
+          text: imageOmittedText(
+            filePart.name,
+            effectiveImageSize!,
+            imageLimit,
+          ),
+        };
+      } else {
+        filePart.url = finalUrl;
+      }
     });
   }
 };

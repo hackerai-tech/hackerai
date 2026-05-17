@@ -10,6 +10,7 @@ import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
+import { convexLogger } from "./lib/logger";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
@@ -32,30 +33,35 @@ export const getFileDownloadUrl = query({
       });
     }
 
-    try {
-      // Direct lookup by storage_id using index
-      const file = await ctx.db
-        .query("files")
-        .withIndex("by_storage_id", (q) =>
-          q.eq("storage_id", args.storageId as Id<"_storage">),
-        )
-        .first();
+    // Direct lookup by storage_id using index
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_storage_id", (q) =>
+        q.eq("storage_id", args.storageId as Id<"_storage">),
+      )
+      .first();
 
-      // Verify file exists and belongs to user
-      if (!file || file.user_id !== user.subject) {
-        throw new ConvexError({
-          code: "FILE_NOT_FOUND",
-          message: "File not found",
-        });
-      }
-
-      // Generate and return signed URL
-      const url = await ctx.storage.getUrl(args.storageId);
-      return url;
-    } catch (error) {
-      console.error("Failed to get file download URL:", error);
-      throw error;
+    // Stale message/file UI can outlive deleted storage rows. Treat missing as
+    // an unavailable URL instead of a Convex exception.
+    if (!file) {
+      convexLogger.warn("file_download_url_missing_file", {
+        user_id: user.subject,
+        storage_id: args.storageId,
+      });
+      return null;
     }
+
+    if (file.user_id !== user.subject) {
+      convexLogger.warn("file_download_url_access_denied", {
+        user_id: user.subject,
+        file_id: file._id,
+        storage_id: args.storageId,
+      });
+      return null;
+    }
+
+    // Generate and return signed URL
+    return await ctx.storage.getUrl(args.storageId);
   },
 });
 
@@ -81,10 +87,11 @@ export const deleteFile = mutation({
     const file = await ctx.db.get(args.fileId);
 
     if (!file) {
-      throw new ConvexError({
-        code: "FILE_NOT_FOUND",
-        message: "File not found",
+      convexLogger.warn("file_delete_missing_file", {
+        user_id: user.subject,
+        file_id: args.fileId,
       });
+      return null;
     }
 
     if (file.user_id !== user.subject) {

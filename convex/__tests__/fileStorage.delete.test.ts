@@ -119,14 +119,14 @@ describe("fileStorage - deleteFile", () => {
       expect(mockCtx.db.delete).not.toHaveBeenCalled();
     });
 
-    it("should throw error if file not found", async () => {
+    it("should no-op if file not found", async () => {
       mockCtx.db.get.mockResolvedValue(null);
 
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
         deleteFile.handler(mockCtx, { fileId: testFileId }),
-      ).rejects.toThrow("File not found");
+      ).resolves.toBeNull();
 
       expect(mockCtx.db.delete).not.toHaveBeenCalled();
     });

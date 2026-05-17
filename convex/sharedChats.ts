@@ -1,6 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { copyChatSummary } from "./lib/utils";
+import { convexLogger } from "./lib/logger";
 
 /**
  * Share a chat by creating a public share link.
@@ -28,10 +29,19 @@ export const shareChat = mutation({
       .first();
 
     if (!chat) {
+      convexLogger.warn("share_chat_missing", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+      });
       throw new Error("Chat not found");
     }
 
     if (chat.user_id !== identity.subject) {
+      convexLogger.warn("share_chat_access_denied", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+        owner_user_id: chat.user_id,
+      });
       throw new Error("Unauthorized: Chat does not belong to user");
     }
 
@@ -97,15 +107,28 @@ export const updateShareDate = mutation({
       .first();
 
     if (!chat) {
+      convexLogger.warn("share_update_chat_missing", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+      });
       throw new Error("Chat not found");
     }
 
     if (chat.user_id !== identity.subject) {
+      convexLogger.warn("share_update_access_denied", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+        owner_user_id: chat.user_id,
+      });
       throw new Error("Unauthorized: Chat does not belong to user");
     }
 
     // Can only update if chat is already shared
     if (!chat.share_id || !chat.share_date) {
+      convexLogger.warn("share_update_not_shared", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+      });
       throw new Error(
         "Chat is not shared - use shareChat to create a share first",
       );
@@ -147,10 +170,19 @@ export const unshareChat = mutation({
       .first();
 
     if (!chat) {
+      convexLogger.warn("share_unshare_chat_missing", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+      });
       throw new Error("Chat not found");
     }
 
     if (chat.user_id !== identity.subject) {
+      convexLogger.warn("share_unshare_access_denied", {
+        user_id: identity.subject,
+        chat_id: args.chatId,
+        owner_user_id: chat.user_id,
+      });
       throw new Error("Unauthorized: Chat does not belong to user");
     }
 
