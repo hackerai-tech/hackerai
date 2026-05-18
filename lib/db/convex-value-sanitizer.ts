@@ -12,6 +12,9 @@ const primitiveErrorFieldNames = [
   "syscall",
 ] as const;
 
+const MIN_CONVEX_BIGINT = -BigInt("9223372036854775808");
+const MAX_CONVEX_BIGINT = BigInt("9223372036854775807");
+
 const arrayBufferViewToArrayBuffer = (view: ArrayBufferView): ArrayBuffer => {
   if (view.buffer instanceof ArrayBuffer) {
     return view.buffer.slice(
@@ -26,6 +29,15 @@ const arrayBufferViewToArrayBuffer = (view: ArrayBufferView): ArrayBuffer => {
 };
 
 const sanitizeError = (error: Error, seen: WeakSet<object>) => {
+  if (seen.has(error)) {
+    return {
+      error: "[Circular]",
+      name: error.name || "Error",
+      message: "[Circular]",
+    };
+  }
+  seen.add(error);
+
   const sanitized: Record<string, unknown> = {
     error: error.message || error.name || "Error",
     name: error.name || "Error",
@@ -49,6 +61,7 @@ const sanitizeError = (error: Error, seen: WeakSet<object>) => {
     sanitized.cause = sanitizeForConvexValue(cause, seen);
   }
 
+  seen.delete(error);
   return sanitized;
 };
 
@@ -66,12 +79,15 @@ export function sanitizeForConvexValue(
   if (value === null || value === undefined) return value;
 
   const valueType = typeof value;
-  if (
-    valueType === "string" ||
-    valueType === "boolean" ||
-    valueType === "bigint"
-  ) {
+  if (valueType === "string" || valueType === "boolean") {
     return value;
+  }
+
+  if (valueType === "bigint") {
+    const bigintValue = value as bigint;
+    return bigintValue >= MIN_CONVEX_BIGINT && bigintValue <= MAX_CONVEX_BIGINT
+      ? bigintValue
+      : bigintValue.toString();
   }
 
   if (valueType === "number") {
@@ -87,7 +103,7 @@ export function sanitizeForConvexValue(
   }
 
   if (value instanceof Date) {
-    return value.toISOString();
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
   }
 
   if (value instanceof ArrayBuffer) {

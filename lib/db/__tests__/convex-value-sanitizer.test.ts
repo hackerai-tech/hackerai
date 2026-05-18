@@ -44,6 +44,29 @@ describe("sanitizeForConvexValue", () => {
     });
   });
 
+  it("handles circular Error causes without throwing", () => {
+    const first = new Error("first") as Error & { cause?: unknown };
+    const second = new Error("second") as Error & { cause?: unknown };
+    first.cause = second;
+    second.cause = first;
+
+    expect(sanitizeForConvexValue(first)).toEqual({
+      error: "first",
+      name: "Error",
+      message: "first",
+      cause: {
+        error: "second",
+        name: "Error",
+        message: "second",
+        cause: {
+          error: "[Circular]",
+          name: "Error",
+          message: "[Circular]",
+        },
+      },
+    });
+  });
+
   it("normalizes unsupported scalar values nested in arrays and objects", () => {
     const result = sanitizeForConvexValue({
       array: [undefined, Number.NaN, Symbol("x")],
@@ -59,6 +82,22 @@ describe("sanitizeForConvexValue", () => {
         keep: "yes",
       },
     });
+  });
+
+  it("keeps only Convex-compatible bigint values as bigint", () => {
+    expect(sanitizeForConvexValue(-(1n << 63n))).toBe(-(1n << 63n));
+    expect(sanitizeForConvexValue((1n << 63n) - 1n)).toBe((1n << 63n) - 1n);
+    expect(sanitizeForConvexValue(1n << 63n)).toBe("9223372036854775808");
+    expect(sanitizeForConvexValue(-(1n << 63n) - 1n)).toBe(
+      "-9223372036854775809",
+    );
+  });
+
+  it("normalizes invalid Date instances without throwing", () => {
+    expect(sanitizeForConvexValue(new Date("2026-05-18T12:00:00.000Z"))).toBe(
+      "2026-05-18T12:00:00.000Z",
+    );
+    expect(sanitizeForConvexValue(new Date(Number.NaN))).toBeNull();
   });
 
   it("converts ArrayBuffer views into sliced ArrayBuffers", () => {
