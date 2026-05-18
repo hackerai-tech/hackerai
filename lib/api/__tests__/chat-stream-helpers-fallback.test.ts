@@ -19,18 +19,50 @@ jest.mock("@/lib/logger", () => ({
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
 const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
+const GEMINI_SLUG = "google/gemini-3-flash-preview";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 chain to Kimi slug", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-opus-4.6");
+  it("resolves Opus 4.6 ask chain to Gemini slug", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
+    expect(opts.openrouter).toMatchObject({
+      models: [GEMINI_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("resolves Opus 4.6 agent chain to Kimi slug", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+    );
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Sonnet 4.6 chain to Kimi slug", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-sonnet-4.6");
+  it("resolves Sonnet 4.6 ask chain to Gemini slug", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-sonnet-4.6",
+      "ask",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [GEMINI_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("resolves Sonnet 4.6 agent chain to Kimi slug", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-sonnet-4.6",
+      "agent",
+    );
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG],
       user: "user-1",
@@ -64,13 +96,23 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it("includes reasoning settings independent of fallback chain", () => {
-    const reasoning = buildProviderOptions(true, "user-1", "model-opus-4.6");
+    const reasoning = buildProviderOptions(
+      true,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+    );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
       models: [KIMI_SLUG],
     });
 
-    const noReasoning = buildProviderOptions(false, "user-1", "model-opus-4.6");
+    const noReasoning = buildProviderOptions(
+      false,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+    );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
       models: [KIMI_SLUG],

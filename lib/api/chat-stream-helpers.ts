@@ -449,17 +449,32 @@ export class SummarizationTracker {
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
  * this fallback can fire. If Opus/Sonnet still fails due to provider-side
- * issues, Kimi preserves agent availability.
+ * issues, use a mode-appropriate fallback: Kimi for agent, Gemini for ask.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "model-opus-4.6": ["model-kimi-k2.6"],
-  "model-sonnet-4.6": ["model-kimi-k2.6"],
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
+};
+
+const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
+  {
+    agent: ["model-kimi-k2.6"],
+    ask: ["model-gemini-3-flash"],
+  };
+
+const getFallbackKeys = (
+  modelName?: string,
+  mode?: ChatMode,
+): readonly ModelName[] | undefined => {
+  if (!modelName) return undefined;
+  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
+    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
+  }
+  return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -480,10 +495,11 @@ const resolveSlug = (modelName: string): string | undefined => {
  * Resolve a model's fallback chain to OpenRouter slugs.
  * Returns an empty array if the model has no chain or all entries are stale.
  */
-export function getFallbackSlugs(modelName?: string): string[] {
-  const fallbackKeys = modelName
-    ? MODEL_FALLBACK_CHAIN[modelName as ModelName]
-    : undefined;
+export function getFallbackSlugs(
+  modelName?: string,
+  mode?: ChatMode,
+): string[] {
+  const fallbackKeys = getFallbackKeys(modelName, mode);
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
@@ -498,10 +514,11 @@ export function buildProviderOptions(
   isReasoningModel: boolean,
   userId?: string,
   modelName?: string,
+  mode?: ChatMode,
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const fallbackSlugs = getFallbackSlugs(modelName);
+  const fallbackSlugs = getFallbackSlugs(modelName, mode);
   return {
     openrouter: {
       ...(isReasoningModel
