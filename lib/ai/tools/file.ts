@@ -220,8 +220,9 @@ const editSchema = z.object({
 });
 
 export const createFile = (context: ToolContext) => {
-  const { sandboxManager, modelName } = context;
-  const canViewMultimodalFiles = supportsMultimodalToolResults(modelName);
+  const { sandboxManager, modelName, getCurrentModelName } = context;
+  const canViewMultimodalFiles = () =>
+    supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
@@ -230,7 +231,7 @@ This tool is the primary way to manage file content, allowing for reading, writi
 ### Supported Actions
 
 - view: View file content through multimodal understanding (images, PDFs). ${
-      canViewMultimodalFiles
+      canViewMultimodalFiles()
         ? "Available for the current model."
         : "Unavailable for the current model; use read for text files or ask the user to select HackerAI Pro or HackerAI Max for image/PDF viewing."
     }
@@ -293,7 +294,7 @@ This tool is the primary way to manage file content, allowing for reading, writi
 
         switch (action) {
           case "view": {
-            if (!canViewMultimodalFiles) {
+            if (!canViewMultimodalFiles()) {
               return { error: MULTIMODAL_UPGRADE_MESSAGE };
             }
 
@@ -558,6 +559,13 @@ This tool is the primary way to manage file content, allowing for reading, writi
           (output as { action?: string }).action === "view"
         ) {
           const viewOutput = output as ViewMetadata;
+
+          if (!canViewMultimodalFiles()) {
+            return {
+              type: "text" as const,
+              value: `Error: ${MULTIMODAL_UPGRADE_MESSAGE}`,
+            };
+          }
 
           try {
             const { sandbox } = await sandboxManager.getSandbox();

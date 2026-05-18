@@ -110,6 +110,8 @@ export interface ToolContext {
   mode: ChatMode;
   /** Configured model key for this request, used for model-aware tool capabilities. */
   modelName?: string;
+  /** Returns the currently active stream model, including provider fallback legs. */
+  getCurrentModelName?: () => string | undefined;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;
   /** Whether the Caido proxy is enabled (default true). When false, proxy tools are hidden and HTTP_PROXY env vars are not injected. */

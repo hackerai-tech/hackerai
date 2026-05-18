@@ -576,6 +576,7 @@ export const agentLongTask = task({
             getFileAccumulator,
             sandboxManager,
             getSandboxSessionCost,
+            setCurrentModelName,
           } = createTools(
             userId,
             chatId,
@@ -816,8 +817,10 @@ export const agentLongTask = task({
             getHardTimeoutReason: () => null,
           };
 
-          const createStream = (modelName: string) =>
-            createAgentStream(modelName, streamCtx, state);
+          const createStream = (modelName: string) => {
+            setCurrentModelName(modelName);
+            return createAgentStream(modelName, streamCtx, state);
+          };
 
           let result;
           try {

@@ -363,6 +363,7 @@ export const createChatHandler = (
             getFileAccumulator,
             sandboxManager,
             getSandboxSessionCost,
+            setCurrentModelName,
           } = createTools(
             userId,
             chatId,
@@ -647,8 +648,10 @@ export const createChatHandler = (
               preemptiveTimeout?.isPreemptive() ? "timeout" : null,
           };
 
-          const createStream = (modelName: string) =>
-            createAgentStream(modelName, streamCtx, state);
+          const createStream = (modelName: string) => {
+            setCurrentModelName(modelName);
+            return createAgentStream(modelName, streamCtx, state);
+          };
 
           let result;
           try {

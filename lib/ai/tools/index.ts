@@ -67,6 +67,7 @@ export const createTools = (
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
+  let currentModelName = modelName;
 
   // E2B sandbox cost: ~$0.05/hour for 4-core 2GB
   const E2B_COST_PER_MS = 0.05 / (60 * 60 * 1000);
@@ -123,6 +124,7 @@ export const createTools = (
     ptySessionManager,
     mode,
     modelName,
+    getCurrentModelName: () => currentModelName,
     isE2BSandbox,
     guardrailsConfig,
     caidoEnabled,
@@ -183,6 +185,9 @@ export const createTools = (
   };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
+  const setCurrentModelName = (nextModelName: string | undefined) => {
+    currentModelName = nextModelName;
+  };
 
   const getSandboxSessionCost = (): number => {
     if (!sandboxFirstUsedAt) return 0;
@@ -197,6 +202,7 @@ export const createTools = (
     getFileAccumulator,
     sandboxManager,
     getSandboxSessionCost,
+    setCurrentModelName,
   };
 };
 
