@@ -23,6 +23,7 @@ import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatMode } from "@/types/chat";
 import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
+import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -150,6 +151,11 @@ export async function saveMessage({
       message.role === "assistant"
         ? fixIncompleteMessageParts(message.parts)
         : message.parts;
+
+    fixedParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
+      any,
+      any
+    >[];
 
     // Extract file IDs from file parts
     const fileIds = extractFileIdsFromParts(fixedParts);
