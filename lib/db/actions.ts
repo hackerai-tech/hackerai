@@ -22,10 +22,58 @@ import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatMode } from "@/types/chat";
+import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
 
 export { setConvexUrl };
+
+const stringifyError = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+};
+
+const truncateDiagnosticString = (value: string): string =>
+  value.length > MAX_DATABASE_ERROR_MESSAGE_LENGTH
+    ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
+    : value;
+
+const databaseError = (
+  operation: string,
+  error: unknown,
+  metadata: Record<string, unknown> = {},
+) => {
+  const dbErrorName = error instanceof Error ? error.name : typeof error;
+  const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
+  const diagnosticMetadata = {
+    db_operation: operation,
+    db_error_name: dbErrorName,
+    db_error_message: dbErrorMessage,
+    ...metadata,
+  };
+
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "database_operation_failed",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      ...diagnosticMetadata,
+    }),
+  );
+
+  return new ChatSDKError(
+    "bad_request:database",
+    `Database operation failed: ${operation}: ${dbErrorMessage}`,
+    diagnosticMetadata,
+  );
+};
 
 export async function getChatById({ id }: { id: string }) {
   try {
@@ -35,7 +83,7 @@ export async function getChatById({ id }: { id: string }) {
     });
     return selectedChat;
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to get chat by id");
+    throw databaseError("chats.getChatById", error, { chat_id: id });
   }
 }
 
@@ -56,7 +104,11 @@ export async function saveChat({
       title,
     });
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to save chat");
+    throw databaseError("chats.saveChat", error, {
+      chat_id: id,
+      user_id: userId,
+      title_length: title.length,
+    });
   }
 }
 export async function saveMessage({
@@ -90,13 +142,13 @@ export async function saveMessage({
   updateOnly?: boolean;
   isHidden?: boolean;
 }) {
-  try {
-    // Fix incomplete tool invocations for assistant messages (from interrupted streams)
-    const fixedParts =
-      message.role === "assistant"
-        ? fixIncompleteMessageParts(message.parts)
-        : message.parts;
+  // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+  const fixedParts =
+    message.role === "assistant"
+      ? fixIncompleteMessageParts(message.parts)
+      : message.parts;
 
+  try {
     // Extract file IDs from file parts
     const fileIds = extractFileIdsFromParts(fixedParts);
     const mergedFileIds = [
@@ -122,7 +174,20 @@ export async function saveMessage({
       isHidden,
     });
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to save message");
+    throw databaseError("messages.saveMessage", error, {
+      chat_id: chatId,
+      user_id: userId,
+      message_id: message.id,
+      message_role: message.role,
+      mode,
+      model,
+      finish_reason: finishReason,
+      update_only: updateOnly === true,
+      hidden: isHidden === true,
+      extra_file_count: extraFileIds?.length ?? 0,
+      usage_keys: usage ? Object.keys(usage).sort() : undefined,
+      ...getMessagePersistenceDiagnostics(fixedParts),
+    });
   }
 }
 

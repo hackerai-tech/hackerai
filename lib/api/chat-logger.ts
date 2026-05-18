@@ -93,6 +93,9 @@ function posthogProviderException(
   return new Error(message);
 }
 
+const truncateLogString = (value: string, maxLength = 500): string =>
+  value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+
 /**
  * Creates a chat logger instance for tracking wide events
  */
@@ -338,12 +341,19 @@ export function createChatLogger(config: ChatLoggerConfig) {
      * Finalize and emit error event for ChatSDKError
      */
     emitChatError(error: ChatSDKError) {
+      const cause =
+        typeof error.cause === "string"
+          ? truncateLogString(error.cause)
+          : undefined;
+
       builder.setError({
         type: "ChatSDKError",
         code: `${error.type}:${error.surface}`,
         message: error.message,
+        cause,
         statusCode: error.statusCode,
         retriable: error.type === "rate_limit",
+        metadata: error.metadata,
       });
       logger.info(builder.build());
 
