@@ -471,7 +471,7 @@ const getFallbackKeys = (
   mode?: ChatMode,
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
+  if (modelName === "model-opus-4.7" || modelName === "model-sonnet-4.6") {
     return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];

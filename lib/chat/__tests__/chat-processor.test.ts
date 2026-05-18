@@ -207,8 +207,8 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6", () => {
-      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.6");
+    it("should map HackerAI Max to Opus 4.7", () => {
+      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.7");
     });
   });
 
@@ -226,9 +226,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode", () => {
+    it("should map HackerAI Max to Opus 4.7 in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-max")).toBe(
-        "model-opus-4.6",
+        "model-opus-4.7",
       );
     });
 

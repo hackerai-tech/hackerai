@@ -48,10 +48,10 @@ describe("ModelSelector tier ↔ provider drift", () => {
       "model-sonnet-4.6",
     );
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
-      "model-opus-4.6",
+      "model-opus-4.7",
     );
     expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
-      "model-opus-4.6",
+      "model-opus-4.7",
     );
   });
 

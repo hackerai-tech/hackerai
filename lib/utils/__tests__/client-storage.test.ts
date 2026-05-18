@@ -36,6 +36,12 @@ describe("client-storage selected model", () => {
       expect(window.localStorage.getItem(STORAGE_KEY)).toBe("hackerai-max");
     });
 
+    it("migrates Opus 4.7 underlying-model ids to HackerAI Max", () => {
+      window.localStorage.setItem(STORAGE_KEY, "opus-4.7");
+      expect(readSelectedModel()).toBe("hackerai-max");
+      expect(window.localStorage.getItem(STORAGE_KEY)).toBe("hackerai-max");
+    });
+
     it("maps legacy gemini-3-flash and kimi-k2.6 both to hackerai-standard", () => {
       window.localStorage.setItem(STORAGE_KEY, "gemini-3-flash");
       expect(readSelectedModel()).toBe("hackerai-standard");

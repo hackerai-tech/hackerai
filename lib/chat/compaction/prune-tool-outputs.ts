@@ -570,7 +570,7 @@ const hasUsefulAssistantContent = (content: unknown): boolean => {
 
 /**
  * Anthropic treats a final assistant message in the prompt as an assistant
- * prefill. Claude Opus 4.6 / Sonnet 4.6 reject prefill, so before calling an
+ * prefill. Claude Opus 4.7 / Sonnet 4.6 reject prefill, so before calling an
  * Anthropic model we ensure the prompt does not end with assistant content.
  *
  * When the trailing assistant message has useful non-tool context, preserve it
