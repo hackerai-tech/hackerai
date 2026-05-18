@@ -1,5 +1,13 @@
 import React from "react";
-import { Minimize2, Terminal, Play, SkipBack, SkipForward } from "lucide-react";
+import {
+  Eye,
+  FileText,
+  Minimize2,
+  Terminal,
+  Play,
+  SkipBack,
+  SkipForward,
+} from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
@@ -43,6 +51,55 @@ interface ComputerSidebarProps {
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
 }
+
+const formatFileSize = (sizeBytes?: number): string | null => {
+  if (typeof sizeBytes !== "number") return null;
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
+  if (!isSidebarFile(file)) return null;
+
+  const filename = file.filename || file.path.split("/").pop() || file.path;
+  const kindLabel = file.kind === "pdf" ? "PDF" : "Image";
+  const sizeLabel = formatFileSize(file.sizeBytes);
+  const metadata = [file.mediaType, sizeLabel].filter(Boolean).join(" | ");
+
+  return (
+    <div className="h-full overflow-y-auto font-sans">
+      <div className="flex min-h-full items-center justify-center p-6">
+        <div className="w-full max-w-[420px] rounded-lg border border-border bg-muted/20 px-5 py-6 text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-background border border-border text-foreground">
+            {file.kind === "pdf" ? (
+              <FileText className="h-6 w-6" aria-hidden="true" />
+            ) : (
+              <Eye className="h-6 w-6" aria-hidden="true" />
+            )}
+          </div>
+          <div className="text-sm font-medium text-foreground">
+            Viewed {kindLabel.toLowerCase()} file
+          </div>
+          <div className="mt-1 break-words font-mono text-xs text-muted-foreground">
+            {filename}
+          </div>
+          {metadata && (
+            <div className="mt-3 text-xs text-muted-foreground">{metadata}</div>
+          )}
+          <div className="mt-4 rounded-md bg-background/70 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground break-all">
+            {file.path}
+          </div>
+          {file.error && (
+            <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-left text-xs text-destructive">
+              {file.error}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   sidebarOpen,
@@ -341,7 +398,12 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     variant="sidebar"
                     // xterm manages its own wrapping; the toggle is a no-op
                     // for interactive PTY output.
-                    showWrap={!(isTerminal && resolvedTerminal?.rawBytes)}
+                    showWrap={
+                      !(
+                        (isTerminal && resolvedTerminal?.rawBytes) ||
+                        (isFile && resolvedFile?.action === "viewing")
+                      )
+                    }
                   />
                 )}
               </div>
@@ -360,33 +422,39 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     >
                       {isFile && resolvedFile && (
                         <>
-                          {/* Show DiffView for editing/appending actions with diff data */}
-                          {(resolvedFile.action === "editing" ||
-                            resolvedFile.action === "appending") &&
-                          resolvedFile.originalContent !== undefined &&
-                          resolvedFile.modifiedContent !== undefined ? (
-                            <DiffView
-                              originalContent={resolvedFile.originalContent}
-                              modifiedContent={resolvedFile.modifiedContent}
-                              language={
-                                resolvedFile.language ||
-                                getLanguageFromPath(resolvedFile.path)
-                              }
-                              wrap={isWrapped}
-                            />
+                          {resolvedFile.action === "viewing" ? (
+                            <ViewFileSummary file={resolvedFile} />
                           ) : (
-                            <ComputerCodeBlock
-                              language={
-                                resolvedFile.action === "searching"
-                                  ? "text"
-                                  : resolvedFile.language ||
+                            <>
+                              {/* Show DiffView for editing/appending actions with diff data */}
+                              {(resolvedFile.action === "editing" ||
+                                resolvedFile.action === "appending") &&
+                              resolvedFile.originalContent !== undefined &&
+                              resolvedFile.modifiedContent !== undefined ? (
+                                <DiffView
+                                  originalContent={resolvedFile.originalContent}
+                                  modifiedContent={resolvedFile.modifiedContent}
+                                  language={
+                                    resolvedFile.language ||
                                     getLanguageFromPath(resolvedFile.path)
-                              }
-                              wrap={isWrapped}
-                              showButtons={false}
-                            >
-                              {resolvedFile.content}
-                            </ComputerCodeBlock>
+                                  }
+                                  wrap={isWrapped}
+                                />
+                              ) : (
+                                <ComputerCodeBlock
+                                  language={
+                                    resolvedFile.action === "searching"
+                                      ? "text"
+                                      : resolvedFile.language ||
+                                        getLanguageFromPath(resolvedFile.path)
+                                  }
+                                  wrap={isWrapped}
+                                  showButtons={false}
+                                >
+                                  {resolvedFile.content}
+                                </ComputerCodeBlock>
+                              )}
+                            </>
                           )}
                         </>
                       )}

@@ -98,6 +98,7 @@ export interface SidebarFile {
     end?: number;
   };
   action?:
+    | "viewing"
     | "reading"
     | "creating"
     | "editing"
@@ -113,6 +114,14 @@ export interface SidebarFile {
   modifiedContent?: string;
   /** Error message if the operation failed */
   error?: string;
+  /** Media type for viewed multimodal files */
+  mediaType?: string;
+  /** File size for viewed multimodal files */
+  sizeBytes?: number;
+  /** File kind for viewed multimodal files */
+  kind?: "image" | "pdf";
+  /** Display filename returned by the file tool */
+  filename?: string;
 }
 
 export interface SidebarTerminal {

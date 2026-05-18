@@ -307,7 +307,9 @@ export function extractSidebarContentFromMessage(
           });
         } else if (
           part.state === "input-available" &&
-          (fileAction === "read" || fileAction === "edit")
+          (fileAction === "view" ||
+            fileAction === "read" ||
+            fileAction === "edit")
         ) {
           const range =
             fileAction === "read" && fileInput.range
@@ -321,7 +323,12 @@ export function extractSidebarContentFromMessage(
             path: fileInput.path,
             content: "",
             range,
-            action: fileAction === "read" ? "reading" : "editing",
+            action:
+              fileAction === "view"
+                ? "viewing"
+                : fileAction === "read"
+                  ? "reading"
+                  : "editing",
             toolCallId: part.toolCallId || "",
             isExecuting: true,
           });
@@ -390,6 +397,7 @@ export function extractSidebarContentFromMessage(
         // New unified file tool
         const fileAction = fileInput.action as string;
         const actionMap: Record<string, SidebarFile["action"]> = {
+          view: "viewing",
           read: "reading",
           write: "writing",
           append: "appending",
@@ -397,7 +405,15 @@ export function extractSidebarContentFromMessage(
         };
         action = actionMap[fileAction] || "reading";
 
-        if (fileAction === "read") {
+        if (fileAction === "view") {
+          const output = part.output;
+          if (typeof output === "object" && output !== null) {
+            content =
+              typeof output.content === "string"
+                ? output.content
+                : "Viewed multimodal file.";
+          }
+        } else if (fileAction === "read") {
           // Output is an object with originalContent (raw content without line numbers)
           const output = part.output;
           if (
@@ -521,6 +537,34 @@ export function extractSidebarContentFromMessage(
         toolCallId: part.toolCallId || "",
         originalContent,
         modifiedContent,
+        mediaType:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.mediaType === "string"
+            ? part.output.mediaType
+            : undefined,
+        sizeBytes:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.sizeBytes === "number"
+            ? part.output.sizeBytes
+            : undefined,
+        kind:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          (part.output.kind === "image" || part.output.kind === "pdf")
+            ? part.output.kind
+            : undefined,
+        filename:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.filename === "string"
+            ? part.output.filename
+            : undefined,
         isExecuting: false,
       });
     }

@@ -1,6 +1,8 @@
 import React from "react";
 import {
   Edit,
+  Eye,
+  FileText,
   Terminal,
   Search,
   FolderSearch,
@@ -99,6 +101,7 @@ export function getActionText(content: SidebarContent): string {
   if (isSidebarFile(content)) {
     if (content.isExecuting) {
       const streamingActionMap = {
+        viewing: "Viewing",
         reading: "Reading",
         creating: "Creating",
         editing: "Editing",
@@ -109,6 +112,7 @@ export function getActionText(content: SidebarContent): string {
       return streamingActionMap[content.action || "reading"];
     }
     const completedActionMap = {
+      viewing: "Viewed",
       reading: "Read",
       creating: "Successfully wrote",
       editing: "Successfully edited",
@@ -178,6 +182,13 @@ const iconClass = "w-5 h-5 text-muted-foreground";
 
 export function getSidebarIcon(content: SidebarContent): React.ReactNode {
   if (isSidebarFile(content)) {
+    if (content.action === "viewing") {
+      return content.kind === "pdf" ? (
+        <FileText className={iconClass} />
+      ) : (
+        <Eye className={iconClass} />
+      );
+    }
     if (content.action === "searching") {
       return <FolderSearch className={iconClass} />;
     }
@@ -193,6 +204,7 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
 
 export function getToolName(content: SidebarContent): string {
   if (isSidebarFile(content)) {
+    if (content.action === "viewing") return "Viewer";
     return content.action === "searching" ? "File Search" : "Editor";
   }
   if (isSidebarProxy(content)) return "Proxy";
