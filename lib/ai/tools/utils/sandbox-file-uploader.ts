@@ -14,6 +14,7 @@ const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
   MAX_GENERATED_FILE_SIZE_BYTES / (1024 * 1024);
 const SANDBOX_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const SANDBOX_UPLOAD_STATUS_MARKER = "__HACKERAI_UPLOAD_EXIT_CODE__:";
 
 export type UploadedFileInfo = {
   url: string;
@@ -118,6 +119,65 @@ function getFileNameFromPath(fullPath: string): string {
   return fullPath.split(/[/\\]/).pop() || "file";
 }
 
+type SandboxCommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
+function commandErrorToResult(error: unknown): SandboxCommandResult | null {
+  if (!(error instanceof Error)) return null;
+
+  const commandError = error as Error & {
+    exitCode?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+  };
+
+  if (typeof commandError.exitCode !== "number") return null;
+
+  return {
+    stdout:
+      typeof commandError.stdout === "string"
+        ? commandError.stdout
+        : error.message,
+    stderr: typeof commandError.stderr === "string" ? commandError.stderr : "",
+    exitCode: commandError.exitCode,
+  };
+}
+
+function parseUploadResult(result: SandboxCommandResult): SandboxCommandResult {
+  const statusMatch = result.stdout.match(
+    new RegExp(`(?:^|\\n)${SANDBOX_UPLOAD_STATUS_MARKER}(\\d+)(?:\\n|$)`),
+  );
+
+  if (!statusMatch) return result;
+
+  return {
+    stdout: result.stdout
+      .replace(
+        new RegExp(`(?:^|\\n)${SANDBOX_UPLOAD_STATUS_MARKER}\\d+(?:\\n|$)`),
+        "\n",
+      )
+      .trim(),
+    stderr: result.stderr,
+    exitCode: Number(statusMatch[1]),
+  };
+}
+
+function formatUploadFailure(
+  fullPath: string,
+  result: SandboxCommandResult,
+): Error {
+  return new Error(
+    `Failed to upload file ${fullPath}: ${
+      result.stderr ||
+      result.stdout ||
+      `upload command failed with exit code ${result.exitCode}`
+    }`,
+  );
+}
+
 async function uploadGeneratedFileFromSandboxToUrl(args: {
   sandbox: AnySandbox;
   fullPath: string;
@@ -127,32 +187,50 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
 
   if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
-    await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
-    return;
+    try {
+      await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
+      return;
+    } catch (error) {
+      logger.warn("sandbox_generated_file_native_upload_failed", {
+        event: "sandbox_generated_file_native_upload_failed",
+        service: "chat-handler",
+        sandbox_type: getSandboxLogType(sandbox),
+        media_type: mediaType,
+        error: errorToLog(error),
+      });
+    }
   }
 
-  let result: Awaited<ReturnType<typeof sandbox.commands.run>>;
+  let result: SandboxCommandResult;
+  const uploadCommand = `curl -fsSL -X PUT -H ${shellQuote(`Content-Type: ${mediaType}`)} --data-binary @${shellQuote(fullPath)} ${shellQuote(uploadUrl)}`;
   try {
     result = await sandbox.commands.run(
-      `curl -fsSL -X PUT -H ${shellQuote(`Content-Type: ${mediaType}`)} --data-binary @${shellQuote(fullPath)} ${shellQuote(uploadUrl)}`,
+      `${uploadCommand}; status=$?; printf '\\n${SANDBOX_UPLOAD_STATUS_MARKER}%s\\n' "$status"; exit 0`,
       {
         timeoutMs: SANDBOX_UPLOAD_TIMEOUT_MS,
       } as { timeoutMs?: number },
     );
   } catch (error) {
-    logger.error(
-      "sandbox_generated_file_upload_failed",
-      error instanceof Error ? error : undefined,
-      {
-        event: "sandbox_generated_file_upload_failed",
-        service: "chat-handler",
-        sandbox_type: getSandboxLogType(sandbox),
-        media_type: mediaType,
-        error: errorToLog(error),
-      },
-    );
-    throw error;
+    const commandResult = commandErrorToResult(error);
+    if (commandResult) {
+      result = commandResult;
+    } else {
+      logger.error(
+        "sandbox_generated_file_upload_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_upload_failed",
+          service: "chat-handler",
+          sandbox_type: getSandboxLogType(sandbox),
+          media_type: mediaType,
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
   }
+
+  result = parseUploadResult(result);
 
   if (result.exitCode !== 0) {
     logger.error("sandbox_generated_file_upload_failed", undefined, {
@@ -162,10 +240,9 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       media_type: mediaType,
       exit_code: result.exitCode,
       stderr: result.stderr?.slice(0, 500),
+      stdout: result.stdout?.slice(0, 500),
     });
-    throw new Error(
-      `Failed to upload file ${fullPath}: ${result.stderr || result.stdout || "upload command failed"}`,
-    );
+    throw formatUploadFailure(fullPath, result);
   }
 }
 

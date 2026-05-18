@@ -161,6 +161,66 @@ describe("uploadSandboxFileToConvex", () => {
     });
   });
 
+  test("falls back to command upload when native Centrifugo upload fails", async () => {
+    const sandbox = makeSandbox(1234);
+    sandbox.files.uploadToUrl.mockRejectedValueOnce(new Error("exit status 1"));
+
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "/home/user/preview.png",
+      mediaType: "image/png",
+    });
+
+    expect(sandbox.files.uploadToUrl).toHaveBeenCalledWith(
+      "/home/user/preview.png",
+      "https://s3.example/upload",
+      "image/png",
+    );
+    expect(sandbox.commands.run).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("curl -fsSL -X PUT -H 'Content-Type: image/png'"),
+      expect.objectContaining({
+        timeoutMs: expect.any(Number),
+      }),
+    );
+    expect(mockConvexAction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        name: "preview.png",
+        size: 1234,
+      }),
+    );
+  });
+
+  test("reports command upload stderr instead of a bare exit status", async () => {
+    const sandbox = makeSandbox(1234, true);
+    (sandbox.commands.run as jest.Mock).mockImplementation(
+      async (command: string) => {
+        if (command.startsWith("stat ")) {
+          return { stdout: "1234", stderr: "", exitCode: 0 };
+        }
+        if (command.includes("curl -fsSL -X PUT")) {
+          return {
+            stdout: "\n__HACKERAI_UPLOAD_EXIT_CODE__:56\n",
+            stderr: "curl: (56) response ended early",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "unexpected command", exitCode: 1 };
+      },
+    );
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/home/user/chart-page-1.png",
+        mediaType: "image/png",
+      }),
+    ).rejects.toThrow(/curl: \(56\) response ended early/);
+  });
+
   test("derives the file name from Windows-style paths", async () => {
     const sandbox = makeSandbox(1234);
 
