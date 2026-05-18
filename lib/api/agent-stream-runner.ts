@@ -198,6 +198,7 @@ export async function createAgentStream(
       ctx.isReasoningModel,
       ctx.userId,
       modelName,
+      ctx.mode,
     ),
 
     prepareStep: async ({ steps, messages }) => {
@@ -235,6 +236,7 @@ export async function createAgentStream(
               ctx.isReasoningModel,
               ctx.userId,
               modelName,
+              ctx.mode,
             ),
           });
 
@@ -388,7 +390,7 @@ export async function createAgentStream(
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
 
-      const fallbackSlugs = getFallbackSlugs(modelName);
+      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
       logOpenRouterFallbackIfFired({
         fallbackSlugs,
         requestedSlug,
