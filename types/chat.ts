@@ -35,7 +35,6 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   "sonnet-4.6": "hackerai-pro",
   "opus-4.6": "hackerai-max",
-  "opus-4.7": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",
   "kimi-k2.6": "hackerai-standard",
   // Grok was removed from the picker before the tier rebrand. Both variants
