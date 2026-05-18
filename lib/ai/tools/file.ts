@@ -369,22 +369,6 @@ async function readSandboxFileForView(
       timeoutMs: 30_000,
     });
   } catch (error) {
-    logger.error(
-      "file_view_inspection_command_threw",
-      error instanceof Error ? error : undefined,
-      {
-        event: "file_view_inspection_command_threw",
-        service: "chat-handler",
-        sandbox_type: getViewSandboxType(sandbox),
-        file_name: getFilename(path),
-        source_path: path,
-        sandbox_path: sandboxPath,
-        include_data: includeData,
-        range,
-        error: errorToLog(error),
-      },
-    );
-
     if (
       typeof error === "object" &&
       error !== null &&
@@ -415,19 +399,6 @@ async function readSandboxFileForView(
   try {
     payload = JSON.parse(stdout);
   } catch {
-    logger.error("file_view_inspection_parse_failed", undefined, {
-      event: "file_view_inspection_parse_failed",
-      service: "chat-handler",
-      sandbox_type: getViewSandboxType(sandbox),
-      file_name: getFilename(path),
-      source_path: path,
-      sandbox_path: sandboxPath,
-      include_data: includeData,
-      range,
-      exit_code: result.exitCode,
-      stderr: result.stderr?.slice(0, 1000),
-      stdout: stdout.slice(0, 1000),
-    });
     throw new Error(
       `Failed to inspect file for view: ${
         result.stderr || stdout || "No output returned"
@@ -436,20 +407,6 @@ async function readSandboxFileForView(
   }
 
   if (result.exitCode !== 0 || payload.error) {
-    logger.error("file_view_inspection_failed", undefined, {
-      event: "file_view_inspection_failed",
-      service: "chat-handler",
-      sandbox_type: getViewSandboxType(sandbox),
-      file_name: getFilename(path),
-      source_path: path,
-      sandbox_path: sandboxPath,
-      include_data: includeData,
-      range,
-      exit_code: result.exitCode,
-      payload_error: payload.error,
-      stderr: result.stderr?.slice(0, 1000),
-      stdout: stdout.slice(0, 1000),
-    });
     throw new Error(payload.error || result.stderr || "Failed to view file");
   }
 
@@ -459,17 +416,6 @@ async function readSandboxFileForView(
     typeof payload.sizeBytes !== "number" ||
     (payload.kind !== "image" && payload.kind !== "pdf")
   ) {
-    logger.error("file_view_inspection_invalid_payload", undefined, {
-      event: "file_view_inspection_invalid_payload",
-      service: "chat-handler",
-      sandbox_type: getViewSandboxType(sandbox),
-      file_name: getFilename(path),
-      source_path: path,
-      sandbox_path: sandboxPath,
-      include_data: includeData,
-      range,
-      payload_keys: Object.keys(payload),
-    });
     throw new Error("View inspection returned an invalid payload.");
   }
 
@@ -480,19 +426,6 @@ async function readSandboxFileForView(
       payload.pages.length > 0 &&
       payload.pages.every((page) => typeof page.data === "string");
     if (!hasPageData) {
-      logger.error("file_view_inspection_missing_data", undefined, {
-        event: "file_view_inspection_missing_data",
-        service: "chat-handler",
-        sandbox_type: getViewSandboxType(sandbox),
-        file_name: getFilename(path),
-        source_path: path,
-        sandbox_path: sandboxPath,
-        kind: payload.kind,
-        include_data: includeData,
-        range,
-        page_count: payload.pageCount,
-        rendered_pages: payload.pages?.map((page) => page.page),
-      });
       throw new Error("View inspection did not return file data.");
     }
   }
@@ -509,33 +442,13 @@ async function uploadViewPreviewFiles(args: {
   const { context, sandbox, sourcePath, payload } = args;
 
   if (payload.kind === "image") {
-    let uploaded: Awaited<ReturnType<typeof uploadSandboxFileToConvex>>;
-    try {
-      uploaded = await uploadSandboxFileToConvex({
-        sandbox,
-        userId: context.userID,
-        fullPath: sourcePath,
-        mediaType: payload.mediaType,
-        name: getFilename(sourcePath),
-      });
-    } catch (error) {
-      logger.error(
-        "file_view_image_preview_upload_failed",
-        error instanceof Error ? error : undefined,
-        {
-          event: "file_view_image_preview_upload_failed",
-          service: "chat-handler",
-          user_id: context.userID,
-          sandbox_type: getViewSandboxType(sandbox),
-          file_name: getFilename(sourcePath),
-          source_path: sourcePath,
-          media_type: payload.mediaType,
-          size_bytes: payload.sizeBytes,
-          error: errorToLog(error),
-        },
-      );
-      throw error;
-    }
+    const uploaded = await uploadSandboxFileToConvex({
+      sandbox,
+      userId: context.userID,
+      fullPath: sourcePath,
+      mediaType: payload.mediaType,
+      name: getFilename(sourcePath),
+    });
 
     return [
       {
@@ -552,58 +465,14 @@ async function uploadViewPreviewFiles(args: {
   const pages = payload.pages || [];
   const previewFiles: ViewPreviewFile[] = [];
 
-  if (pages.length === 0) {
-    logger.warn("file_view_pdf_preview_pages_missing", {
-      event: "file_view_pdf_preview_pages_missing",
-      service: "chat-handler",
-      user_id: context.userID,
-      sandbox_type: getViewSandboxType(sandbox),
-      file_name: getFilename(sourcePath),
-      source_path: sourcePath,
-      media_type: payload.mediaType,
-      size_bytes: payload.sizeBytes,
-      page_count: payload.pageCount,
-      rendered_page_limit: payload.renderedPageLimit,
-      truncated_pages: payload.truncatedPages,
-    });
-  }
-
   for (const page of pages) {
-    let uploaded: Awaited<ReturnType<typeof uploadSandboxFileToConvex>>;
-    try {
-      uploaded = await uploadSandboxFileToConvex({
-        sandbox,
-        userId: context.userID,
-        fullPath: page.path,
-        mediaType: page.mediaType,
-        name: `${baseName}-page-${page.page}.png`,
-      });
-    } catch (error) {
-      logger.error(
-        "file_view_pdf_preview_page_upload_failed",
-        error instanceof Error ? error : undefined,
-        {
-          event: "file_view_pdf_preview_page_upload_failed",
-          service: "chat-handler",
-          user_id: context.userID,
-          sandbox_type: getViewSandboxType(sandbox),
-          file_name: getFilename(sourcePath),
-          source_path: sourcePath,
-          preview_path: page.path,
-          preview_name: `${baseName}-page-${page.page}.png`,
-          media_type: payload.mediaType,
-          preview_media_type: page.mediaType,
-          size_bytes: payload.sizeBytes,
-          preview_size_bytes: page.sizeBytes,
-          page: page.page,
-          page_count: payload.pageCount,
-          rendered_page_limit: payload.renderedPageLimit,
-          truncated_pages: payload.truncatedPages,
-          error: errorToLog(error),
-        },
-      );
-      throw error;
-    }
+    const uploaded = await uploadSandboxFileToConvex({
+      sandbox,
+      userId: context.userID,
+      fullPath: page.path,
+      mediaType: page.mediaType,
+      name: `${baseName}-page-${page.page}.png`,
+    });
 
     previewFiles.push({
       fileId: uploaded.fileId,
