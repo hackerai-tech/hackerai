@@ -26,7 +26,6 @@ import {
 } from "@/app/components/tools/notes-tool-utils";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import ToolBlock from "@/components/ui/tool-block";
-import { FilePartRenderer } from "@/app/components/FilePartRenderer";
 import {
   Reasoning,
   ReasoningContent,
@@ -475,32 +474,16 @@ function renderFileTool(
       }
     };
 
-    const previewFiles = fileOutput?.previewFiles || [];
-
     return (
-      <div key={idx} className="flex flex-col gap-2">
-        <ToolBlock
-          icon={icon}
-          action={useBriefOnly ? brief : action}
-          target={useBriefOnly ? undefined : `${filePath}${getFileRange()}`}
-          isClickable={true}
-          onClick={handleOpenInSidebar}
-          onKeyDown={handleKeyDown}
-        />
-        {fileAction === "view" && previewFiles.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {previewFiles.map((file, index) => (
-              <FilePartRenderer
-                key={file.fileId || `${idx}-preview-${index}`}
-                part={file}
-                partIndex={index}
-                messageId={part.toolCallId || `shared-view-${idx}`}
-                totalFileParts={previewFiles.length}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <ToolBlock
+        key={idx}
+        icon={icon}
+        action={useBriefOnly ? brief : action}
+        target={useBriefOnly ? undefined : `${filePath}${getFileRange()}`}
+        isClickable={true}
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
+      />
     );
   }
   return null;

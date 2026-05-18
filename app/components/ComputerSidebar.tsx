@@ -1,4 +1,7 @@
 import React from "react";
+import Image from "next/image";
+import { useAction, useConvex } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
   Eye,
   FileText,
@@ -32,8 +35,10 @@ import {
   type NoteCategory,
 } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
 import { TodoPanel } from "./TodoPanel";
+import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import {
   getCategoryColor,
   getLanguageFromPath,
@@ -59,6 +64,118 @@ const formatFileSize = (sizeBytes?: number): string | null => {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const SidebarPreviewImage = ({
+  file,
+  label,
+}: {
+  file: FilePart & { page?: number };
+  label: string;
+}) => {
+  const convex = useConvex();
+  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const fileUrlCache = useFileUrlCacheContext();
+  const [fileUrl, setFileUrl] = useState<string | null>(() => {
+    if (file.fileId && fileUrlCache) {
+      return fileUrlCache.getCachedUrl(file.fileId) || null;
+    }
+    return file.url || null;
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchUrl() {
+      if (file.url) {
+        setFileUrl(file.url);
+        return;
+      }
+
+      if (file.fileId && fileUrlCache) {
+        const cachedUrl = fileUrlCache.getCachedUrl(file.fileId);
+        if (cachedUrl) {
+          setFileUrl(cachedUrl);
+          return;
+        }
+      }
+
+      try {
+        setError(null);
+        let url: string | null = null;
+
+        if (file.fileId) {
+          url = await getFileUrlAction({ fileId: file.fileId });
+          if (url && fileUrlCache) {
+            fileUrlCache.setCachedUrl(file.fileId, url);
+          }
+        } else if (file.storageId) {
+          url = await convex.query(api.fileStorage.getFileDownloadUrl, {
+            storageId: file.storageId,
+          });
+        }
+
+        if (!cancelled) {
+          if (url) {
+            setFileUrl(url);
+          } else {
+            setError("Preview URL unavailable");
+          }
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setError(
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Failed to load preview",
+          );
+        }
+      }
+    }
+
+    fetchUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    convex,
+    file.fileId,
+    file.storageId,
+    file.url,
+    fileUrlCache,
+    getFileUrlAction,
+  ]);
+
+  if (error) {
+    return (
+      <div className="flex min-h-[180px] w-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        {error}
+      </div>
+    );
+  }
+
+  if (!fileUrl) {
+    return (
+      <div className="flex min-h-[180px] w-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        Loading preview...
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex w-full justify-center">
+      <Image
+        src={fileUrl}
+        alt={label}
+        width={1600}
+        height={2200}
+        className="block h-auto max-h-none w-auto max-w-full object-contain"
+        unoptimized
+      />
+    </div>
+  );
+};
+
 const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
   if (!isSidebarFile(file)) return null;
 
@@ -67,11 +184,39 @@ const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
   const sizeLabel = formatFileSize(file.sizeBytes);
   const metadata = [file.mediaType, sizeLabel].filter(Boolean).join(" | ");
 
+  const pageSummary =
+    file.renderedPages && file.renderedPages.length > 0
+      ? `Page${file.renderedPages.length === 1 ? "" : "s"} ${file.renderedPages.join(", ")}${file.pageCount ? ` of ${file.pageCount}` : ""}${file.truncatedPages && file.renderedPageLimit ? ` | first ${file.renderedPageLimit} shown` : ""}`
+      : null;
+
+  if (file.previewFiles && file.previewFiles.length > 0) {
+    return (
+      <div className="h-full overflow-auto bg-background font-sans">
+        <div className="flex min-h-full w-full flex-col items-center gap-6 px-4 py-0">
+          {file.previewFiles.map((previewFile, index) => (
+            <SidebarPreviewImage
+              key={
+                previewFile.fileId ||
+                `${file.toolCallId || file.path}-preview-${index}`
+              }
+              file={previewFile}
+              label={
+                previewFile.page
+                  ? `${filename} page ${previewFile.page}`
+                  : filename
+              }
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full overflow-y-auto font-sans">
       <div className="flex min-h-full items-center justify-center p-6">
         <div className="w-full max-w-[420px] rounded-lg border border-border bg-muted/20 px-5 py-6 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-background border border-border text-foreground">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-background text-foreground">
             {file.kind === "pdf" ? (
               <FileText className="h-6 w-6" aria-hidden="true" />
             ) : (
@@ -87,30 +232,9 @@ const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
           {metadata && (
             <div className="mt-3 text-xs text-muted-foreground">{metadata}</div>
           )}
-          {file.renderedPages && file.renderedPages.length > 0 && (
+          {pageSummary && (
             <div className="mt-2 text-xs text-muted-foreground">
-              Page{file.renderedPages.length === 1 ? "" : "s"}{" "}
-              {file.renderedPages.join(", ")}
-              {file.pageCount ? ` of ${file.pageCount}` : ""}
-              {file.truncatedPages && file.renderedPageLimit
-                ? ` | first ${file.renderedPageLimit} shown`
-                : ""}
-            </div>
-          )}
-          {file.previewFiles && file.previewFiles.length > 0 && (
-            <div className="mt-4 flex justify-center gap-2 flex-wrap">
-              {file.previewFiles.map((previewFile, index) => (
-                <FilePartRenderer
-                  key={
-                    previewFile.fileId ||
-                    `${file.toolCallId || file.path}-preview-${index}`
-                  }
-                  part={previewFile}
-                  partIndex={index}
-                  messageId={file.toolCallId || file.path}
-                  totalFileParts={file.previewFiles?.length || 1}
-                />
-              ))}
+              {pageSummary}
             </div>
           )}
           <div className="mt-4 rounded-md bg-background/70 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground break-all">

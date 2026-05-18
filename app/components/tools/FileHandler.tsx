@@ -5,7 +5,6 @@ import type { ChatStatus } from "@/types";
 import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
 import type { FilePart } from "@/types/file";
-import { FilePartRenderer } from "../FilePartRenderer";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface FileInput {
@@ -277,38 +276,17 @@ export const FileHandler = memo(function FileHandler({
         ) : null;
       case "output-available": {
         if (!input) return null;
-        const viewOutput =
-          !isOutputError &&
-          typeof part.output === "object" &&
-          part.output !== null
-            ? (part.output as FileViewOutput)
-            : undefined;
-        const previewFiles = viewOutput?.previewFiles || [];
 
         return (
-          <div key={toolCallId} className="flex flex-col gap-2">
-            <ToolBlock
-              icon={<Eye />}
-              action={briefLabel(isOutputError ? "Failed to view" : "Viewed")}
-              target={briefTarget(input.path)}
-              isClickable={isClickable}
-              onClick={handleOpenInSidebar}
-              onKeyDown={handleKeyDown}
-            />
-            {previewFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {previewFiles.map((file, index) => (
-                  <FilePartRenderer
-                    key={file.fileId || `${toolCallId}-preview-${index}`}
-                    part={file}
-                    partIndex={index}
-                    messageId={toolCallId}
-                    totalFileParts={previewFiles.length}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          <ToolBlock
+            key={toolCallId}
+            icon={<Eye />}
+            action={briefLabel(isOutputError ? "Failed to view" : "Viewed")}
+            target={briefTarget(input.path)}
+            isClickable={isClickable}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
+          />
         );
       }
       default:
