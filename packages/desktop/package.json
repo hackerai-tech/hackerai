@@ -13,16 +13,16 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
-    "@tauri-apps/plugin-deep-link": "^2.4.6",
+    "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-os": "^2.3.2",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-shell": "^2.3.4",
-    "@tauri-apps/plugin-updater": "^2.9.0",
-    "@tauri-apps/plugin-opener": "^2.5.3"
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tauri-apps/plugin-opener": "^2.5.4"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.9.6",
+    "@tauri-apps/cli": "^2.11.2",
     "sharp": "^0.34.5",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   }
 }
