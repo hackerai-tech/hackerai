@@ -229,10 +229,32 @@ export const TeamExtraUsageSection = () => {
   }
 
   const monthlyCapDollars = pool.monthlyCapDollars;
+  // TEMPORARY TRUST-CAP BYPASS:
+  // Restore these fields if HackerAI's own trust-based protection cap should
+  // be shown and combined with the admin-set team spending limit again.
+  /*
+  const trustCapDollars = pool.trustCapDollars;
+  const trustReason = pool.trustReason;
+  */
 
   // Trust-based protection caps are temporarily ignored. The visible and
   // enforced cap is only the admin-configured team monthly spending limit.
   const effectiveCapDollars = monthlyCapDollars;
+
+  // TEMPORARY TRUST-CAP BYPASS:
+  // Restore this calculation if the displayed limit should become the lower of
+  // the admin-set cap and HackerAI's trust-based protection cap again.
+  /*
+  const effectiveCapDollars =
+    monthlyCapDollars != null && trustCapDollars != null
+      ? Math.min(monthlyCapDollars, trustCapDollars)
+      : (monthlyCapDollars ?? trustCapDollars);
+
+  const isTrustCapActive =
+    trustCapDollars != null &&
+    trustReason !== "trusted" &&
+    (monthlyCapDollars == null || trustCapDollars <= monthlyCapDollars);
+  */
 
   return (
     <>
@@ -303,6 +325,24 @@ export const TeamExtraUsageSection = () => {
                     </p>
                   </div>
                 </div>
+                {/*
+                TEMPORARY TRUST-CAP BYPASS:
+                Restore this message if HackerAI's own trust-based protection
+                cap should be visible to team admins again.
+                {isTrustCapActive && (
+                  <p className="text-xs text-muted-foreground">
+                    Your team&apos;s extra usage limit is ${trustCapDollars}
+                    /month while your account builds payment history.{" "}
+                    <a
+                      href="mailto:support@hackerai.co"
+                      className="underline underline-offset-[3px] hover:text-foreground"
+                    >
+                      Contact us
+                    </a>{" "}
+                    for a higher limit.
+                  </p>
+                )}
+                */}
               </div>
             )}
 
