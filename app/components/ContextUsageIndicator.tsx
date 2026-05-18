@@ -34,10 +34,6 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function formatExactTokenCount(n: number): string {
-  return Math.round(n).toLocaleString();
-}
-
 const CIRCLE_SIZE = 16;
 const STROKE_WIDTH = 2.5;
 const RADIUS = (CIRCLE_SIZE - STROKE_WIDTH) / 2;
@@ -133,12 +129,18 @@ export const ContextUsageIndicator = ({
           side="top"
           align="end"
           sideOffset={8}
-          className="w-auto max-w-[240px] px-3 py-2.5 text-center"
+          className="w-auto max-w-[240px] px-3 py-2.5 text-center space-y-0.5"
         >
           <div className="font-medium text-xs">Context window:</div>
+          <div className="text-xs">
+            {Math.round(percent)}% used ({remaining}% left)
+          </div>
           <div className="text-xs tabular-nums">
-            {remaining}% left ({formatExactTokenCount(usedTokens)} used /{" "}
-            {formatExactTokenCount(maxTokens)})
+            {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}{" "}
+            tokens used
+          </div>
+          <div className="text-xs text-muted-foreground pt-1">
+            HackerAI automatically compacts its context
           </div>
         </PopoverContent>
       </Popover>

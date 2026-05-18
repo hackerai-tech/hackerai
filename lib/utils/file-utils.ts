@@ -24,7 +24,7 @@ export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 export const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
 /** Maximum number of files allowed to be uploaded at once */
-export const MAX_FILES_LIMIT = 5;
+export const MAX_FILES_LIMIT = 20;
 
 /** Supported image formats for AI processing */
 const SUPPORTED_IMAGE_TYPES = new Set([
