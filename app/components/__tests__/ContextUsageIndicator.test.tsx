@@ -97,8 +97,8 @@ describe("ContextUsageIndicator", () => {
 
       render(
         <ContextUsageIndicator
-          usedTokens={189833}
-          maxTokens={258000}
+          usedTokens={8500}
+          maxTokens={200000}
           variant="compact-popover"
         />,
       );
@@ -106,8 +106,10 @@ describe("ContextUsageIndicator", () => {
       await user.click(screen.getByTestId("context-usage-indicator"));
 
       expect(screen.getByText("Context window:")).toBeInTheDocument();
+      expect(screen.getByText("4% used (96% left)")).toBeInTheDocument();
+      expect(screen.getByText("8.5k / 200k tokens used")).toBeInTheDocument();
       expect(
-        screen.getByText("26% left (189,833 used / 258,000)"),
+        screen.getByText("HackerAI automatically compacts its context"),
       ).toBeInTheDocument();
     });
   });
