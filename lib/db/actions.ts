@@ -142,13 +142,15 @@ export async function saveMessage({
   updateOnly?: boolean;
   isHidden?: boolean;
 }) {
-  // Fix incomplete tool invocations for assistant messages (from interrupted streams)
-  const fixedParts =
-    message.role === "assistant"
-      ? fixIncompleteMessageParts(message.parts)
-      : message.parts;
+  let fixedParts = message.parts;
 
   try {
+    // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+    fixedParts =
+      message.role === "assistant"
+        ? fixIncompleteMessageParts(message.parts)
+        : message.parts;
+
     // Extract file IDs from file parts
     const fileIds = extractFileIdsFromParts(fixedParts);
     const mergedFileIds = [

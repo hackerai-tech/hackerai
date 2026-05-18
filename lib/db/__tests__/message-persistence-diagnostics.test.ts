@@ -31,5 +31,6 @@ describe("getMessagePersistenceDiagnostics", () => {
     expect(serialized).not.toContain("hello secret text");
     expect(serialized).not.toContain("private chain");
     expect(serialized).not.toContain("secret output");
+    expect(serialized).not.toContain("secret stream");
   });
 });
