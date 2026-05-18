@@ -10,7 +10,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 
 export interface ContextUsageData {
@@ -34,14 +33,6 @@ function formatTokenCount(n: number): string {
   }
   return String(n);
 }
-
-function formatExactTokenCount(n: number): string {
-  return Math.round(n).toLocaleString();
-}
-
-const AUTO_COMPACT_PERCENT = Math.round(
-  SUMMARIZATION_THRESHOLD_PERCENTAGE * 100,
-);
 
 const CIRCLE_SIZE = 16;
 const STROKE_WIDTH = 2.5;
@@ -122,10 +113,6 @@ export const ContextUsageIndicator = ({
   if (usedTokens === 0 || maxTokens === 0) return null;
   const percent = Math.min((usedTokens / maxTokens) * 100, 100);
   const remaining = Math.max(0, 100 - Math.round(percent));
-  const autoCompactTokens = Math.floor(
-    maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE,
-  );
-  const tokensUntilAutoCompact = Math.max(0, autoCompactTokens - usedTokens);
   const dashOffset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
 
   if (variant === "compact-popover") {
@@ -142,12 +129,18 @@ export const ContextUsageIndicator = ({
           side="top"
           align="end"
           sideOffset={8}
-          className="w-auto max-w-[240px] px-3 py-2.5 text-center"
+          className="w-auto max-w-[240px] px-3 py-2.5 text-center space-y-0.5"
         >
           <div className="font-medium text-xs">Context window:</div>
+          <div className="text-xs">
+            {Math.round(percent)}% used ({remaining}% left)
+          </div>
           <div className="text-xs tabular-nums">
-            {remaining}% left ({formatExactTokenCount(usedTokens)} used /{" "}
-            {formatExactTokenCount(maxTokens)})
+            {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)}{" "}
+            tokens used
+          </div>
+          <div className="text-xs text-muted-foreground pt-1">
+            HackerAI automatically compacts its context
           </div>
         </PopoverContent>
       </Popover>
@@ -178,13 +171,7 @@ export const ContextUsageIndicator = ({
           used
         </div>
         <div className="text-xs text-muted-foreground pt-1">
-          Auto-compact starts at {formatExactTokenCount(autoCompactTokens)}{" "}
-          tokens ({AUTO_COMPACT_PERCENT}%).
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {tokensUntilAutoCompact > 0
-            ? `${formatExactTokenCount(tokensUntilAutoCompact)} tokens until auto-compact`
-            : "Auto-compact threshold reached"}
+          HackerAI automatically compacts its context
         </div>
       </TooltipContent>
     </Tooltip>
