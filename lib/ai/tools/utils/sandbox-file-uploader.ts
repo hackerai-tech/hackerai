@@ -173,6 +173,8 @@ export async function uploadSandboxFileToConvex(args: {
   sandbox: AnySandbox;
   userId: string;
   fullPath: string;
+  mediaType?: string;
+  name?: string;
 }): Promise<UploadedFileInfo> {
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
@@ -188,8 +190,8 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   const { sandbox, userId, fullPath } = args;
-  const mediaType = DEFAULT_MEDIA_TYPE;
-  const name = getFileNameFromPath(fullPath);
+  const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
+  const name = args.name || getFileNameFromPath(fullPath);
   const fileSize = await getSandboxFileSize(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {

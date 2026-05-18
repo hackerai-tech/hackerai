@@ -4,6 +4,8 @@ import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
 import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
+import type { FilePart } from "@/types/file";
+import { FilePartRenderer } from "../FilePartRenderer";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface FileInput {
@@ -27,6 +29,12 @@ interface FileViewOutput {
   mediaType?: string;
   sizeBytes?: number;
   kind?: "image" | "pdf";
+  previewFiles?: Array<FilePart & { page?: number }>;
+  renderedPages?: number[];
+  renderedPageLimit?: number;
+  truncatedPages?: boolean;
+  pageCount?: number;
+  previewError?: string;
   error?: string;
 }
 
@@ -155,6 +163,12 @@ export const FileHandler = memo(function FileHandler({
           mediaType: viewOutput?.mediaType,
           sizeBytes: viewOutput?.sizeBytes,
           kind: viewOutput?.kind,
+          previewFiles: viewOutput?.previewFiles,
+          renderedPages: viewOutput?.renderedPages,
+          renderedPageLimit: viewOutput?.renderedPageLimit,
+          truncatedPages: viewOutput?.truncatedPages,
+          pageCount: viewOutput?.pageCount,
+          previewError: viewOutput?.previewError,
         };
       }
 
@@ -263,17 +277,38 @@ export const FileHandler = memo(function FileHandler({
         ) : null;
       case "output-available": {
         if (!input) return null;
+        const viewOutput =
+          !isOutputError &&
+          typeof part.output === "object" &&
+          part.output !== null
+            ? (part.output as FileViewOutput)
+            : undefined;
+        const previewFiles = viewOutput?.previewFiles || [];
 
         return (
-          <ToolBlock
-            key={toolCallId}
-            icon={<Eye />}
-            action={briefLabel(isOutputError ? "Failed to view" : "Viewed")}
-            target={briefTarget(input.path)}
-            isClickable={isClickable}
-            onClick={handleOpenInSidebar}
-            onKeyDown={handleKeyDown}
-          />
+          <div key={toolCallId} className="flex flex-col gap-2">
+            <ToolBlock
+              icon={<Eye />}
+              action={briefLabel(isOutputError ? "Failed to view" : "Viewed")}
+              target={briefTarget(input.path)}
+              isClickable={isClickable}
+              onClick={handleOpenInSidebar}
+              onKeyDown={handleKeyDown}
+            />
+            {previewFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {previewFiles.map((file, index) => (
+                  <FilePartRenderer
+                    key={file.fileId || `${toolCallId}-preview-${index}`}
+                    part={file}
+                    partIndex={index}
+                    messageId={toolCallId}
+                    totalFileParts={previewFiles.length}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         );
       }
       default:

@@ -87,12 +87,43 @@ const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
           {metadata && (
             <div className="mt-3 text-xs text-muted-foreground">{metadata}</div>
           )}
+          {file.renderedPages && file.renderedPages.length > 0 && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Page{file.renderedPages.length === 1 ? "" : "s"}{" "}
+              {file.renderedPages.join(", ")}
+              {file.pageCount ? ` of ${file.pageCount}` : ""}
+              {file.truncatedPages && file.renderedPageLimit
+                ? ` | first ${file.renderedPageLimit} shown`
+                : ""}
+            </div>
+          )}
+          {file.previewFiles && file.previewFiles.length > 0 && (
+            <div className="mt-4 flex justify-center gap-2 flex-wrap">
+              {file.previewFiles.map((previewFile, index) => (
+                <FilePartRenderer
+                  key={
+                    previewFile.fileId ||
+                    `${file.toolCallId || file.path}-preview-${index}`
+                  }
+                  part={previewFile}
+                  partIndex={index}
+                  messageId={file.toolCallId || file.path}
+                  totalFileParts={file.previewFiles?.length || 1}
+                />
+              ))}
+            </div>
+          )}
           <div className="mt-4 rounded-md bg-background/70 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground break-all">
             {file.path}
           </div>
           {file.error && (
             <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-left text-xs text-destructive">
               {file.error}
+            </div>
+          )}
+          {!file.error && file.previewError && (
+            <div className="mt-4 rounded-md border border-border bg-background/70 px-3 py-2 text-left text-xs text-muted-foreground">
+              Preview unavailable: {file.previewError}
             </div>
           )}
         </div>

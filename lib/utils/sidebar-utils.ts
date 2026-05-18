@@ -565,6 +565,48 @@ export function extractSidebarContentFromMessage(
           typeof part.output.filename === "string"
             ? part.output.filename
             : undefined,
+        previewFiles:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          Array.isArray(part.output.previewFiles)
+            ? part.output.previewFiles
+            : undefined,
+        renderedPages:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          Array.isArray(part.output.renderedPages)
+            ? part.output.renderedPages
+            : undefined,
+        renderedPageLimit:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.renderedPageLimit === "number"
+            ? part.output.renderedPageLimit
+            : undefined,
+        truncatedPages:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.truncatedPages === "boolean"
+            ? part.output.truncatedPages
+            : undefined,
+        pageCount:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.pageCount === "number"
+            ? part.output.pageCount
+            : undefined,
+        previewError:
+          part.type === "tool-file" &&
+          typeof part.output === "object" &&
+          part.output !== null &&
+          typeof part.output.previewError === "string"
+            ? part.output.previewError
+            : undefined,
         isExecuting: false,
       });
     }
