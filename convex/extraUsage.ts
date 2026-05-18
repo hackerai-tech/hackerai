@@ -476,6 +476,11 @@ export const deductPoints = mutation({
       effectiveCapPoints === trustCapPoints &&
       (userCapPoints === undefined || trustCapPoints <= userCapPoints);
 
+    // TEMPORARY EXTRA-USAGE CAP BYPASS:
+    // Monthly spending caps and trust-based caps (for example the default
+    // $100/month cap) are intentionally disabled for now. To restore cap
+    // enforcement, uncomment this block.
+    /*
     // Check monthly spending cap before deducting
     if (effectiveCapPoints !== undefined) {
       const newMonthlySpent = monthlySpentPoints + args.amountPoints;
@@ -501,6 +506,7 @@ export const deductPoints = mutation({
         };
       }
     }
+    */
 
     // Add to monthly spending
     monthlySpentPoints += args.amountPoints;

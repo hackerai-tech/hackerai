@@ -286,6 +286,11 @@ export const deductTeamPoints = mutation({
       effectiveTeamCap === trustCapPoints &&
       (teamCap === undefined || trustCapPoints <= teamCap);
 
+    // TEMPORARY EXTRA-USAGE CAP BYPASS:
+    // Team monthly caps, trust-based caps, and per-member spending limits are
+    // intentionally disabled for now. To restore cap enforcement, uncomment
+    // these blocks.
+    /*
     // Team monthly cap check
     if (effectiveTeamCap !== undefined) {
       const newTeamSpent = teamMonthlySpent + args.amountPoints;
@@ -322,6 +327,7 @@ export const deductTeamPoints = mutation({
         };
       }
     }
+    */
 
     // All checks passed — commit
     teamMonthlySpent += args.amountPoints;
