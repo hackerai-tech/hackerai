@@ -12,6 +12,19 @@ const primitiveErrorFieldNames = [
   "syscall",
 ] as const;
 
+const arrayBufferViewToArrayBuffer = (view: ArrayBufferView): ArrayBuffer => {
+  if (view.buffer instanceof ArrayBuffer) {
+    return view.buffer.slice(
+      view.byteOffset,
+      view.byteOffset + view.byteLength,
+    );
+  }
+
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return copy.buffer;
+};
+
 const sanitizeError = (error: Error, seen: WeakSet<object>) => {
   const sanitized: Record<string, unknown> = {
     error: error.message || error.name || "Error",
@@ -82,7 +95,7 @@ export function sanitizeForConvexValue(
   }
 
   if (ArrayBuffer.isView(value)) {
-    return value;
+    return arrayBufferViewToArrayBuffer(value);
   }
 
   if (typeof value !== "object") {

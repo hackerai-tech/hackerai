@@ -60,4 +60,23 @@ describe("sanitizeForConvexValue", () => {
       },
     });
   });
+
+  it("converts ArrayBuffer views into sliced ArrayBuffers", () => {
+    const backingBuffer = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+    const view = new Uint8Array(backingBuffer, 1, 3);
+    const dataView = new DataView(backingBuffer, 2, 2);
+
+    const result = sanitizeForConvexValue({
+      view,
+      dataView,
+    }) as { view: ArrayBuffer; dataView: ArrayBuffer };
+
+    expect(result.view).toBeInstanceOf(ArrayBuffer);
+    expect(result.view).not.toBe(backingBuffer);
+    expect([...new Uint8Array(result.view)]).toEqual([2, 3, 4]);
+
+    expect(result.dataView).toBeInstanceOf(ArrayBuffer);
+    expect(result.dataView).not.toBe(backingBuffer);
+    expect([...new Uint8Array(result.dataView)]).toEqual([3, 4]);
+  });
 });
