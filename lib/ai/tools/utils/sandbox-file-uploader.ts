@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { AnySandbox } from "@/types";
 import { isE2BSandbox } from "./sandbox-types";
+import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { MAX_GENERATED_FILE_SIZE_BYTES } from "@/lib/constants/s3";
@@ -51,10 +52,34 @@ async function getSandboxFileSize(
   fullPath: string,
 ): Promise<number> {
   const quotedPath = shellQuote(fullPath);
-  const statResult = await sandbox.commands.run(
-    `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
-    { displayName: "" } as { displayName?: string },
-  );
+  const commandOptions = buildSandboxCommandOptions(sandbox);
+  let statResult: SandboxCommandResult;
+  try {
+    statResult = await sandbox.commands.run(
+      `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
+      { ...commandOptions, displayName: "" } as typeof commandOptions & {
+        displayName?: string;
+      },
+    );
+  } catch (error) {
+    const commandResult = commandErrorToResult(error);
+    if (!commandResult) {
+      logger.error(
+        "sandbox_generated_file_size_command_threw",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_size_command_threw",
+          service: "chat-handler",
+          sandbox_type: getSandboxLogType(sandbox),
+          file_name: getFileNameFromPath(fullPath),
+          file_path: fullPath,
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
+    statResult = commandResult;
+  }
 
   let fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && statResult.exitCode === 0) {
@@ -63,15 +88,54 @@ async function getSandboxFileSize(
 
   // Windows cmd.exe fallback: %~zI expands to the file size.
   const escapedForCmd = fullPath.replace(/"/g, '\\"');
-  const winResult = await sandbox.commands.run(
-    `for %I in ("${escapedForCmd}") do @echo %~zI`,
-    { displayName: "" } as { displayName?: string },
-  );
+  let winResult: SandboxCommandResult;
+  try {
+    winResult = await sandbox.commands.run(
+      `for %I in ("${escapedForCmd}") do @echo %~zI`,
+      { ...commandOptions, displayName: "" } as typeof commandOptions & {
+        displayName?: string;
+      },
+    );
+  } catch (error) {
+    const commandResult = commandErrorToResult(error);
+    if (!commandResult) {
+      logger.error(
+        "sandbox_generated_file_size_windows_command_threw",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_size_windows_command_threw",
+          service: "chat-handler",
+          sandbox_type: getSandboxLogType(sandbox),
+          file_name: getFileNameFromPath(fullPath),
+          file_path: fullPath,
+          stat_exit_code: statResult.exitCode,
+          stat_stderr: statResult.stderr?.slice(0, 500),
+          stat_stdout: statResult.stdout?.slice(0, 500),
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
+    winResult = commandResult;
+  }
   fileSize = parseInt(winResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && winResult.exitCode === 0) {
     return fileSize;
   }
 
+  logger.error("sandbox_generated_file_size_failed", undefined, {
+    event: "sandbox_generated_file_size_failed",
+    service: "chat-handler",
+    sandbox_type: getSandboxLogType(sandbox),
+    file_name: getFileNameFromPath(fullPath),
+    file_path: fullPath,
+    stat_exit_code: statResult.exitCode,
+    stat_stderr: statResult.stderr?.slice(0, 500),
+    stat_stdout: statResult.stdout?.slice(0, 500),
+    windows_exit_code: winResult.exitCode,
+    windows_stderr: winResult.stderr?.slice(0, 500),
+    windows_stdout: winResult.stdout?.slice(0, 500),
+  });
   throw new Error(
     `Failed to get file size for ${fullPath}: ${
       statResult.stderr || winResult.stderr || "stat command failed"
@@ -185,6 +249,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   mediaType: string;
 }): Promise<void> {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
+  const fileName = getFileNameFromPath(fullPath);
 
   if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
     try {
@@ -195,6 +260,8 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         event: "sandbox_generated_file_native_upload_failed",
         service: "chat-handler",
         sandbox_type: getSandboxLogType(sandbox),
+        file_name: fileName,
+        file_path: fullPath,
         media_type: mediaType,
         error: errorToLog(error),
       });
@@ -207,8 +274,9 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
     result = await sandbox.commands.run(
       `${uploadCommand}; status=$?; printf '\\n${SANDBOX_UPLOAD_STATUS_MARKER}%s\\n' "$status"; exit 0`,
       {
+        ...buildSandboxCommandOptions(sandbox),
         timeoutMs: SANDBOX_UPLOAD_TIMEOUT_MS,
-      } as { timeoutMs?: number },
+      } as ReturnType<typeof buildSandboxCommandOptions>,
     );
   } catch (error) {
     const commandResult = commandErrorToResult(error);
@@ -222,6 +290,8 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
           event: "sandbox_generated_file_upload_failed",
           service: "chat-handler",
           sandbox_type: getSandboxLogType(sandbox),
+          file_name: fileName,
+          file_path: fullPath,
           media_type: mediaType,
           error: errorToLog(error),
         },
@@ -237,6 +307,8 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       event: "sandbox_generated_file_upload_failed",
       service: "chat-handler",
       sandbox_type: getSandboxLogType(sandbox),
+      file_name: fileName,
+      file_path: fullPath,
       media_type: mediaType,
       exit_code: result.exitCode,
       stderr: result.stderr?.slice(0, 500),
@@ -285,18 +357,57 @@ export async function uploadSandboxFileToConvex(args: {
   assertSandboxFileSizeAllowed(name, fileSize);
   const convex = getConvexClient();
 
-  const { uploadUrl, s3Key } = await generateS3UploadUrl(
-    name,
-    mediaType,
-    userId,
-  );
+  let uploadUrl: string;
+  let s3Key: string;
+  try {
+    const generatedUrl = await generateS3UploadUrl(name, mediaType, userId);
+    uploadUrl = generatedUrl.uploadUrl;
+    s3Key = generatedUrl.s3Key;
+  } catch (error) {
+    logger.error(
+      "sandbox_generated_file_upload_url_failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "sandbox_generated_file_upload_url_failed",
+        service: "chat-handler",
+        user_id: userId,
+        file_name: name,
+        file_path: fullPath,
+        media_type: mediaType,
+        size_bytes: fileSize,
+        sandbox_type: getSandboxLogType(sandbox),
+        error: errorToLog(error),
+      },
+    );
+    throw error;
+  }
 
-  await uploadGeneratedFileFromSandboxToUrl({
-    sandbox,
-    fullPath,
-    uploadUrl,
-    mediaType,
-  });
+  try {
+    await uploadGeneratedFileFromSandboxToUrl({
+      sandbox,
+      fullPath,
+      uploadUrl,
+      mediaType,
+    });
+  } catch (error) {
+    logger.error(
+      "sandbox_generated_file_upload_to_url_failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "sandbox_generated_file_upload_to_url_failed",
+        service: "chat-handler",
+        user_id: userId,
+        file_name: name,
+        file_path: fullPath,
+        media_type: mediaType,
+        size_bytes: fileSize,
+        s3_key: s3Key,
+        sandbox_type: getSandboxLogType(sandbox),
+        error: errorToLog(error),
+      },
+    );
+    throw error;
+  }
 
   try {
     const saved = await convex.action(

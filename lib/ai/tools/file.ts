@@ -7,6 +7,7 @@ import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import type { Id } from "@/convex/_generated/dataModel";
+import { logger } from "@/lib/logger";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_VIEW_PDF_PAGES = 8;
@@ -78,6 +79,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 
 path = os.environ["HACKERAI_FILE_VIEW_PATH"]
 include_data = os.environ.get("HACKERAI_FILE_VIEW_INCLUDE_DATA") == "1"
@@ -174,13 +176,16 @@ def render_pdf_with_pymupdf(file_path, page_range_value):
     doc = fitz.open(file_path)
     page_count = doc.page_count
     page_numbers, truncated = bounded_pages(page_count, page_range_value)
-    out_dir = tempfile.mkdtemp(prefix="hackerai-pdf-view-")
+    out_dir = os.path.join(tempfile.gettempdir(), "hackerai-pdf-view", uuid.uuid4().hex)
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    os.chmod(out_dir, 0o755)
     rendered = []
     for page_number in page_numbers:
         page = doc.load_page(page_number - 1)
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
         out_path = os.path.join(out_dir, f"page-{page_number}.png")
         pixmap.save(out_path)
+        os.chmod(out_path, 0o644)
         rendered.append({
             "page": page_number,
             "path": out_path,
@@ -201,7 +206,9 @@ def render_pdf_with_pdftoppm(file_path, page_range_value):
         return None
     page_count = int(match.group(1))
     page_numbers, truncated = bounded_pages(page_count, page_range_value)
-    out_dir = tempfile.mkdtemp(prefix="hackerai-pdf-view-")
+    out_dir = os.path.join(tempfile.gettempdir(), "hackerai-pdf-view", uuid.uuid4().hex)
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    os.chmod(out_dir, 0o755)
     prefix = os.path.join(out_dir, "page")
     result = subprocess.run(
         [
@@ -228,6 +235,8 @@ def render_pdf_with_pdftoppm(file_path, page_range_value):
     )
     if len(paths) != len(page_numbers):
         return None
+    for out_path in paths:
+        os.chmod(out_path, 0o644)
     rendered = [
         {
             "page": page_number,
@@ -281,6 +290,35 @@ emit(payload)
 
 const getFilename = (path: string) => path.split("/").pop() || path;
 
+function getViewSandboxType(sandbox: any): "centrifugo" | "e2b" {
+  return isCentrifugoSandbox(sandbox) ? "centrifugo" : "e2b";
+}
+
+function errorToLog(error: unknown) {
+  if (error instanceof Error) {
+    const commandError = error as Error & {
+      exitCode?: unknown;
+      stdout?: unknown;
+      stderr?: unknown;
+    };
+    return {
+      name: error.name,
+      message: error.message,
+      ...(typeof commandError.exitCode === "number"
+        ? { exit_code: commandError.exitCode }
+        : {}),
+      ...(typeof commandError.stderr === "string" && commandError.stderr
+        ? { stderr: commandError.stderr.slice(0, 500) }
+        : {}),
+      ...(typeof commandError.stdout === "string" && commandError.stdout
+        ? { stdout: commandError.stdout.slice(0, 500) }
+        : {}),
+    };
+  }
+
+  return { message: String(error) };
+}
+
 const getSandboxViewPath = (sandbox: unknown, path: string): string => {
   const maybeSandbox = sandbox as any;
   if (
@@ -331,6 +369,22 @@ async function readSandboxFileForView(
       timeoutMs: 30_000,
     });
   } catch (error) {
+    logger.error(
+      "file_view_inspection_command_threw",
+      error instanceof Error ? error : undefined,
+      {
+        event: "file_view_inspection_command_threw",
+        service: "chat-handler",
+        sandbox_type: getViewSandboxType(sandbox),
+        file_name: getFilename(path),
+        source_path: path,
+        sandbox_path: sandboxPath,
+        include_data: includeData,
+        range,
+        error: errorToLog(error),
+      },
+    );
+
     if (
       typeof error === "object" &&
       error !== null &&
@@ -361,6 +415,19 @@ async function readSandboxFileForView(
   try {
     payload = JSON.parse(stdout);
   } catch {
+    logger.error("file_view_inspection_parse_failed", undefined, {
+      event: "file_view_inspection_parse_failed",
+      service: "chat-handler",
+      sandbox_type: getViewSandboxType(sandbox),
+      file_name: getFilename(path),
+      source_path: path,
+      sandbox_path: sandboxPath,
+      include_data: includeData,
+      range,
+      exit_code: result.exitCode,
+      stderr: result.stderr?.slice(0, 1000),
+      stdout: stdout.slice(0, 1000),
+    });
     throw new Error(
       `Failed to inspect file for view: ${
         result.stderr || stdout || "No output returned"
@@ -369,6 +436,20 @@ async function readSandboxFileForView(
   }
 
   if (result.exitCode !== 0 || payload.error) {
+    logger.error("file_view_inspection_failed", undefined, {
+      event: "file_view_inspection_failed",
+      service: "chat-handler",
+      sandbox_type: getViewSandboxType(sandbox),
+      file_name: getFilename(path),
+      source_path: path,
+      sandbox_path: sandboxPath,
+      include_data: includeData,
+      range,
+      exit_code: result.exitCode,
+      payload_error: payload.error,
+      stderr: result.stderr?.slice(0, 1000),
+      stdout: stdout.slice(0, 1000),
+    });
     throw new Error(payload.error || result.stderr || "Failed to view file");
   }
 
@@ -378,6 +459,17 @@ async function readSandboxFileForView(
     typeof payload.sizeBytes !== "number" ||
     (payload.kind !== "image" && payload.kind !== "pdf")
   ) {
+    logger.error("file_view_inspection_invalid_payload", undefined, {
+      event: "file_view_inspection_invalid_payload",
+      service: "chat-handler",
+      sandbox_type: getViewSandboxType(sandbox),
+      file_name: getFilename(path),
+      source_path: path,
+      sandbox_path: sandboxPath,
+      include_data: includeData,
+      range,
+      payload_keys: Object.keys(payload),
+    });
     throw new Error("View inspection returned an invalid payload.");
   }
 
@@ -388,6 +480,19 @@ async function readSandboxFileForView(
       payload.pages.length > 0 &&
       payload.pages.every((page) => typeof page.data === "string");
     if (!hasPageData) {
+      logger.error("file_view_inspection_missing_data", undefined, {
+        event: "file_view_inspection_missing_data",
+        service: "chat-handler",
+        sandbox_type: getViewSandboxType(sandbox),
+        file_name: getFilename(path),
+        source_path: path,
+        sandbox_path: sandboxPath,
+        kind: payload.kind,
+        include_data: includeData,
+        range,
+        page_count: payload.pageCount,
+        rendered_pages: payload.pages?.map((page) => page.page),
+      });
       throw new Error("View inspection did not return file data.");
     }
   }
@@ -404,13 +509,33 @@ async function uploadViewPreviewFiles(args: {
   const { context, sandbox, sourcePath, payload } = args;
 
   if (payload.kind === "image") {
-    const uploaded = await uploadSandboxFileToConvex({
-      sandbox,
-      userId: context.userID,
-      fullPath: sourcePath,
-      mediaType: payload.mediaType,
-      name: getFilename(sourcePath),
-    });
+    let uploaded: Awaited<ReturnType<typeof uploadSandboxFileToConvex>>;
+    try {
+      uploaded = await uploadSandboxFileToConvex({
+        sandbox,
+        userId: context.userID,
+        fullPath: sourcePath,
+        mediaType: payload.mediaType,
+        name: getFilename(sourcePath),
+      });
+    } catch (error) {
+      logger.error(
+        "file_view_image_preview_upload_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "file_view_image_preview_upload_failed",
+          service: "chat-handler",
+          user_id: context.userID,
+          sandbox_type: getViewSandboxType(sandbox),
+          file_name: getFilename(sourcePath),
+          source_path: sourcePath,
+          media_type: payload.mediaType,
+          size_bytes: payload.sizeBytes,
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
 
     return [
       {
@@ -427,14 +552,58 @@ async function uploadViewPreviewFiles(args: {
   const pages = payload.pages || [];
   const previewFiles: ViewPreviewFile[] = [];
 
-  for (const page of pages) {
-    const uploaded = await uploadSandboxFileToConvex({
-      sandbox,
-      userId: context.userID,
-      fullPath: page.path,
-      mediaType: page.mediaType,
-      name: `${baseName}-page-${page.page}.png`,
+  if (pages.length === 0) {
+    logger.warn("file_view_pdf_preview_pages_missing", {
+      event: "file_view_pdf_preview_pages_missing",
+      service: "chat-handler",
+      user_id: context.userID,
+      sandbox_type: getViewSandboxType(sandbox),
+      file_name: getFilename(sourcePath),
+      source_path: sourcePath,
+      media_type: payload.mediaType,
+      size_bytes: payload.sizeBytes,
+      page_count: payload.pageCount,
+      rendered_page_limit: payload.renderedPageLimit,
+      truncated_pages: payload.truncatedPages,
     });
+  }
+
+  for (const page of pages) {
+    let uploaded: Awaited<ReturnType<typeof uploadSandboxFileToConvex>>;
+    try {
+      uploaded = await uploadSandboxFileToConvex({
+        sandbox,
+        userId: context.userID,
+        fullPath: page.path,
+        mediaType: page.mediaType,
+        name: `${baseName}-page-${page.page}.png`,
+      });
+    } catch (error) {
+      logger.error(
+        "file_view_pdf_preview_page_upload_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "file_view_pdf_preview_page_upload_failed",
+          service: "chat-handler",
+          user_id: context.userID,
+          sandbox_type: getViewSandboxType(sandbox),
+          file_name: getFilename(sourcePath),
+          source_path: sourcePath,
+          preview_path: page.path,
+          preview_name: `${baseName}-page-${page.page}.png`,
+          media_type: payload.mediaType,
+          preview_media_type: page.mediaType,
+          size_bytes: payload.sizeBytes,
+          preview_size_bytes: page.sizeBytes,
+          page: page.page,
+          page_count: payload.pageCount,
+          rendered_page_limit: payload.renderedPageLimit,
+          truncated_pages: payload.truncatedPages,
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
 
     previewFiles.push({
       fileId: uploaded.fileId,
@@ -595,6 +764,29 @@ ${instructionsDescription}`,
             } catch (error) {
               previewUploadError =
                 error instanceof Error ? error.message : String(error);
+              logger.error(
+                "file_view_preview_upload_failed",
+                error instanceof Error ? error : undefined,
+                {
+                  event: "file_view_preview_upload_failed",
+                  service: "chat-handler",
+                  user_id: context.userID,
+                  sandbox_type: getViewSandboxType(sandbox),
+                  file_name: filename,
+                  source_path: path,
+                  kind: viewPayload.kind,
+                  media_type: viewPayload.mediaType,
+                  size_bytes: viewPayload.sizeBytes,
+                  page_count: viewPayload.pageCount,
+                  rendered_pages: viewPayload.pages?.map((page) => page.page),
+                  rendered_page_limit: viewPayload.renderedPageLimit,
+                  truncated_pages: viewPayload.truncatedPages,
+                  preview_source_paths: viewPayload.pages?.map(
+                    (page) => page.path,
+                  ),
+                  error: errorToLog(error),
+                },
+              );
             }
             const renderedPages =
               viewPayload.kind === "pdf"

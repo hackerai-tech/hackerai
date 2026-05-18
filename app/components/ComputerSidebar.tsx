@@ -1,10 +1,12 @@
 import React from "react";
 import Image from "next/image";
+import { createPortal } from "react-dom";
 import { useAction, useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   Eye,
   FileText,
+  Maximize2,
   Minimize2,
   Terminal,
   Play,
@@ -37,6 +39,7 @@ import {
 import type { Id } from "@/convex/_generated/dataModel";
 import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
+import { ImageViewer } from "./ImageViewer";
 import { TodoPanel } from "./TodoPanel";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import {
@@ -81,6 +84,7 @@ const SidebarPreviewImage = ({
     return file.url || null;
   });
   const [error, setError] = useState<string | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,16 +167,40 @@ const SidebarPreviewImage = ({
   }
 
   return (
-    <div className="flex w-full justify-center">
-      <Image
-        src={fileUrl}
-        alt={label}
-        width={1600}
-        height={2200}
-        className="block h-auto max-h-none w-auto max-w-full object-contain"
-        unoptimized
-      />
-    </div>
+    <>
+      <div className="flex w-full justify-center">
+        <button
+          type="button"
+          className="group relative block cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          onClick={() => setViewerOpen(true)}
+          aria-label={`View ${label} in full size`}
+        >
+          <Image
+            src={fileUrl}
+            alt={label}
+            width={1600}
+            height={2200}
+            className="block h-auto max-h-none w-auto max-w-full object-contain"
+            unoptimized
+          />
+          <span className="pointer-events-none absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/65 text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Maximize2 className="h-4 w-4" aria-hidden="true" />
+          </span>
+        </button>
+      </div>
+      {viewerOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <ImageViewer
+            isOpen={viewerOpen}
+            onClose={() => setViewerOpen(false)}
+            imageSrc={fileUrl}
+            imageAlt={label}
+            fileName={file.name || file.filename || label}
+          />,
+          document.body,
+        )}
+    </>
   );
 };
 
