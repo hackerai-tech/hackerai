@@ -124,14 +124,24 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     api.rateLimitStatus.getAgentRateLimitStatus,
   );
 
-  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings);
+  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings, {
+    subscription,
+  });
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
   );
   const extraUsageEnabled = userCustomization?.extra_usage_enabled ?? false;
   const extraUsageMonthlySpentDollars =
     extraUsageSettings?.monthlySpentDollars ?? 0;
-  const extraUsageMonthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
+  const extraUsageMonthlyCapDollars =
+    extraUsageSettings?.monthlyCapDollars != null &&
+    extraUsageSettings?.trustCapDollars != null
+      ? Math.min(
+          extraUsageSettings.monthlyCapDollars,
+          extraUsageSettings.trustCapDollars,
+        )
+      : (extraUsageSettings?.monthlyCapDollars ??
+        extraUsageSettings?.trustCapDollars);
 
   const fetchTokenUsage = useCallback(async () => {
     if (!isPaidUser) return;

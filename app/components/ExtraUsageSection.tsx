@@ -12,8 +12,10 @@ import {
   AdjustSpendingLimitDialog,
   AutoReloadDialog,
 } from "@/app/components/extra-usage";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 const ExtraUsageSection = () => {
+  const { subscription } = useGlobalState();
   // User customization for extra usage enabled flag
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -23,7 +25,9 @@ const ExtraUsageSection = () => {
   );
 
   // Extra usage settings (balance and auto-reload config)
-  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings);
+  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings, {
+    subscription,
+  });
   const updateExtraUsageSettings = useMutation(
     api.extraUsage.updateExtraUsageSettings,
   );
@@ -277,8 +281,7 @@ const ExtraUsageSection = () => {
                 </div>
                 {isTrustCapActive && (
                   <p className="text-xs text-muted-foreground">
-                    Your extra usage limit is ${trustCapDollars}/month while
-                    your account builds payment history.{" "}
+                    Your plan extra usage limit is ${trustCapDollars}/month.{" "}
                     <a
                       href="mailto:support@hackerai.co"
                       className="underline underline-offset-[3px] hover:text-foreground"

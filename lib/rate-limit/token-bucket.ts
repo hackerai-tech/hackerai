@@ -243,7 +243,7 @@ export const checkTokenBucketLimit = async (
         const isTeamPool = subscription === "team" && !!organizationId;
         const deductResult = isTeamPool
           ? await deductFromTeamBalance(organizationId!, userId, shortfall)
-          : await deductFromBalance(userId, shortfall);
+          : await deductFromBalance(userId, shortfall, subscription);
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -292,7 +292,7 @@ export const checkTokenBucketLimit = async (
 
           if (deductResult.trustCapExceeded) {
             const capAmount = deductResult.trustCapDollars ?? 100;
-            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;
+            const msg = `You've reached your extra usage limit of $${capAmount}/month. Need a higher limit? Chat with us through our Help Center.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,
@@ -486,7 +486,7 @@ export const deductUsage = async (
       if (isTeamPool) {
         await deductFromTeamBalance(organizationId!, userId, fromExtraUsage);
       } else {
-        await deductFromBalance(userId, fromExtraUsage);
+        await deductFromBalance(userId, fromExtraUsage, subscription);
       }
     }
   } catch (error) {

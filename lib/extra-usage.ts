@@ -1,6 +1,7 @@
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
+import type { SubscriptionTier } from "@/types";
 
 /** Extra usage pricing multiplier */
 export const EXTRA_USAGE_MULTIPLIER = 1.05;
@@ -146,10 +147,12 @@ export async function refundToBalance(
  *
  * @param userId - User ID
  * @param pointsUsed - Number of points to deduct
+ * @param subscription - Paid tier used for plan-based extra usage caps
  */
 export async function deductFromBalance(
   userId: string,
   pointsUsed: number,
+  subscription?: SubscriptionTier,
 ): Promise<DeductBalanceResult> {
   // No-op: nothing to deduct, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsUsed <= 0) {
@@ -173,6 +176,7 @@ export async function deductFromBalance(
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
         amountPoints: pointsUsed,
+        ...(subscription ? { subscription } : {}),
       },
     );
 

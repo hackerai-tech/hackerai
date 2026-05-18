@@ -11,13 +11,23 @@ interface OnDemandUsageCardProps {
 }
 
 const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
-  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings);
+  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings, {
+    subscription,
+  });
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
   );
 
   const extraUsageEnabled = userCustomization?.extra_usage_enabled ?? false;
-  const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
+  const monthlyCapDollars =
+    extraUsageSettings?.monthlyCapDollars != null &&
+    extraUsageSettings?.trustCapDollars != null
+      ? Math.min(
+          extraUsageSettings.monthlyCapDollars,
+          extraUsageSettings.trustCapDollars,
+        )
+      : (extraUsageSettings?.monthlyCapDollars ??
+        extraUsageSettings?.trustCapDollars);
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
   const balanceDollars = extraUsageSettings?.balanceDollars ?? 0;
 

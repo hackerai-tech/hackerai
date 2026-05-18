@@ -2,6 +2,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import type { SubscriptionTier } from "../types";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -24,14 +25,29 @@ const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
 // Trust-Based Spending Cap
 // =============================================================================
 
+const subscriptionTierValidator = v.union(
+  v.literal("free"),
+  v.literal("pro"),
+  v.literal("pro-plus"),
+  v.literal("team"),
+  v.literal("ultra"),
+);
+
 /**
- * Trust tier thresholds (modeled after Anthropic API tiers).
- * Both cumulative spend AND account age (since first charge) must be met to advance.
- *
- * Tier 1: cumulative_spend < $5  OR account < 7 days   → $100/month cap
- * Tier 2: cumulative_spend >= $5  AND account >= 7 days  → $500/month cap
- * Tier 3: cumulative_spend >= $40 AND account >= 30 days → $1,000/month cap
- * Tier 4: cumulative_spend >= $200 AND account >= 60 days → uncapped
+ * Plan-based extra usage caps. Manual support overrides still take precedence.
+ * "normal" maps to the Pro plan in the product.
+ */
+const PLAN_EXTRA_USAGE_CAP_DOLLARS: Partial<
+  Record<SubscriptionTier, number | null>
+> = {
+  pro: 200,
+  "pro-plus": 600,
+  ultra: 1000,
+};
+
+/**
+ * Legacy trust tier thresholds. Kept as a fallback for team pools and older
+ * callers that don't have a subscription tier available.
  */
 const TRUST_TIERS = [
   { minSpend: 200, minAgeDays: 60, capDollars: null }, // Tier 4: uncapped
@@ -45,6 +61,7 @@ const DAYS_MS = 24 * 60 * 60 * 1000;
 
 export type TrustReason =
   | "trusted" // Tier 4: fully uncapped
+  | "plan" // Plan-based cap
   | "building-history" // Tier 1-3: need more spend/time
   | "override"; // Manual override by support
 
@@ -56,12 +73,24 @@ export function computeExtraUsageCap(settings: {
   first_successful_charge_at?: number;
   cumulative_spend_dollars?: number;
   override_monthly_cap_dollars?: number;
+  subscription?: SubscriptionTier;
 }): { capDollars: number | null; trustReason: TrustReason } {
   // Manual override takes precedence
   if (settings.override_monthly_cap_dollars !== undefined) {
     return {
       capDollars: settings.override_monthly_cap_dollars,
       trustReason: "override",
+    };
+  }
+
+  const planCap = settings.subscription
+    ? PLAN_EXTRA_USAGE_CAP_DOLLARS[settings.subscription]
+    : undefined;
+
+  if (planCap !== undefined) {
+    return {
+      capDollars: planCap,
+      trustReason: "plan",
     };
   }
 
@@ -389,6 +418,7 @@ export const deductPoints = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    subscription: v.optional(subscriptionTierValidator),
   },
   returns: v.object({
     success: v.boolean(),
@@ -457,7 +487,10 @@ export const deductPoints = mutation({
 
     // Compute effective monthly cap: lower of user-set cap and trust-based cap
     const userCapPoints = settings.monthly_cap_points;
-    const { capDollars: trustCapDollars } = computeExtraUsageCap(settings);
+    const { capDollars: trustCapDollars } = computeExtraUsageCap({
+      ...settings,
+      subscription: args.subscription as SubscriptionTier | undefined,
+    });
     const trustCapPoints =
       trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
 
@@ -674,7 +707,9 @@ export const getExtraUsageBalanceForBackend = query({
  * Returns all values in dollars (converted from points storage).
  */
 export const getExtraUsageSettings = query({
-  args: {},
+  args: {
+    subscription: v.optional(subscriptionTierValidator),
+  },
   returns: v.union(
     v.null(),
     v.object({
@@ -692,7 +727,7 @@ export const getExtraUsageSettings = query({
       autoReloadDisabledReason: v.optional(v.string()),
     }),
   ),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       return null;
@@ -707,7 +742,10 @@ export const getExtraUsageSettings = query({
       return null;
     }
 
-    const { capDollars, trustReason } = computeExtraUsageCap(settings);
+    const { capDollars, trustReason } = computeExtraUsageCap({
+      ...settings,
+      subscription: args.subscription as SubscriptionTier | undefined,
+    });
 
     return {
       balanceDollars: pointsToDollars(settings.balance_points),

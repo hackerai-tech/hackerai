@@ -463,6 +463,15 @@ export const deductWithAutoReload = action({
     serviceKey: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    subscription: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("team"),
+        v.literal("ultra"),
+      ),
+    ),
   },
   returns: v.object({
     success: v.boolean(),
@@ -656,6 +665,7 @@ export const deductWithAutoReload = action({
       serviceKey: args.serviceKey,
       userId: args.userId,
       amountPoints: args.amountPoints,
+      ...(args.subscription ? { subscription: args.subscription } : {}),
     });
 
     convexLogger.info("deduct_with_auto_reload", {
