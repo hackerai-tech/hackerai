@@ -4,7 +4,7 @@ import { useMutation, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
-  MAX_FILES_LIMIT,
+  getMaxFilesLimitForMode,
   validateFile,
   validateImageFile,
   createFileMessagePartFromUploadedFile,
@@ -22,6 +22,7 @@ const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const maxFilesLimit = getMaxFilesLimitForMode(mode);
   const {
     uploadedFiles,
     addUploadedFile,
@@ -82,8 +83,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       let filesToProcess = files;
       let truncated = false;
 
-      if (totalFiles > MAX_FILES_LIMIT) {
-        const remainingSlots = MAX_FILES_LIMIT - existingUploadedCount;
+      if (totalFiles > maxFilesLimit) {
+        const remainingSlots = maxFilesLimit - existingUploadedCount;
         if (remainingSlots <= 0) {
           return {
             validFiles: [],
@@ -127,7 +128,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         processedCount: filesToProcess.length,
       };
     },
-    [uploadedFiles.length],
+    [uploadedFiles.length, maxFilesLimit],
   );
 
   // Helper function to show feedback messages
@@ -142,7 +143,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       // Handle case where no slots are available
       if (!hasRemainingSlots) {
         toast.error(
-          `Maximum ${MAX_FILES_LIMIT} files allowed. Please remove some files before adding more.`,
+          `Maximum ${maxFilesLimit} files allowed. Please remove some files before adding more.`,
         );
         return;
       }
@@ -150,7 +151,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       // Add truncation message
       if (result.truncated) {
         messages.push(
-          `Only ${result.processedCount} files were added. Maximum ${MAX_FILES_LIMIT} files allowed.`,
+          `Only ${result.processedCount} files were added. Maximum ${maxFilesLimit} files allowed.`,
         );
       }
 
@@ -166,7 +167,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         toast.error(messages.join("\n\n"));
       }
     },
-    [],
+    [maxFilesLimit],
   );
 
   // Upload file to S3 storage
@@ -306,7 +307,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
       // Check if we have slots available
       const existingUploadedCount = uploadedFiles.length;
-      const remainingSlots = MAX_FILES_LIMIT - existingUploadedCount;
+      const remainingSlots = maxFilesLimit - existingUploadedCount;
       const hasRemainingSlots = remainingSlots > 0;
 
       // Show feedback messages
@@ -323,6 +324,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       showProcessingFeedback,
       startFileUploads,
       uploadedFiles.length,
+      maxFilesLimit,
     ],
   );
 
