@@ -22,19 +22,19 @@ const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 const GEMINI_SLUG = "google/gemini-3-flash-preview";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 ask chain to Gemini slug", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
+  it("resolves Opus 4.7 ask chain to Gemini slug", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-opus-4.7", "ask");
     expect(opts.openrouter).toMatchObject({
       models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Opus 4.6 agent chain to Kimi slug", () => {
+  it("resolves Opus 4.7 agent chain to Kimi slug", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "model-opus-4.6",
+      "model-opus-4.7",
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
@@ -99,7 +99,7 @@ describe("buildProviderOptions fallback chain", () => {
     const reasoning = buildProviderOptions(
       true,
       "user-1",
-      "model-opus-4.6",
+      "model-opus-4.7",
       "agent",
     );
     expect(reasoning.openrouter).toMatchObject({
@@ -110,7 +110,7 @@ describe("buildProviderOptions fallback chain", () => {
     const noReasoning = buildProviderOptions(
       false,
       "user-1",
-      "model-opus-4.6",
+      "model-opus-4.7",
       "agent",
     );
     expect(noReasoning.openrouter).toMatchObject({

@@ -23,7 +23,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  "model-opus-4.6": { input: 5.0, output: 25.0 },
+  "model-opus-4.7": { input: 5.0, output: 25.0 },
   // "agent-model", "agent-model-free", and "model-kimi-k2.6" all route to
   // moonshotai/kimi-k2.6:exacto via lib/ai/providers.ts. Rates from Moonshot AI
   // direct provider (int4): $0.95 in / $4.00 out per 1M tokens. Cache-read
