@@ -3,7 +3,10 @@ import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
-import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
+import {
+  getMaxFilesLimitForMode,
+  isSupportedImageMediaType,
+} from "@/lib/utils/file-utils";
 import {
   isAnthropicModel,
   resolveTierToProviderKey,
@@ -388,9 +391,11 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
  * Only counts image files — PDFs and other file types
  * are left untouched. Keeps the most recent images by removing the oldest ones first.
  */
-const MAX_IMAGES_PER_CONVERSATION = 20;
-
-export function limitImageParts(messages: UIMessage[]): UIMessage[] {
+export function limitImageParts(
+  messages: UIMessage[],
+  mode: ChatMode = "ask",
+): UIMessage[] {
+  const maxImagesPerConversation = getMaxFilesLimitForMode(mode);
   const imagePositions: Array<{ messageIndex: number; partIndex: number }> = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -407,19 +412,19 @@ export function limitImageParts(messages: UIMessage[]): UIMessage[] {
     });
   }
 
-  if (imagePositions.length <= MAX_IMAGES_PER_CONVERSATION) {
+  if (imagePositions.length <= maxImagesPerConversation) {
     return messages;
   }
 
-  const removedCount = imagePositions.length - MAX_IMAGES_PER_CONVERSATION;
+  const removedCount = imagePositions.length - maxImagesPerConversation;
   console.log(
-    `[limitImageParts] Removing ${removedCount} oldest image parts (${imagePositions.length} total, limit ${MAX_IMAGES_PER_CONVERSATION})`,
+    `[limitImageParts] Removing ${removedCount} oldest image parts (${imagePositions.length} total, limit ${maxImagesPerConversation})`,
   );
 
-  // Remove the oldest images, keep the last MAX_IMAGES_PER_CONVERSATION
+  // Remove the oldest images, keep the last maxImagesPerConversation.
   const toRemove = new Set(
     imagePositions
-      .slice(0, imagePositions.length - MAX_IMAGES_PER_CONVERSATION)
+      .slice(0, imagePositions.length - maxImagesPerConversation)
       .map(({ messageIndex, partIndex }) => `${messageIndex}:${partIndex}`),
   );
 
@@ -516,7 +521,10 @@ export async function processChatMessages({
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
-  const messagesWithLimitedFiles = limitImageParts(messagesWithoutUIOnlyParts);
+  const messagesWithLimitedFiles = limitImageParts(
+    messagesWithoutUIOnlyParts,
+    mode,
+  );
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const { messages: messagesWithUrls, sandboxFiles } =

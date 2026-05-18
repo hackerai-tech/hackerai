@@ -20,6 +20,7 @@ import {
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
 } from "@/lib/utils/message-utils";
+import { getMaxFilesLimitForMode } from "@/lib/utils/file-utils";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -223,6 +224,14 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
+      const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
+      if (uploadedFiles.length > maxFilesLimit) {
+        toast.error("Cannot send files in this mode", {
+          description: `Maximum ${maxFilesLimit} files allowed. Please remove some files or switch modes.`,
+        });
+        return;
+      }
+
       // If streaming in Agent mode, check queue behavior
       if (status === "streaming") {
         const validFiles = uploadedFiles.filter(
@@ -275,14 +284,15 @@ export const useChatHandlers = ({
         }
       }
       // Check token limit before sending based on user plan
+      const currentChatMode = chatModeRef.current;
       const tokenCount = countInputTokens(input, uploadedFiles);
       const maxTokens = getMaxTokensForSubscription(subscription, {
-        mode: chatMode,
+        mode: currentChatMode,
       });
 
       // Additional validation for Ask mode: ensure files don't exceed Ask mode token limits
       // This prevents uploading files in Agent mode then switching to Ask mode to send them
-      if (chatMode === "ask" && uploadedFiles.length > 0) {
+      if (currentChatMode === "ask" && uploadedFiles.length > 0) {
         const fileTokens = uploadedFiles.reduce(
           (total, file) => total + (file.tokens || 0),
           0,
@@ -330,7 +340,7 @@ export const useChatHandlers = ({
           },
           {
             body: {
-              mode: chatModeRef.current,
+              mode: currentChatMode,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
@@ -346,7 +356,7 @@ export const useChatHandlers = ({
           { text: input },
           {
             body: {
-              mode: chatModeRef.current,
+              mode: currentChatMode,
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
