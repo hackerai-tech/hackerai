@@ -577,6 +577,7 @@ export const agentLongTask = task({
             sandboxManager,
             getSandboxSessionCost,
             setCurrentModelName,
+            getToolsForModel,
           } = createTools(
             userId,
             chatId,
@@ -818,6 +819,7 @@ export const agentLongTask = task({
           };
 
           const createStream = (modelName: string) => {
+            streamCtx.tools = getToolsForModel(modelName);
             setCurrentModelName(modelName);
             return createAgentStream(modelName, streamCtx, state);
           };

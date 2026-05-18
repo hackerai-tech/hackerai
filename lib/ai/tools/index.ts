@@ -22,7 +22,7 @@ import {
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
-import type { UIMessageStreamWriter } from "ai";
+import type { ToolSet, UIMessageStreamWriter } from "ai";
 import type {
   ChatMode,
   ToolContext,
@@ -134,33 +134,35 @@ export const createTools = (
     onCaidoReady,
   };
 
-  // Create all available tools
-  const allTools = {
-    run_terminal_cmd: createRunTerminalCmd(context),
-    interact_terminal_session: createInteractTerminalSession(context),
-    get_terminal_files: createGetTerminalFiles(context),
-    file: createFile(context),
-    todo_write: createTodoWrite(context),
-    ...(!isTemporary &&
-      memoryEnabled && {
-        create_note: createCreateNote(context),
-        list_notes: createListNotes(context),
-        update_note: createUpdateNote(context),
-        delete_note: createDeleteNote(context),
+  const buildTools = (): ToolSet => {
+    // Create all available tools. This is intentionally a factory rather than a
+    // one-time object so model-specific tool schemas can be rebuilt for
+    // provider fallback legs.
+    const allTools = {
+      run_terminal_cmd: createRunTerminalCmd(context),
+      interact_terminal_session: createInteractTerminalSession(context),
+      get_terminal_files: createGetTerminalFiles(context),
+      file: createFile(context),
+      todo_write: createTodoWrite(context),
+      ...(!isTemporary &&
+        memoryEnabled && {
+          create_note: createCreateNote(context),
+          list_notes: createListNotes(context),
+          update_note: createUpdateNote(context),
+          delete_note: createDeleteNote(context),
+        }),
+      ...(process.env.PERPLEXITY_API_KEY && {
+        web_search: createWebSearch(context),
       }),
-    ...(process.env.PERPLEXITY_API_KEY && {
-      web_search: createWebSearch(context),
-    }),
-    // Caido proxy temporarily disabled for all users.
-    // ...(caidoEnabled && createProxyTools(context)),
-    ...(process.env.JINA_API_KEY && {
-      open_url: createOpenUrlTool(),
-    }),
-  };
+      // Caido proxy temporarily disabled for all users.
+      // ...(caidoEnabled && createProxyTools(context)),
+      ...(process.env.JINA_API_KEY && {
+        open_url: createOpenUrlTool(),
+      }),
+    };
 
-  // Filter tools based on mode
-  const tools =
-    mode === "ask"
+    // Filter tools based on mode
+    return mode === "ask"
       ? {
           ...(!isTemporary &&
             memoryEnabled && {
@@ -177,6 +179,9 @@ export const createTools = (
           }),
         }
       : allTools;
+  };
+
+  const tools = buildTools();
 
   const getSandbox = () => sandbox;
   const ensureSandbox = async () => {
@@ -187,6 +192,11 @@ export const createTools = (
   const getFileAccumulator = () => fileAccumulator;
   const setCurrentModelName = (nextModelName: string | undefined) => {
     currentModelName = nextModelName;
+  };
+
+  const getToolsForModel = (nextModelName: string | undefined) => {
+    setCurrentModelName(nextModelName);
+    return buildTools();
   };
 
   const getSandboxSessionCost = (): number => {
@@ -203,6 +213,7 @@ export const createTools = (
     sandboxManager,
     getSandboxSessionCost,
     setCurrentModelName,
+    getToolsForModel,
   };
 };
 

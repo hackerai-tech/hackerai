@@ -364,6 +364,7 @@ export const createChatHandler = (
             sandboxManager,
             getSandboxSessionCost,
             setCurrentModelName,
+            getToolsForModel,
           } = createTools(
             userId,
             chatId,
@@ -649,6 +650,7 @@ export const createChatHandler = (
           };
 
           const createStream = (modelName: string) => {
+            streamCtx.tools = getToolsForModel(modelName);
             setCurrentModelName(modelName);
             return createAgentStream(modelName, streamCtx, state);
           };
