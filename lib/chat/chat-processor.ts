@@ -385,11 +385,10 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
 
 /**
  * Limits the number of image file parts across all messages to stay within provider limits.
- * Google Vertex AI (Gemini 3) limits requests to 10 image links, returning
- * INVALID_ARGUMENT if exceeded. Only counts image files — PDFs and other file types
+ * Only counts image files — PDFs and other file types
  * are left untouched. Keeps the most recent images by removing the oldest ones first.
  */
-const MAX_IMAGES_PER_CONVERSATION = 10;
+const MAX_IMAGES_PER_CONVERSATION = 20;
 
 export function limitImageParts(messages: UIMessage[]): UIMessage[] {
   const imagePositions: Array<{ messageIndex: number; partIndex: number }> = [];
@@ -516,7 +515,7 @@ export async function processChatMessages({
   const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
-  // Vertex AI (Gemini 3) limits conversations to 10 images
+  // Keep image attachment pruning aligned with the per-message upload cap.
   const messagesWithLimitedFiles = limitImageParts(messagesWithoutUIOnlyParts);
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content

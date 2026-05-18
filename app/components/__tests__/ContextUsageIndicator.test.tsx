@@ -1,8 +1,22 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect } from "@jest/globals";
+import { afterAll, beforeAll, describe, it, expect } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextUsageIndicator } from "../ContextUsageIndicator";
+
+const originalResizeObserver = global.ResizeObserver;
+
+beforeAll(() => {
+  global.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+});
+
+afterAll(() => {
+  global.ResizeObserver = originalResizeObserver;
+});
 
 describe("ContextUsageIndicator", () => {
   const defaultProps = {
@@ -55,6 +69,25 @@ describe("ContextUsageIndicator", () => {
         "aria-label",
         "Context usage: 8.0k of 100k tokens",
       );
+    });
+  });
+
+  describe("Desktop tooltip", () => {
+    it("shows the exact auto-compact threshold on hover", async () => {
+      const user = userEvent.setup();
+
+      render(<ContextUsageIndicator {...defaultProps} />);
+
+      await user.hover(screen.getByTestId("context-usage-indicator"));
+
+      expect(
+        await screen.findAllByText(
+          "Auto-compact starts at 90,000 tokens (90%).",
+        ),
+      ).not.toHaveLength(0);
+      expect(
+        screen.getAllByText("82,000 tokens until auto-compact"),
+      ).not.toHaveLength(0);
     });
   });
 
