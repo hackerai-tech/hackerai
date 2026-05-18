@@ -455,33 +455,28 @@ export const deductPoints = mutation({
       monthlySpentPoints = 0;
     }
 
-    // Compute effective monthly cap: lower of user-set cap and trust-based cap
+    // Compute effective monthly cap from the user-set cap only. The
+    // trust-based protection cap (for example the default $100/month cap) is
+    // intentionally ignored for now.
     const userCapPoints = settings.monthly_cap_points;
+    let effectiveCapPoints = userCapPoints;
+
+    // TEMPORARY TRUST-CAP BYPASS:
+    // Restore this block if HackerAI's own trust-based protection caps should
+    // be combined with user-set monthly spending limits again.
+    /*
     const { capDollars: trustCapDollars } = computeExtraUsageCap(settings);
     const trustCapPoints =
       trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
 
-    // Use the most restrictive cap (lowest non-undefined value)
-    let effectiveCapPoints: number | undefined;
-    if (userCapPoints !== undefined && trustCapPoints !== undefined) {
-      effectiveCapPoints = Math.min(userCapPoints, trustCapPoints);
+    if (effectiveCapPoints !== undefined && trustCapPoints !== undefined) {
+      effectiveCapPoints = Math.min(effectiveCapPoints, trustCapPoints);
     } else {
-      effectiveCapPoints = userCapPoints ?? trustCapPoints;
+      effectiveCapPoints = effectiveCapPoints ?? trustCapPoints;
     }
+    */
 
-    // Determine which cap triggered (for frontend error messaging)
-    const isTrustCap =
-      effectiveCapPoints !== undefined &&
-      trustCapPoints !== undefined &&
-      effectiveCapPoints === trustCapPoints &&
-      (userCapPoints === undefined || trustCapPoints <= userCapPoints);
-
-    // TEMPORARY EXTRA-USAGE CAP BYPASS:
-    // Monthly spending caps and trust-based caps (for example the default
-    // $100/month cap) are intentionally disabled for now. To restore cap
-    // enforcement, uncomment this block.
-    /*
-    // Check monthly spending cap before deducting
+    // Check user-set monthly spending cap before deducting
     if (effectiveCapPoints !== undefined) {
       const newMonthlySpent = monthlySpentPoints + args.amountPoints;
       if (newMonthlySpent > effectiveCapPoints) {
@@ -490,9 +485,7 @@ export const deductPoints = mutation({
           amount_points: args.amountPoints,
           monthly_spent_points: monthlySpentPoints,
           effective_cap_points: effectiveCapPoints,
-          trust_cap_dollars: trustCapDollars,
-          is_trust_cap: isTrustCap,
-          reason: isTrustCap ? "trust_cap_exceeded" : "monthly_cap_exceeded",
+          reason: "monthly_cap_exceeded",
           monthly_cap_exceeded: true,
         });
         return {
@@ -501,12 +494,10 @@ export const deductPoints = mutation({
           newBalanceDollars: pointsToDollars(currentBalancePoints),
           insufficientFunds: true,
           monthlyCapExceeded: true,
-          trustCapExceeded: isTrustCap,
-          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
+          trustCapExceeded: false,
         };
       }
     }
-    */
 
     // Add to monthly spending
     monthlySpentPoints += args.amountPoints;

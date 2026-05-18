@@ -267,30 +267,26 @@ export const deductTeamPoints = mutation({
       memberMonthlySpent = 0;
     }
 
-    // Compute effective team cap (user-set vs trust)
+    // Compute effective team cap from the admin-set cap only. The trust-based
+    // protection cap is intentionally ignored for now.
     const teamCap = team.monthly_cap_points;
+    let effectiveTeamCap = teamCap;
+
+    // TEMPORARY TRUST-CAP BYPASS:
+    // Restore this block if HackerAI's own trust-based protection caps should
+    // be combined with admin-set team spending limits again.
+    /*
     const { capDollars: trustCapDollars } = computeExtraUsageCap(team);
     const trustCapPoints =
       trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
 
-    let effectiveTeamCap: number | undefined;
-    if (teamCap !== undefined && trustCapPoints !== undefined) {
-      effectiveTeamCap = Math.min(teamCap, trustCapPoints);
+    if (effectiveTeamCap !== undefined && trustCapPoints !== undefined) {
+      effectiveTeamCap = Math.min(effectiveTeamCap, trustCapPoints);
     } else {
-      effectiveTeamCap = teamCap ?? trustCapPoints;
+      effectiveTeamCap = effectiveTeamCap ?? trustCapPoints;
     }
+    */
 
-    const isTrustCap =
-      effectiveTeamCap !== undefined &&
-      trustCapPoints !== undefined &&
-      effectiveTeamCap === trustCapPoints &&
-      (teamCap === undefined || trustCapPoints <= teamCap);
-
-    // TEMPORARY EXTRA-USAGE CAP BYPASS:
-    // Team monthly caps, trust-based caps, and per-member spending limits are
-    // intentionally disabled for now. To restore cap enforcement, uncomment
-    // these blocks.
-    /*
     // Team monthly cap check
     if (effectiveTeamCap !== undefined) {
       const newTeamSpent = teamMonthlySpent + args.amountPoints;
@@ -304,8 +300,7 @@ export const deductTeamPoints = mutation({
           memberCapExceeded: false,
           memberDisabled: false,
           poolDisabled: false,
-          trustCapExceeded: isTrustCap,
-          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
+          trustCapExceeded: false,
         };
       }
     }
@@ -327,7 +322,6 @@ export const deductTeamPoints = mutation({
         };
       }
     }
-    */
 
     // All checks passed — commit
     teamMonthlySpent += args.amountPoints;

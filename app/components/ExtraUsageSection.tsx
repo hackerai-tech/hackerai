@@ -176,20 +176,10 @@ const ExtraUsageSection = () => {
   const autoReloadDisabledReason = extraUsageSettings?.autoReloadDisabledReason;
   const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
-  const trustCapDollars = extraUsageSettings?.trustCapDollars;
-  const trustReason = extraUsageSettings?.trustReason;
 
-  // Effective cap is the lower of user-set cap and trust-based cap
-  const effectiveCapDollars =
-    monthlyCapDollars != null && trustCapDollars != null
-      ? Math.min(monthlyCapDollars, trustCapDollars)
-      : (monthlyCapDollars ?? trustCapDollars);
-
-  // Whether the trust cap is the binding constraint
-  const isTrustCapActive =
-    trustCapDollars != null &&
-    trustReason !== "trusted" &&
-    (monthlyCapDollars == null || trustCapDollars <= monthlyCapDollars);
+  // Trust-based protection caps are temporarily ignored. The visible and
+  // enforced cap is only the user-configured monthly spending limit.
+  const effectiveCapDollars = monthlyCapDollars;
 
   // Get color class based on usage percentage (matches UsageTab)
   const getUsageColorClass = (percentage: number): string => {
@@ -275,19 +265,6 @@ const ExtraUsageSection = () => {
                     </p>
                   </div>
                 </div>
-                {isTrustCapActive && (
-                  <p className="text-xs text-muted-foreground">
-                    Your extra usage limit is ${trustCapDollars}/month while
-                    your account builds payment history.{" "}
-                    <a
-                      href="mailto:support@hackerai.co"
-                      className="underline underline-offset-[3px] hover:text-foreground"
-                    >
-                      Contact us
-                    </a>{" "}
-                    for a higher limit.
-                  </p>
-                )}
               </div>
             )}
 

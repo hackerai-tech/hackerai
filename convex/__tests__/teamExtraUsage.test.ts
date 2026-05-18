@@ -328,7 +328,7 @@ describe("deductTeamPoints", () => {
     });
   });
 
-  it("temporarily bypasses the team monthly cap", async () => {
+  it("returns monthlyCapExceeded when team cap would be breached", async () => {
     const { ctx } = makeMockCtx({
       team: [
         enabledTeamRow({
@@ -345,12 +345,12 @@ describe("deductTeamPoints", () => {
       amountPoints: 200, // 400 + 200 = 600 > 500
     });
     expect(result).toMatchObject({
-      success: true,
-      monthlyCapExceeded: false,
+      success: false,
+      monthlyCapExceeded: true,
     });
   });
 
-  it("temporarily bypasses the per-member cap", async () => {
+  it("returns memberCapExceeded when per-member cap would be breached", async () => {
     const { ctx } = makeMockCtx({
       team: [enabledTeamRow({ balance_points: 1_000_000 })],
       members: [
@@ -371,8 +371,8 @@ describe("deductTeamPoints", () => {
       amountPoints: 200, // 900 + 200 = 1100 > 1000
     });
     expect(result).toMatchObject({
-      success: true,
-      memberCapExceeded: false,
+      success: false,
+      memberCapExceeded: true,
       monthlyCapExceeded: false,
     });
   });
