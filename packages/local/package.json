@@ -33,14 +33,14 @@
     "node": ">=18"
   },
   "dependencies": {
-    "centrifuge": "^5.0.0",
-    "convex": "^1.29.2",
+    "centrifuge": "^5.5.3",
+    "convex": "^1.39.1",
     "node-pty": "^1.2.0-beta.12",
-    "ws": "^8.18.0"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
-    "typescript": "^5.0.0"
+    "@types/node": "^25.8.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.3"
   }
 }
