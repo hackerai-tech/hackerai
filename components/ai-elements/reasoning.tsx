@@ -60,7 +60,10 @@ export function Reasoning({
       <Collapsible
         open={isOpen}
         onOpenChange={setIsOpen}
-        className={cn("not-prose w-full space-y-2", className)}
+        className={cn(
+          "not-prose w-full min-w-0 max-w-full space-y-2",
+          className,
+        )}
         {...props}
       >
         {children}
@@ -133,7 +136,9 @@ export function ReasoningContent({
     <CollapsibleContent
       ref={contentRef}
       className={cn(
-        "mt-2 space-y-3 text-muted-foreground max-h-60 overflow-y-auto",
+        "mt-2 space-y-3 text-muted-foreground max-h-60 min-w-0 max-w-full overflow-x-hidden overflow-y-auto break-words",
+        "[overflow-wrap:anywhere]",
+        "[&_pre]:max-w-full [&_pre]:overflow-x-auto",
         "data-[state=closed]:animate-out data-[state=open]:animate-in",
         "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
         "data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2",

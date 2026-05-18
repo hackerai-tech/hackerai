@@ -103,7 +103,7 @@ const CodeHighlightImpl = ({
     </div>
   ) : (
     <code
-      className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded text-sm font-mono"
+      className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded text-sm font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
       {...props}
     >
       {children}
