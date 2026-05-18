@@ -164,7 +164,9 @@ export interface ChatWideEvent {
     type: string;
     code?: string;
     message: string;
+    cause?: string;
     retriable: boolean;
+    metadata?: Record<string, unknown>;
   };
 
   // True when the provider stream errored (e.g., AI_RetryError) but the
@@ -558,8 +560,10 @@ export class WideEventBuilder {
     type: string;
     code?: string;
     message: string;
+    cause?: string;
     statusCode: number;
     retriable?: boolean;
+    metadata?: Record<string, unknown>;
   }): this {
     this.event.outcome = "error";
     this.event.status_code = error.statusCode;
@@ -567,7 +571,9 @@ export class WideEventBuilder {
       type: error.type,
       code: error.code,
       message: error.message,
+      cause: error.cause,
       retriable: error.retriable ?? false,
+      metadata: error.metadata,
     };
     return this;
   }

@@ -18,6 +18,56 @@ const extractTextFromParts = (parts: any[]): string => {
     .trim();
 };
 
+const getJsonSize = (value: unknown): number => {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const getMessageSaveDiagnostics = (parts: any[]) => {
+  const partTypes: Record<string, number> = {};
+  let largestPartType = "unknown";
+  let largestPartSize = 0;
+  let textChars = 0;
+  let reasoningChars = 0;
+  let toolPartCount = 0;
+  let dataPartCount = 0;
+
+  for (const part of parts) {
+    const type = typeof part?.type === "string" ? part.type : "unknown";
+    partTypes[type] = (partTypes[type] ?? 0) + 1;
+
+    const partSize = getJsonSize(part);
+    if (partSize > largestPartSize) {
+      largestPartType = type;
+      largestPartSize = partSize;
+    }
+
+    if (type === "text" && typeof part.text === "string") {
+      textChars += part.text.length;
+    }
+    if (type === "reasoning" && typeof part.text === "string") {
+      reasoningChars += part.text.length;
+    }
+    if (type.startsWith("tool-") || type === "dynamic-tool") toolPartCount++;
+    if (type.startsWith("data-")) dataPartCount++;
+  }
+
+  return {
+    part_count: parts.length,
+    parts_json_chars: getJsonSize(parts),
+    part_types: partTypes,
+    largest_part_type: largestPartType,
+    largest_part_json_chars: largestPartSize,
+    text_chars: textChars,
+    reasoning_chars: reasoningChars,
+    tool_part_count: toolPartCount,
+    data_part_count: dataPartCount,
+  };
+};
+
 /**
  * Helper function to check if deleted messages invalidate the chat summary
  * Clears latest_summary_id if the summary's cutoff message was deleted
@@ -342,7 +392,28 @@ export const saveMessage = mutation({
 
       return null;
     } catch (error) {
-      console.error("Failed to save message:", error);
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "convex_message_save_failed",
+          service: "convex",
+          timestamp: new Date().toISOString(),
+          db_operation: "messages.saveMessage",
+          chat_id: args.chatId,
+          user_id: args.userId,
+          message_id: args.id,
+          message_role: args.role,
+          mode: args.mode,
+          model: args.model,
+          finish_reason: args.finishReason,
+          update_only: args.updateOnly === true,
+          hidden: args.isHidden === true,
+          file_count: args.fileIds?.length ?? 0,
+          error_name: error instanceof Error ? error.name : typeof error,
+          error_message: error instanceof Error ? error.message : String(error),
+          ...getMessageSaveDiagnostics(args.parts),
+        }),
+      );
       throw new Error("Failed to save message");
     }
   },

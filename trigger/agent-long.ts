@@ -110,11 +110,47 @@ const truncateForTriggerMetadata = (value: string) =>
 const sanitizeTriggerTagValue = (value: string) =>
   value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
 
+const getStringMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+) => {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+const getNumberMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+) => {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+};
+
 const OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS = [
   /rate limiting service .*not configured/i,
   /rate limiting service unavailable/i,
   /extra usage billing is temporarily unavailable/i,
 ];
+
+type AgentLongErrorSummary = {
+  category: string;
+  code?: string;
+  name: string;
+  message: string;
+  cause?: string;
+  loginRequired: boolean;
+  statusCode?: number;
+  dbOperation?: string;
+  dbErrorName?: string;
+  dbErrorMessage?: string;
+  partsSizeKb?: number;
+  partCount?: number;
+  largestPartType?: string;
+  largestPartSizeKb?: number;
+  toolPartCount?: number;
+  dataPartCount?: number;
+  reasoningChars?: number;
+};
 
 const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
   if (!(error instanceof ChatSDKError)) return false;
@@ -126,7 +162,7 @@ const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
   );
 };
 
-const classifyAgentLongError = (error: unknown) => {
+const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   const details = extractErrorDetails(error);
   const errorMessage = truncateForTriggerMetadata(
     typeof details.errorMessage === "string"
@@ -136,13 +172,32 @@ const classifyAgentLongError = (error: unknown) => {
 
   if (error instanceof ChatSDKError) {
     const code = `${error.type}:${error.surface}`;
+    const cause =
+      typeof error.cause === "string"
+        ? truncateForTriggerMetadata(error.cause)
+        : undefined;
+    const errorMetadata = error.metadata;
     return {
       category: error.type === "unauthorized" ? "login_required" : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
+      cause,
       loginRequired: error.type === "unauthorized",
       statusCode: error.statusCode,
+      dbOperation: getStringMetadata(errorMetadata, "db_operation"),
+      dbErrorName: getStringMetadata(errorMetadata, "db_error_name"),
+      dbErrorMessage: getStringMetadata(errorMetadata, "db_error_message"),
+      partsSizeKb: getNumberMetadata(errorMetadata, "parts_size_kb"),
+      partCount: getNumberMetadata(errorMetadata, "part_count"),
+      largestPartType: getStringMetadata(errorMetadata, "largest_part_type"),
+      largestPartSizeKb: getNumberMetadata(
+        errorMetadata,
+        "largest_part_size_kb",
+      ),
+      toolPartCount: getNumberMetadata(errorMetadata, "tool_part_count"),
+      dataPartCount: getNumberMetadata(errorMetadata, "data_part_count"),
+      reasoningChars: getNumberMetadata(errorMetadata, "reasoning_chars"),
     };
   }
 
@@ -181,6 +236,25 @@ const recordAgentLongFailureForDashboard = async (
 
   if (summary.code) metadata.set("errorCode", summary.code);
   if (summary.statusCode) metadata.set("errorStatusCode", summary.statusCode);
+  if (summary.cause) metadata.set("errorCause", summary.cause);
+  if (summary.dbOperation) metadata.set("dbOperation", summary.dbOperation);
+  if (summary.dbErrorName) metadata.set("dbErrorName", summary.dbErrorName);
+  if (summary.dbErrorMessage)
+    metadata.set("dbErrorMessage", summary.dbErrorMessage);
+  if (summary.partsSizeKb != null)
+    metadata.set("messagePartsSizeKb", summary.partsSizeKb);
+  if (summary.partCount != null)
+    metadata.set("messagePartCount", summary.partCount);
+  if (summary.largestPartType)
+    metadata.set("largestPartType", summary.largestPartType);
+  if (summary.largestPartSizeKb != null)
+    metadata.set("largestPartSizeKb", summary.largestPartSizeKb);
+  if (summary.toolPartCount != null)
+    metadata.set("toolPartCount", summary.toolPartCount);
+  if (summary.dataPartCount != null)
+    metadata.set("dataPartCount", summary.dataPartCount);
+  if (summary.reasoningChars != null)
+    metadata.set("reasoningChars", summary.reasoningChars);
 
   const errorTags = [`error_${summary.category}`];
   if (summary.code) {
