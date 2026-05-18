@@ -804,7 +804,13 @@ In using these tools, adhere to the following guidelines:
           });
         } // end of executeCommand
       } catch (error) {
-        return error as CommandExitError;
+        return {
+          result: {
+            exitCode: error instanceof CommandExitError ? error.exitCode : 1,
+            output: "",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        };
       }
     },
     // For interactive PTY results, strip rawSnapshot from what the model
