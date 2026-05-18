@@ -2,6 +2,209 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
+import { supportsMultimodalToolResults } from "@/lib/ai/providers";
+import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
+import { isCentrifugoSandbox } from "./utils/sandbox-types";
+
+const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
+
+const MULTIMODAL_UPGRADE_MESSAGE =
+  "The current model does not support multimodal tool results for sandbox images/PDFs. Please select HackerAI Pro or HackerAI Max and retry the view action.";
+
+type ViewKind = "image" | "pdf";
+
+type ViewMetadata = {
+  action: "view";
+  content: string;
+  path: string;
+  filename: string;
+  mediaType: string;
+  sizeBytes: number;
+  kind: ViewKind;
+};
+
+type SandboxViewPayload = {
+  path: string;
+  mediaType: string;
+  sizeBytes: number;
+  kind: ViewKind;
+  data?: string;
+};
+
+const VIEW_FILE_SCRIPT = String.raw`
+import base64
+import json
+import mimetypes
+import os
+import sys
+
+path = os.environ["HACKERAI_FILE_VIEW_PATH"]
+include_data = os.environ.get("HACKERAI_FILE_VIEW_INCLUDE_DATA") == "1"
+max_bytes = int(os.environ.get("HACKERAI_FILE_VIEW_MAX_BYTES", "10485760"))
+
+def emit(payload, code=0):
+    print(json.dumps(payload, separators=(",", ":")))
+    sys.exit(code)
+
+if not os.path.isfile(path):
+    emit({"error": f"File not found or is not a regular file: {path}"}, 2)
+
+size = os.path.getsize(path)
+if size > max_bytes:
+    emit({
+        "error": (
+            f"File is too large for multimodal view ({size} bytes). "
+            f"Maximum supported size is {max_bytes} bytes."
+        )
+    }, 3)
+
+with open(path, "rb") as f:
+    head = f.read(32)
+
+def detect_media_type(head_bytes, file_path):
+    if head_bytes.startswith(b"%PDF-"):
+        return "application/pdf"
+    if head_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head_bytes.startswith(b"GIF87a") or head_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if head_bytes.startswith(b"RIFF") and head_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    guessed, _ = mimetypes.guess_type(file_path)
+    return guessed or "application/octet-stream"
+
+media_type = detect_media_type(head, path)
+if media_type == "image/svg+xml":
+    emit({"error": "SVG files are text/vector files. Use the read action instead of view."}, 4)
+if media_type != "application/pdf" and not media_type.startswith("image/"):
+    emit({
+        "error": (
+            f"Unsupported media type for view: {media_type}. "
+            "Use read for text-based files."
+        )
+    }, 5)
+
+payload = {
+    "path": path,
+    "mediaType": media_type,
+    "sizeBytes": size,
+    "kind": "pdf" if media_type == "application/pdf" else "image",
+}
+
+if include_data:
+    with open(path, "rb") as f:
+        payload["data"] = base64.b64encode(f.read()).decode("ascii")
+
+emit(payload)
+`;
+
+const getFilename = (path: string) => path.split("/").pop() || path;
+
+const getSandboxViewPath = (sandbox: unknown, path: string): string => {
+  const maybeSandbox = sandbox as any;
+  if (
+    isCentrifugoSandbox(maybeSandbox) &&
+    maybeSandbox.isWindows() &&
+    path.startsWith("/tmp/")
+  ) {
+    return `C:\\temp${path.slice(4).replace(/\//g, "\\")}`;
+  }
+
+  return path;
+};
+
+async function readSandboxFileForView(
+  sandbox: any,
+  path: string,
+  includeData: boolean,
+): Promise<SandboxViewPayload> {
+  if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) {
+    throw new Error(
+      "The view action is not available for Windows local sandboxes yet. Use a Linux/E2B sandbox or convert the file to text manually.",
+    );
+  }
+
+  const sandboxPath = getSandboxViewPath(sandbox, path);
+  const viewEnvVars = {
+    HACKERAI_FILE_VIEW_PATH: sandboxPath,
+    HACKERAI_FILE_VIEW_INCLUDE_DATA: includeData ? "1" : "0",
+    HACKERAI_FILE_VIEW_MAX_BYTES: String(MAX_VIEW_FILE_BYTES),
+  };
+  const command = `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" - <<'PY'\n${VIEW_FILE_SCRIPT}\nPY`;
+  let result: {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    error?: string;
+  };
+
+  try {
+    result = await sandbox.commands.run(command, {
+      ...buildSandboxCommandOptions(sandbox, undefined, viewEnvVars),
+      // E2B's command API calls this option `envs`; local sandboxes use
+      // `envVars`. Provide both so the same binary-safe helper works in both.
+      envs: viewEnvVars,
+      timeoutMs: 30_000,
+    });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "stdout" in error &&
+      "stderr" in error
+    ) {
+      const commandError = error as Record<string, unknown>;
+      result = {
+        stdout: String(commandError.stdout ?? ""),
+        stderr: String(commandError.stderr ?? ""),
+        exitCode:
+          typeof commandError.exitCode === "number" ? commandError.exitCode : 1,
+        error:
+          typeof commandError.error === "string"
+            ? commandError.error
+            : error instanceof Error
+              ? error.message
+              : String(error),
+      };
+    } else {
+      throw error;
+    }
+  }
+
+  const stdout = result.stdout.trim();
+  let payload: { error?: string } & Partial<SandboxViewPayload>;
+
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    throw new Error(
+      `Failed to inspect file for view: ${
+        result.stderr || stdout || "No output returned"
+      }`,
+    );
+  }
+
+  if (result.exitCode !== 0 || payload.error) {
+    throw new Error(payload.error || result.stderr || "Failed to view file");
+  }
+
+  if (
+    !payload.path ||
+    !payload.mediaType ||
+    typeof payload.sizeBytes !== "number" ||
+    (payload.kind !== "image" && payload.kind !== "pdf")
+  ) {
+    throw new Error("View inspection returned an invalid payload.");
+  }
+
+  if (includeData && !payload.data) {
+    throw new Error("View inspection did not return file data.");
+  }
+
+  return payload as SandboxViewPayload;
+}
 
 const editSchema = z.object({
   find: z.string().describe("The exact text string to find in the file"),
@@ -17,48 +220,46 @@ const editSchema = z.object({
 });
 
 export const createFile = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, modelName } = context;
+  const canViewMultimodalFiles = supportsMultimodalToolResults(modelName);
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
+This tool is the primary way to manage file content, allowing for reading, writing, appending, and editing text-based or multimodal files.
 
-<supported_actions>
-read: Read file content as text
-write: Overwrite the full content of a text file
-append: Append content to a text file
-edit: Make targeted edits to a text file
-</supported_actions>
+### Supported Actions
 
-<instructions>
-- Prioritize using this tool for file content operations instead of shell tool to avoid escaping errors
-- For file copying, moving, and deletion operations, use shell tool to complete them
-- Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file)
-- If the range parameter is not specified, the entire file will be read by default
-- DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints
-- write and append actions will automatically create files if they do not exist, no need to write first then append
-- When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards
-- Code MUST be saved to a file using this tool before execution via shell tool to enable debugging and future modifications
-- DO NOT read files that were just written, as their content remains in context
-- DO NOT repeatedly read template files or boilerplate code that has already been reviewed once; focus on user-modified or project-specific files
-- Choose appropriate file extensions based on file content and syntax, e.g., Markdown syntax MUST use .md extension
-- DO NOT write partial or truncated content, always output full content
-- edit can make multiple edits to a single file at once, all edits will be applied sequentially, all must succeed or none are applied
-- For extensive modifications to shorter files, use write to rewrite the entire file instead of using edit for modifications
-</instructions>
+- view: View file content through multimodal understanding (images, PDFs). ${
+      canViewMultimodalFiles
+        ? "Available for the current model."
+        : "Unavailable for the current model; use read for text files or ask the user to select HackerAI Pro or HackerAI Max for image/PDF viewing."
+    }
+- read: Read file content as text (Markdown, code, logs).
+- write: Overwrite the full content of a text file.
+- append: Append content to a text file.
+- edit: Make targeted edits to a text file.
 
-<recommended_usage>
-Use read to read text files
-Use read with range parameter to read specific parts of log files
-Use write to create files and record key findings
-Use write to save code to files before execution via shell tool
-Use write to refactor code files or rewrite short documents
-Use append to write long content in segments
-Use edit to fix errors in code
-Use edit to update markers in todo lists
-</recommended_usage>`,
+### Instructions
+
+1. Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.
+2. For file copying, moving, and deletion, use the shell tool.
+3. Use 'view' for files requiring multimodal understanding (images, PDFs).
+4. Use 'read' for text-based or line-oriented formats.
+5. After every two 'view' actions or browser operations, MUST immediately save key findings to text files to prevent loss of multimodal information.
+6. Code MUST be saved to a file using this tool before execution via the shell tool.
+7. DO NOT write partial or truncated content; always output the full content.
+8. 'edit' can make multiple targeted replacements at once; all must succeed or none are applied.
+9. For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.
+10. Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).
+11. If the range parameter is not specified, the entire file will be read by default.
+12. DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.
+13. write and append actions will automatically create files if they do not exist.
+14. When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.
+15. DO NOT read files that were just written, as their content remains in context.
+16. Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.`,
     inputSchema: z.object({
       action: z
-        .enum(["read", "write", "append", "edit"])
+        .enum(["view", "read", "write", "append", "edit"])
         .describe("The action to perform"),
       path: z.string().describe("The absolute path to the target file"),
       brief: z
@@ -91,6 +292,31 @@ Use edit to update markers in todo lists
         const { sandbox } = await sandboxManager.getSandbox();
 
         switch (action) {
+          case "view": {
+            if (!canViewMultimodalFiles) {
+              return { error: MULTIMODAL_UPGRADE_MESSAGE };
+            }
+
+            const viewPayload = await readSandboxFileForView(
+              sandbox,
+              path,
+              false,
+            );
+            const filename = getFilename(path);
+            const kindLabel =
+              viewPayload.kind === "pdf" ? "PDF file" : "image file";
+
+            return {
+              action: "view",
+              content: `Viewing ${kindLabel}: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes). Use multimodal understanding for this file and save key findings to a text file after every two view/browser operations.`,
+              path,
+              filename,
+              mediaType: viewPayload.mediaType,
+              sizeBytes: viewPayload.sizeBytes,
+              kind: viewPayload.kind,
+            } satisfies ViewMetadata;
+          }
+
           case "read": {
             const fileContent = await sandbox.files.read(path, {
               user: "user" as const,
@@ -312,7 +538,7 @@ Use edit to update markers in todo lists
       }
     },
     // Control what the model sees (exclude large diff content)
-    toModelOutput({ output }) {
+    async toModelOutput({ output }) {
       // If output is a string (write action), pass through
       if (typeof output === "string") {
         return { type: "text" as const, value: output };
@@ -325,6 +551,48 @@ Use edit to update markers in todo lists
             type: "text" as const,
             value: `Error: ${(output as { error: string }).error}`,
           };
+        }
+
+        if (
+          "action" in output &&
+          (output as { action?: string }).action === "view"
+        ) {
+          const viewOutput = output as ViewMetadata;
+
+          try {
+            const { sandbox } = await sandboxManager.getSandbox();
+            const viewPayload = await readSandboxFileForView(
+              sandbox,
+              viewOutput.path,
+              true,
+            );
+
+            return {
+              type: "content" as const,
+              value: [
+                { type: "text" as const, text: viewOutput.content },
+                viewOutput.kind === "image"
+                  ? {
+                      type: "image-data" as const,
+                      data: viewPayload.data!,
+                      mediaType: viewPayload.mediaType,
+                    }
+                  : {
+                      type: "file-data" as const,
+                      data: viewPayload.data!,
+                      mediaType: viewPayload.mediaType,
+                      filename: viewOutput.filename,
+                    },
+              ],
+            };
+          } catch (error) {
+            return {
+              type: "text" as const,
+              value: `Error: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
         }
 
         // For read, edit, and append actions, return the content message

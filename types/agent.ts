@@ -108,6 +108,8 @@ export interface ToolContext {
   /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */
   ptySessionManager: PtySessionManager;
   mode: ChatMode;
+  /** Configured model key for this request, used for model-aware tool capabilities. */
+  modelName?: string;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;
   /** Whether the Caido proxy is enabled (default true). When false, proxy tools are hidden and HTTP_PROXY env vars are not injected. */

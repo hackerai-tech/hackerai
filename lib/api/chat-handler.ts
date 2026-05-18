@@ -389,6 +389,7 @@ export const createChatHandler = (
             subscription,
             (info) => chatLogger?.setSandboxBoot(info),
             (info) => chatLogger?.setCaidoReady(info),
+            selectedModel,
           );
 
           // Helper to send file metadata via stream for resumable stream clients

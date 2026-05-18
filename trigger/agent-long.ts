@@ -600,6 +600,7 @@ export const agentLongTask = task({
             subscription,
             (info) => chatLogger?.setSandboxBoot(info),
             undefined,
+            selectedModel,
           );
 
           const sendFileMetadataToStream = (

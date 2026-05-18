@@ -63,6 +63,7 @@ export const createTools = (
   subscription?: SubscriptionTier,
   onSandboxBoot?: (info: SandboxBootInfo) => void,
   onCaidoReady?: (info: CaidoReadyInfo) => void,
+  modelName?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -121,6 +122,7 @@ export const createTools = (
     backgroundProcessTracker,
     ptySessionManager,
     mode,
+    modelName,
     isE2BSandbox,
     guardrailsConfig,
     caidoEnabled,

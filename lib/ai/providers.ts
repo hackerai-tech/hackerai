@@ -111,6 +111,27 @@ export function isDeepSeekModel(modelName: string): boolean {
   );
 }
 
+export function supportsMultimodalToolResults(modelName?: string): boolean {
+  if (!modelName) return false;
+
+  const normalized = modelName.toLowerCase();
+
+  return (
+    normalized === "ask-model" ||
+    normalized === "model-gemini-3-flash" ||
+    normalized.includes("gemini") ||
+    normalized.includes("google/") ||
+    isAnthropicModel(normalized) ||
+    normalized.includes("anthropic/") ||
+    normalized.includes("claude") ||
+    normalized.includes("openai/") ||
+    normalized.includes("gpt-") ||
+    normalized.includes("o1") ||
+    normalized.includes("o3") ||
+    normalized.includes("o4")
+  );
+}
+
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
