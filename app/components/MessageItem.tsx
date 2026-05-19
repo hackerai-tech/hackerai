@@ -151,6 +151,8 @@ export const MessageItem = memo(function MessageItem({
     index === lastAssistantMessageIndex;
   const canRegenerate = status === "ready" || status === "error";
   const isLastMessage = index === messagesLength - 1;
+  const isRecentMessage = messagesLength - index <= 4;
+  const shouldUseContentVisibility = !isRecentMessage;
 
   // Only the last assistant message should propagate "streaming" status to its
   // tool handlers. Old messages may have tools stuck in input-available /
@@ -300,9 +302,13 @@ export const MessageItem = memo(function MessageItem({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={onMouseLeave}
         style={{
-          // CSS content-visibility for off-screen performance
-          contentVisibility: isLastMessage ? "visible" : "auto",
-          containIntrinsicSize: isLastMessage ? undefined : "auto 100px",
+          // Keep recent turns rendered. If a long prompt near the tail collapses
+          // to the 100px intrinsic placeholder, the chat can inherit a bad scroll
+          // position until a reload re-measures the conversation.
+          contentVisibility: shouldUseContentVisibility ? "auto" : "visible",
+          containIntrinsicSize: shouldUseContentVisibility
+            ? "auto 100px"
+            : undefined,
         }}
       >
         {isEditing && isUser ? (
