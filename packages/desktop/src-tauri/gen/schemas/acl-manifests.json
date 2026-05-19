@@ -9,6 +9,7 @@
           "allow": [
             "get_dev_auth_port",
             "get_cmd_server_info",
+            "get_local_file_metadata",
             "execute_command",
             "execute_stream_command",
             "cancel_stream_command",

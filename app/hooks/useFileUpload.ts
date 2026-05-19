@@ -12,13 +12,56 @@ import {
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
 import { getMaxFileTokens } from "@/lib/token-utils";
-import { FileProcessingResult, FileSource } from "@/types/file";
+import {
+  FileProcessingResult,
+  FileSource,
+  LocalDesktopFile,
+} from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
+import {
+  getLocalFileMetadata,
+  isTauriEnvironment,
+  pickLocalFiles,
+  readLocalFile,
+} from "./useTauri";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
+
+const logLocalAttachmentDebug = (
+  event: string,
+  data: Record<string, unknown>,
+) => {
+  if (typeof window === "undefined") return;
+  const enabled =
+    process.env.NODE_ENV === "development" ||
+    window.localStorage.getItem("hackerai:debug-local-attachments") === "1";
+  if (!enabled) return;
+  console.info(`[local-attachments] ${event}`, data);
+};
+
+const getFilenameFromPath = (path: string) =>
+  path.split(/[\\/]/).filter(Boolean).pop() || "selected file";
+
+const fileFromBase64 = (
+  base64: string,
+  name: string,
+  type: string,
+  lastModified: number,
+): File => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], name, {
+    type: type || "application/octet-stream",
+    lastModified,
+  });
+};
 
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -30,6 +73,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     removeUploadedFile,
     subscription,
     getTotalTokens,
+    sandboxPreference,
   } = useGlobalState();
 
   // Drag and drop state
@@ -45,6 +89,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const generateS3UploadUrlAction = useAction(
     api.s3Actions.generateS3UploadUrlAction,
   );
+
+  const shouldUseLocalDesktopAttachments =
+    isTauriEnvironment() &&
+    isAgentMode(mode) &&
+    sandboxPreference === "desktop";
 
   // Helper to show rate limit warning (throttled to once per minute)
   const showRateLimitWarning = useCallback((rateLimit: RateLimitInfo) => {
@@ -174,6 +223,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const uploadFileToS3 = useCallback(
     async (file: File, uploadIndex: number) => {
       try {
+        logLocalAttachmentDebug("s3-upload-start", {
+          fileName: file.name,
+          mode,
+          sandboxPreference,
+        });
+
         // Step 1: Generate presigned S3 upload URL
         const { uploadUrl, s3Key, rateLimit } = await generateS3UploadUrlAction(
           {
@@ -270,6 +325,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       updateUploadedFile,
       showRateLimitWarning,
       mode,
+      sandboxPreference,
       subscription,
     ],
   );
@@ -292,6 +348,169 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       });
     },
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
+  );
+
+  const startDesktopSelectedFiles = useCallback(
+    (
+      files: Array<
+        | {
+            storage: "local-desktop";
+            file: LocalDesktopFile & { path: string };
+          }
+        | { storage: "s3"; file: File }
+      >,
+    ) => {
+      const startingIndex = uploadedFiles.length;
+
+      files.forEach((entry, index) => {
+        if (entry.storage === "s3") {
+          addUploadedFile({
+            file: entry.file,
+            uploading: true,
+            uploaded: false,
+            storage: "s3",
+          });
+          uploadFileToS3(entry.file, startingIndex + index);
+          return;
+        }
+
+        addUploadedFile({
+          file: {
+            name: entry.file.name,
+            type: entry.file.type,
+            size: entry.file.size,
+            lastModified: entry.file.lastModified,
+          },
+          uploading: false,
+          uploaded: true,
+          storage: "local-desktop",
+          localAttachmentId:
+            typeof crypto !== "undefined" && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          localPath: entry.file.path,
+          tokens: 0,
+        });
+        logLocalAttachmentDebug("local-file-added", {
+          fileName: entry.file.name,
+          mediaType: entry.file.type,
+          size: entry.file.size,
+          hasLocalPath: Boolean(entry.file.path),
+        });
+      });
+    },
+    [addUploadedFile, uploadFileToS3, uploadedFiles.length],
+  );
+
+  const processLocalDesktopPaths = useCallback(
+    async (paths: string[]) => {
+      if (subscription === "free") {
+        toast.error("Upgrade plan to upload files.");
+        return;
+      }
+
+      const existingUploadedCount = uploadedFiles.length;
+      const remainingSlots = maxFilesLimit - existingUploadedCount;
+      if (remainingSlots <= 0) {
+        toast.error(
+          `Maximum ${maxFilesLimit} files allowed. Please remove some files before adding more.`,
+        );
+        return;
+      }
+
+      const selectedPaths = paths.slice(0, remainingSlots);
+      if (paths.length > selectedPaths.length) {
+        toast.error(
+          `Only ${selectedPaths.length} files were added. Maximum ${maxFilesLimit} files allowed.`,
+        );
+      }
+
+      const validFiles: Array<
+        | {
+            storage: "local-desktop";
+            file: LocalDesktopFile & { path: string };
+          }
+        | { storage: "s3"; file: File }
+      > = [];
+      const invalidFiles: string[] = [];
+
+      for (const path of selectedPaths) {
+        let metadata: Awaited<ReturnType<typeof getLocalFileMetadata>>;
+        try {
+          metadata = await getLocalFileMetadata(path);
+        } catch (error) {
+          logLocalAttachmentDebug("local-metadata-error", {
+            fileName: getFilenameFromPath(path),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          invalidFiles.push(
+            `${getFilenameFromPath(path)}: could not read file metadata`,
+          );
+          continue;
+        }
+        if (!metadata) {
+          invalidFiles.push(
+            `${getFilenameFromPath(path)}: could not read file metadata`,
+          );
+          continue;
+        }
+
+        const file = {
+          path: metadata.path,
+          name: metadata.name,
+          type: metadata.mediaType || "application/octet-stream",
+          size: metadata.size,
+          lastModified: metadata.lastModified || Date.now(),
+        };
+        logLocalAttachmentDebug("local-metadata-read", {
+          fileName: file.name,
+          mediaType: file.type,
+          size: file.size,
+          hasLocalPath: Boolean(file.path),
+        });
+        const validation = validateFile(file);
+        if (!validation.valid) {
+          invalidFiles.push(`${file.name}: ${validation.error}`);
+          continue;
+        }
+
+        if (isImageFile(file)) {
+          const localFileData = await readLocalFile(path);
+          if (!localFileData) {
+            invalidFiles.push(`${file.name}: could not read image file`);
+            continue;
+          }
+          const browserFile = fileFromBase64(
+            localFileData.base64,
+            localFileData.name,
+            localFileData.mediaType || "application/octet-stream",
+            localFileData.lastModified || Date.now(),
+          );
+          const imageValidation = await validateImageFile(browserFile);
+          if (!imageValidation.valid) {
+            invalidFiles.push(`${browserFile.name}: ${imageValidation.error}`);
+            continue;
+          }
+          validFiles.push({ storage: "s3", file: browserFile });
+          continue;
+        }
+
+        validFiles.push({ storage: "local-desktop", file });
+      }
+
+      if (invalidFiles.length > 0) {
+        toast.error(`Some files were invalid:\n${invalidFiles.join("\n")}`);
+      }
+      if (validFiles.length > 0) {
+        startDesktopSelectedFiles(validFiles);
+      }
+    },
+    [
+      subscription,
+      uploadedFiles.length,
+      maxFilesLimit,
+      startDesktopSelectedFiles,
+    ],
   );
 
   // Unified file processing function
@@ -346,7 +565,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
     // If the file was uploaded to Convex, delete it from storage
-    if (uploadedFile?.fileId) {
+    if (uploadedFile?.fileId && uploadedFile.storage !== "local-desktop") {
       try {
         await deleteFile({
           fileId: uploadedFile.fileId as Id<"files">,
@@ -362,6 +581,32 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   };
 
   const handleAttachClick = () => {
+    const isTauri = isTauriEnvironment();
+    logLocalAttachmentDebug("attach-click", {
+      isTauri,
+      mode,
+      sandboxPreference,
+      shouldUseLocalDesktopAttachments,
+    });
+
+    if (shouldUseLocalDesktopAttachments) {
+      pickLocalFiles()
+        .then(async (paths) => {
+          logLocalAttachmentDebug("local-picker-result", {
+            selectedCount: paths.length,
+          });
+          if (paths.length > 0) {
+            await processLocalDesktopPaths(paths);
+          }
+        })
+        .catch((error) => {
+          logLocalAttachmentDebug("local-picker-error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          toast.error("Failed to open file picker");
+        });
+      return;
+    }
     fileInputRef.current?.click();
   };
 

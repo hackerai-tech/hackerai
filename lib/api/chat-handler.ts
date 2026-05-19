@@ -80,6 +80,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
   getUploadBasePath,
+  stripLocalDesktopSourcePaths,
 } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
@@ -219,7 +220,7 @@ export const createChatHandler = (
         await handleInitialChatAndUserMessage({
           chatId,
           userId,
-          messages: truncatedMessages,
+          messages: stripLocalDesktopSourcePaths(truncatedMessages),
           regenerate,
           chat,
           isHidden: isAutoContinue ? true : undefined,
@@ -243,6 +244,8 @@ export const createChatHandler = (
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          allowLocalDesktopFiles:
+            isAgentMode(mode) && sandboxPreference === "desktop",
         });
 
       // Empty after processing → Gemini rejects with "must include at least one parts field".
@@ -431,7 +434,12 @@ export const createChatHandler = (
           }
 
           if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
-            writeUploadStartStatus(writer);
+            writeUploadStartStatus(
+              writer,
+              sandboxFiles.every((file) => file.kind === "localPath")
+                ? "Preparing local attachments on your computer"
+                : "Uploading attachments to the computer",
+            );
             let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
               uploadResult = await uploadSandboxFiles(

@@ -1014,15 +1014,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         sendMessage(
           {
             text: nextMessage.text,
-            files: nextMessage.files
-              ? nextMessage.files.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
+            files: nextMessage.files as any,
           },
           {
             body: {

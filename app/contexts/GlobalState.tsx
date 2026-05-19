@@ -27,6 +27,7 @@ import {
   computeReplaceAssistantTodos,
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
+import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
@@ -99,10 +100,7 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
-  queueMessage: (
-    text: string,
-    files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
-  ) => void;
+  queueMessage: (text: string, files?: FileMessagePart[]) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
   dequeueNext: () => QueuedMessage | null;
@@ -540,10 +538,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue handlers
   const queueMessage = useCallback(
-    (
-      text: string,
-      files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
-    ) => {
+    (text: string, files?: FileMessagePart[]) => {
       setMessageQueue((prev) => {
         // Limit queue size to 10 messages
         if (prev.length >= 10) {

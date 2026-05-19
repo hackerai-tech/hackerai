@@ -15,6 +15,14 @@ import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
 import { coerceSelectedModel } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
+import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import {
+  getUploadBasePath,
+  hasLocalDesktopSourcePaths,
+  prepareLocalDesktopAttachmentsForTrigger,
+  stripLocalDesktopSourcePaths,
+  uploadSandboxFiles,
+} from "@/lib/utils/sandbox-file-utils";
 
 export const maxDuration = 30;
 
@@ -61,11 +69,61 @@ export async function POST(req: NextRequest) {
     const isNewChat =
       !temporary && !existingChat && !regenerate && !isAutoContinue;
 
+    let messagesForPersistence = stripLocalDesktopSourcePaths(messages);
+    let messagesForTrigger = messagesForPersistence;
+    let localDesktopAttachmentsPrepared = false;
+
+    if (hasLocalDesktopSourcePaths(messages)) {
+      if (sandboxPreference !== "desktop") {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Desktop-local attachments can only be used with the desktop sandbox.",
+        );
+      }
+
+      const { messages: preparedMessages, sandboxFiles } =
+        prepareLocalDesktopAttachmentsForTrigger(
+          messages,
+          getUploadBasePath("desktop"),
+        );
+      if (sandboxFiles.length > 0) {
+        const sandboxManager = new HybridSandboxManager(
+          userId,
+          () => {},
+          "desktop",
+          process.env.CONVEX_SERVICE_ROLE_KEY!,
+          null,
+          subscription,
+        );
+        let stagedSandbox: any = null;
+        let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
+        try {
+          uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
+            const { sandbox } = await sandboxManager.getSandbox();
+            stagedSandbox = sandbox;
+            return sandbox;
+          });
+        } finally {
+          await stagedSandbox?.close?.().catch(() => {});
+        }
+        if (uploadResult.failedCount > 0) {
+          const noun =
+            uploadResult.failedCount === 1 ? "attachment" : "attachments";
+          throw new ChatSDKError(
+            "bad_request:api",
+            `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+          );
+        }
+      }
+      messagesForTrigger = preparedMessages;
+      localDesktopAttachmentsPrepared = true;
+    }
+
     if (!temporary) {
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
-        messages,
+        messages: messagesForPersistence,
         regenerate,
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
@@ -82,7 +140,8 @@ export async function POST(req: NextRequest) {
         userId,
         subscription,
         organizationId,
-        messages,
+        messages: messagesForTrigger,
+        localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
         sandboxPreference,
         selectedModel: selectedModelOverride,

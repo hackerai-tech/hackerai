@@ -3,19 +3,36 @@ import { Id } from "@/convex/_generated/dataModel";
 export interface FileMessagePart {
   type: "file";
   mediaType: string;
-  fileId: string; // Database file ID for backend operations
+  fileId?: string; // Database file ID for backend operations
   name: string;
   size: number;
+  storage?: "s3" | "local-desktop";
+  localAttachmentId?: string;
+  /**
+   * Transient source path for desktop-local agent attachments.
+   * Must never be persisted to Convex or long-lived task payloads.
+   */
+  localPath?: string;
   // DON'T store URL in message parts - S3 URLs expire!
   // URLs are generated on-demand via fileId
   // url: string;
 }
 
+export interface LocalDesktopFile {
+  name: string;
+  type: string;
+  size: number;
+  lastModified: number;
+}
+
 export interface UploadedFileState {
-  file: File;
+  file: File | LocalDesktopFile;
   uploading: boolean;
   uploaded: boolean;
   error?: string;
+  storage?: "s3" | "local-desktop";
+  localAttachmentId?: string;
+  localPath?: string;
   fileId?: string; // Database file ID for backend operations
   url?: string; // Store the resolved URL
   tokens?: number; // Token count for the file
@@ -28,6 +45,8 @@ export interface FilePart {
   name?: string;
   filename?: string;
   mediaType?: string;
+  storage?: "s3" | "local-desktop";
+  localAttachmentId?: string;
   storageId?: string; // Storage ID for on-demand URL fetching (Convex files)
   s3Key?: string; // S3 key for on-demand URL fetching (S3 files)
 }
@@ -47,7 +66,7 @@ export interface FileUploadPreviewProps {
 }
 
 export interface FilePreview {
-  file: File;
+  file: File | LocalDesktopFile;
   preview?: string;
   loading: boolean;
   uploading: boolean;

@@ -4,11 +4,14 @@ import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 // Upload status notifications
-export const writeUploadStartStatus = (writer: UIMessageStreamWriter): void => {
+export const writeUploadStartStatus = (
+  writer: UIMessageStreamWriter,
+  message: string = "Uploading attachments to the computer",
+): void => {
   writer.write({
     type: "data-upload-status",
     data: {
-      message: "Uploading attachments to the computer",
+      message,
       isUploading: true,
     },
     transient: true,

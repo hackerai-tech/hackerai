@@ -1,4 +1,8 @@
-import { FileMessagePart, UploadedFileState } from "@/types/file";
+import {
+  FileMessagePart,
+  LocalDesktopFile,
+  UploadedFileState,
+} from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 
 /** Rate limit info returned from upload URL generation */
@@ -58,14 +62,17 @@ export function isSupportedImageMediaType(mediaType: string): boolean {
 /**
  * Check if file is an image
  */
-export function isImageFile(file: File): boolean {
+export function isImageFile(file: File | LocalDesktopFile): boolean {
   return file.type.startsWith("image/");
 }
 
 /**
  * Validate file for upload
  */
-export function validateFile(file: File): { valid: boolean; error?: string } {
+export function validateFile(file: File | LocalDesktopFile): {
+  valid: boolean;
+  error?: string;
+} {
   if (file.size > MAX_FILE_SIZE) {
     return {
       valid: false,
@@ -133,7 +140,27 @@ export async function validateImageFile(
 export function createFileMessagePartFromUploadedFile(
   uploadedFile: UploadedFileState,
 ): FileMessagePart | null {
-  if (!uploadedFile.fileId || !uploadedFile.uploaded) {
+  if (!uploadedFile.uploaded) {
+    return null;
+  }
+
+  if (uploadedFile.storage === "local-desktop") {
+    if (!uploadedFile.localAttachmentId || !uploadedFile.localPath) {
+      return null;
+    }
+
+    return {
+      type: "file" as const,
+      mediaType: uploadedFile.file.type || "application/octet-stream",
+      name: uploadedFile.file.name,
+      size: uploadedFile.file.size,
+      storage: "local-desktop",
+      localAttachmentId: uploadedFile.localAttachmentId,
+      localPath: uploadedFile.localPath,
+    };
+  }
+
+  if (!uploadedFile.fileId) {
     return null;
   }
 
@@ -143,6 +170,7 @@ export function createFileMessagePartFromUploadedFile(
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
+    storage: "s3",
   };
 }
 

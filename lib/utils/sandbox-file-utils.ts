@@ -5,8 +5,24 @@ import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
 
 export type SandboxFile = {
-  url: string;
   localPath: string;
+} & (
+  | {
+      kind: "url";
+      url: string;
+    }
+  | {
+      kind: "localPath";
+      path: string;
+    }
+);
+
+const logLocalAttachmentDebug = (
+  event: string,
+  data: Record<string, unknown>,
+) => {
+  if (process.env.NODE_ENV !== "development") return;
+  console.info(`[local-attachments] ${event}`, data);
 };
 
 /**
@@ -27,7 +43,7 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
-const sanitizeFilenameForTerminal = (filename: string): string => {
+export const sanitizeFilenameForTerminal = (filename: string): string => {
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
   const lastDotIndex = basename.lastIndexOf(".");
   const hasExtension = lastDotIndex > 0;
@@ -64,6 +80,7 @@ export const collectSandboxFiles = (
   updatedMessages: UIMessage[],
   sandboxFiles: SandboxFile[],
   uploadBasePath: string = getUploadBasePath(undefined),
+  options: { allowLocalDesktopFiles?: boolean } = {},
 ): void => {
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
@@ -73,14 +90,40 @@ export const collectSandboxFiles = (
 
     const tags: string[] = [];
     (msg.parts as any[]).forEach((part) => {
-      if (part?.type === "file" && part?.fileId && part?.url) {
+      if (part?.type !== "file") return;
+
+      if (part?.storage === "local-desktop") {
+        if (!part.localPath) return;
+        if (!options.allowLocalDesktopFiles) {
+          throw new Error(
+            "Desktop-local attachments can only be used with the desktop sandbox.",
+          );
+        }
+        const sanitizedName = sanitizeFilenameForTerminal(
+          part.name || part.filename || "file",
+        );
+        const localPath = `${uploadBasePath}/${sanitizedName}`;
+        if (i === lastUserIdx) {
+          sandboxFiles.push({
+            kind: "localPath",
+            path: part.localPath,
+            localPath,
+          });
+        }
+        tags.push(
+          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+        );
+        return;
+      }
+
+      if (part?.fileId && part?.url) {
         const sanitizedName = sanitizeFilenameForTerminal(
           part.name || part.filename || "file",
         );
         const localPath = `${uploadBasePath}/${sanitizedName}`;
 
         if (i === lastUserIdx) {
-          sandboxFiles.push({ url: part.url, localPath });
+          sandboxFiles.push({ kind: "url", url: part.url, localPath });
         }
         tags.push(
           `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
@@ -92,6 +135,95 @@ export const collectSandboxFiles = (
       (msg.parts as any[]).push({ type: "text", text: tags.join("\n") });
     }
   });
+};
+
+export const stripLocalDesktopSourcePaths = <T extends { parts?: any[] }>(
+  messages: T[],
+): T[] =>
+  messages.map((message) => {
+    if (!message.parts) return message;
+    return {
+      ...message,
+      parts: message.parts.map((part) => {
+        if (part?.type !== "file" || part.storage !== "local-desktop") {
+          return part;
+        }
+        const { localPath: _localPath, ...safePart } = part;
+        return safePart;
+      }),
+    };
+  });
+
+export const hasLocalDesktopSourcePaths = (
+  messages: Array<{ parts?: any[] }>,
+): boolean =>
+  messages.some((message) =>
+    message.parts?.some(
+      (part) =>
+        part?.type === "file" &&
+        part.storage === "local-desktop" &&
+        typeof part.localPath === "string" &&
+        part.localPath.length > 0,
+    ),
+  );
+
+export const prepareLocalDesktopAttachmentsForTrigger = (
+  messages: UIMessage[],
+  uploadBasePath: string = getUploadBasePath("desktop"),
+): { messages: UIMessage[]; sandboxFiles: SandboxFile[] } => {
+  const clonedMessages =
+    typeof structuredClone === "function"
+      ? structuredClone(messages)
+      : JSON.parse(JSON.stringify(messages));
+  const preparedMessages = stripLocalDesktopSourcePaths(
+    clonedMessages,
+  ) as UIMessage[];
+  const sandboxFiles: SandboxFile[] = [];
+  const lastUserIdx = getLastUserMessageIndex(messages);
+
+  messages.forEach((message, messageIndex) => {
+    if (message.role !== "user" || !message.parts) return;
+
+    const tags: string[] = [];
+    (message.parts as any[]).forEach((part) => {
+      if (
+        part?.type !== "file" ||
+        part.storage !== "local-desktop" ||
+        !part.localPath
+      ) {
+        return;
+      }
+      const sanitizedName = sanitizeFilenameForTerminal(
+        part.name || part.filename || "file",
+      );
+      const localPath = `${uploadBasePath}/${sanitizedName}`;
+      if (messageIndex === lastUserIdx) {
+        sandboxFiles.push({
+          kind: "localPath",
+          path: part.localPath,
+          localPath,
+        });
+      }
+      tags.push(
+        `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+      );
+    });
+
+    if (tags.length > 0) {
+      (preparedMessages[messageIndex].parts as any[]).push({
+        type: "text",
+        text: tags.join("\n"),
+      });
+    }
+  });
+
+  logLocalAttachmentDebug("prepared-trigger-local-files", {
+    fileCount: sandboxFiles.length,
+    scrubbedHasLocalPath:
+      JSON.stringify(preparedMessages).includes("localPath"),
+  });
+
+  return { messages: preparedMessages, sandboxFiles };
 };
 
 /**
@@ -172,6 +304,20 @@ const downloadFileToSandbox = async (
   );
 };
 
+const copyLocalFileToSandbox = async (
+  sandbox: any,
+  sourcePath: string,
+  localPath: string,
+): Promise<void> => {
+  if (!sandbox.files?.copyLocal) {
+    throw new Error(
+      "Desktop-local attachments require a desktop local sandbox.",
+    );
+  }
+
+  return sandbox.files.copyLocal(sourcePath, localPath);
+};
+
 const safeUrlForLog = (url: string): string => {
   try {
     const parsed = new URL(url);
@@ -179,6 +325,32 @@ const safeUrlForLog = (url: string): string => {
   } catch {
     return url.split("?")[0];
   }
+};
+
+const describeSandboxFileForLog = (file: SandboxFile) => {
+  if (file.kind === "url") {
+    return {
+      kind: file.kind,
+      url: safeUrlForLog(file.url),
+      urlLength: file.url.length,
+      protocol: file.url.split("://")[0],
+      localPath: file.localPath,
+    };
+  }
+  return {
+    kind: file.kind,
+    sourcePath: "[redacted-local-path]",
+    localPath: file.localPath,
+  };
+};
+
+const redactSandboxUploadError = (
+  file: SandboxFile,
+  error: unknown,
+): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (file.kind !== "localPath") return message;
+  return message.split(file.path).join("[redacted-local-path]");
 };
 
 /**
@@ -194,6 +366,13 @@ export const uploadSandboxFiles = async (
 ): Promise<{ failedCount: number }> => {
   if (sandboxFiles.length === 0) return { failedCount: 0 };
 
+  logLocalAttachmentDebug("sandbox-staging-start", {
+    totalCount: sandboxFiles.length,
+    localPathCount: sandboxFiles.filter((file) => file.kind === "localPath")
+      .length,
+    urlCount: sandboxFiles.filter((file) => file.kind === "url").length,
+  });
+
   let sandbox: any;
   try {
     sandbox = await ensureSandbox();
@@ -204,7 +383,9 @@ export const uploadSandboxFiles = async (
 
   const results = await Promise.allSettled(
     sandboxFiles.map((file) =>
-      downloadFileToSandbox(sandbox, file.url, file.localPath),
+      file.kind === "url"
+        ? downloadFileToSandbox(sandbox, file.url, file.localPath)
+        : copyLocalFileToSandbox(sandbox, file.path, file.localPath),
     ),
   );
 
@@ -220,14 +401,8 @@ export const uploadSandboxFiles = async (
       const file = sandboxFiles[i];
       const result = results[i] as PromiseRejectedResult;
       console.error("  -", {
-        url: safeUrlForLog(file.url),
-        urlLength: file.url.length,
-        localPath: file.localPath,
-        protocol: file.url.split("://")[0],
-        error:
-          result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason),
+        ...describeSandboxFileForLog(file),
+        error: redactSandboxUploadError(file, result.reason),
       });
     });
   }

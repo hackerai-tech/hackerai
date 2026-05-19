@@ -401,6 +401,7 @@ export type AgentLongPayload = {
   subscription: SubscriptionTier;
   organizationId?: string;
   messages: UIMessage[];
+  localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
   sandboxPreference?: SandboxPreference;
   selectedModel?: SelectedModel;
@@ -455,6 +456,7 @@ export const agentLongTask = task({
       subscription,
       organizationId,
       messages,
+      localDesktopAttachmentsPrepared,
       sandboxPreference,
       selectedModel: selectedModelOverride,
       userLocation,
@@ -532,13 +534,22 @@ export const agentLongTask = task({
       );
 
       const uploadBasePath = getUploadBasePath(sandboxPreference);
+      const messagesForProcessing =
+        localDesktopAttachmentsPrepared && messages.length > 0
+          ? messages
+          : truncatedMessages.length
+            ? truncatedMessages
+            : messages;
+      const messagesForAccounting = messagesForProcessing;
+
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
-          messages: truncatedMessages.length ? truncatedMessages : messages,
+          messages: messagesForProcessing,
           mode,
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          allowLocalDesktopFiles: sandboxPreference === "desktop",
         });
 
       if (!processedMessages.length) {
@@ -557,12 +568,12 @@ export const agentLongTask = task({
         selectedModel,
         userCustomization,
         temporary,
-        truncatedMessages,
+        truncatedMessages: messagesForAccounting,
       });
 
       chatLogger.setChat(
         {
-          messageCount: truncatedMessages.length,
+          messageCount: messagesForAccounting.length,
           estimatedInputTokens,
           isNewChat: !!isNewChat,
           fileCount: 0,
@@ -709,7 +720,12 @@ export const agentLongTask = task({
           }
 
           if (sandboxFiles && sandboxFiles.length > 0) {
-            writeUploadStartStatus(writer);
+            writeUploadStartStatus(
+              writer,
+              sandboxFiles.every((file) => file.kind === "localPath")
+                ? "Preparing local attachments on your computer"
+                : "Uploading attachments to the computer",
+            );
             let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
               uploadResult = await uploadSandboxFiles(
@@ -759,7 +775,7 @@ export const agentLongTask = task({
             : 0;
           const initialCtxUsage = contextUsageOn
             ? computeContextUsage(
-                truncatedMessages,
+                messagesForAccounting,
                 fileTokens,
                 ctxSystemTokens,
                 ctxMaxTokens,

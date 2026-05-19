@@ -791,6 +791,34 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       return result.stdout;
     },
 
+    copyLocal: async (
+      sourceRawPath: string,
+      destRawPath: string,
+    ): Promise<void> => {
+      const sourceCtx = await this.shellContext(sourceRawPath);
+      const destCtx = await this.shellContext(destRawPath);
+      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
+      const dir = CentrifugoSandbox.parentDir(destCtx.path);
+
+      const mkdirPart = !dir
+        ? ""
+        : destCtx.useBash
+          ? `mkdir -p ${destCtx.escapePath(dir)} &&`
+          : `if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)} &&`;
+      const copyPart = destCtx.useBash
+        ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
+        : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
+
+      const result = await this.commands.run(`${mkdirPart} ${copyPart}`, {
+        displayName: `Preparing: ${fileName}`,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Failed to prepare local file: ${result.stderr || result.stdout}`,
+        );
+      }
+    },
+
     remove: async (rawPath: string): Promise<void> => {
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";

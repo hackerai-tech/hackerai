@@ -93,6 +93,70 @@ export async function getCmdServerInfo(): Promise<{
   }
 }
 
+export type LocalFileMetadata = {
+  path: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  lastModified: number;
+};
+
+export type LocalFileData = LocalFileMetadata & {
+  base64: string;
+};
+
+export async function pickLocalFiles(): Promise<string[]> {
+  if (!detectTauri()) return [];
+
+  try {
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    const selected = await dialog.open({
+      multiple: true,
+      directory: false,
+    });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  } catch (err) {
+    console.error("[Tauri] Failed to pick local files:", err);
+    toast.error("Failed to open file picker");
+    return [];
+  }
+}
+
+export async function getLocalFileMetadata(
+  path: string,
+): Promise<LocalFileMetadata | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalFileMetadata>("get_local_file_metadata", {
+      path,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to read local file metadata:", err);
+    toast.error("Failed to read local file metadata");
+    return null;
+  }
+}
+
+export async function readLocalFile(
+  path: string,
+): Promise<LocalFileData | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalFileData>("read_local_file", {
+      path,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to read local file:", err);
+    toast.error("Failed to read local file");
+    return null;
+  }
+}
+
 /**
  * Reveal a file or folder in the OS file manager (Finder/Explorer).
  */
