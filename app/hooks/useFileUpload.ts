@@ -30,6 +30,18 @@ import {
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
+const logLocalAttachmentDebug = (
+  event: string,
+  data: Record<string, unknown>,
+) => {
+  if (typeof window === "undefined") return;
+  const enabled =
+    process.env.NODE_ENV !== "production" ||
+    window.localStorage.getItem("hackerai:debug-local-attachments") === "1";
+  if (!enabled) return;
+  console.info(`[local-attachments] ${event}`, data);
+};
+
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
@@ -190,6 +202,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const uploadFileToS3 = useCallback(
     async (file: File, uploadIndex: number) => {
       try {
+        logLocalAttachmentDebug("s3-upload-start", {
+          fileName: file.name,
+          mode,
+          sandboxPreference,
+        });
+
         // Step 1: Generate presigned S3 upload URL
         const { uploadUrl, s3Key, rateLimit } = await generateS3UploadUrlAction(
           {
@@ -330,6 +348,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           localPath: file.path,
           tokens: 0,
         });
+        logLocalAttachmentDebug("local-file-added", {
+          fileName: file.name,
+          mediaType: file.type,
+          size: file.size,
+          hasLocalPath: Boolean(file.path),
+        });
       });
     },
     [addUploadedFile],
@@ -372,6 +396,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           size: metadata.size,
           lastModified: metadata.lastModified || Date.now(),
         };
+        logLocalAttachmentDebug("local-metadata-read", {
+          fileName: file.name,
+          mediaType: file.type,
+          size: file.size,
+          hasLocalPath: Boolean(file.path),
+        });
         const validation = validateFile(file);
         if (!validation.valid) {
           invalidFiles.push(`${file.name}: ${validation.error}`);
@@ -458,8 +488,19 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   };
 
   const handleAttachClick = () => {
+    const isTauri = isTauriEnvironment();
+    logLocalAttachmentDebug("attach-click", {
+      isTauri,
+      mode,
+      sandboxPreference,
+      shouldUseLocalDesktopAttachments,
+    });
+
     if (shouldUseLocalDesktopAttachments) {
       pickLocalFiles().then((paths) => {
+        logLocalAttachmentDebug("local-picker-result", {
+          selectedCount: paths.length,
+        });
         if (paths.length > 0) {
           processLocalDesktopPaths(paths);
         }

@@ -719,7 +719,12 @@ export const agentLongTask = task({
           }
 
           if (sandboxFiles && sandboxFiles.length > 0) {
-            writeUploadStartStatus(writer);
+            writeUploadStartStatus(
+              writer,
+              sandboxFiles.every((file) => file.kind === "localPath")
+                ? "Preparing local attachments on your computer"
+                : "Uploading attachments to the computer",
+            );
             let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
               uploadResult = await uploadSandboxFiles(

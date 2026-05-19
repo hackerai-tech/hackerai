@@ -17,6 +17,14 @@ export type SandboxFile = {
     }
 );
 
+const logLocalAttachmentDebug = (
+  event: string,
+  data: Record<string, unknown>,
+) => {
+  if (process.env.NODE_ENV === "production") return;
+  console.info(`[local-attachments] ${event}`, data);
+};
+
 /**
  * E2B uses /home/user/upload; any local connection uses /tmp/hackerai-upload
  * since the host machine may not have /home/user (e.g. macOS in dangerous mode).
@@ -209,6 +217,12 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
     }
   });
 
+  logLocalAttachmentDebug("prepared-trigger-local-files", {
+    fileCount: sandboxFiles.length,
+    scrubbedHasLocalPath:
+      JSON.stringify(preparedMessages).includes("localPath"),
+  });
+
   return { messages: preparedMessages, sandboxFiles };
 };
 
@@ -342,6 +356,13 @@ export const uploadSandboxFiles = async (
   ensureSandbox: () => Promise<any>,
 ): Promise<{ failedCount: number }> => {
   if (sandboxFiles.length === 0) return { failedCount: 0 };
+
+  logLocalAttachmentDebug("sandbox-staging-start", {
+    totalCount: sandboxFiles.length,
+    localPathCount: sandboxFiles.filter((file) => file.kind === "localPath")
+      .length,
+    urlCount: sandboxFiles.filter((file) => file.kind === "url").length,
+  });
 
   let sandbox: any;
   try {
