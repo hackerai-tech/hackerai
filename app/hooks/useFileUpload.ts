@@ -25,6 +25,7 @@ import {
   getLocalFileMetadata,
   isTauriEnvironment,
   pickLocalFiles,
+  readLocalFile,
 } from "./useTauri";
 
 // Show warning when remaining uploads are at or below this threshold
@@ -44,6 +45,23 @@ const logLocalAttachmentDebug = (
 
 const getFilenameFromPath = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).pop() || "selected file";
+
+const fileFromBase64 = (
+  base64: string,
+  name: string,
+  type: string,
+  lastModified: number,
+): File => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], name, {
+    type: type || "application/octet-stream",
+    lastModified,
+  });
+};
 
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -307,6 +325,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       updateUploadedFile,
       showRateLimitWarning,
       mode,
+      sandboxPreference,
       subscription,
     ],
   );
@@ -331,15 +350,36 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
   );
 
-  const startLocalDesktopFiles = useCallback(
-    (files: Array<LocalDesktopFile & { path: string }>) => {
-      files.forEach((file) => {
+  const startDesktopSelectedFiles = useCallback(
+    (
+      files: Array<
+        | {
+            storage: "local-desktop";
+            file: LocalDesktopFile & { path: string };
+          }
+        | { storage: "s3"; file: File }
+      >,
+    ) => {
+      const startingIndex = uploadedFiles.length;
+
+      files.forEach((entry, index) => {
+        if (entry.storage === "s3") {
+          addUploadedFile({
+            file: entry.file,
+            uploading: true,
+            uploaded: false,
+            storage: "s3",
+          });
+          uploadFileToS3(entry.file, startingIndex + index);
+          return;
+        }
+
         addUploadedFile({
           file: {
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            lastModified: file.lastModified,
+            name: entry.file.name,
+            type: entry.file.type,
+            size: entry.file.size,
+            lastModified: entry.file.lastModified,
           },
           uploading: false,
           uploaded: true,
@@ -348,18 +388,18 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             typeof crypto !== "undefined" && crypto.randomUUID
               ? crypto.randomUUID()
               : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          localPath: file.path,
+          localPath: entry.file.path,
           tokens: 0,
         });
         logLocalAttachmentDebug("local-file-added", {
-          fileName: file.name,
-          mediaType: file.type,
-          size: file.size,
-          hasLocalPath: Boolean(file.path),
+          fileName: entry.file.name,
+          mediaType: entry.file.type,
+          size: entry.file.size,
+          hasLocalPath: Boolean(entry.file.path),
         });
       });
     },
-    [addUploadedFile],
+    [addUploadedFile, uploadFileToS3, uploadedFiles.length],
   );
 
   const processLocalDesktopPaths = useCallback(
@@ -385,7 +425,13 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         );
       }
 
-      const validFiles: Array<LocalDesktopFile & { path: string }> = [];
+      const validFiles: Array<
+        | {
+            storage: "local-desktop";
+            file: LocalDesktopFile & { path: string };
+          }
+        | { storage: "s3"; file: File }
+      > = [];
       const invalidFiles: string[] = [];
 
       for (const path of selectedPaths) {
@@ -427,17 +473,44 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           invalidFiles.push(`${file.name}: ${validation.error}`);
           continue;
         }
-        validFiles.push(file);
+
+        if (isImageFile(file)) {
+          const localFileData = await readLocalFile(path);
+          if (!localFileData) {
+            invalidFiles.push(`${file.name}: could not read image file`);
+            continue;
+          }
+          const browserFile = fileFromBase64(
+            localFileData.base64,
+            localFileData.name,
+            localFileData.mediaType || "application/octet-stream",
+            localFileData.lastModified || Date.now(),
+          );
+          const imageValidation = await validateImageFile(browserFile);
+          if (!imageValidation.valid) {
+            invalidFiles.push(`${browserFile.name}: ${imageValidation.error}`);
+            continue;
+          }
+          validFiles.push({ storage: "s3", file: browserFile });
+          continue;
+        }
+
+        validFiles.push({ storage: "local-desktop", file });
       }
 
       if (invalidFiles.length > 0) {
         toast.error(`Some files were invalid:\n${invalidFiles.join("\n")}`);
       }
       if (validFiles.length > 0) {
-        startLocalDesktopFiles(validFiles);
+        startDesktopSelectedFiles(validFiles);
       }
     },
-    [subscription, uploadedFiles.length, maxFilesLimit, startLocalDesktopFiles],
+    [
+      subscription,
+      uploadedFiles.length,
+      maxFilesLimit,
+      startDesktopSelectedFiles,
+    ],
   );
 
   // Unified file processing function

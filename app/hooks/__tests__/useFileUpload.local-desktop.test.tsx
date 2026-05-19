@@ -1,6 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useFileUpload } from "../useFileUpload";
-import { getLocalFileMetadata, pickLocalFiles } from "@/app/hooks/useTauri";
+import {
+  getLocalFileMetadata,
+  pickLocalFiles,
+  readLocalFile,
+} from "@/app/hooks/useTauri";
 
 const addUploadedFile = jest.fn();
 const updateUploadedFile = jest.fn();
@@ -35,6 +39,7 @@ jest.mock("@/app/hooks/useTauri", () => ({
   isTauriEnvironment: jest.fn(() => true),
   pickLocalFiles: jest.fn(),
   getLocalFileMetadata: jest.fn(),
+  readLocalFile: jest.fn(),
 }));
 
 describe("useFileUpload desktop-local agent attachments", () => {
@@ -98,6 +103,46 @@ describe("useFileUpload desktop-local agent attachments", () => {
     });
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("uploads desktop-selected images through S3 for preview and model visibility", async () => {
+    (pickLocalFiles as jest.Mock).mockResolvedValue(["/Users/alice/logo.svg"]);
+    (getLocalFileMetadata as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/logo.svg",
+      name: "logo.svg",
+      mediaType: "image/svg+xml",
+      size: 36,
+      lastModified: 123,
+    });
+    (readLocalFile as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/logo.svg",
+      name: "logo.svg",
+      mediaType: "image/svg+xml",
+      size: 36,
+      lastModified: 123,
+      base64: btoa("<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+    });
+
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleAttachClick();
+    });
+
+    await waitFor(() => {
+      expect(generateS3UploadUrlAction).toHaveBeenCalledWith({
+        fileName: "logo.svg",
+        contentType: "image/svg+xml",
+      });
+    });
+    expect(addUploadedFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uploading: true,
+        uploaded: false,
+        storage: "s3",
+      }),
+    );
+    expect(saveFile).toHaveBeenCalled();
   });
 
   it("keeps the S3 upload path outside desktop Agent mode", async () => {

@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { X, File, Loader2 } from "lucide-react";
+import { X, File as FileIcon, Loader2 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Image from "next/image";
 import {
@@ -16,7 +16,7 @@ import {
 } from "@/types/file";
 
 const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
-  typeof File !== "undefined" && file instanceof File;
+  typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
 
 export const FileUploadPreview = ({
   uploadedFiles,
@@ -198,7 +198,7 @@ export const FileUploadPreview = ({
                             ) : filePreview.error ? (
                               <X className="h-6 w-6 text-white" />
                             ) : (
-                              <File className="h-6 w-6 text-white" />
+                              <FileIcon className="h-6 w-6 text-white" />
                             )}
                           </div>
                           <div className="overflow-hidden flex-1">

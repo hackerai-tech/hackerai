@@ -53,6 +53,17 @@ struct LocalFileMetadata {
     last_modified: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFileData {
+    path: String,
+    name: String,
+    media_type: String,
+    size: u64,
+    last_modified: u64,
+    base64: String,
+}
+
 fn json_error_body(message: &str) -> String {
     serde_json::to_string(&serde_json::json!({ "error": message }))
         .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
@@ -121,6 +132,23 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
         media_type: guess_media_type(&path_buf),
         size: metadata.len(),
         last_modified,
+    })
+}
+
+#[tauri::command]
+fn read_local_file(path: String) -> Result<LocalFileData, String> {
+    use base64::Engine;
+
+    let metadata = get_local_file_metadata(path.clone())?;
+    let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(LocalFileData {
+        path: metadata.path,
+        name: metadata.name,
+        media_type: metadata.media_type,
+        size: metadata.size,
+        last_modified: metadata.last_modified,
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
 }
 
@@ -1295,6 +1323,7 @@ pub fn run() {
             get_dev_auth_port,
             get_cmd_server_info,
             get_local_file_metadata,
+            read_local_file,
             execute_command,
             execute_stream_command,
             cancel_stream_command,
