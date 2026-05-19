@@ -1,6 +1,7 @@
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
+import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name";
 import { NextRequest, NextResponse } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
@@ -12,9 +13,9 @@ export const POST = async (req: NextRequest) => {
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
-    // Get user details from WorkOS to use email as organization name
+    // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
-    const orgName = user.email;
+    const orgName = buildWorkOSOrganizationName(user);
     const allowedPlans = new Set([
       "pro-monthly-plan",
       "pro-plus-monthly-plan",
