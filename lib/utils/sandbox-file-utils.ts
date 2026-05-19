@@ -21,7 +21,7 @@ const logLocalAttachmentDebug = (
   event: string,
   data: Record<string, unknown>,
 ) => {
-  if (process.env.NODE_ENV === "production") return;
+  if (process.env.NODE_ENV !== "development") return;
   console.info(`[local-attachments] ${event}`, data);
 };
 
@@ -344,6 +344,15 @@ const describeSandboxFileForLog = (file: SandboxFile) => {
   };
 };
 
+const redactSandboxUploadError = (
+  file: SandboxFile,
+  error: unknown,
+): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (file.kind !== "localPath") return message;
+  return message.split(file.path).join("[redacted-local-path]");
+};
+
 /**
  * Uploads files to the sandbox environment in parallel
  * - Downloads files directly from S3 URLs using curl in the sandbox
@@ -393,10 +402,7 @@ export const uploadSandboxFiles = async (
       const result = results[i] as PromiseRejectedResult;
       console.error("  -", {
         ...describeSandboxFileForLog(file),
-        error:
-          result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason),
+        error: redactSandboxUploadError(file, result.reason),
       });
     });
   }

@@ -89,4 +89,40 @@ describe("desktop-local sandbox file helpers", () => {
     );
     expect(downloadFromUrl).not.toHaveBeenCalled();
   });
+
+  it("redacts desktop source paths from staging failure logs", async () => {
+    const sourcePath = "/Users/alice/Secrets/report.pdf";
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    try {
+      await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: sourcePath,
+            localPath: "/tmp/hackerai-upload/report.pdf",
+          },
+        ],
+        async () => ({
+          files: {
+            copyLocal: jest
+              .fn()
+              .mockRejectedValue(
+                new Error(`Failed to copy ${sourcePath}: permission denied`),
+              ),
+          },
+        }),
+      );
+
+      const logged = consoleErrorSpy.mock.calls
+        .map((call) => JSON.stringify(call))
+        .join("\n");
+      expect(logged).not.toContain(sourcePath);
+      expect(logged).toContain("[redacted-local-path]");
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });

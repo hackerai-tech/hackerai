@@ -37,7 +37,7 @@ const logLocalAttachmentDebug = (
 ) => {
   if (typeof window === "undefined") return;
   const enabled =
-    process.env.NODE_ENV !== "production" ||
+    process.env.NODE_ENV === "development" ||
     window.localStorage.getItem("hackerai:debug-local-attachments") === "1";
   if (!enabled) return;
   console.info(`[local-attachments] ${event}`, data);
