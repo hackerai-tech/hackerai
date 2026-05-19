@@ -401,6 +401,7 @@ export type AgentLongPayload = {
   subscription: SubscriptionTier;
   organizationId?: string;
   messages: UIMessage[];
+  localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
   sandboxPreference?: SandboxPreference;
   selectedModel?: SelectedModel;
@@ -455,6 +456,7 @@ export const agentLongTask = task({
       subscription,
       organizationId,
       messages,
+      localDesktopAttachmentsPrepared,
       sandboxPreference,
       selectedModel: selectedModelOverride,
       userLocation,
@@ -532,13 +534,21 @@ export const agentLongTask = task({
       );
 
       const uploadBasePath = getUploadBasePath(sandboxPreference);
+      const messagesForProcessing =
+        localDesktopAttachmentsPrepared && messages.length > 0
+          ? messages
+          : truncatedMessages.length
+            ? truncatedMessages
+            : messages;
+
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
-          messages: truncatedMessages.length ? truncatedMessages : messages,
+          messages: messagesForProcessing,
           mode,
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          allowLocalDesktopFiles: sandboxPreference === "desktop",
         });
 
       if (!processedMessages.length) {

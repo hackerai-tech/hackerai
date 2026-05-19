@@ -509,12 +509,14 @@ export async function processChatMessages({
   subscription,
   uploadBasePath,
   modelOverride,
+  allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
   subscription: SubscriptionTier;
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
+  allowLocalDesktopFiles?: boolean;
 }) {
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
@@ -533,6 +535,7 @@ export async function processChatMessages({
       mode,
       uploadBasePath,
       subscription,
+      allowLocalDesktopFiles,
     );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.

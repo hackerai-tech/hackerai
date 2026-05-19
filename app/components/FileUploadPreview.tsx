@@ -12,7 +12,11 @@ import {
   UploadedFileState,
   FileUploadPreviewProps,
   FilePreview,
+  LocalDesktopFile,
 } from "@/types/file";
+
+const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
+  typeof File !== "undefined" && file instanceof File;
 
 export const FileUploadPreview = ({
   uploadedFiles,
@@ -45,7 +49,10 @@ export const FileUploadPreview = ({
         };
 
         // Generate base64 preview for images - this will show immediately while uploading
-        if (isImageFile(uploadedFile.file)) {
+        if (
+          isImageFile(uploadedFile.file) &&
+          isBrowserFile(uploadedFile.file)
+        ) {
           const fileKey = generateFileKey(uploadedFile.file);
           const cachedPreview = previewCache.current.get(fileKey);
 
@@ -207,7 +214,7 @@ export const FileUploadPreview = ({
                             >
                               {filePreview.error
                                 ? "Upload failed"
-                                : `Document • ${formatFileSize(filePreview.file.size)}`}
+                                : `${uploadedFiles[index]?.storage === "local-desktop" ? "Local file" : "Document"} • ${formatFileSize(filePreview.file.size)}`}
                             </div>
                           </div>
                         </div>

@@ -12,10 +12,20 @@ import {
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
 import { getMaxFileTokens } from "@/lib/token-utils";
-import { FileProcessingResult, FileSource } from "@/types/file";
+import {
+  FileProcessingResult,
+  FileSource,
+  LocalDesktopFile,
+} from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
+import {
+  getLocalFileMetadata,
+  isTauriEnvironment,
+  pickLocalFiles,
+} from "./useTauri";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
@@ -30,6 +40,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     removeUploadedFile,
     subscription,
     getTotalTokens,
+    sandboxPreference,
   } = useGlobalState();
 
   // Drag and drop state
@@ -45,6 +56,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const generateS3UploadUrlAction = useAction(
     api.s3Actions.generateS3UploadUrlAction,
   );
+
+  const shouldUseLocalDesktopAttachments =
+    isTauriEnvironment() &&
+    isAgentMode(mode) &&
+    sandboxPreference === "desktop";
 
   // Helper to show rate limit warning (throttled to once per minute)
   const showRateLimitWarning = useCallback((rateLimit: RateLimitInfo) => {
@@ -294,6 +310,86 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
   );
 
+  const startLocalDesktopFiles = useCallback(
+    (files: Array<LocalDesktopFile & { path: string }>) => {
+      files.forEach((file) => {
+        addUploadedFile({
+          file: {
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            lastModified: file.lastModified,
+          },
+          uploading: false,
+          uploaded: true,
+          storage: "local-desktop",
+          localAttachmentId:
+            typeof crypto !== "undefined" && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          localPath: file.path,
+          tokens: 0,
+        });
+      });
+    },
+    [addUploadedFile],
+  );
+
+  const processLocalDesktopPaths = useCallback(
+    async (paths: string[]) => {
+      if (subscription === "free") {
+        toast.error("Upgrade plan to upload files.");
+        return;
+      }
+
+      const existingUploadedCount = uploadedFiles.length;
+      const remainingSlots = maxFilesLimit - existingUploadedCount;
+      if (remainingSlots <= 0) {
+        toast.error(
+          `Maximum ${maxFilesLimit} files allowed. Please remove some files before adding more.`,
+        );
+        return;
+      }
+
+      const selectedPaths = paths.slice(0, remainingSlots);
+      if (paths.length > selectedPaths.length) {
+        toast.error(
+          `Only ${selectedPaths.length} files were added. Maximum ${maxFilesLimit} files allowed.`,
+        );
+      }
+
+      const validFiles: Array<LocalDesktopFile & { path: string }> = [];
+      const invalidFiles: string[] = [];
+
+      for (const path of selectedPaths) {
+        const metadata = await getLocalFileMetadata(path);
+        if (!metadata) continue;
+
+        const file = {
+          path: metadata.path,
+          name: metadata.name,
+          type: metadata.mediaType || "application/octet-stream",
+          size: metadata.size,
+          lastModified: metadata.lastModified || Date.now(),
+        };
+        const validation = validateFile(file);
+        if (!validation.valid) {
+          invalidFiles.push(`${file.name}: ${validation.error}`);
+          continue;
+        }
+        validFiles.push(file);
+      }
+
+      if (invalidFiles.length > 0) {
+        toast.error(`Some files were invalid:\n${invalidFiles.join("\n")}`);
+      }
+      if (validFiles.length > 0) {
+        startLocalDesktopFiles(validFiles);
+      }
+    },
+    [subscription, uploadedFiles.length, maxFilesLimit, startLocalDesktopFiles],
+  );
+
   // Unified file processing function
   const processFiles = useCallback(
     async (files: File[], source: FileSource) => {
@@ -346,7 +442,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
     // If the file was uploaded to Convex, delete it from storage
-    if (uploadedFile?.fileId) {
+    if (uploadedFile?.fileId && uploadedFile.storage !== "local-desktop") {
       try {
         await deleteFile({
           fileId: uploadedFile.fileId as Id<"files">,
@@ -362,6 +458,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   };
 
   const handleAttachClick = () => {
+    if (shouldUseLocalDesktopAttachments) {
+      pickLocalFiles().then((paths) => {
+        if (paths.length > 0) {
+          processLocalDesktopPaths(paths);
+        }
+      });
+      return;
+    }
     fileInputRef.current?.click();
   };
 

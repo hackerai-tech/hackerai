@@ -323,11 +323,7 @@ export interface ExtraUsageConfig {
 export interface QueuedMessage {
   id: string;
   text: string;
-  files?: Array<{
-    file: File;
-    fileId: Id<"files">;
-    url: string;
-  }>;
+  files?: import("@/types/file").FileMessagePart[];
   timestamp: number;
 }
 

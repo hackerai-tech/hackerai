@@ -296,11 +296,14 @@ const applyModeSpecificTransforms = async (
   sandboxFiles: SandboxFile[],
   uploadBasePath?: string,
   maxFileTokens?: number,
+  allowLocalDesktopFiles?: boolean,
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
   if (mode === "agent") {
-    collectSandboxFiles(messages, sandboxFiles, uploadBasePath);
+    collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
+      allowLocalDesktopFiles,
+    });
     removeNonMediaFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
@@ -343,6 +346,7 @@ export const processMessageFiles = async (
   mode: ChatMode = "ask",
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
+  allowLocalDesktopFiles: boolean = false,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -379,6 +383,7 @@ export const processMessageFiles = async (
     sandboxFiles,
     uploadBasePath,
     maxFileTokens,
+    allowLocalDesktopFiles,
   );
 
   return {
