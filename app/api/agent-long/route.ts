@@ -96,15 +96,16 @@ export async function POST(req: NextRequest) {
           subscription,
         );
         let stagedSandbox: any = null;
-        const uploadResult = await uploadSandboxFiles(
-          sandboxFiles,
-          async () => {
+        let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
+        try {
+          uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
             const { sandbox } = await sandboxManager.getSandbox();
             stagedSandbox = sandbox;
             return sandbox;
-          },
-        );
-        await stagedSandbox?.close?.().catch(() => {});
+          });
+        } finally {
+          await stagedSandbox?.close?.().catch(() => {});
+        }
         if (uploadResult.failedCount > 0) {
           const noun =
             uploadResult.failedCount === 1 ? "attachment" : "attachments";

@@ -42,6 +42,9 @@ const logLocalAttachmentDebug = (
   console.info(`[local-attachments] ${event}`, data);
 };
 
+const getFilenameFromPath = (path: string) =>
+  path.split(/[\\/]/).filter(Boolean).pop() || "selected file";
+
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
@@ -386,8 +389,25 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const invalidFiles: string[] = [];
 
       for (const path of selectedPaths) {
-        const metadata = await getLocalFileMetadata(path);
-        if (!metadata) continue;
+        let metadata: Awaited<ReturnType<typeof getLocalFileMetadata>>;
+        try {
+          metadata = await getLocalFileMetadata(path);
+        } catch (error) {
+          logLocalAttachmentDebug("local-metadata-error", {
+            fileName: getFilenameFromPath(path),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          invalidFiles.push(
+            `${getFilenameFromPath(path)}: could not read file metadata`,
+          );
+          continue;
+        }
+        if (!metadata) {
+          invalidFiles.push(
+            `${getFilenameFromPath(path)}: could not read file metadata`,
+          );
+          continue;
+        }
 
         const file = {
           path: metadata.path,
@@ -497,14 +517,21 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     });
 
     if (shouldUseLocalDesktopAttachments) {
-      pickLocalFiles().then((paths) => {
-        logLocalAttachmentDebug("local-picker-result", {
-          selectedCount: paths.length,
+      pickLocalFiles()
+        .then(async (paths) => {
+          logLocalAttachmentDebug("local-picker-result", {
+            selectedCount: paths.length,
+          });
+          if (paths.length > 0) {
+            await processLocalDesktopPaths(paths);
+          }
+        })
+        .catch((error) => {
+          logLocalAttachmentDebug("local-picker-error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          toast.error("Failed to open file picker");
         });
-        if (paths.length > 0) {
-          processLocalDesktopPaths(paths);
-        }
-      });
       return;
     }
     fileInputRef.current?.click();

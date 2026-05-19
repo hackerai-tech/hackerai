@@ -540,6 +540,7 @@ export const agentLongTask = task({
           : truncatedMessages.length
             ? truncatedMessages
             : messages;
+      const messagesForAccounting = messagesForProcessing;
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -567,12 +568,12 @@ export const agentLongTask = task({
         selectedModel,
         userCustomization,
         temporary,
-        truncatedMessages,
+        truncatedMessages: messagesForAccounting,
       });
 
       chatLogger.setChat(
         {
-          messageCount: truncatedMessages.length,
+          messageCount: messagesForAccounting.length,
           estimatedInputTokens,
           isNewChat: !!isNewChat,
           fileCount: 0,
@@ -774,7 +775,7 @@ export const agentLongTask = task({
             : 0;
           const initialCtxUsage = contextUsageOn
             ? computeContextUsage(
-                truncatedMessages,
+                messagesForAccounting,
                 fileTokens,
                 ctxSystemTokens,
                 ctxMaxTokens,

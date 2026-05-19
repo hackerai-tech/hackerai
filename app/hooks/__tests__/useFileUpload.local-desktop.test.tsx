@@ -38,6 +38,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
 }));
 
 describe("useFileUpload desktop-local agent attachments", () => {
+  const originalFetch = global.fetch;
+
   beforeEach(() => {
     jest.clearAllMocks();
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
@@ -59,6 +61,10 @@ describe("useFileUpload desktop-local agent attachments", () => {
       fileId: "file_123",
       tokens: 10,
     });
+  });
+
+  afterAll(() => {
+    global.fetch = originalFetch;
   });
 
   it("uses Tauri file paths without calling S3 in desktop Agent mode", async () => {

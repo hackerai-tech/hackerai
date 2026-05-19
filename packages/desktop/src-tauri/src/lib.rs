@@ -53,6 +53,19 @@ struct LocalFileMetadata {
     last_modified: u64,
 }
 
+fn json_error_body(message: &str) -> String {
+    serde_json::to_string(&serde_json::json!({ "error": message }))
+        .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+}
+
+fn json_stream_error_line(message: &str) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "type": "error",
+        "message": message,
+    }))
+    .unwrap_or_else(|_| r#"{"type":"error","message":"serialization failed"}"#.to_string())
+}
+
 fn guess_media_type(path: &std::path::Path) -> String {
     match path
         .extension()
@@ -449,11 +462,8 @@ async fn handle_cmd_request(
 
     let (status, resp_body) = match result {
         Ok(json) => ("200 OK", json),
-        Err(e) if e == "not found" => ("404 Not Found", format!(r#"{{"error":"not found"}}"#)),
-        Err(e) => (
-            "500 Internal Server Error",
-            format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\"")),
-        ),
+        Err(e) if e == "not found" => ("404 Not Found", json_error_body("not found")),
+        Err(e) => ("500 Internal Server Error", json_error_body(&e)),
     };
 
     let response = format!(
@@ -528,10 +538,7 @@ async fn handle_execute_stream(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let err_body = format!(
-                r#"{{"error":"Failed to spawn: {}"}}"#,
-                e.to_string().replace('"', "\\\"")
-            );
+            let err_body = json_error_body(&format!("Failed to spawn: {}", e));
             let resp = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
                 err_body.len(), err_body
@@ -605,19 +612,14 @@ async fn handle_execute_stream(
             write_chunk(stream, &line).await;
         }
         Ok(Err(e)) => {
-            let line = format!(
-                r#"{{"type":"error","message":"Process error: {}"}}"#,
-                e.to_string().replace('"', "\\\"")
-            );
+            let line = json_stream_error_line(&format!("Process error: {}", e));
             write_chunk(stream, &line).await;
         }
         Err(_) => {
             // Timeout — gracefully kill the process
             platform::graceful_kill(&mut child).await;
-            let line = format!(
-                r#"{{"type":"error","message":"Command timed out after {}ms"}}"#,
-                req.timeout_ms
-            );
+            let line =
+                json_stream_error_line(&format!("Command timed out after {}ms", req.timeout_ms));
             write_chunk(stream, &line).await;
         }
     }
