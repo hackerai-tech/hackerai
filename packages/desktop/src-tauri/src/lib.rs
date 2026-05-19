@@ -86,6 +86,7 @@ fn guess_media_type(path: &std::path::Path) -> String {
         .as_str()
     {
         "png" => "image/png",
+        "svg" => "image/svg+xml",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
