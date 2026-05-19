@@ -16,6 +16,7 @@ import {
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
+import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
@@ -151,6 +152,21 @@ export async function saveMessage({
       message.role === "assistant"
         ? fixIncompleteMessageParts(message.parts)
         : message.parts;
+    const storageSafeMessage =
+      message.role === "assistant"
+        ? compactMessageForStorage({ ...message, parts: fixedParts })
+        : null;
+    const storageSafeParts = storageSafeMessage?.message.parts ?? fixedParts;
+    if (storageSafeMessage?.compacted) {
+      console.info("[db] compacted assistant message before save", {
+        chatId,
+        messageId: message.id,
+        beforeSizeBytes: storageSafeMessage.beforeSizeBytes,
+        afterSizeBytes: storageSafeMessage.afterSizeBytes,
+        prunedCount: storageSafeMessage.prunedCount,
+        strippedUiOnlyFields: storageSafeMessage.strippedUiOnlyFields,
+      });
+    }
 
     fixedParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
       any,
@@ -158,7 +174,7 @@ export async function saveMessage({
     >[];
 
     // Extract file IDs from file parts
-    const fileIds = extractFileIdsFromParts(fixedParts);
+    const fileIds = extractFileIdsFromParts(storageSafeParts);
     const mergedFileIds = [
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
@@ -170,7 +186,7 @@ export async function saveMessage({
       chatId,
       userId,
       role: message.role,
-      parts: fixedParts,
+      parts: storageSafeParts,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
       mode,

@@ -5,6 +5,8 @@ import {
   pruneModelMessages,
   filterEmptyAssistantMessages,
   repairAnthropicModelMessages,
+  compactMessageForStorage,
+  estimateSerializedSizeBytes,
 } from "../prune-tool-outputs";
 
 // Helper to create a UIMessage with tool parts
@@ -690,6 +692,87 @@ describe("pruneToolOutputs", () => {
     expect(result.toolOutputCount).toBe(2);
     expect(result.totalToolOutputTokens).toBeGreaterThan(0);
     expect(result.tokensSaved).toBeGreaterThan(0);
+  });
+});
+
+describe("compactMessageForStorage", () => {
+  it("leaves small assistant messages unchanged", () => {
+    const message = makeAssistantMessage([
+      { type: "text", text: "small answer" },
+      makeToolPart(
+        "file",
+        { content: "ok", originalContent: "ok" },
+        { action: "read", path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10_000,
+    });
+
+    expect(result.compacted).toBe(false);
+    expect(result.message).toBe(message);
+    expect(result.prunedCount).toBe(0);
+  });
+
+  it("strips bulky UI-only file fields before storage", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file",
+        {
+          content: "latest content",
+          originalContent: "x".repeat(5000),
+          modifiedContent: "y".repeat(5000),
+        },
+        { action: "edit", path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    const part = result.message.parts[0] as any;
+    expect(result.compacted).toBe(true);
+    expect(result.strippedUiOnlyFields).toBe(true);
+    expect(part.output).toEqual({ content: "latest content" });
+    expect(result.afterSizeBytes).toBeLessThan(result.beforeSizeBytes);
+  });
+
+  it("prunes old tool outputs when stripped parts are still too large", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file",
+        { content: "old ".repeat(2000) },
+        { action: "read", path: "/tmp/old.txt" },
+      ),
+      makeToolPart(
+        "file",
+        { content: "new ".repeat(2000) },
+        { action: "read", path: "/tmp/new.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 100,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.prunedCount).toBeGreaterThan(0);
+    expect(estimateSerializedSizeBytes(result.message.parts)).toBeLessThan(
+      estimateSerializedSizeBytes(message.parts),
+    );
+  });
+
+  it("does not compact user messages", () => {
+    const message = makeUserMessage("x".repeat(5000));
+
+    const result = compactMessageForStorage(message, { softLimitBytes: 100 });
+
+    expect(result.compacted).toBe(false);
+    expect(result.message).toBe(message);
   });
 });
 

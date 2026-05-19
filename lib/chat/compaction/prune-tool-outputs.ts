@@ -48,6 +48,18 @@ export interface PruneResult {
     | null;
 }
 
+export interface StorageCompactionResult<T extends UIMessage = UIMessage> {
+  message: T;
+  compacted: boolean;
+  beforeSizeBytes: number;
+  afterSizeBytes: number;
+  strippedUiOnlyFields: boolean;
+  prunedCount: number;
+}
+
+const STORAGE_MESSAGE_SOFT_LIMIT_BYTES = 850 * 1024;
+const STORAGE_TOOL_OUTPUT_TOKEN_BUDGET = 20_000;
+
 // ---------------------------------------------------------------------------
 // Placeholder builders per tool type
 // ---------------------------------------------------------------------------
@@ -145,6 +157,122 @@ const countOutputTokens = (output: unknown): number => {
   if (typeof output === "string") return countTokens(output);
   return countTokens(JSON.stringify(output));
 };
+
+export const estimateSerializedSizeBytes = (value: unknown): number =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
+  if (!part || typeof part !== "object") return part;
+  const output = part.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return part;
+  }
+
+  if (part.type === "tool-file") {
+    const { originalContent, modifiedContent, ...restOutput } =
+      output as Record<string, unknown>;
+
+    if (originalContent !== undefined || modifiedContent !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  if (part.type === "tool-update_note") {
+    const { original, modified, ...restOutput } = output as Record<
+      string,
+      unknown
+    >;
+
+    if (original !== undefined || modified !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  if (
+    part.type === "tool-run_terminal_cmd" ||
+    part.type === "tool-interact_terminal_session"
+  ) {
+    const { rawSnapshot, ...restOutput } = output as Record<string, unknown>;
+
+    if (rawSnapshot !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  return part;
+};
+
+/**
+ * Compacts a single assistant UIMessage before database storage.
+ *
+ * Convex documents are capped at 1 MiB, so long agent runs can fail when a
+ * single assistant message accumulates many tool outputs. This preserves normal
+ * messages, then progressively removes UI-only bulk and old tool output detail
+ * once the serialized parts payload approaches the document limit.
+ */
+export function compactMessageForStorage<T extends UIMessage>(
+  message: T,
+  {
+    softLimitBytes = STORAGE_MESSAGE_SOFT_LIMIT_BYTES,
+    toolOutputTokenBudget = STORAGE_TOOL_OUTPUT_TOKEN_BUDGET,
+  }: {
+    softLimitBytes?: number;
+    toolOutputTokenBudget?: number;
+  } = {},
+): StorageCompactionResult<T> {
+  const beforeSizeBytes = estimateSerializedSizeBytes(message.parts);
+
+  if (message.role !== "assistant" || beforeSizeBytes <= softLimitBytes) {
+    return {
+      message,
+      compacted: false,
+      beforeSizeBytes,
+      afterSizeBytes: beforeSizeBytes,
+      strippedUiOnlyFields: false,
+      prunedCount: 0,
+    };
+  }
+
+  let strippedUiOnlyFields = false;
+  let parts = message.parts.map((part) => {
+    const stripped = stripBulkyOutputFields(part as ToolPart);
+    if (stripped !== part) strippedUiOnlyFields = true;
+    return stripped as UIMessage["parts"][number];
+  });
+
+  let afterSizeBytes = estimateSerializedSizeBytes(parts);
+  let prunedCount = 0;
+
+  if (afterSizeBytes > softLimitBytes) {
+    const pruneResult = pruneToolOutputs(
+      [{ ...message, parts }],
+      toolOutputTokenBudget,
+      0,
+    );
+    parts = pruneResult.messages[0]?.parts ?? parts;
+    prunedCount += pruneResult.prunedCount;
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    const pruneResult = pruneToolOutputs([{ ...message, parts }], 0, 0);
+    parts = pruneResult.messages[0]?.parts ?? parts;
+    prunedCount += pruneResult.prunedCount;
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  const compacted =
+    strippedUiOnlyFields || prunedCount > 0 || afterSizeBytes < beforeSizeBytes;
+
+  return {
+    message: compacted ? ({ ...message, parts } as T) : message,
+    compacted,
+    beforeSizeBytes,
+    afterSizeBytes,
+    strippedUiOnlyFields,
+    prunedCount,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Main pruning function
