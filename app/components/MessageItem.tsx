@@ -151,14 +151,6 @@ export const MessageItem = memo(function MessageItem({
     index === lastAssistantMessageIndex;
   const canRegenerate = status === "ready" || status === "error";
   const isLastMessage = index === messagesLength - 1;
-  const isLoading = status === "submitted" || status === "streaming";
-  const isActiveUserPromptDuringGeneration =
-    isUser &&
-    isLoading &&
-    lastAssistantMessageIndex !== undefined &&
-    index === lastAssistantMessageIndex - 1;
-  const shouldUseContentVisibility =
-    !isLastMessage && !isActiveUserPromptDuringGeneration;
 
   // Only the last assistant message should propagate "streaming" status to its
   // tool handlers. Old messages may have tools stuck in input-available /
@@ -307,15 +299,6 @@ export const MessageItem = memo(function MessageItem({
         className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={onMouseLeave}
-        style={{
-          // Keep the active prompt rendered while its response starts. If a
-          // long prompt becomes non-last and collapses to the 100px intrinsic
-          // placeholder, the chat scroll position jumps upward mid-stream.
-          contentVisibility: shouldUseContentVisibility ? "auto" : "visible",
-          containIntrinsicSize: shouldUseContentVisibility
-            ? "auto 100px"
-            : undefined,
-        }}
       >
         {isEditing && isUser ? (
           <div className="w-full">
