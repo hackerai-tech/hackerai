@@ -10,7 +10,6 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_VIEW_PDF_PAGES = 8;
 const FILE_ACTIONS_WITH_VIEW = [
   "view",
   "read",
@@ -22,9 +21,9 @@ const FILE_ACTIONS_TEXT_ONLY = ["read", "write", "append", "edit"] as const;
 type FileAction = (typeof FILE_ACTIONS_WITH_VIEW)[number];
 
 const MULTIMODAL_UPGRADE_MESSAGE =
-  "The current model does not support multimodal tool results for sandbox images/PDFs. Please select HackerAI Pro or HackerAI Max and retry the view action.";
+  "The current model does not support multimodal tool results for sandbox images. Please select HackerAI Pro or HackerAI Max and retry the view action.";
 
-type ViewKind = "image" | "pdf";
+type ViewKind = "image";
 
 type ViewPreviewFile = {
   fileId: Id<"files">;
@@ -32,7 +31,6 @@ type ViewPreviewFile = {
   mediaType: string;
   s3Key?: string;
   storageId?: Id<"_storage">;
-  page?: number;
 };
 
 type ViewMetadata = {
@@ -43,11 +41,7 @@ type ViewMetadata = {
   mediaType: string;
   sizeBytes: number;
   kind: ViewKind;
-  pageCount?: number;
   previewFiles?: ViewPreviewFile[];
-  renderedPages?: number[];
-  renderedPageLimit?: number;
-  truncatedPages?: boolean;
   previewError?: string;
 };
 
@@ -57,16 +51,6 @@ type SandboxViewPayload = {
   sizeBytes: number;
   kind: ViewKind;
   data?: string;
-  pageCount?: number;
-  pages?: Array<{
-    page: number;
-    path: string;
-    mediaType: "image/png";
-    sizeBytes: number;
-    data?: string;
-  }>;
-  renderedPageLimit?: number;
-  truncatedPages?: boolean;
 };
 
 const VIEW_FILE_SCRIPT = String.raw`
@@ -74,42 +58,15 @@ import base64
 import json
 import mimetypes
 import os
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
-import uuid
 
 path = os.environ["HACKERAI_FILE_VIEW_PATH"]
 include_data = os.environ.get("HACKERAI_FILE_VIEW_INCLUDE_DATA") == "1"
 max_bytes = int(os.environ.get("HACKERAI_FILE_VIEW_MAX_BYTES", "10485760"))
-max_pdf_pages = int(os.environ.get("HACKERAI_FILE_VIEW_MAX_PDF_PAGES", "8"))
-range_raw = os.environ.get("HACKERAI_FILE_VIEW_RANGE")
 
 def emit(payload, code=0):
     print(json.dumps(payload, separators=(",", ":")))
     sys.exit(code)
-
-def parse_range():
-    if not range_raw:
-        return None
-    try:
-        value = json.loads(range_raw)
-    except Exception:
-        emit({"error": "Invalid range for view action. Expected [start_page, end_page]."}, 6)
-    if (
-        not isinstance(value, list)
-        or len(value) != 2
-        or not all(isinstance(item, int) for item in value)
-    ):
-        emit({"error": "Invalid range for view action. Expected [start_page, end_page]."}, 6)
-    start, end = value
-    if start < 1:
-        emit({"error": "Invalid PDF page range: start_page must be >= 1."}, 6)
-    if end != -1 and end < start:
-        emit({"error": "Invalid PDF page range: end_page cannot be before start_page."}, 6)
-    return start, end
 
 if not os.path.isfile(path):
     emit({"error": f"File not found or is not a regular file: {path}"}, 2)
@@ -118,7 +75,7 @@ size = os.path.getsize(path)
 if size > max_bytes:
     emit({
         "error": (
-            f"File is too large for multimodal view ({size} bytes). "
+            f"Image is too large for view ({size} bytes). "
             f"Maximum supported size is {max_bytes} bytes."
         )
     }, 3)
@@ -127,8 +84,6 @@ with open(path, "rb") as f:
     head = f.read(32)
 
 def detect_media_type(head_bytes, file_path):
-    if head_bytes.startswith(b"%PDF-"):
-        return "application/pdf"
     if head_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if head_bytes.startswith(b"\xff\xd8\xff"):
@@ -141,149 +96,26 @@ def detect_media_type(head_bytes, file_path):
     return guessed or "application/octet-stream"
 
 media_type = detect_media_type(head, path)
-page_range = parse_range()
 if media_type == "image/svg+xml":
     emit({"error": "SVG files are text/vector files. Use the read action instead of view."}, 4)
-if media_type != "application/pdf" and not media_type.startswith("image/"):
+if not media_type.startswith("image/"):
     emit({
         "error": (
             f"Unsupported media type for view: {media_type}. "
-            "Use read for text-based files."
+            "The view action is only for raster image files. Use read or a purpose-built converter for PDFs and text-based files."
         )
     }, 5)
-if page_range and media_type != "application/pdf":
-    emit({"error": "The range parameter for view is only supported for PDF page ranges."}, 6)
-
-def bounded_pages(page_count, page_range_value):
-    if page_count < 1:
-        emit({"error": "PDF has no pages to view."}, 7)
-    if page_range_value:
-        start, end = page_range_value
-        if start > page_count:
-            emit({"error": f"Invalid PDF page range: start_page {start} exceeds page count {page_count}."}, 7)
-        resolved_end = page_count if end == -1 else min(end, page_count)
-    else:
-        start, resolved_end = 1, page_count
-    render_end = min(resolved_end, start + max_pdf_pages - 1)
-    pages = list(range(start, render_end + 1))
-    return pages, resolved_end > render_end
-
-def render_pdf_with_pymupdf(file_path, page_range_value):
-    try:
-        import fitz
-    except Exception:
-        return None
-    doc = fitz.open(file_path)
-    page_count = doc.page_count
-    page_numbers, truncated = bounded_pages(page_count, page_range_value)
-    out_dir = os.path.join(tempfile.gettempdir(), "hackerai-pdf-view", uuid.uuid4().hex)
-    os.makedirs(out_dir, mode=0o755, exist_ok=True)
-    os.chmod(out_dir, 0o755)
-    rendered = []
-    for page_number in page_numbers:
-        page = doc.load_page(page_number - 1)
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        out_path = os.path.join(out_dir, f"page-{page_number}.png")
-        pixmap.save(out_path)
-        os.chmod(out_path, 0o644)
-        rendered.append({
-            "page": page_number,
-            "path": out_path,
-            "mediaType": "image/png",
-            "sizeBytes": os.path.getsize(out_path),
-        })
-    doc.close()
-    return page_count, rendered, truncated
-
-def render_pdf_with_pdftoppm(file_path, page_range_value):
-    if not shutil.which("pdftoppm") or not shutil.which("pdfinfo"):
-        return None
-    info = subprocess.run(["pdfinfo", file_path], capture_output=True, text=True)
-    if info.returncode != 0:
-        return None
-    match = re.search(r"^Pages:\s+(\d+)", info.stdout, re.MULTILINE)
-    if not match:
-        return None
-    page_count = int(match.group(1))
-    page_numbers, truncated = bounded_pages(page_count, page_range_value)
-    out_dir = os.path.join(tempfile.gettempdir(), "hackerai-pdf-view", uuid.uuid4().hex)
-    os.makedirs(out_dir, mode=0o755, exist_ok=True)
-    os.chmod(out_dir, 0o755)
-    prefix = os.path.join(out_dir, "page")
-    result = subprocess.run(
-        [
-            "pdftoppm",
-            "-png",
-            "-r",
-            "144",
-            "-f",
-            str(page_numbers[0]),
-            "-l",
-            str(page_numbers[-1]),
-            file_path,
-            prefix,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    paths = sorted(
-        os.path.join(out_dir, name)
-        for name in os.listdir(out_dir)
-        if name.endswith(".png")
-    )
-    if len(paths) != len(page_numbers):
-        return None
-    for out_path in paths:
-        os.chmod(out_path, 0o644)
-    rendered = [
-        {
-            "page": page_number,
-            "path": out_path,
-            "mediaType": "image/png",
-            "sizeBytes": os.path.getsize(out_path),
-        }
-        for page_number, out_path in zip(page_numbers, paths)
-    ]
-    return page_count, rendered, truncated
-
-def render_pdf_pages(file_path, page_range_value):
-    rendered = render_pdf_with_pymupdf(file_path, page_range_value)
-    if rendered is not None:
-        return rendered
-    rendered = render_pdf_with_pdftoppm(file_path, page_range_value)
-    if rendered is not None:
-        return rendered
-    emit({
-        "error": (
-            "PDF page rendering is unavailable in this sandbox. "
-            "Install PyMuPDF or poppler-utils, then retry the view action."
-        )
-    }, 8)
 
 payload = {
     "path": path,
     "mediaType": media_type,
     "sizeBytes": size,
-    "kind": "pdf" if media_type == "application/pdf" else "image",
+    "kind": "image",
 }
 
-if media_type == "application/pdf":
-    page_count, rendered_pages, truncated_pages = render_pdf_pages(path, page_range)
-    payload["pageCount"] = page_count
-    payload["pages"] = rendered_pages
-    payload["renderedPageLimit"] = max_pdf_pages
-    payload["truncatedPages"] = truncated_pages
-
 if include_data:
-    if media_type == "application/pdf":
-        for page in payload["pages"]:
-            with open(page["path"], "rb") as f:
-                page["data"] = base64.b64encode(f.read()).decode("ascii")
-    else:
-        with open(path, "rb") as f:
-            payload["data"] = base64.b64encode(f.read()).decode("ascii")
+    with open(path, "rb") as f:
+        payload["data"] = base64.b64encode(f.read()).decode("ascii")
 
 emit(payload)
 `;
@@ -336,11 +168,10 @@ async function readSandboxFileForView(
   sandbox: any,
   path: string,
   includeData: boolean,
-  range?: number[],
 ): Promise<SandboxViewPayload> {
   if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) {
     throw new Error(
-      "The view action is not available for Windows local sandboxes yet. Use a Linux/E2B sandbox or convert the file to text manually.",
+      "The view action is not available for Windows local sandboxes yet. Use a Linux/E2B sandbox or inspect the image manually.",
     );
   }
 
@@ -349,8 +180,6 @@ async function readSandboxFileForView(
     HACKERAI_FILE_VIEW_PATH: sandboxPath,
     HACKERAI_FILE_VIEW_INCLUDE_DATA: includeData ? "1" : "0",
     HACKERAI_FILE_VIEW_MAX_BYTES: String(MAX_VIEW_FILE_BYTES),
-    HACKERAI_FILE_VIEW_MAX_PDF_PAGES: String(MAX_VIEW_PDF_PAGES),
-    ...(range ? { HACKERAI_FILE_VIEW_RANGE: JSON.stringify(range) } : {}),
   };
   const command = `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" - <<'PY'\n${VIEW_FILE_SCRIPT}\nPY`;
   let result: {
@@ -414,20 +243,13 @@ async function readSandboxFileForView(
     !payload.path ||
     !payload.mediaType ||
     typeof payload.sizeBytes !== "number" ||
-    (payload.kind !== "image" && payload.kind !== "pdf")
+    payload.kind !== "image"
   ) {
     throw new Error("View inspection returned an invalid payload.");
   }
 
   if (includeData && !payload.data) {
-    const hasPageData =
-      payload.kind === "pdf" &&
-      Array.isArray(payload.pages) &&
-      payload.pages.length > 0 &&
-      payload.pages.every((page) => typeof page.data === "string");
-    if (!hasPageData) {
-      throw new Error("View inspection did not return file data.");
-    }
+    throw new Error("View inspection did not return image data.");
   }
 
   return payload as SandboxViewPayload;
@@ -441,50 +263,23 @@ async function uploadViewPreviewFiles(args: {
 }): Promise<ViewPreviewFile[]> {
   const { context, sandbox, sourcePath, payload } = args;
 
-  if (payload.kind === "image") {
-    const uploaded = await uploadSandboxFileToConvex({
-      sandbox,
-      userId: context.userID,
-      fullPath: sourcePath,
-      mediaType: payload.mediaType,
-      name: getFilename(sourcePath),
-    });
+  const uploaded = await uploadSandboxFileToConvex({
+    sandbox,
+    userId: context.userID,
+    fullPath: sourcePath,
+    mediaType: payload.mediaType,
+    name: getFilename(sourcePath),
+  });
 
-    return [
-      {
-        fileId: uploaded.fileId,
-        name: uploaded.name,
-        mediaType: uploaded.mediaType,
-        s3Key: uploaded.s3Key,
-        storageId: uploaded.storageId,
-      },
-    ];
-  }
-
-  const baseName = getFilename(sourcePath).replace(/\.pdf$/i, "");
-  const pages = payload.pages || [];
-  const previewFiles: ViewPreviewFile[] = [];
-
-  for (const page of pages) {
-    const uploaded = await uploadSandboxFileToConvex({
-      sandbox,
-      userId: context.userID,
-      fullPath: page.path,
-      mediaType: page.mediaType,
-      name: `${baseName}-page-${page.page}.png`,
-    });
-
-    previewFiles.push({
+  return [
+    {
       fileId: uploaded.fileId,
       name: uploaded.name,
       mediaType: uploaded.mediaType,
       s3Key: uploaded.s3Key,
       storageId: uploaded.storageId,
-      page: page.page,
-    });
-  }
-
-  return previewFiles;
+    },
+  ];
 }
 
 const editSchema = z.object({
@@ -512,7 +307,7 @@ export const createFile = (context: ToolContext) => {
   ) as z.ZodType<FileAction>;
   const supportedActionsDescription = [
     supportsViewInSchema
-      ? "- view: View file content through multimodal understanding (images, PDFs)."
+      ? "- view: View raster image files through multimodal understanding."
       : null,
     "- read: Read file content as text (Markdown, code, logs).",
     "- write: Overwrite the full content of a text file.",
@@ -521,30 +316,18 @@ export const createFile = (context: ToolContext) => {
   ]
     .filter(Boolean)
     .join("\n");
-  const pdfViewingDescription = supportsViewInSchema
-    ? `
-### PDF Page Viewing
-
-When action is 'view' and path points to a PDF, range controls page selection:
-- range: [3, 3] views only page 3.
-- range: [2, 4] views pages 2 through 4.
-- range: [3, -1] views from page 3 through the end, up to the page render limit.
-- If range is omitted, the tool views from page 1 up to ${MAX_VIEW_PDF_PAGES} pages.
-`
-    : "";
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
     "For file copying, moving, and deletion, use the shell tool.",
     ...(supportsViewInSchema
       ? [
-          "Use 'view' for files requiring multimodal understanding (images, PDFs).",
-          `For PDF view actions, use range as [start_page, end_page] to view specific pages; omit range to view from page 1 up to ${MAX_VIEW_PDF_PAGES} pages, or use -1 as end_page to view to the end within that limit.`,
+          "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
+          "Do not use 'view' for PDFs. Use 'read' for extractable text, or use the shell tool to convert PDF pages to images first if visual inspection is required.",
           "Use 'read' for text-based or line-oriented formats.",
-          "After every two 'view' actions or browser operations, MUST immediately save key findings to text files to prevent loss of multimodal information.",
         ]
       : [
           "Use 'read' for text-based or line-oriented formats.",
-          "This model cannot view sandbox images/PDFs directly; ask the user to select HackerAI Pro or HackerAI Max for multimodal file viewing.",
+          "This model cannot view sandbox images directly; ask the user to select HackerAI Pro or HackerAI Max for multimodal image viewing.",
         ]),
     "Code MUST be saved to a file using this tool before execution via the shell tool.",
     "DO NOT write partial or truncated content; always output the full content.",
@@ -564,12 +347,11 @@ When action is 'view' and path points to a PDF, range controls page selection:
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
-This tool is the primary way to manage file content, allowing for reading, writing, appending, and editing text-based or multimodal files.
+This tool is the primary way to manage file content, allowing for reading, writing, appending, editing text-based files, and viewing raster image files.
 
 ### Supported Actions
 
 ${supportedActionsDescription}
-${pdfViewingDescription}
 
 ### Instructions
 
@@ -593,7 +375,7 @@ ${instructionsDescription}`,
         .length(2)
         .optional()
         .describe(
-          "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. For `view` on PDFs, numbers are 1-indexed page numbers and -1 means view to the end of the document.",
+          "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
         ),
       edits: z
         .array(editSchema)
@@ -616,11 +398,8 @@ ${instructionsDescription}`,
               sandbox,
               path,
               false,
-              range,
             );
             const filename = getFilename(path);
-            const kindLabel =
-              viewPayload.kind === "pdf" ? "PDF file" : "image file";
             let previewFiles: ViewPreviewFile[] = [];
             let previewUploadError: string | undefined;
             try {
@@ -646,39 +425,20 @@ ${instructionsDescription}`,
                   kind: viewPayload.kind,
                   media_type: viewPayload.mediaType,
                   size_bytes: viewPayload.sizeBytes,
-                  page_count: viewPayload.pageCount,
-                  rendered_pages: viewPayload.pages?.map((page) => page.page),
-                  rendered_page_limit: viewPayload.renderedPageLimit,
-                  truncated_pages: viewPayload.truncatedPages,
-                  preview_source_paths: viewPayload.pages?.map(
-                    (page) => page.path,
-                  ),
                   error: errorToLog(error),
                 },
               );
             }
-            const renderedPages =
-              viewPayload.kind === "pdf"
-                ? viewPayload.pages?.map((page) => page.page) || []
-                : undefined;
-            const pageSummary =
-              viewPayload.kind === "pdf"
-                ? ` Rendered page${renderedPages?.length === 1 ? "" : "s"} ${renderedPages?.join(", ") || "none"}${viewPayload.truncatedPages ? ` (limited to ${viewPayload.renderedPageLimit} pages)` : ""}.`
-                : "";
 
             return {
               action: "view",
-              content: `Viewing ${kindLabel}: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).${pageSummary} Use multimodal understanding for this file and save key findings to a text file after every two view/browser operations.`,
+              content: `Viewing image file: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).`,
               path,
               filename,
               mediaType: viewPayload.mediaType,
               sizeBytes: viewPayload.sizeBytes,
               kind: viewPayload.kind,
-              pageCount: viewPayload.pageCount,
               previewFiles,
-              renderedPages,
-              renderedPageLimit: viewPayload.renderedPageLimit,
-              truncatedPages: viewPayload.truncatedPages,
               ...(previewUploadError
                 ? { previewError: previewUploadError }
                 : {}),
@@ -936,40 +696,22 @@ ${instructionsDescription}`,
 
           try {
             const { sandbox } = await sandboxManager.getSandbox();
-            const pdfPageRange =
-              viewOutput.kind === "pdf" &&
-              viewOutput.renderedPages &&
-              viewOutput.renderedPages.length > 0
-                ? [
-                    viewOutput.renderedPages[0],
-                    viewOutput.renderedPages[
-                      viewOutput.renderedPages.length - 1
-                    ],
-                  ]
-                : undefined;
             const viewPayload = await readSandboxFileForView(
               sandbox,
               viewOutput.path,
               true,
-              pdfPageRange,
             );
 
             return {
               type: "content" as const,
               value: [
                 { type: "text" as const, text: viewOutput.content },
-                viewOutput.kind === "image"
-                  ? {
-                      type: "image-data" as const,
-                      data: viewPayload.data!,
-                      mediaType: viewPayload.mediaType,
-                    }
-                  : viewPayload.pages!.map((page) => ({
-                      type: "image-data" as const,
-                      data: page.data!,
-                      mediaType: page.mediaType,
-                    })),
-              ].flat(),
+                {
+                  type: "image-data" as const,
+                  data: viewPayload.data!,
+                  mediaType: viewPayload.mediaType,
+                },
+              ],
             };
           } catch (error) {
             return {
