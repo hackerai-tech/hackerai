@@ -153,7 +153,18 @@ export async function saveMessage({
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
     fixedParts =
       message.role === "assistant"
-        ? fixIncompleteMessageParts(message.parts)
+        ? fixIncompleteMessageParts(message.parts, {
+            logContext: {
+              service: "chat-handler",
+              source: "save_message",
+              chatId,
+              userId,
+              messageId: message.id,
+              mode,
+              finishReason,
+              updateOnly,
+            },
+          })
         : message.parts;
     const storageSafeMessage =
       message.role === "assistant"

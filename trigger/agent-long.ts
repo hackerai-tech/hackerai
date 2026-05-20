@@ -22,6 +22,7 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   sendRateLimitWarnings,
   SummarizationTracker,
@@ -1213,6 +1214,27 @@ export const agentLongTask = task({
                             p.toolCallId,
                         ),
                     );
+                    const incompleteToolSummaries = isAborted
+                      ? summarizeIncompleteToolParts(finishedMessages)
+                      : [];
+                    if (incompleteToolSummaries.length > 0) {
+                      console.info(
+                        JSON.stringify({
+                          level: "info",
+                          event:
+                            "agent_long_abort_incomplete_tool_calls_detected",
+                          service: "agent-long",
+                          timestamp: new Date().toISOString(),
+                          chat_id: chatId,
+                          user_id: userId,
+                          mode: "agent",
+                          finish_reason: state.streamFinishReason,
+                          trigger_signal_aborted: triggerSignal.aborted,
+                          incomplete_tool_count: incompleteToolSummaries.length,
+                          incomplete_tools: incompleteToolSummaries,
+                        }),
+                      );
+                    }
                     if (
                       isAborted &&
                       !triggerSignal.aborted &&
@@ -1220,6 +1242,21 @@ export const agentLongTask = task({
                       !hasIncompleteToolCalls &&
                       !resolvedUsage
                     ) {
+                      console.info(
+                        JSON.stringify({
+                          level: "info",
+                          event: "agent_long_abort_message_save_skipped",
+                          service: "agent-long",
+                          timestamp: new Date().toISOString(),
+                          chat_id: chatId,
+                          user_id: userId,
+                          mode: "agent",
+                          finish_reason: state.streamFinishReason,
+                          new_file_count: newFileIds.length,
+                          has_incomplete_tool_calls: hasIncompleteToolCalls,
+                          has_usage_to_record: Boolean(resolvedUsage),
+                        }),
+                      );
                       await deductAccumulatedUsage();
                       return;
                     }

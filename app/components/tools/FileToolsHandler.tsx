@@ -18,6 +18,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface DiffDataPart {
   type: "data-diff";
@@ -198,6 +199,9 @@ export const FileToolsHandler = ({
   });
 
   const isClickable = !!sidebarContent;
+  const isStoppedByUser = isUserStoppedToolError(part.errorText);
+  const errorLabel = (failed: string, stopped: string) =>
+    isStoppedByUser ? stopped : failed;
 
   const renderReadFileTool = () => {
     const { toolCallId, state, input } = part;
@@ -261,6 +265,16 @@ export const FileToolsHandler = ({
           </div>
         );
       }
+      case "output-error":
+        if (!readInput) return null;
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileText />}
+            action={errorLabel("Failed to read", "Stopped reading")}
+            target={`${readInput.target_file}${getFileRange()}`}
+          />
+        );
       default:
         return null;
     }
@@ -322,6 +336,16 @@ export const FileToolsHandler = ({
             <OpenFileButton filePath={writeInput.file_path} />
           </div>
         );
+      case "output-error":
+        if (!writeInput) return null;
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePlus />}
+            action={errorLabel("Failed to write", "Stopped writing")}
+            target={writeInput.file_path}
+          />
+        );
       default:
         return null;
     }
@@ -367,6 +391,16 @@ export const FileToolsHandler = ({
           />
         );
       }
+      case "output-error":
+        if (!deleteInput) return null;
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileMinus />}
+            action={errorLabel("Failed to delete", "Stopped deleting")}
+            target={deleteInput.target_file}
+          />
+        );
       default:
         return null;
     }
@@ -426,6 +460,16 @@ export const FileToolsHandler = ({
           </div>
         );
       }
+      case "output-error":
+        if (!searchReplaceInput) return null;
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={errorLabel("Failed to edit", "Stopped editing")}
+            target={searchReplaceInput.file_path}
+          />
+        );
       default:
         return null;
     }
@@ -491,6 +535,16 @@ export const FileToolsHandler = ({
           </div>
         );
       }
+      case "output-error":
+        if (!multiEditInput) return null;
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={errorLabel("Failed to apply edits", "Stopped editing")}
+            target={multiEditInput.file_path}
+          />
+        );
       default:
         return null;
     }

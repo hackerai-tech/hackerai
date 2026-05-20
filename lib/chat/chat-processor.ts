@@ -13,6 +13,10 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import { AUTH_DISCLAIMER, detectLang } from "@/lib/chat/auth-disclaimer";
+import {
+  ABORTED_TOOL_ERROR_TEXT,
+  hasMeaningfulToolInput,
+} from "@/lib/chat/tool-abort-utils";
 /**
  * Get maximum steps allowed for a user based on mode and subscription.
  * Agent mode: 100 steps (all tiers).
@@ -121,18 +125,118 @@ export function addAuthMessage(messages: UIMessage[], moderationText: string) {
   }
 }
 
+const ABORT_RENDERABLE_TOOL_TYPES = new Set([
+  "tool-file",
+  "tool-read_file",
+  "tool-write_file",
+  "tool-delete_file",
+  "tool-search_replace",
+  "tool-multi_edit",
+  "tool-web_search",
+  "tool-open_url",
+  "tool-web",
+  "tool-shell",
+  "tool-run_terminal_cmd",
+  "tool-interact_terminal_session",
+  "tool-http_request",
+  "tool-get_terminal_files",
+  "tool-todo_write",
+  "tool-create_note",
+  "tool-list_notes",
+  "tool-update_note",
+  "tool-delete_note",
+  "tool-list_requests",
+  "tool-view_request",
+  "tool-send_request",
+  "tool-scope_rules",
+  "tool-list_sitemap",
+  "tool-view_sitemap_entry",
+]);
+
+type IncompleteMessagePartsLogContext = {
+  service?: string;
+  source?: string;
+  chatId?: string;
+  userId?: string;
+  messageId?: string;
+  mode?: string;
+  finishReason?: string;
+  updateOnly?: boolean;
+};
+
+function logIncompleteToolPartHandled({
+  action,
+  part,
+  context,
+}: {
+  action: "converted_to_output_error" | "dropped";
+  part: any;
+  context?: IncompleteMessagePartsLogContext;
+}) {
+  if (!context) return;
+
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "incomplete_tool_part_handled",
+      service: context.service ?? "chat-processor",
+      timestamp: new Date().toISOString(),
+      source: context.source,
+      chat_id: context.chatId,
+      user_id: context.userId,
+      message_id: context.messageId,
+      mode: context.mode,
+      finish_reason: context.finishReason,
+      update_only: context.updateOnly,
+      action,
+      tool_type: part.type,
+      tool_call_id: part.toolCallId,
+      original_state: part.state,
+      has_input: part.input != null,
+      has_meaningful_input: hasMeaningfulToolInput(part.input),
+      input_keys:
+        part.input &&
+        typeof part.input === "object" &&
+        !Array.isArray(part.input)
+          ? Object.keys(part.input as Record<string, unknown>).sort()
+          : [],
+    }),
+  );
+}
+
+function createAbortedToolPart(part: any): any | null {
+  if (
+    !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
+    !part.toolCallId ||
+    !hasMeaningfulToolInput(part.input)
+  ) {
+    return null;
+  }
+
+  const { output: _output, result: _result, ...restPart } = part;
+  return {
+    ...restPart,
+    state: "output-error",
+    errorText: ABORTED_TOOL_ERROR_TEXT,
+  };
+}
+
 /**
  * Fixes incomplete tool invocations and removes incomplete reasoning from message parts.
  * This can happen when a stream is interrupted. Without proper handling:
  * - Tool invocations without results cause AI_MissingToolResultsError
  * - Incomplete reasoning parts may cause "must include at least one parts field" errors
  *
- * We add placeholder results for tools and remove incomplete reasoning (along with
- * any step-start that immediately precedes it).
+ * We mark renderable aborted tools as output-error when they have enough input
+ * to show what was stopped, and remove empty incomplete tools/reasoning (along
+ * with any step-start that immediately precedes them).
  *
  * This function is exported for use in db/actions.ts as well.
  */
-export function fixIncompleteMessageParts(parts: any[]): any[] {
+export function fixIncompleteMessageParts(
+  parts: any[],
+  options?: { logContext?: IncompleteMessagePartsLogContext },
+): any[] {
   // First pass: fix incomplete tool invocations
   const partsWithFixedTools = parts.map((part: any) => {
     // Check for custom tool-xxx parts that aren't in a completed state
@@ -151,12 +255,25 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
       isToolPart && part.state === "result" && part.result !== undefined;
 
     if (isIncomplete || hasWrongFormat) {
-      // If the tool never executed (input-streaming or input-available), remove it entirely.
-      // These tools were interrupted before producing any output, so there's nothing real
-      // to report. Keeping them with fabricated output pollutes the conversation history.
-      // This also prevents "must have at least one content element" errors from providers
-      // like xAI/Grok when the conversation is resumed with empty tool args.
       if (isIncomplete && part.output == null && part.result == null) {
+        const abortedPart = createAbortedToolPart(part);
+        if (abortedPart) {
+          logIncompleteToolPartHandled({
+            action: "converted_to_output_error",
+            part,
+            context: options?.logContext,
+          });
+          return abortedPart;
+        }
+
+        // Empty or unknown tools were interrupted before producing any useful
+        // display state. Removing them avoids polluting model history with
+        // fabricated tool calls and prevents provider errors on resume.
+        logIncompleteToolPartHandled({
+          action: "dropped",
+          part,
+          context: options?.logContext,
+        });
         return null; // Mark for removal in second pass
       }
 

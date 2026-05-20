@@ -8,6 +8,7 @@ import {
   type SidebarSharedFiles,
 } from "@/types/chat";
 import type { FileDetails } from "@/types/file";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface TerminalFilesPart {
   toolCallId: string;
@@ -17,6 +18,7 @@ interface TerminalFilesPart {
     | "output-available"
     | "output-error";
   input?: { files: string[]; brief?: string };
+  errorText?: string;
   output?: {
     result: string;
     files?: Array<{ path: string }>;
@@ -37,6 +39,7 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
   sharedFileDetails,
 }: GetTerminalFilesHandlerProps) {
   const { toolCallId, state, input, output } = part;
+  const isStoppedByUser = isUserStoppedToolError(part.errorText);
 
   // Memoize requestedPaths to prevent unstable references from triggering
   // infinite re-render loops via useToolSidebar's updateSidebarContent effect.
@@ -145,7 +148,7 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action="Failed to share"
+          action={isStoppedByUser ? "Stopped sharing" : "Failed to share"}
           target={getFileNames(requestedPaths)}
         />
       );

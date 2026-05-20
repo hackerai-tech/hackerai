@@ -4,6 +4,7 @@ import { Search, ExternalLink } from "lucide-react";
 import type { ChatStatus, SidebarWebSearch, WebSearchResult } from "@/types";
 import { isSidebarWebSearch } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface WebSearchInput {
   queries?: string[];
@@ -31,6 +32,7 @@ interface WebToolHandlerProps {
     state: string;
     input?: WebSearchInput | OpenUrlInput | LegacyWebInput;
     output?: WebSearchResult[] | { result?: WebSearchResult[] };
+    errorText?: string;
   };
   status: ChatStatus;
 }
@@ -51,7 +53,8 @@ export const WebToolHandler = memo(function WebToolHandler({
   part,
   status,
 }: WebToolHandlerProps) {
-  const { toolCallId, toolName, type, state, input, output } = part;
+  const { toolCallId, toolName, type, state, input, output, errorText } = part;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
 
   // Determine if this is an open_url action
   const isOpenUrl =
@@ -187,6 +190,24 @@ export const WebToolHandler = memo(function WebToolHandler({
           isClickable={canOpenSidebar}
           onClick={canOpenSidebar ? handleOpenInSidebar : undefined}
           onKeyDown={canOpenSidebar ? handleKeyDown : undefined}
+        />
+      );
+
+    case "output-error":
+      return (
+        <ToolBlock
+          key={toolCallId}
+          icon={icon}
+          action={
+            isOpenUrl
+              ? isStoppedByUser
+                ? "Stopped opening URL"
+                : "Failed to open URL"
+              : isStoppedByUser
+                ? "Stopped searching web"
+                : "Search failed"
+          }
+          target={target}
         />
       );
 

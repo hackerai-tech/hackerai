@@ -5,6 +5,7 @@ import { Globe } from "lucide-react";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface HttpRequestToolHandlerProps {
   message: UIMessage;
@@ -18,6 +19,7 @@ export const HttpRequestToolHandler = ({
   status,
 }: HttpRequestToolHandlerProps) => {
   const { toolCallId, state, input, output, errorText } = part;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
 
   const httpInput = input as {
     url: string;
@@ -135,7 +137,7 @@ export const HttpRequestToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Globe />}
-          action="Request failed"
+          action={isStoppedByUser ? "Stopped request" : "Request failed"}
           target={displayCommand}
           isClickable={true}
           onClick={handleOpenInSidebar}
