@@ -28,6 +28,7 @@ import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
+const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
 
 export { setConvexUrl };
 
@@ -145,6 +146,8 @@ export async function saveMessage({
   isHidden?: boolean;
 }) {
   let fixedParts = message.parts;
+  let partsForSave = message.parts;
+  let persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
 
   try {
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
@@ -168,13 +171,34 @@ export async function saveMessage({
       });
     }
 
-    fixedParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
+    partsForSave = sanitizeForConvexValue(storageSafeParts) as UIMessagePart<
       any,
       any
     >[];
+    persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
+    if (
+      message.role === "assistant" &&
+      persistenceDiagnostics.parts_size_bytes > LARGE_MESSAGE_SAVE_WARNING_BYTES
+    ) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "large_message_save_attempt",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          chat_id: chatId,
+          user_id: userId,
+          message_id: message.id,
+          mode,
+          model,
+          finish_reason: finishReason,
+          ...persistenceDiagnostics,
+        }),
+      );
+    }
 
     // Extract file IDs from file parts
-    const fileIds = extractFileIdsFromParts(storageSafeParts);
+    const fileIds = extractFileIdsFromParts(partsForSave);
     const mergedFileIds = [
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
@@ -186,7 +210,7 @@ export async function saveMessage({
       chatId,
       userId,
       role: message.role,
-      parts: storageSafeParts,
+      parts: partsForSave,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
       mode,
@@ -210,7 +234,7 @@ export async function saveMessage({
       hidden: isHidden === true,
       extra_file_count: extraFileIds?.length ?? 0,
       usage_keys: usage ? Object.keys(usage).sort() : undefined,
-      ...getMessagePersistenceDiagnostics(fixedParts),
+      ...persistenceDiagnostics,
     });
   }
 }

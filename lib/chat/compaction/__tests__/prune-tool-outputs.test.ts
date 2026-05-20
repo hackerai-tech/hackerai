@@ -766,6 +766,35 @@ describe("compactMessageForStorage", () => {
     );
   });
 
+  it("compacts oversized reasoning and storage-only status parts", () => {
+    const message = makeAssistantMessage([
+      { type: "step-start" },
+      { type: "data-summarization", data: { status: "completed" } },
+      { type: "reasoning", text: "old ".repeat(20_000), state: "done" },
+      { type: "text", text: "final answer" },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1_000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(
+      result.message.parts.some((part) => part.type === "step-start"),
+    ).toBe(false);
+    expect(
+      result.message.parts.some((part) => part.type === "data-summarization"),
+    ).toBe(false);
+    expect(estimateSerializedSizeBytes(result.message.parts)).toBeLessThan(
+      estimateSerializedSizeBytes(message.parts),
+    );
+    expect(result.message.parts.at(-1)).toEqual({
+      type: "text",
+      text: "final answer",
+    });
+  });
+
   it("does not compact user messages", () => {
     const message = makeUserMessage("x".repeat(5000));
 
