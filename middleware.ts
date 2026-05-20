@@ -51,6 +51,8 @@ function isBrowserRequest(request: NextRequest): boolean {
 
 const SESSION_HEADER = "x-workos-session";
 const ATTRIBUTION_COOKIE = "hai_attribution";
+const ATTRIBUTION_VALUE_MAX_LENGTH = 180;
+const ATTRIBUTION_URL_MAX_LENGTH = 500;
 const ATTRIBUTION_KEYS = [
   "utm_source",
   "utm_medium",
@@ -61,17 +63,59 @@ const ATTRIBUTION_KEYS = [
   "fbclid",
 ] as const;
 
+type AttributionPayload = Partial<
+  Record<
+    (typeof ATTRIBUTION_KEYS)[number] | "landing_page" | "referrer",
+    string
+  >
+>;
+
+function cleanAttributionValue(value: unknown, maxLength: number) {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, maxLength)
+    : undefined;
+}
+
+function normalizeAttributionPayload(value: unknown): AttributionPayload {
+  if (!value || typeof value !== "object") return {};
+
+  const source = value as Record<string, unknown>;
+  const normalized: AttributionPayload = {};
+  for (const key of ATTRIBUTION_KEYS) {
+    const clean = cleanAttributionValue(
+      source[key],
+      ATTRIBUTION_VALUE_MAX_LENGTH,
+    );
+    if (clean) normalized[key] = clean;
+  }
+
+  const landingPage = cleanAttributionValue(
+    source.landing_page,
+    ATTRIBUTION_URL_MAX_LENGTH,
+  );
+  if (landingPage) normalized.landing_page = landingPage;
+
+  const referrer = cleanAttributionValue(
+    source.referrer,
+    ATTRIBUTION_URL_MAX_LENGTH,
+  );
+  if (referrer) normalized.referrer = referrer;
+
+  return normalized;
+}
+
 function sanitizedLandingPage(request: NextRequest): string {
   const params = new URLSearchParams();
   for (const key of ATTRIBUTION_KEYS) {
     const value = request.nextUrl.searchParams.get(key);
-    if (value) params.set(key, value.slice(0, 500));
+    if (value) params.set(key, value.slice(0, ATTRIBUTION_VALUE_MAX_LENGTH));
   }
 
   const query = params.toString();
-  return query
+  const landingPage = query
     ? `${request.nextUrl.pathname}?${query}`
     : request.nextUrl.pathname;
+  return landingPage.slice(0, ATTRIBUTION_URL_MAX_LENGTH);
 }
 
 function sanitizedReferrer(request: NextRequest): string | undefined {
@@ -80,7 +124,10 @@ function sanitizedReferrer(request: NextRequest): string | undefined {
 
   try {
     const referrer = new URL(raw);
-    return `${referrer.origin}${referrer.pathname}`.slice(0, 500);
+    return `${referrer.origin}${referrer.pathname}`.slice(
+      0,
+      ATTRIBUTION_URL_MAX_LENGTH,
+    );
   } catch {
     return undefined;
   }
@@ -95,17 +142,19 @@ function withAttributionCookie(
   const incoming: Record<string, string> = {};
   for (const key of ATTRIBUTION_KEYS) {
     const value = request.nextUrl.searchParams.get(key);
-    if (value) incoming[key] = value.slice(0, 500);
+    if (value) incoming[key] = value.slice(0, ATTRIBUTION_VALUE_MAX_LENGTH);
   }
 
   const hasNewAttribution = Object.keys(incoming).length > 0;
   const existingCookie = request.cookies.get(ATTRIBUTION_COOKIE)?.value;
   if (!hasNewAttribution && existingCookie) return response;
 
-  let existing: Record<string, string> = {};
+  let existing: AttributionPayload = {};
   if (existingCookie) {
     try {
-      existing = JSON.parse(decodeURIComponent(existingCookie));
+      existing = normalizeAttributionPayload(
+        JSON.parse(decodeURIComponent(existingCookie)),
+      );
     } catch {
       existing = {};
     }

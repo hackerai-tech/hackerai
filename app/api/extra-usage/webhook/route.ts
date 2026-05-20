@@ -90,9 +90,8 @@ export async function POST(req: NextRequest) {
 
         if (result.alreadyProcessed) {
           console.log(
-            `[Extra Usage Webhook] Checkout session ${session.id} already processed, skipping`,
+            `[Extra Usage Webhook] Checkout session ${session.id} already credited, ensuring revenue is recorded`,
           );
-          break;
         }
 
         await convex.mutation(api.economics.recordRevenueEvent, {

@@ -1,4 +1,9 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
@@ -29,14 +34,14 @@ const dayFromMs = (ms: number): string =>
   new Date(ms).toISOString().slice(0, 10);
 
 async function upsertAccountForUsage(
-  ctx: any,
+  ctx: MutationCtx,
   userId: string,
   subscriptionTier: "free" | "pro" | "pro-plus" | "ultra" | "team",
 ) {
   const now = Date.now();
   const existing = await ctx.db
     .query("user_accounts")
-    .withIndex("by_user_id", (q: any) => q.eq("user_id", userId))
+    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
     .unique();
 
   if (!existing) {
@@ -61,7 +66,7 @@ async function upsertAccountForUsage(
 }
 
 async function aggregateUsageDaily(
-  ctx: any,
+  ctx: MutationCtx,
   args: {
     user_id: string;
     subscription_tier: "free" | "pro" | "pro-plus" | "ultra" | "team";
@@ -77,7 +82,7 @@ async function aggregateUsageDaily(
   const day = dayFromMs(now);
   const existing = await ctx.db
     .query("user_economics_daily")
-    .withIndex("by_day_user_tier", (q: any) =>
+    .withIndex("by_day_user_tier", (q) =>
       q
         .eq("day", day)
         .eq("user_id", args.user_id)
