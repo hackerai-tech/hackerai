@@ -317,6 +317,18 @@ export default defineSchema({
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
     user_id: v.string(),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    mode: v.optional(
+      v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
+    ),
     model: v.string(),
     type: v.union(v.literal("included"), v.literal("extra")),
     input_tokens: v.number(),
@@ -324,6 +336,8 @@ export default defineSchema({
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
+    model_cost_dollars: v.optional(v.number()),
+    non_model_cost_dollars: v.optional(v.number()),
     cost_dollars: v.number(),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema
@@ -336,6 +350,61 @@ export default defineSchema({
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),
+
+  user_accounts: defineTable({
+    user_id: v.string(),
+    first_seen_at: v.number(),
+    last_seen_at: v.number(),
+    first_paid_at: v.optional(v.number()),
+    current_subscription_tier: v.union(
+      v.literal("free"),
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    stripe_customer_id: v.optional(v.string()),
+    workos_organization_id: v.optional(v.string()),
+    utm_source: v.optional(v.string()),
+    utm_medium: v.optional(v.string()),
+    utm_campaign: v.optional(v.string()),
+    utm_content: v.optional(v.string()),
+    utm_term: v.optional(v.string()),
+    gclid: v.optional(v.string()),
+    fbclid: v.optional(v.string()),
+    landing_page: v.optional(v.string()),
+    referrer: v.optional(v.string()),
+    updated_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_first_seen", ["first_seen_at"])
+    .index("by_current_tier", ["current_subscription_tier"]),
+
+  user_economics_daily: defineTable({
+    day: v.string(),
+    user_id: v.string(),
+    subscription_tier: v.union(
+      v.literal("free"),
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    request_count: v.number(),
+    input_tokens: v.number(),
+    output_tokens: v.number(),
+    total_tokens: v.number(),
+    llm_cost_dollars: v.number(),
+    tool_cost_dollars: v.number(),
+    total_cost_dollars: v.number(),
+    gross_revenue_dollars: v.number(),
+    refund_dollars: v.number(),
+    net_revenue_dollars: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_day", ["day"])
+    .index("by_user_day", ["user_id", "day"])
+    .index("by_day_user_tier", ["day", "user_id", "subscription_tier"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

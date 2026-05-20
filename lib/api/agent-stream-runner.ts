@@ -199,6 +199,12 @@ export async function createAgentStream(
       ctx.userId,
       modelName,
       ctx.mode,
+      {
+        sessionId: ctx.chatId,
+        traceId: `${ctx.chatId}:${modelName}:${ctx.streamStartTime}`,
+        subscriptionTier: ctx.subscription,
+        selectedModel: modelName,
+      },
     ),
 
     prepareStep: async ({ steps, messages }) => {
@@ -237,6 +243,12 @@ export async function createAgentStream(
               ctx.userId,
               modelName,
               ctx.mode,
+              {
+                sessionId: ctx.chatId,
+                traceId: `${ctx.chatId}:summarization:${ctx.streamStartTime}`,
+                subscriptionTier: ctx.subscription,
+                selectedModel: modelName,
+              },
             ),
           });
 

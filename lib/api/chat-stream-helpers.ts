@@ -515,6 +515,13 @@ export function buildProviderOptions(
   userId?: string,
   modelName?: string,
   mode?: ChatMode,
+  trace?: {
+    sessionId: string;
+    traceId: string;
+    subscriptionTier: SubscriptionTier;
+    selectedModel: string;
+    environment?: string;
+  },
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
@@ -531,6 +538,21 @@ export function buildProviderOptions(
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
+      ...(trace && {
+        extraBody: {
+          session_id: trace.sessionId,
+          trace: {
+            trace_id: trace.traceId,
+            mode,
+            subscription_tier: trace.subscriptionTier,
+            selected_model: trace.selectedModel,
+            environment:
+              trace.environment ??
+              process.env.VERCEL_ENV ??
+              process.env.NODE_ENV,
+          },
+        },
+      }),
     },
   } as const;
 }

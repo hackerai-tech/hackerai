@@ -838,7 +838,7 @@ export const agentLongTask = task({
           let preFallbackCacheWrite = 0;
 
           const deductAccumulatedUsage = async () => {
-            if (hasDeductedUsage || subscription === "free") return;
+            if (hasDeductedUsage) return;
             const sandboxCost = getSandboxSessionCost();
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
@@ -851,19 +851,23 @@ export const agentLongTask = task({
               usageTracker.modelProviderCost > 0
                 ? usageTracker.providerCost
                 : undefined;
-            await deductUsage(
-              userId,
-              subscription,
-              estimatedInputTokens,
-              usageTracker.inputTokens,
-              usageTracker.outputTokens,
-              extraUsageConfig,
-              providerCost,
-              selectedModel,
-              usageTracker.nonModelCost,
-            );
+            if (subscription !== "free") {
+              await deductUsage(
+                userId,
+                subscription,
+                estimatedInputTokens,
+                usageTracker.inputTokens,
+                usageTracker.outputTokens,
+                extraUsageConfig,
+                providerCost,
+                selectedModel,
+                usageTracker.nonModelCost,
+              );
+            }
             usageTracker.log({
               userId,
+              subscription,
+              mode,
               selectedModel,
               selectedModelOverride,
               responseModel: state.responseModel,

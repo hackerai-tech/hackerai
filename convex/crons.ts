@@ -85,6 +85,32 @@ export const runStaleConnectionsPurge = internalAction({
   },
 });
 
+/**
+ * Keep detailed per-request paid usage logs for user-facing history, while
+ * relying on user_economics_daily for long-term economics.
+ */
+export const runUsageLogsPurge = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const limit = 100;
+    let lastDeletedCount = 0;
+    for (let i = 0; i < 10; i++) {
+      const { deletedCount } = await ctx.runMutation(
+        internal.usageLogs.purgeOldUsageLogs,
+        { cutoffTimeMs: cutoff, limit },
+      );
+      lastDeletedCount = deletedCount;
+      if (deletedCount < limit) break;
+    }
+    if (lastDeletedCount === limit) {
+      await ctx.scheduler.runAfter(0, internal.crons.runUsageLogsPurge, {});
+    }
+    return null;
+  },
+});
+
 const crons = cronJobs();
 
 crons.interval(
@@ -105,6 +131,13 @@ crons.interval(
   "purge stale disconnected sandbox connections older than 30d",
   { hours: 24 },
   internal.crons.runStaleConnectionsPurge,
+  {},
+);
+
+crons.interval(
+  "purge detailed usage logs older than 90d",
+  { hours: 24 },
+  internal.crons.runUsageLogsPurge,
   {},
 );
 

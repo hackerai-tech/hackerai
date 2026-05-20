@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
 /**
  * POST /api/extra-usage/webhook
@@ -80,7 +81,7 @@ export async function POST(req: NextRequest) {
       // the same key) can race without double-crediting.
       try {
         const result = await convex.mutation(api.extraUsage.addCredits, {
-          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          serviceKey,
           userId,
           amountDollars,
           idempotencyKey: `cs_${session.id}`,
@@ -91,7 +92,31 @@ export async function POST(req: NextRequest) {
           console.log(
             `[Extra Usage Webhook] Checkout session ${session.id} already processed, skipping`,
           );
+          break;
         }
+
+        await convex.mutation(api.economics.recordRevenueEvent, {
+          serviceKey,
+          dedupe_key: `extra_usage:${session.id}:${userId}`,
+          stripe_event_id: event.id,
+          event_type: event.type,
+          revenue_type: "extra_usage",
+          occurred_at: (session.created ?? event.created) * 1000,
+          user_id: userId,
+          stripe_customer_id:
+            typeof session.customer === "string"
+              ? session.customer
+              : session.customer?.id,
+          stripe_checkout_session_id: session.id,
+          currency: session.currency ?? "usd",
+          gross_revenue_dollars: amountDollars,
+          refund_dollars: 0,
+          dispute_dollars: 0,
+          net_revenue_dollars: amountDollars,
+          metadata: {
+            source: "extra_usage_checkout",
+          },
+        });
       } catch (error) {
         console.error("[Extra Usage Webhook] FAILED to add credits:", error);
         // Return 500 so Stripe retries

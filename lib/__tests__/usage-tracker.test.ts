@@ -329,6 +329,8 @@ describe("UsageTracker", () => {
 
       t.log({
         userId: "user-123",
+        subscription: "pro",
+        mode: "ask",
         selectedModel: "model-default",
         configuredModelId: "model-config",
         rateLimitInfo: {
@@ -341,6 +343,8 @@ describe("UsageTracker", () => {
 
       expect(localMockLog).toHaveBeenCalledWith({
         userId: "user-123",
+        subscription: "pro",
+        mode: "ask",
         model: "auto",
         type: "included",
         inputTokens: 1000,
@@ -348,8 +352,56 @@ describe("UsageTracker", () => {
         totalTokens: 1500,
         cacheReadTokens: undefined,
         cacheWriteTokens: undefined,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: undefined,
         costDollars: 0.01,
+        persistRawLog: true,
       });
+    });
+
+    it("should aggregate free usage without persisting raw logs", () => {
+      const localMockLog = jest.fn();
+
+      let IsolatedTracker: typeof UsageTracker;
+      jest.isolateModules(() => {
+        jest.doMock("@/lib/db/actions", () => ({
+          logUsageRecord: localMockLog,
+        }));
+        jest.doMock("@/lib/rate-limit", () => ({
+          calculateTokenCost: jest.fn(() => 1),
+          POINTS_PER_DOLLAR: 10_000,
+        }));
+        IsolatedTracker = require("../usage-tracker").UsageTracker;
+      });
+
+      const t = new IsolatedTracker!();
+      t.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.01 },
+      });
+
+      t.log({
+        userId: "free-user",
+        subscription: "free",
+        mode: "ask",
+        selectedModel: "ask-model-free",
+        configuredModelId: "deepseek/deepseek-v4-flash",
+        rateLimitInfo: {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 10,
+        },
+      });
+
+      expect(localMockLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "free-user",
+          subscription: "free",
+          mode: "ask",
+          persistRawLog: false,
+        }),
+      );
     });
   });
 });

@@ -37,6 +37,7 @@ function tierDirection(
 }
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
 // =============================================================================
 // Tier Resolution
@@ -57,6 +58,96 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
 
 const resolveUserIdsFromCustomer = (customerId: string) =>
   resolveStripeCustomerUsers(customerId, "Subscription Webhook");
+
+const centsToDollars = (amount: number | null | undefined): number =>
+  (amount ?? 0) / 100;
+
+async function recordRevenueForUsers({
+  event,
+  userIds,
+  orgId,
+  customerId,
+  tier,
+  revenueType,
+  grossDollars,
+  refundDollars = 0,
+  disputeDollars = 0,
+  stripeFeeDollars,
+  netDollars,
+  stripeInvoiceId,
+  stripeSubscriptionId,
+  metadata,
+}: {
+  event: Stripe.Event;
+  userIds: string[];
+  orgId: string | null;
+  customerId?: string | null;
+  tier?: SubscriptionTier | null;
+  revenueType: "subscription" | "refund" | "dispute";
+  grossDollars: number;
+  refundDollars?: number;
+  disputeDollars?: number;
+  stripeFeeDollars?: number;
+  netDollars: number;
+  stripeInvoiceId?: string | null;
+  stripeSubscriptionId?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  if (userIds.length === 0) return;
+  const divisor = userIds.length;
+  await Promise.all(
+    userIds.map((uid) =>
+      convex.mutation(api.economics.recordRevenueEvent, {
+        serviceKey,
+        dedupe_key: `${event.id}:${uid}`,
+        stripe_event_id: event.id,
+        event_type: event.type,
+        revenue_type: revenueType,
+        occurred_at: event.created * 1000,
+        user_id: uid,
+        organization_id: orgId ?? undefined,
+        stripe_customer_id: customerId ?? undefined,
+        stripe_invoice_id: stripeInvoiceId ?? undefined,
+        stripe_subscription_id: stripeSubscriptionId ?? undefined,
+        tier: tier ?? undefined,
+        currency: "usd",
+        gross_revenue_dollars: grossDollars / divisor,
+        refund_dollars: refundDollars / divisor,
+        dispute_dollars: disputeDollars / divisor,
+        stripe_fee_dollars:
+          stripeFeeDollars === undefined
+            ? undefined
+            : stripeFeeDollars / divisor,
+        net_revenue_dollars: netDollars / divisor,
+        metadata,
+      }),
+    ),
+  );
+}
+
+async function upsertSubscriptionAccounts({
+  userIds,
+  orgId,
+  customerId,
+  tier,
+}: {
+  userIds: string[];
+  orgId: string | null;
+  customerId?: string | null;
+  tier: SubscriptionTier;
+}) {
+  await Promise.all(
+    userIds.map((uid) =>
+      convex.mutation(api.economics.upsertUserAccount, {
+        serviceKey,
+        user_id: uid,
+        current_subscription_tier: tier,
+        stripe_customer_id: customerId ?? undefined,
+        workos_organization_id: orgId ?? undefined,
+      }),
+    ),
+  );
+}
 
 /** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
 function tierFromProductName(name: string): SubscriptionTier | null {
@@ -123,7 +214,10 @@ async function resolveSubscription(subscriptionId: string): Promise<{
 // =============================================================================
 
 /** Handle invoice.paid — reset rate limit buckets on subscription payment. */
-async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+async function handleInvoicePaid(
+  invoice: Stripe.Invoice,
+  event: Stripe.Event,
+): Promise<void> {
   // In Stripe API 2026-03-25, subscription lives under invoice.parent.subscription_details
   const subDetails = invoice.parent?.subscription_details;
   const subscriptionId = subDetails
@@ -164,6 +258,24 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
   const { tier, subscription } = resolved;
   const billingReason = (invoice as any).billing_reason as string | undefined;
+  const grossDollars = centsToDollars(invoice.amount_paid);
+
+  await recordRevenueForUsers({
+    event,
+    userIds,
+    orgId,
+    customerId,
+    tier,
+    revenueType: "subscription",
+    grossDollars,
+    netDollars: grossDollars,
+    stripeInvoiceId: invoice.id,
+    stripeSubscriptionId: subscription.id,
+    metadata: {
+      billing_reason: billingReason,
+      user_count: userIds.length,
+    },
+  });
 
   // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
   // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
@@ -289,6 +401,15 @@ async function handleSubscriptionUpdated(
   );
 
   const direction = tierDirection(previousTier, currentTier);
+  if (currentTier) {
+    await upsertSubscriptionAccounts({
+      userIds,
+      orgId,
+      customerId,
+      tier: currentTier,
+    });
+  }
+
   for (const uid of userIds) {
     phLogger.event("subscription_changed", {
       userId: uid,
@@ -343,6 +464,13 @@ async function handleSubscriptionDeleted(
   );
 
   for (const uid of userIds) {
+    await convex.mutation(api.economics.upsertUserAccount, {
+      serviceKey,
+      user_id: uid,
+      current_subscription_tier: "free",
+      stripe_customer_id: customerId,
+      workos_organization_id: orgId ?? undefined,
+    });
     phLogger.event("subscription_cancelled", {
       userId: uid,
       tier,
@@ -351,6 +479,65 @@ async function handleSubscriptionDeleted(
       $set: { subscription_tier: "free" },
     });
   }
+}
+
+async function handleChargeRefunded(
+  charge: Stripe.Charge,
+  event: Stripe.Event,
+): Promise<void> {
+  const customerId =
+    typeof charge.customer === "string" ? charge.customer : charge.customer?.id;
+  if (!customerId) return;
+
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const refundDollars = centsToDollars(charge.amount_refunded);
+  if (refundDollars <= 0) return;
+
+  await recordRevenueForUsers({
+    event,
+    userIds,
+    orgId,
+    customerId,
+    revenueType: "refund",
+    grossDollars: 0,
+    refundDollars,
+    netDollars: -refundDollars,
+    metadata: { charge_id: charge.id },
+  });
+}
+
+async function handleDisputeCreated(
+  dispute: Stripe.Dispute,
+  event: Stripe.Event,
+): Promise<void> {
+  const chargeId =
+    typeof dispute.charge === "string" ? dispute.charge : dispute.charge?.id;
+  if (!chargeId) return;
+
+  const charge = await stripe.charges.retrieve(chargeId);
+  const customerId =
+    typeof charge.customer === "string" ? charge.customer : charge.customer?.id;
+  if (!customerId) return;
+
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const disputeDollars = centsToDollars(dispute.amount);
+
+  await recordRevenueForUsers({
+    event,
+    userIds,
+    orgId,
+    customerId,
+    revenueType: "dispute",
+    grossDollars: 0,
+    disputeDollars,
+    netDollars: -disputeDollars,
+    metadata: {
+      dispute_id: dispute.id,
+      charge_id: chargeId,
+      reason: dispute.reason,
+      status: dispute.status,
+    },
+  });
 }
 
 // =============================================================================
@@ -400,58 +587,81 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Idempotency check (check only — mark after successful processing)
+  // Atomic claim — eliminates the TOCTOU window where two concurrent
+  // deliveries of the same event.id could both pass a read-then-write
+  // pre-check and both run side effects. Stale pending claims are reclaimable
+  // by Stripe retries.
+  let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
-      checkOnly: true,
-    });
-
-    if (result.alreadyProcessed) {
-      console.log(
-        `[Subscription Webhook] Event ${event.id} already processed, skipping`,
-      );
-      return NextResponse.json({ received: true });
-    }
+    const result = await convex.mutation(
+      api.extraUsage.claimWebhookProcessing,
+      {
+        serviceKey,
+        eventId: event.id,
+      },
+    );
+    claimState = result.state;
   } catch (error) {
-    console.error("[Subscription Webhook] Idempotency check failed:", error);
-    // Return 500 so Stripe retries
+    console.error("[Subscription Webhook] Claim failed:", error);
     return NextResponse.json(
-      { error: "Failed to check idempotency" },
+      { error: "Failed to claim webhook" },
       { status: 500 },
     );
   }
 
-  // Handle events
-  switch (event.type) {
-    case "invoice.paid": {
-      await handleInvoicePaid(event.data.object as Stripe.Invoice);
-      break;
+  if (claimState !== "acquired") {
+    console.log(
+      `[Subscription Webhook] Event ${event.id} ${claimState}, skipping`,
+    );
+    return NextResponse.json({ received: true });
+  }
+
+  try {
+    switch (event.type) {
+      case "invoice.paid": {
+        await handleInvoicePaid(event.data.object as Stripe.Invoice, event);
+        break;
+      }
+      case "customer.subscription.updated": {
+        await handleSubscriptionUpdated(
+          event.data.object as Stripe.Subscription,
+          event.data.previous_attributes as
+            | Partial<Stripe.Subscription>
+            | undefined,
+        );
+        break;
+      }
+      case "customer.subscription.deleted": {
+        await handleSubscriptionDeleted(
+          event.data.object as Stripe.Subscription,
+        );
+        break;
+      }
+      case "charge.refunded": {
+        await handleChargeRefunded(event.data.object as Stripe.Charge, event);
+        break;
+      }
+      case "charge.dispute.created": {
+        await handleDisputeCreated(event.data.object as Stripe.Dispute, event);
+        break;
+      }
     }
-    case "customer.subscription.updated": {
-      await handleSubscriptionUpdated(
-        event.data.object as Stripe.Subscription,
-        event.data.previous_attributes as
-          | Partial<Stripe.Subscription>
-          | undefined,
-      );
-      break;
-    }
-    case "customer.subscription.deleted": {
-      await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
-      break;
-    }
+  } catch (error) {
+    console.error(
+      `[Subscription Webhook] Handler failed for event ${event.id} (${event.type}):`,
+      error,
+    );
+    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
 
   // Flush queued PostHog events after the response is sent. Webhook handlers
   // terminate quickly enough that buffered events would otherwise be dropped.
   after(() => phLogger.flush());
 
-  // Mark as processed after successful handling
+  // Mark as processed after successful handling.
   try {
-    await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
+      serviceKey,
       eventId: event.id,
     });
   } catch (error) {

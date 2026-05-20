@@ -55,12 +55,37 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(redirectUrl, { status: 303 });
     }
 
-    await convex.mutation(api.extraUsage.addCredits, {
+    const result = await convex.mutation(api.extraUsage.addCredits, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       userId,
       amountDollars,
       idempotencyKey: `cs_${session.id}`,
     });
+
+    if (!result.alreadyProcessed) {
+      await convex.mutation(api.economics.recordRevenueEvent, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        dedupe_key: `extra_usage:${session.id}:${userId}`,
+        stripe_event_id: `checkout_confirm:${session.id}`,
+        event_type: "checkout.session.confirmed",
+        revenue_type: "extra_usage",
+        occurred_at: (session.created ?? Math.floor(Date.now() / 1000)) * 1000,
+        user_id: userId,
+        stripe_customer_id:
+          typeof session.customer === "string"
+            ? session.customer
+            : session.customer?.id,
+        stripe_checkout_session_id: session.id,
+        currency: session.currency ?? "usd",
+        gross_revenue_dollars: amountDollars,
+        refund_dollars: 0,
+        dispute_dollars: 0,
+        net_revenue_dollars: amountDollars,
+        metadata: {
+          source: "extra_usage_confirm",
+        },
+      });
+    }
 
     return NextResponse.redirect(redirectUrl, { status: 303 });
   } catch (err) {

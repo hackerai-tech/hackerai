@@ -954,6 +954,8 @@ export async function getNotes({
 
 export async function logUsageRecord({
   userId,
+  subscription,
+  mode,
   model,
   type,
   inputTokens,
@@ -961,9 +963,14 @@ export async function logUsageRecord({
   totalTokens,
   cacheReadTokens,
   cacheWriteTokens,
+  modelCostDollars,
+  nonModelCostDollars,
   costDollars,
+  persistRawLog = true,
 }: {
   userId: string;
+  subscription?: SubscriptionTier;
+  mode?: ChatMode;
   model: string;
   type: "included" | "extra";
   inputTokens: number;
@@ -971,12 +978,17 @@ export async function logUsageRecord({
   totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  modelCostDollars?: number;
+  nonModelCostDollars?: number;
   costDollars: number;
+  persistRawLog?: boolean;
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       user_id: userId,
+      subscription_tier: subscription,
+      mode,
       model,
       type,
       input_tokens: inputTokens,
@@ -984,15 +996,22 @@ export async function logUsageRecord({
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
+      model_cost_dollars: modelCostDollars,
+      non_model_cost_dollars: nonModelCostDollars,
       cost_dollars: costDollars,
+      persist_raw_log: persistRawLog,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
       userId,
+      subscription,
+      mode,
       model,
       type,
       costDollars,
+      modelCostDollars,
+      nonModelCostDollars,
       inputTokens,
       outputTokens,
     });

@@ -2,6 +2,7 @@
 
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { ChatLayout } from "@/app/components/ChatLayout";
+import { AttributionSync } from "@/app/components/AttributionSync";
 import Loading from "@/components/ui/loading";
 
 const fullWidthShell = (
@@ -32,6 +33,7 @@ export default function ChatRouteLayout({
       </Unauthenticated>
       <Authenticated>
         <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
+          <AttributionSync />
           <ChatLayout>{children}</ChatLayout>
         </div>
       </Authenticated>

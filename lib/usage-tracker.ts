@@ -1,6 +1,7 @@
 import { logUsageRecord } from "@/lib/db/actions";
 import { calculateTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { RateLimitInfo } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types/chat";
 
 interface StepUsage {
   inputTokens?: number;
@@ -140,6 +141,8 @@ export class UsageTracker {
 
   log({
     userId,
+    subscription,
+    mode,
     selectedModel,
     selectedModelOverride,
     responseModel,
@@ -147,14 +150,23 @@ export class UsageTracker {
     rateLimitInfo,
   }: {
     userId: string;
+    subscription: SubscriptionTier;
+    mode: ChatMode;
     selectedModel: string;
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
   }) {
+    const modelCostDollars = Math.max(
+      0,
+      this.computeModelCostDollars(selectedModel),
+    );
+    const totalCostDollars = this.computeCostDollars(selectedModel);
     logUsageRecord({
       userId,
+      subscription,
+      mode,
       model: this.resolveModelName({
         selectedModelOverride,
         responseModel,
@@ -167,7 +179,10 @@ export class UsageTracker {
       totalTokens: this.totalTokens || this.inputTokens + this.outputTokens,
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
-      costDollars: this.computeCostDollars(selectedModel),
+      modelCostDollars,
+      nonModelCostDollars: this.nonModelCost || undefined,
+      costDollars: totalCostDollars,
+      persistRawLog: subscription !== "free",
     });
   }
 }

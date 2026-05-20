@@ -113,6 +113,7 @@ export const purgeOldProcessedWebhooks = internalMutation({
 
     let deletedCount = 0;
     for (const row of rows) {
+      if (row.event_id.startsWith("economics:")) continue;
       if (row.processed_at < args.cutoffTimeMs) {
         await ctx.db.delete(row._id);
         deletedCount++;

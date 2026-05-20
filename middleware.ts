@@ -50,6 +50,87 @@ function isBrowserRequest(request: NextRequest): boolean {
 }
 
 const SESSION_HEADER = "x-workos-session";
+const ATTRIBUTION_COOKIE = "hai_attribution";
+const ATTRIBUTION_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+  "gclid",
+  "fbclid",
+] as const;
+
+function sanitizedLandingPage(request: NextRequest): string {
+  const params = new URLSearchParams();
+  for (const key of ATTRIBUTION_KEYS) {
+    const value = request.nextUrl.searchParams.get(key);
+    if (value) params.set(key, value.slice(0, 500));
+  }
+
+  const query = params.toString();
+  return query
+    ? `${request.nextUrl.pathname}?${query}`
+    : request.nextUrl.pathname;
+}
+
+function sanitizedReferrer(request: NextRequest): string | undefined {
+  const raw = request.headers.get("referer");
+  if (!raw) return undefined;
+
+  try {
+    const referrer = new URL(raw);
+    return `${referrer.origin}${referrer.pathname}`.slice(0, 500);
+  } catch {
+    return undefined;
+  }
+}
+
+function withAttributionCookie(
+  request: NextRequest,
+  response: NextResponse,
+): NextResponse {
+  if (!isBrowserRequest(request)) return response;
+
+  const incoming: Record<string, string> = {};
+  for (const key of ATTRIBUTION_KEYS) {
+    const value = request.nextUrl.searchParams.get(key);
+    if (value) incoming[key] = value.slice(0, 500);
+  }
+
+  const hasNewAttribution = Object.keys(incoming).length > 0;
+  const existingCookie = request.cookies.get(ATTRIBUTION_COOKIE)?.value;
+  if (!hasNewAttribution && existingCookie) return response;
+
+  let existing: Record<string, string> = {};
+  if (existingCookie) {
+    try {
+      existing = JSON.parse(decodeURIComponent(existingCookie));
+    } catch {
+      existing = {};
+    }
+  }
+
+  const payload = {
+    ...existing,
+    ...incoming,
+    landing_page: existing.landing_page ?? sanitizedLandingPage(request),
+    referrer: existing.referrer ?? sanitizedReferrer(request),
+  };
+
+  response.cookies.set(
+    ATTRIBUTION_COOKIE,
+    encodeURIComponent(JSON.stringify(payload)),
+    {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 90 * 24 * 60 * 60,
+      path: "/",
+    },
+  );
+  return response;
+}
 
 export default async function middleware(
   request: NextRequest,
@@ -62,8 +143,11 @@ export default async function middleware(
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return NextResponse.redirect(
-        new URL("/desktop-callback?error=unauthenticated", request.url),
+      return withAttributionCookie(
+        request,
+        NextResponse.redirect(
+          new URL("/desktop-callback?error=unauthenticated", request.url),
+        ),
       );
     }
   }
@@ -88,10 +172,13 @@ export default async function middleware(
   const responseHeaders = buildResponseHeaders(headers);
 
   if (session.user || isUnauthenticatedPath(pathname)) {
-    return NextResponse.next({
-      request: { headers: requestHeaders },
-      headers: responseHeaders,
-    });
+    return withAttributionCookie(
+      request,
+      NextResponse.next({
+        request: { headers: requestHeaders },
+        headers: responseHeaders,
+      }),
+    );
   }
 
   // If rate-limited (not a real session expiry), don't redirect to login
@@ -99,26 +186,35 @@ export default async function middleware(
     if (!isBrowserRequest(request)) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
-      return NextResponse.json(
-        { code: "rate_limited", message: "Please retry shortly." },
-        { status: 503, headers: rateLimitHeaders },
+      return withAttributionCookie(
+        request,
+        NextResponse.json(
+          { code: "rate_limited", message: "Please retry shortly." },
+          { status: 503, headers: rateLimitHeaders },
+        ),
       );
     }
     // For browser requests, let through rather than forcing a confusing login redirect
-    return NextResponse.next({
-      request: { headers: requestHeaders },
-      headers: responseHeaders,
-    });
+    return withAttributionCookie(
+      request,
+      NextResponse.next({
+        request: { headers: requestHeaders },
+        headers: responseHeaders,
+      }),
+    );
   }
 
   if (!isBrowserRequest(request)) {
-    return NextResponse.json(
-      {
-        code: "unauthorized:auth",
-        message: "You need to sign in before continuing.",
-        cause: "Session expired or invalid",
-      },
-      { status: 401, headers: responseHeaders },
+    return withAttributionCookie(
+      request,
+      NextResponse.json(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        { status: 401, headers: responseHeaders },
+      ),
     );
   }
 
@@ -129,10 +225,16 @@ export default async function middleware(
     });
     const errorUrl = new URL("/auth-error", request.url);
     errorUrl.searchParams.set("code", "503");
-    return NextResponse.redirect(errorUrl, { headers: responseHeaders });
+    return withAttributionCookie(
+      request,
+      NextResponse.redirect(errorUrl, { headers: responseHeaders }),
+    );
   }
 
-  return NextResponse.redirect(authorizationUrl, { headers: responseHeaders });
+  return withAttributionCookie(
+    request,
+    NextResponse.redirect(authorizationUrl, { headers: responseHeaders }),
+  );
 }
 
 function buildRequestHeaders(
