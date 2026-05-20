@@ -51,12 +51,25 @@ async function assertAdmin(req: NextRequest) {
 }
 
 const dayString = (date: Date): string => date.toISOString().slice(0, 10);
+const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 function defaultRange() {
   const end = new Date();
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - 30);
   return { startDay: dayString(start), endDay: dayString(end) };
+}
+
+function parseDay(value: string | null, fallback: string): string | null {
+  const day = value ?? fallback;
+  if (!dayPattern.test(day)) return null;
+
+  const parsed = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || dayString(parsed) !== day) {
+    return null;
+  }
+
+  return day;
 }
 
 function csvEscape(value: string | number): string {
@@ -100,9 +113,21 @@ export async function GET(req: NextRequest) {
   if (forbidden) return forbidden;
 
   const fallback = defaultRange();
-  const startDay =
-    req.nextUrl.searchParams.get("startDay") ?? fallback.startDay;
-  const endDay = req.nextUrl.searchParams.get("endDay") ?? fallback.endDay;
+  const startDay = parseDay(
+    req.nextUrl.searchParams.get("startDay"),
+    fallback.startDay,
+  );
+  const endDay = parseDay(
+    req.nextUrl.searchParams.get("endDay"),
+    fallback.endDay,
+  );
+
+  if (!startDay || !endDay || startDay > endDay) {
+    return NextResponse.json(
+      { error: "Invalid date range. Use YYYY-MM-DD with startDay <= endDay." },
+      { status: 400 },
+    );
+  }
 
   const summary: EconomicsSummary = await convex.query(
     api.economics.getEconomicsSummary,
