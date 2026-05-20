@@ -190,7 +190,7 @@ const validateTokenLimit = (
   if (totalTokens > maxTokens) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
     });
   }
 };
@@ -406,7 +406,7 @@ const processFileAuto = async (
         if (!skipTokenValidation && fallbackTokens > maxTokens) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
           });
         }
 
@@ -816,16 +816,29 @@ export const saveFile = action({
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
       if (error instanceof ConvexError) {
+        const errorData = error.data as { code?: string; message?: string };
         // Best-effort cleanup: delete storage before re-throwing
-        convexLogger.error("file_upload_processing_convex_error", {
-          userId: actingUserId,
-          fileName: args.name,
-          size: args.size,
-          mediaType: args.mediaType,
-          mode: args.mode,
-          errorCode: (error.data as { code?: string })?.code,
-          errorMessage: (error.data as { message?: string })?.message,
-        });
+        if (errorData?.code === "FILE_TOKEN_LIMIT_EXCEEDED") {
+          convexLogger.warn("file_upload_token_limit_exceeded", {
+            userId: actingUserId,
+            fileName: args.name,
+            size: args.size,
+            mediaType: args.mediaType,
+            mode: args.mode,
+            errorCode: errorData.code,
+            errorMessage: errorData.message,
+          });
+        } else {
+          convexLogger.error("file_upload_processing_convex_error", {
+            userId: actingUserId,
+            fileName: args.name,
+            size: args.size,
+            mediaType: args.mediaType,
+            mode: args.mode,
+            errorCode: errorData?.code,
+            errorMessage: errorData?.message,
+          });
+        }
         try {
           if (args.s3Key) {
             await ctx.scheduler.runAfter(
@@ -857,7 +870,7 @@ export const saveFile = action({
         error instanceof Error &&
         error.message.includes("exceeds the maximum token limit")
       ) {
-        convexLogger.error("file_upload_token_limit_exceeded", {
+        convexLogger.warn("file_upload_token_limit_exceeded", {
           userId: actingUserId,
           fileName: args.name,
           size: args.size,
