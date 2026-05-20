@@ -21,6 +21,15 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#039;");
 }
 
+function isValidLocalPath(path: string | undefined): path is string {
+  return (
+    typeof path === "string" &&
+    path.startsWith("/") &&
+    !path.startsWith("//") &&
+    !path.startsWith("/\\")
+  );
+}
+
 function renderErrorPage(
   title: string,
   message: string,
@@ -146,7 +155,10 @@ export async function GET(request: Request) {
     );
   }
 
-  const response = NextResponse.redirect(new URL("/", request.url));
+  const redirectPath = isValidLocalPath(sessionData.returnPath)
+    ? sessionData.returnPath
+    : "/";
+  const response = NextResponse.redirect(new URL(redirectPath, request.url));
 
   response.cookies.set("wos-session", sessionData.sealedSession, {
     httpOnly: true,

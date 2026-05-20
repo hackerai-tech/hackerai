@@ -68,6 +68,20 @@ describe("createDesktopTransferToken", () => {
     );
   });
 
+  it("stores the optional return path with the transfer token", async () => {
+    await createDesktopTransferToken("sealed-session-data", {
+      returnPath: "/#pricing",
+    });
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.stringContaining("desktop-auth-transfer:"),
+      expect.objectContaining({
+        sealedSession: "sealed-session-data",
+        returnPath: "/#pricing",
+      }),
+      { ex: 300 },
+    );
+  });
+
   it("generates unique tokens", async () => {
     const token1 = await createDesktopTransferToken("session1");
     const token2 = await createDesktopTransferToken("session2");
@@ -82,6 +96,19 @@ describe("exchangeDesktopTransferToken", () => {
 
     const result = await exchangeDesktopTransferToken(token!);
     expect(result).toEqual({ sealedSession: "my-sealed-session" });
+  });
+
+  it("returns the preserved return path for valid token", async () => {
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      returnPath: "/#pricing",
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!);
+    expect(result).toEqual({
+      sealedSession: "my-sealed-session",
+      returnPath: "/#pricing",
+    });
   });
 
   it("returns null for invalid token format", async () => {
@@ -135,10 +162,10 @@ describe("createOAuthState", () => {
   });
 
   it("stores state with metadata as JSON", async () => {
-    await createOAuthState({ devCallbackPort: 3456 });
+    await createOAuthState({ devCallbackPort: 3456, returnPath: "/#pricing" });
     expect(mockRedis.set).toHaveBeenCalledWith(
       expect.stringContaining("desktop-oauth-state:"),
-      JSON.stringify({ devCallbackPort: 3456 }),
+      JSON.stringify({ devCallbackPort: 3456, returnPath: "/#pricing" }),
       { ex: 300 },
     );
   });
@@ -154,12 +181,18 @@ describe("verifyAndConsumeOAuthState", () => {
   });
 
   it("returns valid with metadata for a stored state", async () => {
-    const state = await createOAuthState({ devCallbackPort: 9999 });
+    const state = await createOAuthState({
+      devCallbackPort: 9999,
+      returnPath: "/#pricing",
+    });
     expect(state).not.toBeNull();
 
     const result = await verifyAndConsumeOAuthState(state!);
     expect(result.valid).toBe(true);
-    expect(result.metadata).toEqual({ devCallbackPort: 9999 });
+    expect(result.metadata).toEqual({
+      devCallbackPort: 9999,
+      returnPath: "/#pricing",
+    });
   });
 
   it("returns invalid for non-existent state", async () => {

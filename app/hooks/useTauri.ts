@@ -1,6 +1,7 @@
 "use client";
 
 import { toast } from "sonner";
+import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 
 declare global {
   interface Window {
@@ -38,12 +39,48 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 }
 
+type AuthFallbackPath =
+  | "/login"
+  | "/signup"
+  | `/login?${string}`
+  | `/signup?${string}`;
+
+type NavigateToAuthOptions = {
+  preferSignInForReturningUser?: boolean;
+};
+
+function resolveAuthPath(
+  fallbackPath: AuthFallbackPath,
+  options?: NavigateToAuthOptions,
+): AuthFallbackPath {
+  if (!options?.preferSignInForReturningUser || !hasAuthenticatedBefore()) {
+    return fallbackPath;
+  }
+
+  const authUrl = new URL(fallbackPath, window.location.origin);
+  if (authUrl.pathname !== "/signup") {
+    return fallbackPath;
+  }
+
+  authUrl.pathname = "/login";
+  return `${authUrl.pathname}${authUrl.search}` as AuthFallbackPath;
+}
+
 export async function navigateToAuth(
-  fallbackPath: "/login" | "/signup",
+  fallbackPath: AuthFallbackPath,
+  options?: NavigateToAuthOptions,
 ): Promise<void> {
+  const resolvedPath = resolveAuthPath(fallbackPath, options);
+
   if (detectTauri()) {
     try {
       let loginUrl = `${window.location.origin}/desktop-login`;
+      const fallbackUrl = new URL(resolvedPath, window.location.origin);
+      const authSearchParams = new URLSearchParams(fallbackUrl.search);
+
+      if (fallbackUrl.pathname === "/signup") {
+        authSearchParams.set("screen_hint", "sign-up");
+      }
 
       // In dev mode, pass the local auth callback port so the server
       // redirects to localhost instead of the hackerai:// deep link
@@ -51,10 +88,15 @@ export async function navigateToAuth(
         const { invoke } = await import("@tauri-apps/api/core");
         const port = await invoke<number>("get_dev_auth_port");
         if (port > 0) {
-          loginUrl += `?dev_callback_port=${port}`;
+          authSearchParams.set("dev_callback_port", String(port));
         }
       } catch {
         // Not in dev mode or command not available
+      }
+
+      const query = authSearchParams.toString();
+      if (query) {
+        loginUrl += `?${query}`;
       }
 
       const opened = await openInBrowser(loginUrl);
@@ -63,7 +105,7 @@ export async function navigateToAuth(
       // Fall through to web navigation
     }
   }
-  window.location.href = fallbackPath;
+  window.location.href = resolvedPath;
 }
 
 /**

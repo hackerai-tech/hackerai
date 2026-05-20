@@ -45,6 +45,7 @@ import {
   readSelectedModel,
   writeSelectedModel,
   cleanupExpiredDrafts,
+  markHasAuthenticatedBefore,
 } from "@/lib/utils/client-storage";
 
 interface GlobalStateType {
@@ -188,6 +189,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     writeChatMode(chatMode);
   }, [chatMode]);
+
+  useEffect(() => {
+    if (user) {
+      markHasAuthenticatedBefore();
+    }
+  }, [user]);
 
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
