@@ -46,6 +46,18 @@ const logLocalAttachmentDebug = (
 const getFilenameFromPath = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).pop() || "selected file";
 
+const isExpectedFileUploadError = (error: unknown): boolean => {
+  if (error instanceof ConvexError) {
+    const errorData = error.data as { code?: string };
+    return (
+      errorData?.code === "FILE_TOKEN_LIMIT_EXCEEDED" ||
+      errorData?.code === "FILE_UPLOAD_RATE_LIMIT" ||
+      errorData?.code === "PAID_PLAN_REQUIRED"
+    );
+  }
+  return false;
+};
+
 const fileFromBase64 = (
   base64: string,
   name: string,
@@ -292,7 +304,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           url,
         });
       } catch (error) {
-        console.error("Failed to upload file:", error);
+        if (isExpectedFileUploadError(error)) {
+          console.warn("File upload blocked:", error);
+        } else {
+          console.error("Failed to upload file:", error);
+        }
 
         // Extract error message from ConvexError or regular Error
         const errorMessage = (() => {
