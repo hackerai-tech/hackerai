@@ -16,6 +16,18 @@ import { logger } from "@/lib/logger";
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
 
+type FileToProcess = {
+  fileId?: string;
+  url?: string;
+  mediaType?: string;
+  positions: Array<{ messageIndex: number; partIndex: number }>;
+};
+
+type SizeProbeResult = {
+  bytes: number;
+  source: "content_length" | "content_range" | "download_probe";
+};
+
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
   messages.some((msg: any) =>
     (msg.parts || []).some(
@@ -56,7 +68,23 @@ const convertUrlToBase64DataUrl = async (
   }
 };
 
-const probeContentLength = async (url: string): Promise<number | null> => {
+const parseContentLength = (value: string | null): number | null => {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseContentRangeTotal = (value: string | null): number | null => {
+  if (!value) return null;
+  const match = value.match(/\/(\d+)$/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const probeContentLength = async (
+  url: string,
+): Promise<SizeProbeResult | null> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -66,16 +94,76 @@ const probeContentLength = async (url: string): Promise<number | null> => {
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    const length = response.headers.get("content-length");
-    if (!length) return null;
-    const parsed = Number(length);
-    return Number.isFinite(parsed) ? parsed : null;
+    const parsed = parseContentLength(response.headers.get("content-length"));
+    return parsed == null ? null : { bytes: parsed, source: "content_length" };
   } catch {
     return null;
   } finally {
     clearTimeout(timeoutId);
   }
 };
+
+const probeDownloadSize = async (
+  url: string,
+  limitBytes: number,
+): Promise<SizeProbeResult | null> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(url, {
+      headers: { Range: `bytes=0-${limitBytes}` },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return null;
+
+    const rangeTotal = parseContentRangeTotal(
+      response.headers.get("content-range"),
+    );
+    if (rangeTotal != null) {
+      return { bytes: rangeTotal, source: "content_range" };
+    }
+
+    const contentLength = parseContentLength(
+      response.headers.get("content-length"),
+    );
+    if (contentLength != null && response.status !== 206) {
+      return { bytes: contentLength, source: "content_length" };
+    }
+
+    if (!response.body) {
+      return contentLength == null
+        ? null
+        : { bytes: contentLength, source: "download_probe" };
+    }
+
+    const reader = response.body.getReader();
+    let bytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limitBytes) {
+        controller.abort();
+        return { bytes, source: "download_probe" };
+      }
+    }
+
+    return { bytes, source: "download_probe" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const probeImageSize = async (
+  url: string,
+  limitBytes: number,
+): Promise<SizeProbeResult | null> =>
+  (await probeContentLength(url)) ?? (await probeDownloadSize(url, limitBytes));
 
 const imageOmittedText = (
   name: unknown,
@@ -119,30 +207,16 @@ const collectFilesToProcess = (
   mode: ChatMode,
 ): {
   hasMedia: boolean;
-  files: Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >;
+  files: Map<string, FileToProcess>;
 } => {
   let hasMedia = false;
-  const files = new Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >();
+  const files = new Map<string, FileToProcess>();
 
   messages.forEach((msg, messageIndex) => {
     if (!msg.parts) return;
 
     (msg.parts as any[]).forEach((part, partIndex) => {
-      if (!isFilePart(part) || !part.fileId) return;
+      if (!isFilePart(part)) return;
 
       if (isMediaFile(part.mediaType)) hasMedia = true;
 
@@ -152,10 +226,22 @@ const collectFilesToProcess = (
         isMediaFile(part.mediaType);
 
       if (shouldProcess) {
-        if (!files.has(part.fileId)) {
-          files.set(part.fileId, { mediaType: part.mediaType, positions: [] });
+        const fileId =
+          typeof part.fileId === "string" ? part.fileId : undefined;
+        const url =
+          typeof (part as any).url === "string" ? (part as any).url : undefined;
+        const key = fileId ? `file:${fileId}` : url ? `url:${url}` : null;
+        if (!key) return;
+
+        if (!files.has(key)) {
+          files.set(key, {
+            fileId,
+            url,
+            mediaType: part.mediaType,
+            positions: [],
+          });
         }
-        files.get(part.fileId)!.positions.push({ messageIndex, partIndex });
+        files.get(key)!.positions.push({ messageIndex, partIndex });
       }
     });
   });
@@ -185,30 +271,23 @@ const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
 
 const applyUrlsToFileParts = async (
   messages: UIMessage[],
-  filesToProcess: Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >,
+  filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
 ) => {
-  const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
-    .filter(([_, file]) => !file.url)
-    .map(([fileId]) => fileId);
+  const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
+    (file) => file.fileId && !file.url,
+  );
+  const fileIdsNeedingUrls = filesNeedingUrls.map((file) => file.fileId!);
 
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls);
 
-  fileIdsNeedingUrls.forEach((fileId, index) => {
-    const file = filesToProcess.get(fileId);
-    if (file && fetchedUrls[index]) {
+  filesNeedingUrls.forEach((file, index) => {
+    if (fetchedUrls[index]) {
       file.url = fetchedUrls[index];
     }
   });
 
-  for (const [fileId, file] of filesToProcess) {
+  for (const [fileKey, file] of filesToProcess) {
     if (!file.url) continue;
 
     // Only convert PDFs to base64 in "ask" mode for inline viewing.
@@ -226,12 +305,17 @@ const applyUrlsToFileParts = async (
         ] as any)
       : null;
     const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
-    const probedImageSize =
-      isSupportedImage && typeof firstPart?.size !== "number"
-        ? await probeContentLength(file.url)
-        : null;
+    const shouldProbeImageSize =
+      isSupportedImage &&
+      file.url &&
+      (!file.fileId || typeof firstPart?.size !== "number");
+    const probedImageSize = shouldProbeImageSize
+      ? await probeImageSize(file.url, MAX_IMAGE_SIZE)
+      : null;
     const effectiveImageSize =
-      typeof firstPart?.size === "number" ? firstPart.size : probedImageSize;
+      typeof firstPart?.size === "number"
+        ? firstPart.size
+        : (probedImageSize?.bytes ?? null);
     const imageLimit =
       effectiveImageSize != null &&
       effectiveImageSize > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
@@ -246,14 +330,16 @@ const applyUrlsToFileParts = async (
       logger.warn("image_attachment_omitted_before_provider_call", {
         event: "image_attachment_omitted_before_provider_call",
         service: "chat-handler",
-        file_id: fileId,
+        file_id: file.fileId,
+        file_ref: file.fileId ? "file_id" : "inline_url",
+        file_key: file.fileId ? fileKey : undefined,
         media_type: file.mediaType,
         size_bytes: effectiveImageSize,
         limit_bytes: imageLimit,
         size_source:
           typeof firstPart?.size === "number"
             ? "message_part"
-            : "content_length",
+            : probedImageSize?.source,
         mode,
       });
     }
