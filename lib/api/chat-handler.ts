@@ -76,6 +76,7 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
+import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
@@ -1079,6 +1080,26 @@ export const createChatHandler = (
                           p.toolCallId,
                       ),
                   );
+                  const incompleteToolSummaries = isAborted
+                    ? summarizeIncompleteToolParts(messages)
+                    : [];
+                  if (incompleteToolSummaries.length > 0) {
+                    console.info(
+                      JSON.stringify({
+                        level: "info",
+                        event: "abort_incomplete_tool_calls_detected",
+                        service: "chat-handler",
+                        timestamp: new Date().toISOString(),
+                        chat_id: chatId,
+                        user_id: userId,
+                        mode,
+                        finish_reason: state.streamFinishReason,
+                        is_preemptive_abort: isPreemptiveAbort,
+                        incomplete_tool_count: incompleteToolSummaries.length,
+                        incomplete_tools: incompleteToolSummaries,
+                      }),
+                    );
+                  }
 
                   // On abort, streamText.onFinish may not have fired yet, so state.streamUsage
                   // could be undefined. Await usage from result to ensure we capture it.
@@ -1097,6 +1118,8 @@ export const createChatHandler = (
                   }
 
                   const hasUsageToRecord = Boolean(resolvedUsage);
+                  const shouldSkipSaveSignal =
+                    cancellationSubscriber.shouldSkipSave();
 
                   // If user aborted (not pre-emptive), skip message save when:
                   // 1. skipSave signal received via Redis (edit/regenerate/retry — message will be discarded)
@@ -1104,11 +1127,27 @@ export const createChatHandler = (
                   if (
                     isAborted &&
                     !isPreemptiveAbort &&
-                    (cancellationSubscriber.shouldSkipSave() ||
+                    (shouldSkipSaveSignal ||
                       (newFileIds.length === 0 &&
                         !hasIncompleteToolCalls &&
                         !hasUsageToRecord))
                   ) {
+                    console.info(
+                      JSON.stringify({
+                        level: "info",
+                        event: "abort_message_save_skipped",
+                        service: "chat-handler",
+                        timestamp: new Date().toISOString(),
+                        chat_id: chatId,
+                        user_id: userId,
+                        mode,
+                        finish_reason: state.streamFinishReason,
+                        skip_save_signal: shouldSkipSaveSignal,
+                        new_file_count: newFileIds.length,
+                        has_incomplete_tool_calls: hasIncompleteToolCalls,
+                        has_usage_to_record: hasUsageToRecord,
+                      }),
+                    );
                     await deductAccumulatedUsage();
                     return;
                   }

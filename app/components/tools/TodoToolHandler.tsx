@@ -4,6 +4,7 @@ import ToolBlock from "@/components/ui/tool-block";
 import { TodoBlock } from "@/components/ui/todo-block";
 import { ListTodo } from "lucide-react";
 import type { ChatStatus, Todo, TodoWriteInput } from "@/types";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface TodoToolHandlerProps {
   message: UIMessage;
@@ -29,8 +30,15 @@ export const TodoToolHandler = memo(function TodoToolHandler({
   part,
   status,
 }: TodoToolHandlerProps) {
-  const { toolCallId, state, input, output } = part;
+  const { toolCallId, state, input, output, errorText } = part;
   const todoInput = input as TodoWriteInput;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
+  const stoppedTodoAction = todoInput?.merge
+    ? "Stopped updating to-do list"
+    : "Stopped creating to-do list";
+  const failedTodoAction = todoInput?.merge
+    ? "Todo update failed"
+    : "Todo creation failed";
 
   switch (state) {
     case "input-streaming":
@@ -75,6 +83,20 @@ export const TodoToolHandler = memo(function TodoToolHandler({
         />
       );
     }
+
+    case "output-error":
+      return (
+        <ToolBlock
+          key={toolCallId}
+          icon={<ListTodo />}
+          action={isStoppedByUser ? stoppedTodoAction : failedTodoAction}
+          target={
+            todoInput?.todos?.length
+              ? `${todoInput.todos.length} items`
+              : undefined
+          }
+        />
+      );
 
     default:
       return null;

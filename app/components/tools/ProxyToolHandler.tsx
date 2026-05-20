@@ -4,6 +4,7 @@ import { Radar } from "lucide-react";
 import type { ChatStatus, SidebarProxy } from "@/types/chat";
 import { isSidebarProxy } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface ProxyToolHandlerProps {
   part: any;
@@ -224,6 +225,7 @@ export const ProxyToolHandler = ({
   toolName,
 }: ProxyToolHandlerProps) => {
   const { toolCallId, state, input, output, errorText } = part;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
 
   const displayTarget = useMemo(() => {
     if (!input) return "";
@@ -292,7 +294,9 @@ export const ProxyToolHandler = ({
   const getActionText = (): string => {
     if (state === "input-streaming") return "Preparing proxy action";
     if (isExecuting) return PROXY_ACTION_LABELS[toolName] || "Proxying";
-    if (output?.result?.error || errorText) return "Proxy action failed";
+    if (output?.result?.error || errorText) {
+      return isStoppedByUser ? "Stopped proxy action" : "Proxy action failed";
+    }
     return PROXY_COMPLETED_LABELS[toolName] || "Proxied";
   };
 
@@ -336,7 +340,9 @@ export const ProxyToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Radar />}
-          action="Proxy action failed"
+          action={
+            isStoppedByUser ? "Stopped proxy action" : "Proxy action failed"
+          }
           target={displayTarget}
           isClickable={true}
           onClick={handleOpenInSidebar}

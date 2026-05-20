@@ -12,6 +12,7 @@ import {
   type ShellToolInput,
   type ShellToolOutput,
 } from "./shell-tool-utils";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -112,6 +113,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   });
 
   const shellAction = (input as { action?: string })?.action;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
 
   switch (state) {
     case "input-streaming": {
@@ -168,7 +170,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={blockAction(false)}
+          action={isStoppedByUser ? "Stopped command" : blockAction(false)}
           target={blockTarget}
           isClickable
           onClick={handleOpenInSidebar}

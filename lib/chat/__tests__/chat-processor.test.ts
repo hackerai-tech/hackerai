@@ -317,7 +317,7 @@ describe("fixIncompleteMessageParts", () => {
     expect(result).toEqual(parts);
   });
 
-  it("should remove incomplete tool with input but no output", () => {
+  it("should mark incomplete renderable tool with input as aborted", () => {
     const parts = [
       { type: "step-start" },
       {
@@ -328,8 +328,15 @@ describe("fixIncompleteMessageParts", () => {
       },
     ];
     const result = fixIncompleteMessageParts(parts);
-    // Tool never executed (no output), so remove it and its step-start
-    expect(result).toHaveLength(0);
+    expect(result).toHaveLength(2);
+    expect(result[0].type).toBe("step-start");
+    expect(result[1]).toMatchObject({
+      type: "tool-create_note",
+      toolCallId: "call_1",
+      state: "output-error",
+      input: { title: "Test", content: "Content" },
+      errorText: "Stopped by user before the tool completed.",
+    });
   });
 
   it("should remove tool parts with input-streaming and no input", () => {
@@ -362,7 +369,7 @@ describe("fixIncompleteMessageParts", () => {
     expect(result[0].type).toBe("text");
   });
 
-  it("should remove incomplete tool with partial input but no output", () => {
+  it("should mark incomplete tool with partial meaningful input as aborted", () => {
     const parts = [
       { type: "step-start" },
       {
@@ -373,8 +380,44 @@ describe("fixIncompleteMessageParts", () => {
       },
     ];
     const result = fixIncompleteMessageParts(parts);
-    // Tool never produced output, so remove entirely
-    expect(result).toHaveLength(0);
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({
+      type: "tool-create_note",
+      state: "output-error",
+      input: { title: "Partial" },
+      errorText: "Stopped by user before the tool completed.",
+    });
+  });
+
+  it("should mark incomplete file writes with streamed path metadata as aborted", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        input: {
+          action: "write",
+          brief: "Test with cloudscraper to handle Cloudflare challenge",
+          path: "/home/user/telenet_cloudscraper.py",
+        },
+        state: "input-streaming",
+        toolCallId: "toolu_vrtx_01CY5UvLdoBKwymCRD5TB8r3",
+        type: "tool-file",
+      },
+    ];
+
+    const result = fixIncompleteMessageParts(parts);
+
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({
+      type: "tool-file",
+      state: "output-error",
+      toolCallId: "toolu_vrtx_01CY5UvLdoBKwymCRD5TB8r3",
+      input: {
+        action: "write",
+        brief: "Test with cloudscraper to handle Cloudflare challenge",
+        path: "/home/user/telenet_cloudscraper.py",
+      },
+      errorText: "Stopped by user before the tool completed.",
+    });
   });
 
   it("should handle mixed complete and incomplete parts", () => {
