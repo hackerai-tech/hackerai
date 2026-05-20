@@ -59,6 +59,10 @@ export interface StorageCompactionResult<T extends UIMessage = UIMessage> {
 
 const STORAGE_MESSAGE_SOFT_LIMIT_BYTES = 850 * 1024;
 const STORAGE_TOOL_OUTPUT_TOKEN_BUDGET = 20_000;
+const STORAGE_REASONING_CHAR_BUDGET = 32_000;
+const STORAGE_REASONING_PART_CHAR_LIMIT = 8_000;
+const STORAGE_COMPACTED_REASONING_PREFIX =
+  "[Earlier reasoning compacted for storage]\n\n";
 
 // ---------------------------------------------------------------------------
 // Placeholder builders per tool type
@@ -202,6 +206,55 @@ const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
   return part;
 };
 
+const compactReasoningParts = (
+  parts: UIMessage["parts"],
+): UIMessage["parts"] => {
+  let remainingReasoningChars = STORAGE_REASONING_CHAR_BUDGET;
+
+  const compacted = parts
+    .slice()
+    .reverse()
+    .map((part) => {
+      if (part?.type !== "reasoning") return part;
+
+      const text = typeof part.text === "string" ? part.text : "";
+      if (!text.trim()) return null;
+      if (remainingReasoningChars <= 0) return null;
+
+      const charLimit = Math.min(
+        remainingReasoningChars,
+        STORAGE_REASONING_PART_CHAR_LIMIT,
+      );
+      remainingReasoningChars -= Math.min(text.length, charLimit);
+
+      if (text.length <= charLimit) return part;
+
+      const prefixBudget = Math.min(
+        STORAGE_COMPACTED_REASONING_PREFIX.length,
+        charLimit,
+      );
+      const tailBudget = Math.max(0, charLimit - prefixBudget);
+
+      return {
+        ...part,
+        text: `${STORAGE_COMPACTED_REASONING_PREFIX.slice(
+          0,
+          prefixBudget,
+        )}${tailBudget > 0 ? text.slice(-tailBudget) : ""}`,
+      };
+    })
+    .filter((part): part is UIMessage["parts"][number] => part !== null)
+    .reverse();
+
+  return compacted;
+};
+
+const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
+  parts.filter(
+    (part) =>
+      part?.type !== "step-start" && part?.type !== "data-summarization",
+  );
+
 /**
  * Compacts a single assistant UIMessage before database storage.
  *
@@ -258,6 +311,16 @@ export function compactMessageForStorage<T extends UIMessage>(
     const pruneResult = pruneToolOutputs([{ ...message, parts }], 0, 0);
     parts = pruneResult.messages[0]?.parts ?? parts;
     prunedCount += pruneResult.prunedCount;
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    parts = compactReasoningParts(parts);
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    parts = stripStorageOnlyParts(parts);
     afterSizeBytes = estimateSerializedSizeBytes(parts);
   }
 
