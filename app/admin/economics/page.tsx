@@ -6,7 +6,9 @@ import {
   Activity,
   ArrowLeft,
   BadgeDollarSign,
+  Download,
   Gauge,
+  Info,
   RefreshCw,
   TrendingUp,
   Users,
@@ -104,6 +106,11 @@ function Row({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+function csvUrl(startDay: string, endDay: string): string {
+  const params = new URLSearchParams({ startDay, endDay, format: "csv" });
+  return `/api/admin/economics?${params.toString()}`;
+}
+
 export default async function EconomicsPage({
   searchParams,
 }: {
@@ -129,6 +136,11 @@ export default async function EconomicsPage({
     summary.users.active > 0
       ? summary.margin.contributionDollars / summary.users.active
       : 0;
+  const hasEconomicsData =
+    summary.usage.requests > 0 ||
+    summary.revenue.grossRevenueDollars !== 0 ||
+    summary.revenue.netRevenueDollars !== 0 ||
+    summary.usage.totalCostDollars !== 0;
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -150,24 +162,43 @@ export default async function EconomicsPage({
             </p>
           </div>
 
-          <form
-            className="grid w-full gap-3 sm:grid-cols-[1fr_1fr_auto] lg:w-auto"
-            method="GET"
-          >
-            <label className="grid gap-1.5 text-xs text-muted-foreground">
-              Start
-              <Input name="startDay" type="date" defaultValue={startDay} />
-            </label>
-            <label className="grid gap-1.5 text-xs text-muted-foreground">
-              End
-              <Input name="endDay" type="date" defaultValue={endDay} />
-            </label>
-            <Button type="submit" className="self-end">
-              <RefreshCw className="h-4 w-4" />
-              Apply
+          <div className="flex w-full flex-col gap-3 lg:w-auto">
+            <form
+              className="grid w-full gap-3 sm:grid-cols-[1fr_1fr_auto] lg:w-auto"
+              method="GET"
+            >
+              <label className="grid gap-1.5 text-xs text-muted-foreground">
+                Start
+                <Input name="startDay" type="date" defaultValue={startDay} />
+              </label>
+              <label className="grid gap-1.5 text-xs text-muted-foreground">
+                End
+                <Input name="endDay" type="date" defaultValue={endDay} />
+              </label>
+              <Button type="submit" className="self-end">
+                <RefreshCw className="h-4 w-4" />
+                Apply
+              </Button>
+            </form>
+            <Button asChild variant="outline" className="w-full lg:self-end">
+              <Link href={csvUrl(startDay, endDay)}>
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Link>
             </Button>
-          </form>
+          </div>
         </header>
+
+        {!hasEconomicsData ? (
+          <section className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              No usage or revenue rows were found for this range. Economics data
+              starts after this instrumentation is deployed and the first LLM
+              usage or Stripe revenue event is recorded.
+            </span>
+          </section>
+        ) : null}
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Metric
