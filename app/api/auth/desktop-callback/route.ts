@@ -6,6 +6,15 @@ import {
 } from "@/lib/desktop-auth";
 import { workos } from "@/app/api/workos";
 
+type DesktopAuthSession = {
+  accessToken: string;
+  refreshToken: string;
+  user: unknown;
+  impersonator?: unknown;
+  authenticationMethod?: unknown;
+  sealedSession?: string;
+};
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -81,16 +90,55 @@ export async function GET(request: NextRequest) {
         clientId,
       });
 
-    const session = {
+    let session: DesktopAuthSession = {
       accessToken,
       refreshToken,
       user,
       impersonator,
     };
 
-    const sealedSession = await sealData(session, {
-      password: cookiePassword,
-    });
+    let organizationId: string | undefined;
+    try {
+      const memberships =
+        await workos.userManagement.listOrganizationMemberships({
+          userId: user.id,
+          statuses: ["active"],
+        });
+      organizationId = memberships.data?.[0]?.organizationId;
+    } catch (err) {
+      console.error(
+        "[Desktop Auth] Failed to fetch organization memberships:",
+        err,
+      );
+    }
+
+    if (organizationId) {
+      session = await workos.userManagement.authenticateWithRefreshToken({
+        clientId,
+        refreshToken,
+        organizationId,
+        session: {
+          sealSession: true,
+          cookiePassword,
+        },
+      });
+    }
+
+    const sealedSession =
+      session.sealedSession ??
+      (await sealData(
+        {
+          accessToken: session.accessToken,
+          refreshToken: session.refreshToken,
+          user: session.user,
+          impersonator: session.impersonator,
+          authenticationMethod: session.authenticationMethod,
+        },
+        {
+          password: cookiePassword,
+          ttl: 0,
+        },
+      ));
 
     const transferToken = await createDesktopTransferToken(sealedSession);
 
