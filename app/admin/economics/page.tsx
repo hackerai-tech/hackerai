@@ -11,7 +11,6 @@ import {
   Info,
   RefreshCw,
   TrendingUp,
-  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { api } from "@/convex/_generated/api";
@@ -300,14 +299,6 @@ export default async function EconomicsPage({
               />
             </CardContent>
           </Card>
-        </section>
-
-        <section className="flex items-center gap-2 rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          <Users className="h-4 w-4 shrink-0" />
-          <span>
-            Data comes from Convex daily aggregates and Stripe webhooks. PostHog
-            is not needed to view this dashboard.
-          </span>
         </section>
       </div>
     </main>
