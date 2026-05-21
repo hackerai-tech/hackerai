@@ -36,6 +36,15 @@ function tierDirection(
   return "lateral";
 }
 
+const centsToDollars = (amount: number | null | undefined): number =>
+  (amount ?? 0) / 100;
+
+function priceBillingInterval(
+  price: Stripe.Price | undefined,
+): "day" | "week" | "month" | "year" | undefined {
+  return price?.recurring?.interval ?? undefined;
+}
+
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 // =============================================================================
@@ -226,6 +235,47 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     `[Subscription Webhook] invoice.paid (${billingReason ?? "unknown"}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
+
+  if (billingReason === "subscription_create") {
+    const item = subscription.items?.data[0];
+    const price = item?.price;
+    const invoiceAmountPaidDollars = centsToDollars(
+      (invoice as { amount_paid?: number }).amount_paid,
+    );
+    const attributedRevenueDollars =
+      userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
+
+    for (const uid of userIds) {
+      phLogger.event("subscription_started", {
+        userId: uid,
+        from_tier: "free",
+        to_tier: tier,
+        conversion_type: "free_to_paid",
+        org_id: orgId,
+        user_count: userIds.length,
+        plan: price?.lookup_key,
+        billing_interval: priceBillingInterval(price),
+        billing_interval_count: price?.recurring?.interval_count,
+        quantity: item?.quantity,
+        invoice_amount_paid_dollars: invoiceAmountPaidDollars,
+        attributed_revenue_dollars: attributedRevenueDollars,
+        revenue_dollars: attributedRevenueDollars,
+        currency: invoice.currency,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscription.id,
+        stripe_invoice_id: invoice.id,
+        stripe_price_id: price?.id,
+        $set: {
+          subscription_tier: tier,
+          last_subscription_started_at: new Date().toISOString(),
+        },
+        $set_once: {
+          first_subscription_started_at: new Date().toISOString(),
+          first_paid_tier: tier,
+        },
+      });
+    }
+  }
 
   // Clear team seat rotation debt on renewal (fresh cycle)
   if (tier === "team" && orgId) {
