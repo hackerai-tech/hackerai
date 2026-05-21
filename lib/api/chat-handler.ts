@@ -37,6 +37,7 @@ import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
+  captureAgentRun,
   captureToolCalls,
   createChatLogger,
   shutdownPostHog,
@@ -795,9 +796,8 @@ export const createChatHandler = (
                             subscriberStopped = true;
                           }
 
-                          chatLogger!.setSandbox(
-                            sandboxManager.getSandboxInfo(),
-                          );
+                          const sandboxInfo = sandboxManager.getSandboxInfo();
+                          chatLogger!.setSandbox(sandboxInfo);
                           // Use fallback-only cache tokens (subtract pre-fallback snapshot)
                           // so the wide event isn't mixing cumulative cache with retry-only usage
                           const fallbackCacheRead =
@@ -820,6 +820,14 @@ export const createChatHandler = (
                             chatLogger,
                             userId,
                             mode,
+                          });
+                          captureAgentRun({
+                            posthog,
+                            userId,
+                            mode,
+                            subscription,
+                            sandboxInfo,
+                            outcome: retryAborted ? "aborted" : "success",
                           });
                           shutdownPostHog(posthog);
                           chatLogger!.emitSuccess({
@@ -999,13 +1007,22 @@ export const createChatHandler = (
 
                 // Emit wide event
                 stepStart = Date.now();
-                chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
+                const sandboxInfo = sandboxManager.getSandboxInfo();
+                chatLogger!.setSandbox(sandboxInfo);
                 chatLogger!.setCacheMetrics({
                   cacheHitRate: usageTracker.cacheHitRate,
                   cacheReadTokens: usageTracker.cacheReadTokens,
                   cacheWriteTokens: usageTracker.cacheWriteTokens,
                 });
                 captureToolCalls({ posthog, chatLogger, userId, mode });
+                captureAgentRun({
+                  posthog,
+                  userId,
+                  mode,
+                  subscription,
+                  sandboxInfo,
+                  outcome: isAborted ? "aborted" : "success",
+                });
                 shutdownPostHog(posthog);
                 chatLogger!.emitSuccess({
                   finishReason: state.streamFinishReason,

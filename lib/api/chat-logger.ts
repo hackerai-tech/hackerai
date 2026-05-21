@@ -15,6 +15,7 @@ import type {
   CaidoReadyInfo,
   ChatMode,
   ExtraUsageConfig,
+  SandboxInfo,
   SandboxBootInfo,
 } from "@/types";
 import type { ChatSDKError } from "@/lib/errors";
@@ -425,7 +426,7 @@ export type ChatLogger = ReturnType<typeof createChatLogger>;
 
 /**
  * Capture aggregated tool usage to PostHog at end of request.
- * One event is emitted per tool/sandbox bucket to keep analytics useful while
+ * One event is emitted per tool to keep analytics useful while
  * avoiding the cost of one PostHog event per individual tool call.
  */
 export function captureToolCalls({
@@ -445,17 +446,16 @@ export function captureToolCalls({
 
   const aggregatedToolCalls = new Map<
     string,
-    { name: string; sandbox_type?: string; count: number }
+    { name: string; count: number }
   >();
 
   for (const tool of toolCalls) {
-    const key = `${tool.name}:${tool.sandbox_type ?? ""}`;
-    const existing = aggregatedToolCalls.get(key);
+    const existing = aggregatedToolCalls.get(tool.name);
     if (existing) {
       existing.count += 1;
       continue;
     }
-    aggregatedToolCalls.set(key, { ...tool, count: 1 });
+    aggregatedToolCalls.set(tool.name, { name: tool.name, count: 1 });
   }
 
   for (const tool of aggregatedToolCalls.values()) {
@@ -468,10 +468,37 @@ export function captureToolCalls({
         count: tool.count,
         toolCallCount: tool.count,
         legacyEventName: "hackerai-" + tool.name,
-        ...(tool.sandbox_type && { sandboxType: tool.sandbox_type }),
       },
     });
   }
+}
+
+export function captureAgentRun({
+  posthog,
+  userId,
+  mode,
+  subscription,
+  sandboxInfo,
+  outcome,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  mode: ChatMode;
+  subscription: string;
+  sandboxInfo: SandboxInfo | null;
+  outcome: "success" | "aborted" | "error";
+}) {
+  if (!posthog || mode !== "agent") return;
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-agent_run",
+    properties: {
+      mode,
+      subscription,
+      outcome,
+      ...(sandboxInfo?.type && { sandboxType: sandboxInfo.type }),
+    },
+  });
 }
 
 export function shutdownPostHog(posthog: PostHog | null) {
