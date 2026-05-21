@@ -28,7 +28,35 @@ import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
+const MAX_DATABASE_ERROR_DATA_STRING_LENGTH = 500;
+const MAX_DATABASE_ERROR_DATA_BYTES = 4 * 1024;
+const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
+const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
+const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+
+const sensitiveErrorDataKeys = new Set([
+  "authorization",
+  "body",
+  "content",
+  "cookie",
+  "cookies",
+  "file",
+  "files",
+  "headers",
+  "messages",
+  "output",
+  "parts",
+  "password",
+  "prompt",
+  "request",
+  "requestbody",
+  "response",
+  "responsebody",
+  "result",
+  "text",
+  "token",
+]);
 
 export { setConvexUrl };
 
@@ -45,7 +73,105 @@ const stringifyError = (error: unknown): string => {
 const getErrorData = (error: unknown): unknown => {
   if (!error || typeof error !== "object") return undefined;
   const data = (error as { data?: unknown }).data;
-  return data === undefined ? undefined : data;
+  return data === undefined ? undefined : sanitizeErrorData(data);
+};
+
+const getJsonByteLength = (value: unknown): number => {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf-8");
+  } catch {
+    return 0;
+  }
+};
+
+const truncateErrorDataString = (value: string): string =>
+  value.length > MAX_DATABASE_ERROR_DATA_STRING_LENGTH
+    ? `${value.slice(0, MAX_DATABASE_ERROR_DATA_STRING_LENGTH)}...`
+    : value;
+
+const isSensitiveErrorDataKey = (key: string): boolean => {
+  const normalized = key.replace(/[-_\s]/g, "").toLowerCase();
+  return (
+    sensitiveErrorDataKeys.has(normalized) ||
+    /apikey|authorization|bearer|cookie|password|secret/.test(normalized)
+  );
+};
+
+const summarizeErrorDataObject = (value: object) => ({
+  truncated: true,
+  keys: Object.keys(value).slice(0, MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH),
+});
+
+const sanitizeErrorDataValue = (
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown => {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === "string") return truncateErrorDataString(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function" || typeof value === "symbol") {
+    return String(value);
+  }
+  if (typeof value !== "object") return String(value);
+
+  if (seen.has(value)) return "[Circular]";
+  if (depth >= MAX_DATABASE_ERROR_DATA_DEPTH) {
+    return summarizeErrorDataObject(value);
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const sanitized = value
+      .slice(0, MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH)
+      .map((item) => sanitizeErrorDataValue(item, depth + 1, seen));
+    if (value.length > MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH) {
+      sanitized.push({
+        truncated: true,
+        remaining: value.length - MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH,
+      });
+    }
+    seen.delete(value);
+    return sanitized;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, childValue] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    sanitized[key] = isSensitiveErrorDataKey(key)
+      ? REDACTED_ERROR_DATA_VALUE
+      : sanitizeErrorDataValue(childValue, depth + 1, seen);
+  }
+
+  seen.delete(value);
+  return sanitized;
+};
+
+const sanitizeErrorData = (data: unknown): unknown => {
+  const sanitized = sanitizeErrorDataValue(data, 0, new WeakSet<object>());
+  const sizeBytes = getJsonByteLength(sanitized);
+  if (sizeBytes <= MAX_DATABASE_ERROR_DATA_BYTES) return sanitized;
+
+  if (sanitized && typeof sanitized === "object") {
+    return {
+      truncated: true,
+      size_bytes: sizeBytes,
+      keys: Object.keys(sanitized).slice(
+        0,
+        MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH,
+      ),
+    };
+  }
+
+  return {
+    truncated: true,
+    size_bytes: sizeBytes,
+  };
 };
 
 const truncateDiagnosticString = (value: string): string =>
