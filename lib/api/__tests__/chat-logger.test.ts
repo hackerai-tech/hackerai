@@ -15,7 +15,7 @@ describe("captureToolCalls", () => {
         { name: "run_terminal_cmd", sandbox_type: "e2b" },
         { name: "run_terminal_cmd", sandbox_type: "e2b" },
         { name: "open_url" },
-        { name: "run_terminal_cmd", sandbox_type: "local" },
+        { name: "run_terminal_cmd", sandbox_type: "remote-connection" },
       ],
     };
 
@@ -35,7 +35,6 @@ describe("captureToolCalls", () => {
         toolName: "run_terminal_cmd",
         count: 3,
         toolCallCount: 3,
-        legacyEventName: "hackerai-run_terminal_cmd",
       },
     });
     expect(capture).toHaveBeenCalledWith({
@@ -46,7 +45,6 @@ describe("captureToolCalls", () => {
         toolName: "open_url",
         count: 1,
         toolCallCount: 1,
-        legacyEventName: "hackerai-open_url",
       },
     });
   });

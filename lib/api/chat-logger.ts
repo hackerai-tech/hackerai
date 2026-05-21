@@ -467,7 +467,6 @@ export function captureToolCalls({
         toolName: tool.name,
         count: tool.count,
         toolCallCount: tool.count,
-        legacyEventName: "hackerai-" + tool.name,
       },
     });
   }
