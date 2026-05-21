@@ -424,8 +424,9 @@ export function createChatLogger(config: ChatLoggerConfig) {
 export type ChatLogger = ReturnType<typeof createChatLogger>;
 
 /**
- * Capture all tool call events to PostHog at end of request.
- * Events are queued synchronously and flushed after the response is sent.
+ * Capture aggregated tool usage to PostHog at end of request.
+ * One event is emitted per tool/sandbox bucket to keep analytics useful while
+ * avoiding the cost of one PostHog event per individual tool call.
  */
 export function captureToolCalls({
   posthog,
@@ -441,12 +442,32 @@ export function captureToolCalls({
   if (!posthog || !chatLogger) return;
   const toolCalls = chatLogger.getToolCalls();
   if (toolCalls.length === 0) return;
+
+  const aggregatedToolCalls = new Map<
+    string,
+    { name: string; sandbox_type?: string; count: number }
+  >();
+
   for (const tool of toolCalls) {
+    const key = `${tool.name}:${tool.sandbox_type ?? ""}`;
+    const existing = aggregatedToolCalls.get(key);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    aggregatedToolCalls.set(key, { ...tool, count: 1 });
+  }
+
+  for (const tool of aggregatedToolCalls.values()) {
     posthog.capture({
       distinctId: userId,
-      event: "hackerai-" + tool.name,
+      event: "hackerai-tool_usage",
       properties: {
         mode,
+        toolName: tool.name,
+        count: tool.count,
+        toolCallCount: tool.count,
+        legacyEventName: "hackerai-" + tool.name,
         ...(tool.sandbox_type && { sandboxType: tool.sandbox_type }),
       },
     });
