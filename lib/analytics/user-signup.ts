@@ -18,6 +18,7 @@ export function captureUserSignedUp({
     user_created_at: user.createdAt,
     workos_event_id: workosEventId,
     workos_event_created_at: workosEventCreatedAt,
+    $insert_id: workosEventId,
     $set_once: {
       signed_up_at: user.createdAt,
       signup_source: "workos_user_created_webhook",
