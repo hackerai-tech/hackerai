@@ -284,6 +284,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
       context: {
         mode?: string;
         model?: string;
+        requestedModelSlug?: string;
+        fallbackModelSlugs?: string[];
         userId?: string;
         subscription?: string;
         isTemporary?: boolean;
@@ -299,6 +301,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         {
           chat_id: config.chatId,
           endpoint: config.endpoint,
+          provider_gateway: "openrouter",
           provider_error_category: category,
           ...context,
           ...details,
@@ -310,6 +313,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         error: posthogProviderException(error, details),
         chatId: config.chatId,
         endpoint: config.endpoint,
+        providerGateway: "openrouter",
         providerErrorCategory: category,
         ...context,
         ...details,

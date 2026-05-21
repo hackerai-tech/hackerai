@@ -112,9 +112,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
-    const streamErrorIdx = taskSrc.indexOf("if (streamError)", waitIdx);
+    const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
     const handledRateLimitIdx = taskSrc.indexOf(
-      "isHandledUserRateLimitError(streamError)",
+      "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
     const returnIdx = taskSrc.indexOf(
@@ -128,15 +128,34 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
-    const streamErrorIdx = taskSrc.indexOf("if (streamError)");
+    const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
-      "isHandledUserRateLimitError(streamError)",
+      "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
-    const throwIdx = taskSrc.indexOf("throw streamError", handledRateLimitIdx);
+    const throwIdx = taskSrc.indexOf(
+      "throw terminalStreamError",
+      handledRateLimitIdx,
+    );
     expect(streamErrorIdx).toBeGreaterThan(-1);
     expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
     expect(throwIdx).toBeGreaterThan(streamErrorIdx);
+  });
+
+  test("provider finishReason error fails the task after the UI stream drains", () => {
+    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const terminalErrorIdx = taskSrc.indexOf(
+      "getTerminalProviderStreamError(terminalAgentState)",
+      waitIdx,
+    );
+    const throwIdx = taskSrc.indexOf(
+      "throw terminalStreamError",
+      terminalErrorIdx,
+    );
+
+    expect(waitIdx).toBeGreaterThan(-1);
+    expect(terminalErrorIdx).toBeGreaterThan(waitIdx);
+    expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
   test("task catch records structured metadata for dashboard filtering", () => {

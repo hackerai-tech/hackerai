@@ -1,5 +1,5 @@
 import { query, mutation, internalQuery } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Value } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
@@ -66,6 +66,18 @@ const getMessageSaveDiagnostics = (parts: any[]) => {
     tool_part_count: toolPartCount,
     data_part_count: dataPartCount,
   };
+};
+
+const getErrorName = (error: unknown): string =>
+  error instanceof Error ? error.name : typeof error;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const getConvexErrorData = (error: unknown): Value | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : (data as Value);
 };
 
 /**
@@ -245,8 +257,10 @@ export const saveMessage = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    let failureStage = "start";
 
     try {
+      failureStage = "find_existing_message";
       const existingMessage = await ctx.db
         .query("messages")
         .withIndex("by_message_id", (q) => q.eq("id", args.id))
@@ -283,6 +297,7 @@ export const saveMessage = mutation({
             );
             for (const file of files) {
               if (file && !file.is_attached) {
+                failureStage = "patch_existing_message_file_attachment";
                 await ctx.db.patch(file._id, { is_attached: true });
               }
             }
@@ -323,6 +338,7 @@ export const saveMessage = mutation({
         // Apply patch if there are changes
         if (Object.keys(patch).length > 0) {
           patch.update_time = Date.now();
+          failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
         }
 
@@ -334,6 +350,7 @@ export const saveMessage = mutation({
           return null;
         }
 
+        failureStage = "verify_chat_ownership";
         const chatExists: boolean = await ctx.runQuery(
           internal.messages.verifyChatOwnership,
           {
@@ -347,8 +364,10 @@ export const saveMessage = mutation({
         }
       }
 
+      failureStage = "extract_content";
       const content = extractTextFromParts(args.parts);
 
+      failureStage = "insert_message";
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
@@ -370,6 +389,7 @@ export const saveMessage = mutation({
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
       if (args.fileIds && args.fileIds.length > 0) {
+        failureStage = "read_new_message_files";
         const files = await Promise.all(
           args.fileIds.map((fileId) =>
             ctx.db.get(fileId).catch((e) => {
@@ -385,6 +405,7 @@ export const saveMessage = mutation({
             continue;
           }
           if (!file.is_attached) {
+            failureStage = "patch_new_message_file_attachment";
             await ctx.db.patch(file._id, { is_attached: true });
           }
         }
@@ -392,6 +413,7 @@ export const saveMessage = mutation({
 
       return null;
     } catch (error) {
+      const causeData = getConvexErrorData(error);
       console.error(
         JSON.stringify({
           level: "error",
@@ -399,6 +421,7 @@ export const saveMessage = mutation({
           service: "convex",
           timestamp: new Date().toISOString(),
           db_operation: "messages.saveMessage",
+          failure_stage: failureStage,
           chat_id: args.chatId,
           user_id: args.userId,
           message_id: args.id,
@@ -409,12 +432,30 @@ export const saveMessage = mutation({
           update_only: args.updateOnly === true,
           hidden: args.isHidden === true,
           file_count: args.fileIds?.length ?? 0,
-          error_name: error instanceof Error ? error.name : typeof error,
-          error_message: error instanceof Error ? error.message : String(error),
+          error_name: getErrorName(error),
+          error_message: getErrorMessage(error),
+          convex_error_data: causeData,
           ...getMessageSaveDiagnostics(args.parts),
         }),
       );
-      throw new Error("Failed to save message");
+      throw new ConvexError({
+        code: "MESSAGE_SAVE_FAILED",
+        message: "Failed to save message",
+        failureStage,
+        causeName: getErrorName(error),
+        causeMessage: getErrorMessage(error),
+        causeData,
+        operation: "messages.saveMessage",
+        chatId: args.chatId,
+        messageId: args.id,
+        role: args.role,
+        mode: args.mode,
+        finishReason: args.finishReason,
+        updateOnly: args.updateOnly === true,
+        hidden: args.isHidden === true,
+        fileCount: args.fileIds?.length ?? 0,
+        ...getMessageSaveDiagnostics(args.parts),
+      });
     }
   },
 });
