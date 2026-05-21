@@ -39,6 +39,7 @@ import PostHogClient from "@/app/posthog";
 import {
   captureAgentRun,
   captureToolCalls,
+  captureUsageCost,
   createChatLogger,
   shutdownPostHog,
   type ChatLogger,
@@ -567,13 +568,13 @@ export const createChatHandler = (
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
           const usageTracker = new UsageTracker();
-          let hasDeductedUsage = false;
+          let hasRecordedUsage = false;
           // Snapshot cache tokens before fallback retry so we can isolate fallback-only metrics
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
 
           const deductAccumulatedUsage = async () => {
-            if (hasDeductedUsage || subscription === "free") return;
+            if (hasRecordedUsage) return;
             // Add E2B sandbox session cost (duration-based)
             const sandboxCost = getSandboxSessionCost();
             if (sandboxCost > 0) {
@@ -586,7 +587,14 @@ export const createChatHandler = (
               // No usage data reported — skip deduction
               return;
             }
-            hasDeductedUsage = true;
+            hasRecordedUsage = true;
+            const usageCostRecord = usageTracker.createUsageCostRecord({
+              selectedModel,
+              selectedModelOverride,
+              responseModel: state.responseModel,
+              configuredModelId,
+              rateLimitInfo,
+            });
 
             // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
             // non-clean streams. Each completed step reports authoritative cost with
@@ -601,25 +609,37 @@ export const createChatHandler = (
                 ? usageTracker.providerCost
                 : undefined;
 
-            await deductUsage(
+            if (subscription !== "free") {
+              await deductUsage(
+                userId,
+                subscription,
+                estimatedInputTokens,
+                usageTracker.inputTokens,
+                usageTracker.outputTokens,
+                extraUsageConfig,
+                providerCost,
+                selectedModel,
+                usageTracker.nonModelCost,
+                organizationId,
+              );
+              usageTracker.log({
+                userId,
+                selectedModel,
+                selectedModelOverride,
+                responseModel: state.responseModel,
+                configuredModelId,
+                rateLimitInfo,
+              });
+            }
+            captureUsageCost({
+              posthog,
               userId,
               subscription,
-              estimatedInputTokens,
-              usageTracker.inputTokens,
-              usageTracker.outputTokens,
-              extraUsageConfig,
-              providerCost,
-              selectedModel,
-              usageTracker.nonModelCost,
               organizationId,
-            );
-            usageTracker.log({
-              userId,
-              selectedModel,
-              selectedModelOverride,
-              responseModel: state.responseModel,
-              configuredModelId,
-              rateLimitInfo,
+              chatId,
+              endpoint,
+              mode,
+              usage: usageCostRecord,
             });
           };
 

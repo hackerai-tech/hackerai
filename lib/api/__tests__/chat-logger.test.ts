@@ -4,7 +4,11 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Response = class Response {};
 (globalThis as any).Headers = class Headers {};
 
-const { captureAgentRun, captureToolCalls } = require("../chat-logger");
+const {
+  captureAgentRun,
+  captureToolCalls,
+  captureUsageCost,
+} = require("../chat-logger");
 
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
@@ -101,5 +105,63 @@ describe("captureAgentRun", () => {
     });
 
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureUsageCost", () => {
+  it("captures a user-scoped cost event with queryable dollar fields", () => {
+    const capture = jest.fn();
+
+    captureUsageCost({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "pro",
+      organizationId: "org_123",
+      chatId: "chat_123",
+      endpoint: "/api/chat",
+      mode: "agent",
+      usage: {
+        model: "claude-sonnet",
+        type: "extra",
+        inputTokens: 1000,
+        outputTokens: 500,
+        totalTokens: 1500,
+        cacheReadTokens: 200,
+        cacheWriteTokens: undefined,
+        costDollars: 0.42,
+        modelCostDollars: 0.3,
+        nonModelCostDollars: 0.12,
+        costSource: "provider",
+      },
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-usage_cost",
+      properties: expect.objectContaining({
+        user_id: "user_123",
+        subscription: "pro",
+        subscription_tier: "pro",
+        organization_id: "org_123",
+        chat_id: "chat_123",
+        endpoint: "/api/chat",
+        mode: "agent",
+        model: "claude-sonnet",
+        usage_type: "extra",
+        cost_dollars: 0.42,
+        model_cost_dollars: 0.3,
+        non_model_cost_dollars: 0.12,
+        input_tokens: 1000,
+        output_tokens: 500,
+        total_tokens: 1500,
+        cache_read_tokens: 200,
+        cache_write_tokens: 0,
+        cost_source: "provider",
+        $set: expect.objectContaining({
+          subscription_tier: "pro",
+          last_usage_cost_at: expect.any(String),
+        }),
+      }),
+    });
   });
 });

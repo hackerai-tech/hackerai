@@ -69,6 +69,7 @@ import {
 import {
   captureAgentRun,
   captureToolCalls,
+  captureUsageCost,
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
@@ -835,12 +836,12 @@ export const agentLongTask = task({
           const fallbackModel = "fallback-agent-model";
 
           const usageTracker = new UsageTracker();
-          let hasDeductedUsage = false;
+          let hasRecordedUsage = false;
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
 
           const deductAccumulatedUsage = async () => {
-            if (hasDeductedUsage || subscription === "free") return;
+            if (hasRecordedUsage) return;
             const sandboxCost = getSandboxSessionCost();
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
@@ -848,29 +849,49 @@ export const agentLongTask = task({
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
             if (!usageTracker.hasUsage) return;
-            hasDeductedUsage = true;
-            const providerCost =
-              usageTracker.modelProviderCost > 0
-                ? usageTracker.providerCost
-                : undefined;
-            await deductUsage(
-              userId,
-              subscription,
-              estimatedInputTokens,
-              usageTracker.inputTokens,
-              usageTracker.outputTokens,
-              extraUsageConfig,
-              providerCost,
-              selectedModel,
-              usageTracker.nonModelCost,
-            );
-            usageTracker.log({
-              userId,
+            hasRecordedUsage = true;
+            const usageCostRecord = usageTracker.createUsageCostRecord({
               selectedModel,
               selectedModelOverride,
               responseModel: state.responseModel,
               configuredModelId,
               rateLimitInfo,
+            });
+            const providerCost =
+              usageTracker.modelProviderCost > 0
+                ? usageTracker.providerCost
+                : undefined;
+            if (subscription !== "free") {
+              await deductUsage(
+                userId,
+                subscription,
+                estimatedInputTokens,
+                usageTracker.inputTokens,
+                usageTracker.outputTokens,
+                extraUsageConfig,
+                providerCost,
+                selectedModel,
+                usageTracker.nonModelCost,
+                organizationId,
+              );
+              usageTracker.log({
+                userId,
+                selectedModel,
+                selectedModelOverride,
+                responseModel: state.responseModel,
+                configuredModelId,
+                rateLimitInfo,
+              });
+            }
+            captureUsageCost({
+              posthog,
+              userId,
+              subscription,
+              organizationId,
+              chatId,
+              endpoint: "/api/agent",
+              mode,
+              usage: usageCostRecord,
             });
           };
 
@@ -1058,7 +1079,6 @@ export const agentLongTask = task({
                               sandboxInfo,
                               outcome: retryAborted ? "aborted" : "success",
                             });
-                            posthog?.shutdown();
                             chatLogger?.emitSuccess({
                               finishReason: state.streamFinishReason,
                               wasAborted: retryAborted,
@@ -1129,6 +1149,7 @@ export const agentLongTask = task({
                               sendFileMetadataToStream(accumulatedFiles);
                             }
                             await deductAccumulatedUsage();
+                            posthog?.shutdown();
                           },
                         }),
                         userStopSignal.signal,
@@ -1164,7 +1185,6 @@ export const agentLongTask = task({
                     sandboxInfo,
                     outcome: isAborted ? "aborted" : "success",
                   });
-                  posthog?.shutdown();
                   chatLogger?.emitSuccess({
                     finishReason: state.streamFinishReason,
                     wasAborted: isAborted,
@@ -1275,6 +1295,7 @@ export const agentLongTask = task({
                         }),
                       );
                       await deductAccumulatedUsage();
+                      posthog?.shutdown();
                       return;
                     }
 
@@ -1353,6 +1374,7 @@ export const agentLongTask = task({
                   }
 
                   await deductAccumulatedUsage();
+                  posthog?.shutdown();
                 },
               }),
               userStopSignal.signal,

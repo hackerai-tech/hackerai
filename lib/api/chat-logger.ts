@@ -22,6 +22,7 @@ import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
+import type { UsageCostRecord } from "@/lib/usage-tracker";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -496,6 +497,61 @@ export function captureAgentRun({
       subscription,
       outcome,
       ...(sandboxInfo?.type && { sandboxType: sandboxInfo.type }),
+    },
+  });
+}
+
+/**
+ * Capture one cost event per request with usage. In PostHog, answer
+ * "how much does each user cost you?" by summing cost_dollars on
+ * hackerai-usage_cost grouped by distinct_id (or user_id).
+ */
+export function captureUsageCost({
+  posthog,
+  userId,
+  subscription,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  usage,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  subscription: string;
+  organizationId?: string;
+  chatId: string;
+  endpoint: "/api/chat" | "/api/agent";
+  mode: ChatMode;
+  usage: UsageCostRecord;
+}) {
+  if (!posthog) return;
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-usage_cost",
+    properties: {
+      user_id: userId,
+      subscription,
+      subscription_tier: subscription,
+      ...(organizationId && { organization_id: organizationId }),
+      chat_id: chatId,
+      endpoint,
+      mode,
+      model: usage.model,
+      usage_type: usage.type,
+      cost_dollars: usage.costDollars,
+      model_cost_dollars: usage.modelCostDollars,
+      non_model_cost_dollars: usage.nonModelCostDollars,
+      input_tokens: usage.inputTokens,
+      output_tokens: usage.outputTokens,
+      total_tokens: usage.totalTokens,
+      cache_read_tokens: usage.cacheReadTokens ?? 0,
+      cache_write_tokens: usage.cacheWriteTokens ?? 0,
+      cost_source: usage.costSource,
+      $set: {
+        subscription_tier: subscription,
+        last_usage_cost_at: new Date().toISOString(),
+      },
     },
   });
 }
