@@ -79,6 +79,8 @@ export type AgentStreamState = {
   streamFinishReason: string | undefined;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
+  /** Original provider/AI SDK error captured from streamText.onError. */
+  providerError: unknown;
   /** Stop-condition flags set by the respective onFired callbacks. */
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
@@ -98,6 +100,7 @@ export function initAgentStreamState(
     streamFinishReason: undefined,
     streamUsage: undefined,
     responseModel: undefined,
+    providerError: undefined,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
@@ -415,10 +418,15 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
+      state.providerError = error;
       if (!isXaiSafetyError(error)) {
+        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
         ctx.chatLogger?.recordProviderError(error, {
           mode: ctx.mode,
           model: modelName,
+          requestedModelSlug: requestedSlug,
+          fallbackModelSlugs:
+            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
           userId: ctx.userId,
           subscription: ctx.subscription,
           isTemporary: ctx.temporary,

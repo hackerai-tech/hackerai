@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { extractRetryAttempts } from "../error-utils";
+import { extractErrorDetails, extractRetryAttempts } from "../error-utils";
 
 const apiCallError = (overrides: Record<string, unknown>) =>
   Object.assign(new Error("Internal Server Error"), {
@@ -15,6 +15,52 @@ const retryError = (errors: unknown[]) =>
   });
 
 describe("extractRetryAttempts -> request_id", () => {
+  it("extracts OpenRouter provider metadata from data.error.metadata", () => {
+    const err = apiCallError({
+      data: {
+        id: "gen-1778016347-NLwcIgc6sf7HbOc1VW4x",
+        error: {
+          code: 502,
+          message: "Upstream idle timeout exceeded",
+          metadata: {
+            provider_name: "Moonshot AI",
+            raw: "upstream idle timeout exceeded after 60s",
+          },
+        },
+      },
+    });
+
+    expect(extractErrorDetails(err)).toMatchObject({
+      providerName: "Moonshot AI",
+      providerErrorCode: 502,
+      providerErrorMessage: "Upstream idle timeout exceeded",
+      providerRawError: "upstream idle timeout exceeded after 60s",
+      openrouterGenerationId: "gen-1778016347-NLwcIgc6sf7HbOc1VW4x",
+    });
+  });
+
+  it("extracts OpenRouter provider metadata from responseBody JSON", () => {
+    const err = apiCallError({
+      responseBody: JSON.stringify({
+        id: "gen-9999999999-abcdefabcdef",
+        error: {
+          code: 503,
+          message: "Provider overloaded",
+          metadata: {
+            provider_name: "Anthropic",
+          },
+        },
+      }),
+    });
+
+    expect(extractErrorDetails(err)).toMatchObject({
+      providerName: "Anthropic",
+      providerErrorCode: 503,
+      providerErrorMessage: "Provider overloaded",
+      openrouterGenerationId: "gen-9999999999-abcdefabcdef",
+    });
+  });
+
   it("prefers OpenRouter gen-id from error.data over cf-ray header", () => {
     const err = retryError([
       apiCallError({
@@ -131,6 +177,22 @@ describe("extractRetryAttempts -> request_id", () => {
 
     const ids = extractRetryAttempts(err)?.map((a) => a.request_id);
     expect(ids).toEqual(["gen-aaa", "gen-bbb", "ray-3"]);
+  });
+
+  it("adds provider name to retry attempts when OpenRouter exposes it", () => {
+    const err = retryError([
+      apiCallError({
+        data: {
+          error: {
+            metadata: {
+              provider_name: "Google",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(extractRetryAttempts(err)?.[0].provider_name).toBe("Google");
   });
 
   it("returns undefined when error has no errors[] array", () => {

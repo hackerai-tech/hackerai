@@ -566,6 +566,8 @@ export const createChatHandler = (
           ].includes(selectedModel);
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
+          const fallbackModelId =
+            trackedProvider.languageModel(fallbackModel).modelId;
 
           const usageTracker = new UsageTracker();
           let hasRecordedUsage = false;
@@ -694,8 +696,11 @@ export const createChatHandler = (
                 chatId,
                 endpoint,
                 mode,
+                providerGateway: "openrouter",
                 originalModel: selectedModel,
+                requestedModelSlug: configuredModelId,
                 fallbackModel,
+                fallbackModelSlug: fallbackModelId,
                 userId,
                 subscription,
                 isTemporary: temporary,
@@ -1210,27 +1215,68 @@ export const createChatHandler = (
                     // On user-initiated abort, use updateOnly as safety net:
                     // only patch existing messages (add files/usage), don't create new ones.
                     // This prevents orphan messages when Redis skipSave signal was missed.
-                    await saveMessage({
-                      chatId,
-                      userId,
-                      message: processedMessage,
-                      extraFileIds: newFileIds,
-                      model: state.responseModel || configuredModelId,
-                      mode,
-                      generationStartedAt:
-                        processedMessage.role === "assistant"
-                          ? streamStartTime
-                          : undefined,
-                      generationTimeMs: Date.now() - streamStartTime,
-                      finishReason: state.streamFinishReason,
-                      usage: resolvedUsage ?? state.streamUsage,
-                      updateOnly:
-                        isAborted && !isPreemptiveAbort ? true : undefined,
-                      isHidden:
-                        isAutoContinue && processedMessage.role === "user"
-                          ? true
-                          : undefined,
-                    });
+                    try {
+                      await saveMessage({
+                        chatId,
+                        userId,
+                        message: processedMessage,
+                        extraFileIds: newFileIds,
+                        model: state.responseModel || configuredModelId,
+                        mode,
+                        generationStartedAt:
+                          processedMessage.role === "assistant"
+                            ? streamStartTime
+                            : undefined,
+                        generationTimeMs: Date.now() - streamStartTime,
+                        finishReason: state.streamFinishReason,
+                        usage: resolvedUsage ?? state.streamUsage,
+                        updateOnly:
+                          isAborted && !isPreemptiveAbort ? true : undefined,
+                        isHidden:
+                          isAutoContinue && processedMessage.role === "user"
+                            ? true
+                            : undefined,
+                        wasAborted: isAborted,
+                        wasPreemptiveTimeout: isPreemptiveAbort,
+                      });
+                    } catch (error) {
+                      if (isPreemptiveAbort) {
+                        console.error(
+                          JSON.stringify({
+                            level: "error",
+                            event: "preemptive_timeout_message_save_failed",
+                            service: "chat-handler",
+                            timestamp: new Date().toISOString(),
+                            chat_id: chatId,
+                            user_id: userId,
+                            message_id: processedMessage.id,
+                            message_role: processedMessage.role,
+                            mode,
+                            model: state.responseModel || configuredModelId,
+                            finish_reason: state.streamFinishReason,
+                            time_since_timeout_trigger_ms: triggerTime
+                              ? Date.now() - triggerTime
+                              : null,
+                            stream_duration_ms: Date.now() - streamStartTime,
+                            error_name:
+                              error instanceof Error
+                                ? error.name
+                                : typeof error,
+                            error_message:
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                            error_metadata:
+                              error &&
+                              typeof error === "object" &&
+                              "metadata" in error
+                                ? (error as { metadata?: unknown }).metadata
+                                : undefined,
+                          }),
+                        );
+                      }
+                      throw error;
+                    }
                   }
                   logStep("save_messages", stepStart);
 

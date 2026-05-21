@@ -91,6 +91,7 @@ import {
   createAgentStream,
   initAgentStreamState,
   type AgentStreamContext,
+  type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
 import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
@@ -216,6 +217,24 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
     statusCode:
       typeof details.statusCode === "number" ? details.statusCode : undefined,
   };
+};
+
+const getTerminalProviderStreamError = (
+  state:
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
+): unknown | undefined => {
+  if (!state) return undefined;
+  if (state.streamFinishReason !== "error") return undefined;
+  if (state.providerError) return state.providerError;
+
+  return Object.assign(
+    new Error("Provider stream finished with error finish reason"),
+    {
+      name: "ProviderStreamError",
+      finishReason: state.streamFinishReason,
+    },
+  );
 };
 
 const recordAgentLongFailureForDashboard = async (
@@ -598,6 +617,7 @@ export const agentLongTask = task({
 
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
+      let terminalAgentState: AgentStreamState | undefined;
 
       // Rate limit check happens inside execute so a thrown ChatSDKError
       // (e.g. "exceeded daily messages") flows through createUIMessageStream's
@@ -810,6 +830,7 @@ export const agentLongTask = task({
           // Mutable stream state — updated in-place by the shared runner and
           // read back here in toUIMessageStream.onFinish.
           const state = initAgentStreamState(finalMessages, initialCtxUsage);
+          terminalAgentState = state;
 
           const budgetSnapshot = captureBudgetSnapshot({
             rateLimitInfo,
@@ -834,6 +855,8 @@ export const agentLongTask = task({
             "agent-model-free",
           ].includes(selectedModel);
           const fallbackModel = "fallback-agent-model";
+          const fallbackModelId =
+            trackedProvider.languageModel(fallbackModel).modelId;
 
           const usageTracker = new UsageTracker();
           let hasRecordedUsage = false;
@@ -945,8 +968,11 @@ export const agentLongTask = task({
                 {
                   error,
                   chatId,
+                  providerGateway: "openrouter",
                   originalModel: selectedModel,
+                  requestedModelSlug: configuredModelId,
                   fallbackModel,
+                  fallbackModelSlug: fallbackModelId,
                   userId,
                   subscription,
                   preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
@@ -1388,13 +1414,18 @@ export const agentLongTask = task({
       streamPiped = true;
       await waitUntilComplete();
 
-      if (streamError) {
-        if (isHandledUserRateLimitError(streamError)) {
-          await recordAgentLongHandledRateLimitForDashboard(streamError, {
-            chatId,
-            userId,
-            runId: ctx.run.id,
-          }).catch((metadataError) => {
+      const terminalStreamError =
+        streamError ?? getTerminalProviderStreamError(terminalAgentState);
+      if (terminalStreamError) {
+        if (isHandledUserRateLimitError(terminalStreamError)) {
+          await recordAgentLongHandledRateLimitForDashboard(
+            terminalStreamError,
+            {
+              chatId,
+              userId,
+              runId: ctx.run.id,
+            },
+          ).catch((metadataError) => {
             metadata.set("status", "rate_limited");
             console.error(
               "[agent-long] failed to record rate limit metadata:",
@@ -1402,11 +1433,11 @@ export const agentLongTask = task({
             );
           });
           await usageRefundTracker.refund().catch(() => {});
-          chatLogger?.emitChatError(streamError);
+          chatLogger?.emitChatError(terminalStreamError);
           await phLogger.flush().catch(() => {});
           return { chatId, assistantMessageId };
         }
-        throw streamError;
+        throw terminalStreamError;
       }
 
       metadata.set("status", "done");

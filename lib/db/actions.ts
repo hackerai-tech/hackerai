@@ -42,6 +42,12 @@ const stringifyError = (error: unknown): string => {
   }
 };
 
+const getErrorData = (error: unknown): unknown => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : data;
+};
+
 const truncateDiagnosticString = (value: string): string =>
   value.length > MAX_DATABASE_ERROR_MESSAGE_LENGTH
     ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
@@ -58,6 +64,7 @@ const databaseError = (
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
+    db_error_data: getErrorData(error),
     ...metadata,
   };
 
@@ -127,6 +134,8 @@ export async function saveMessage({
   usage,
   updateOnly,
   isHidden,
+  wasAborted,
+  wasPreemptiveTimeout,
 }: {
   chatId: string;
   userId: string;
@@ -144,6 +153,8 @@ export async function saveMessage({
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
+  wasAborted?: boolean;
+  wasPreemptiveTimeout?: boolean;
 }) {
   let fixedParts = message.parts;
   let partsForSave = message.parts;
@@ -243,6 +254,8 @@ export async function saveMessage({
       finish_reason: finishReason,
       update_only: updateOnly === true,
       hidden: isHidden === true,
+      was_aborted: wasAborted,
+      was_preemptive_timeout: wasPreemptiveTimeout,
       extra_file_count: extraFileIds?.length ?? 0,
       usage_keys: usage ? Object.keys(usage).sort() : undefined,
       ...persistenceDiagnostics,
