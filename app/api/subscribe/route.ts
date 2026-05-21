@@ -2,8 +2,19 @@ import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
+import { phLogger } from "@/lib/posthog/server";
+
+function planLookupKeyToTier(
+  lookupKey: string,
+): "pro" | "pro-plus" | "ultra" | "team" | null {
+  if (lookupKey.startsWith("ultra")) return "ultra";
+  if (lookupKey.startsWith("pro-plus")) return "pro-plus";
+  if (lookupKey.startsWith("team")) return "team";
+  if (lookupKey.startsWith("pro")) return "pro";
+  return null;
+}
 
 export const POST = async (req: NextRequest) => {
   try {
@@ -185,6 +196,18 @@ export const POST = async (req: NextRequest) => {
       mode: "subscription",
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
+      metadata: {
+        userId,
+        workOSOrganizationId: organization.id,
+        requestedPlan: subscriptionLevel,
+      },
+      subscription_data: {
+        metadata: {
+          userId,
+          workOSOrganizationId: organization.id,
+          requestedPlan: subscriptionLevel,
+        },
+      },
       custom_text: {
         submit: {
           message:
@@ -192,6 +215,30 @@ export const POST = async (req: NextRequest) => {
         },
       },
     });
+
+    const selectedPrice = price.data[0];
+    phLogger.event("checkout_started", {
+      userId,
+      org_id: organization.id,
+      from_tier: "free",
+      to_tier: planLookupKeyToTier(subscriptionLevel),
+      plan: subscriptionLevel,
+      billing_interval: selectedPrice.recurring?.interval,
+      billing_interval_count: selectedPrice.recurring?.interval_count,
+      quantity,
+      checkout_amount_dollars:
+        selectedPrice.unit_amount != null
+          ? (selectedPrice.unit_amount * quantity) / 100
+          : undefined,
+      currency: selectedPrice.currency,
+      stripe_customer_id: customer.id,
+      stripe_checkout_session_id: session.id,
+      stripe_price_id: selectedPrice.id,
+      $set: {
+        last_checkout_started_at: new Date().toISOString(),
+      },
+    });
+    after(() => phLogger.flush());
 
     return NextResponse.json({ url: session.url });
   } catch (error: unknown) {
