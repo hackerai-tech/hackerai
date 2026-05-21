@@ -10,23 +10,6 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const runtime = "nodejs";
 
-async function alreadyProcessed(eventId: string): Promise<boolean> {
-  const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    eventId,
-    checkOnly: true,
-  });
-
-  return result.alreadyProcessed;
-}
-
-async function markProcessed(eventId: string): Promise<void> {
-  await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    eventId,
-  });
-}
-
 /**
  * POST /api/workos/webhook
  * Handles WorkOS user lifecycle events for acquisition analytics.
@@ -81,34 +64,55 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    if (await alreadyProcessed(event.id)) {
-      console.log(`[WorkOS Webhook] Event ${event.id} already processed`);
-      return NextResponse.json({ received: true });
-    }
+    const result = await convex.mutation(
+      api.extraUsage.claimWebhookProcessing,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+      },
+    );
+    claimState = result.state;
   } catch (error) {
-    console.error("[WorkOS Webhook] Idempotency check failed:", error);
+    console.error("[WorkOS Webhook] Claim failed:", error);
     return NextResponse.json(
-      { error: "Failed to check idempotency" },
+      { error: "Failed to claim webhook" },
       { status: 500 },
     );
   }
 
-  if (event.event === "user.created") {
-    captureUserSignedUp({
-      user: event.data,
-      workosEventId: event.id,
-      workosEventCreatedAt: event.createdAt,
-    });
+  if (claimState !== "acquired") {
+    console.log(`[WorkOS Webhook] Event ${event.id} ${claimState}, skipping`);
+    return NextResponse.json({ received: true });
+  }
+
+  try {
+    if (event.event === "user.created") {
+      captureUserSignedUp({
+        user: event.data,
+        workosEventId: event.id,
+        workosEventCreatedAt: event.createdAt,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `[WorkOS Webhook] Handler failed for event ${event.id} (${event.event}):`,
+      error,
+    );
+    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
 
   after(() => phLogger.flush());
 
   try {
-    await markProcessed(event.id);
+    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      eventId: event.id,
+    });
   } catch (error) {
     console.error(
-      `[WorkOS Webhook] Failed to mark event ${event.id} as processed:`,
+      `[WorkOS Webhook] Failed to finalize event ${event.id}:`,
       error,
     );
   }
