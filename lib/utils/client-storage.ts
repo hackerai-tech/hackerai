@@ -19,6 +19,7 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
 
 const isBrowser = (): boolean => typeof window !== "undefined";
@@ -66,6 +67,27 @@ export const writeChatMode = (mode: ChatMode): void => {
     window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
   } catch {
     // ignore
+  }
+};
+
+export const markHasAuthenticatedBefore = (): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(HAS_AUTHENTICATED_BEFORE_STORAGE_KEY, "true");
+  } catch {
+    // ignore
+  }
+};
+
+export const hasAuthenticatedBefore = (): boolean => {
+  if (!isBrowser()) return false;
+  try {
+    return (
+      window.localStorage.getItem(HAS_AUTHENTICATED_BEFORE_STORAGE_KEY) ===
+      "true"
+    );
+  } catch {
+    return false;
   }
 };
 

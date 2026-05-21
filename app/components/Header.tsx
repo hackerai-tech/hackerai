@@ -61,7 +61,11 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
               </Button>
               <Button
                 data-testid="sign-up-button"
-                onClick={() => navigateToAuth("/signup")}
+                onClick={() =>
+                  navigateToAuth("/signup", {
+                    preferSignInForReturningUser: true,
+                  })
+                }
                 variant="outline"
                 size="default"
                 className="min-w-16 rounded-[10px]"
@@ -94,7 +98,11 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
             </Button>
             <Button
               data-testid="sign-up-button-mobile"
-              onClick={() => navigateToAuth("/signup")}
+              onClick={() =>
+                navigateToAuth("/signup", {
+                  preferSignInForReturningUser: true,
+                })
+              }
               variant="outline"
               size="sm"
               className="rounded-[10px]"

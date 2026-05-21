@@ -9,6 +9,7 @@ const TOKEN_FORMAT_REGEX = /^[a-f0-9]{64}$/;
 type TransferTokenData = {
   sealedSession: string;
   createdAt: number;
+  returnPath?: string;
 };
 
 function getRedis(): Redis | null {
@@ -35,6 +36,7 @@ function generateTransferToken(): string {
 
 export async function createDesktopTransferToken(
   sealedSession: string,
+  options?: { returnPath?: string },
 ): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
@@ -51,6 +53,9 @@ export async function createDesktopTransferToken(
     sealedSession,
     createdAt: Date.now(),
   };
+  if (options?.returnPath) {
+    data.returnPath = options.returnPath;
+  }
 
   try {
     await redis.set(key, data, { ex: TRANSFER_TOKEN_TTL_SECONDS });
@@ -67,7 +72,10 @@ export async function createDesktopTransferToken(
 
 export async function exchangeDesktopTransferToken(
   transferToken: string,
-): Promise<{ sealedSession: string } | null> {
+): Promise<{
+  sealedSession: string;
+  returnPath?: string;
+} | null> {
   if (!TOKEN_FORMAT_REGEX.test(transferToken)) {
     console.warn("[Desktop Auth] Invalid transfer token format");
     return null;
@@ -122,11 +130,18 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
-  return { sealedSession: data.sealedSession };
+  const result: { sealedSession: string; returnPath?: string } = {
+    sealedSession: data.sealedSession,
+  };
+  if (typeof data.returnPath === "string") {
+    result.returnPath = data.returnPath;
+  }
+  return result;
 }
 
 export type OAuthStateMetadata = {
   devCallbackPort?: number;
+  returnPath?: string;
 };
 
 export async function createOAuthState(

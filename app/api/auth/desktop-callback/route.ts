@@ -140,7 +140,9 @@ export async function GET(request: NextRequest) {
         },
       ));
 
-    const transferToken = await createDesktopTransferToken(sealedSession);
+    const transferToken = await createDesktopTransferToken(sealedSession, {
+      returnPath: stateMetadata?.returnPath,
+    });
 
     if (!transferToken) {
       return new Response(
