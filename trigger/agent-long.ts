@@ -67,6 +67,7 @@ import {
   getUploadBasePath,
 } from "@/lib/utils/sandbox-file-utils";
 import {
+  captureAgentRun,
   captureToolCalls,
   createChatLogger,
   type ChatLogger,
@@ -1033,9 +1034,8 @@ export const agentLongTask = task({
                               preFallbackCacheWrite;
                             const fallbackCacheTotal =
                               fallbackCacheRead + fallbackCacheWrite;
-                            chatLogger?.setSandbox(
-                              sandboxManager.getSandboxInfo(),
-                            );
+                            const sandboxInfo = sandboxManager.getSandboxInfo();
+                            chatLogger?.setSandbox(sandboxInfo);
                             chatLogger?.setCacheMetrics({
                               cacheHitRate:
                                 fallbackCacheTotal > 0
@@ -1049,6 +1049,14 @@ export const agentLongTask = task({
                               chatLogger,
                               userId,
                               mode,
+                            });
+                            captureAgentRun({
+                              posthog,
+                              userId,
+                              mode,
+                              subscription,
+                              sandboxInfo,
+                              outcome: retryAborted ? "aborted" : "success",
                             });
                             posthog?.shutdown();
                             chatLogger?.emitSuccess({
@@ -1140,13 +1148,22 @@ export const agentLongTask = task({
                     state.streamFinishReason = undefined;
                   }
 
-                  chatLogger?.setSandbox(sandboxManager.getSandboxInfo());
+                  const sandboxInfo = sandboxManager.getSandboxInfo();
+                  chatLogger?.setSandbox(sandboxInfo);
                   chatLogger?.setCacheMetrics({
                     cacheHitRate: usageTracker.cacheHitRate,
                     cacheReadTokens: usageTracker.cacheReadTokens,
                     cacheWriteTokens: usageTracker.cacheWriteTokens,
                   });
                   captureToolCalls({ posthog, chatLogger, userId, mode });
+                  captureAgentRun({
+                    posthog,
+                    userId,
+                    mode,
+                    subscription,
+                    sandboxInfo,
+                    outcome: isAborted ? "aborted" : "success",
+                  });
                   posthog?.shutdown();
                   chatLogger?.emitSuccess({
                     finishReason: state.streamFinishReason,

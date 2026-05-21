@@ -4,10 +4,10 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Response = class Response {};
 (globalThis as any).Headers = class Headers {};
 
-const { captureToolCalls } = require("../chat-logger");
+const { captureAgentRun, captureToolCalls } = require("../chat-logger");
 
 describe("captureToolCalls", () => {
-  it("aggregates repeated tool calls before sending PostHog events", () => {
+  it("aggregates repeated tool calls by tool before sending PostHog events", () => {
     const capture = jest.fn();
     const posthog = { capture };
     const chatLogger = {
@@ -26,17 +26,16 @@ describe("captureToolCalls", () => {
       mode: "agent",
     });
 
-    expect(capture).toHaveBeenCalledTimes(3);
+    expect(capture).toHaveBeenCalledTimes(2);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-tool_usage",
       properties: {
         mode: "agent",
         toolName: "run_terminal_cmd",
-        count: 2,
-        toolCallCount: 2,
+        count: 3,
+        toolCallCount: 3,
         legacyEventName: "hackerai-run_terminal_cmd",
-        sandboxType: "e2b",
       },
     });
     expect(capture).toHaveBeenCalledWith({
@@ -50,18 +49,6 @@ describe("captureToolCalls", () => {
         legacyEventName: "hackerai-open_url",
       },
     });
-    expect(capture).toHaveBeenCalledWith({
-      distinctId: "user_123",
-      event: "hackerai-tool_usage",
-      properties: {
-        mode: "agent",
-        toolName: "run_terminal_cmd",
-        count: 1,
-        toolCallCount: 1,
-        legacyEventName: "hackerai-run_terminal_cmd",
-        sandboxType: "local",
-      },
-    });
   });
 
   it("does nothing when there are no recorded tool calls", () => {
@@ -72,6 +59,47 @@ describe("captureToolCalls", () => {
       chatLogger: { getToolCalls: () => [] } as any,
       userId: "user_123",
       mode: "agent",
+    });
+
+    expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureAgentRun", () => {
+  it("captures one sanitized agent run event with sandbox type", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "remote-connection", name: "Work laptop" },
+      outcome: "success",
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: {
+        mode: "agent",
+        subscription: "pro",
+        outcome: "success",
+        sandboxType: "remote-connection",
+      },
+    });
+  });
+
+  it("does not capture agent run events for ask mode", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "ask",
+      subscription: "pro",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
     });
 
     expect(capture).not.toHaveBeenCalled();
