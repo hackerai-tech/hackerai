@@ -24,8 +24,10 @@ import { coerceSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
+  checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
+  recordFreeMonthlyCost,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import {
@@ -323,6 +325,11 @@ export const createChatHandler = (
           organizationId,
         ));
 
+      const freeMonthlyBudgetSnapshot =
+        subscription === "free"
+          ? await checkFreeMonthlyCostLimit(userId)
+          : null;
+
       usageRefundTracker.recordDeductions(rateLimitInfo);
 
       chatLogger.setRateLimit(
@@ -564,18 +571,20 @@ export const createChatHandler = (
                 : { usedTokens: 0, maxTokens: 0 },
             );
 
-            // Mid-stream budget enforcement (paid users only). Snapshot bucket
-            // state once; the monitor emits threshold warnings (80/95/100) and
-            // signals "abort" when the bucket hits 0 with no extra-usage
-            // cushion. captureBudgetSnapshot returns null when enforcement
-            // shouldn't run (free, no bucket, rate limiting skipped in dev).
+            // Mid-stream budget enforcement. Paid users use their subscription
+            // bucket; free users use an internal monthly cost cap.
             const budgetSnapshot = captureBudgetSnapshot({
               rateLimitInfo,
               extraUsageConfig,
               subscription,
             });
-            const budgetMonitor = budgetSnapshot
-              ? new BudgetMonitor(budgetSnapshot, writer, subscription)
+            const effectiveBudgetSnapshot =
+              budgetSnapshot ??
+              (freeMonthlyBudgetSnapshot?.rateLimitSkipped
+                ? null
+                : freeMonthlyBudgetSnapshot);
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
               : null;
             const isReasoningModel = isAgentMode(mode);
 
@@ -637,7 +646,12 @@ export const createChatHandler = (
                     ? usageTracker.providerCost
                     : undefined;
 
-                if (subscription !== "free") {
+                if (subscription === "free") {
+                  await recordFreeMonthlyCost(
+                    userId,
+                    usageCostRecord.costDollars,
+                  );
+                } else {
                   await deductUsage(
                     userId,
                     subscription,

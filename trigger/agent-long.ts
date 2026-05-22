@@ -43,8 +43,10 @@ import {
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
   acquireFreeRunConcurrencyLock,
+  checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
+  recordFreeMonthlyCost,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
@@ -736,6 +738,11 @@ export const agentLongTask = task({
               organizationId,
             );
 
+            const freeMonthlyBudgetSnapshot =
+              subscription === "free"
+                ? await checkFreeMonthlyCostLimit(userId)
+                : null;
+
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(
               {
@@ -918,8 +925,13 @@ export const agentLongTask = task({
               extraUsageConfig,
               subscription,
             });
-            const budgetMonitor = budgetSnapshot
-              ? new BudgetMonitor(budgetSnapshot, writer, subscription)
+            const effectiveBudgetSnapshot =
+              budgetSnapshot ??
+              (freeMonthlyBudgetSnapshot?.rateLimitSkipped
+                ? null
+                : freeMonthlyBudgetSnapshot);
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
               : null;
 
             // Use task start time (not stream start time) so the 58-min stop
@@ -966,7 +978,12 @@ export const agentLongTask = task({
                   usageTracker.modelProviderCost > 0
                     ? usageTracker.providerCost
                     : undefined;
-                if (subscription !== "free") {
+                if (subscription === "free") {
+                  await recordFreeMonthlyCost(
+                    userId,
+                    usageCostRecord.costDollars,
+                  );
+                } else {
                   await deductUsage(
                     userId,
                     subscription,
