@@ -73,8 +73,8 @@ const formatTimeUntil = (resetTime: Date): string => {
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.warningType === "sliding-window") {
     return data.remaining === 0
-      ? `You've used all your daily responses. Daily responses reset at midnight UTC.`
-      : `You have ${data.remaining} daily ${data.remaining === 1 ? "response" : "responses"} remaining today.`;
+      ? `You've used all your daily requests. Daily requests reset at midnight UTC.`
+      : `You have ${data.remaining} daily ${data.remaining === 1 ? "request" : "requests"} remaining today.`;
   }
 
   if (data.warningType === "extra-usage-active") {

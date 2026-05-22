@@ -549,8 +549,8 @@ export const resetRateLimitBuckets = async (
  * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
  *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
  *   - upgrade:carryover:<userId>     — upgrade proration stash
- *   - free_limit:<userId>:*          — free-tier ask sliding window
- *   - free_agent_limit:<userId>:*    — free-tier agent sliding window
+ *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
+ *   - free_agent_limit:<userId>:*    — legacy free-tier agent sliding window
  *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
  *
  * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
