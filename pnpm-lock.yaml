@@ -438,9 +438,6 @@ importers:
       convex:
         specifier: ^1.39.1
         version: 1.39.1(react@19.2.6)
-      node-pty:
-        specifier: ^1.2.0-beta.12
-        version: 1.2.0-beta.12
       ws:
         specifier: ^8.20.1
         version: 8.20.1
@@ -454,6 +451,10 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+    optionalDependencies:
+      node-pty:
+        specifier: ^1.2.0-beta.12
+        version: 1.2.0-beta.12
 
 packages:
 
@@ -15960,7 +15961,8 @@ snapshots:
       - '@babel/core'
       - babel-plugin-macros
 
-  node-addon-api@7.1.1: {}
+  node-addon-api@7.1.1:
+    optional: true
 
   node-domexception@1.0.0: {}
 
@@ -15981,6 +15983,7 @@ snapshots:
   node-pty@1.2.0-beta.12:
     dependencies:
       node-addon-api: 7.1.1
+    optional: true
 
   node-releases@2.0.26: {}
 

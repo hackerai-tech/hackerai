@@ -14,12 +14,13 @@ importers:
       convex:
         specifier: ^1.39.1
         version: 1.39.1
-      node-pty:
-        specifier: ^1.2.0-beta.12
-        version: 1.2.0-beta.13
       ws:
         specifier: ^8.20.1
         version: 8.20.1
+    optionalDependencies:
+      node-pty:
+        specifier: ^1.2.0-beta.12
+        version: 1.2.0-beta.13
     devDependencies:
       '@types/node':
         specifier: ^25.8.0
@@ -463,11 +464,13 @@ snapshots:
 
   long@5.3.2: {}
 
-  node-addon-api@7.1.1: {}
+  node-addon-api@7.1.1:
+    optional: true
 
   node-pty@1.2.0-beta.13:
     dependencies:
       node-addon-api: 7.1.1
+    optional: true
 
   prettier@3.6.2: {}
 
