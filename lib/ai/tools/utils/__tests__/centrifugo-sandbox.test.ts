@@ -8,7 +8,7 @@
  */
 
 import { EventEmitter } from "events";
-import { CentrifugoSandbox } from "../centrifugo-sandbox";
+import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 
 // Track all created mock subscriptions and clients for assertions
@@ -99,6 +99,51 @@ describe("CentrifugoSandbox", () => {
   afterEach(() => {
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
+  });
+
+  describe("parseSandboxMessage", () => {
+    it("ignores known PTY traffic without warning", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(
+          parseSandboxMessage({
+            type: "pty_create",
+            sessionId: "pty-1",
+            command: "bash",
+          }),
+        ).toBeNull();
+        expect(
+          parseSandboxMessage({
+            type: "pty_data",
+            sessionId: "pty-1",
+            data: "hello",
+          }),
+        ).toBeNull();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("still warns for truly unknown message types", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(
+          parseSandboxMessage({
+            type: "something_else",
+            commandId: FIXED_UUID,
+          }),
+        ).toBeNull();
+        expect(warnSpy).toHaveBeenCalledWith(
+          "Invalid sandbox message: unknown type",
+          "something_else",
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   describe("commands.run happy path", () => {

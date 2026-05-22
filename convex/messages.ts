@@ -80,6 +80,15 @@ const getConvexErrorData = (error: unknown): Value | undefined => {
   return data === undefined ? undefined : (data as Value);
 };
 
+const getConvexErrorCode = (data: Value | undefined): string | undefined => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+
+  const code = (data as Record<string, unknown>).code;
+  return typeof code === "string" ? code : undefined;
+};
+
 /**
  * Helper function to check if deleted messages invalidate the chat summary
  * Clears latest_summary_id if the summary's cutoff message was deleted
@@ -414,6 +423,36 @@ export const saveMessage = mutation({
       return null;
     } catch (error) {
       const causeData = getConvexErrorData(error);
+      if (
+        failureStage === "verify_chat_ownership" &&
+        args.role === "assistant" &&
+        getConvexErrorCode(causeData) === "CHAT_NOT_FOUND"
+      ) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "convex_message_save_skipped_chat_not_found",
+            service: "convex",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            failure_stage: failureStage,
+            chat_id: args.chatId,
+            user_id: args.userId,
+            message_id: args.id,
+            message_role: args.role,
+            mode: args.mode,
+            model: args.model,
+            finish_reason: args.finishReason,
+            update_only: args.updateOnly === true,
+            hidden: args.isHidden === true,
+            file_count: args.fileIds?.length ?? 0,
+            convex_error_code: "CHAT_NOT_FOUND",
+            ...getMessageSaveDiagnostics(args.parts),
+          }),
+        );
+        return null;
+      }
+
       console.error(
         JSON.stringify({
           level: "error",

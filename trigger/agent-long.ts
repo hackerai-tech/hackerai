@@ -76,6 +76,7 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
+  getProviderErrorCategory,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError } from "@/lib/errors";
@@ -166,6 +167,26 @@ const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
   );
 };
 
+const isChatNotFoundError = (error: ChatSDKError): boolean => {
+  if (error.type === "not_found" && error.surface === "chat") return true;
+  return (
+    getStringMetadata(error.metadata, "db_error_code") === "CHAT_NOT_FOUND"
+  );
+};
+
+const classifyProviderDashboardCategory = (
+  error: unknown,
+  details: Record<string, unknown>,
+): string => {
+  const category = getProviderErrorCategory(details);
+  if (category === "stream_terminated") return "provider_stream_terminated";
+  if (category === "timeout") return "provider_timeout";
+  if (category !== "unknown" || isProviderApiError(error)) {
+    return "provider_error";
+  }
+  return "unexpected_error";
+};
+
 const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   const details = extractErrorDetails(error);
   const errorMessage = truncateForTriggerMetadata(
@@ -182,7 +203,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         : undefined;
     const errorMetadata = error.metadata;
     return {
-      category: error.type === "unauthorized" ? "login_required" : "chat_error",
+      category:
+        error.type === "unauthorized"
+          ? "login_required"
+          : isChatNotFoundError(error)
+            ? "chat_not_found"
+            : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -206,7 +232,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   }
 
   return {
-    category: isProviderApiError(error) ? "provider_error" : "unexpected_error",
+    category: classifyProviderDashboardCategory(error, details),
     code: typeof details.errorCode === "string" ? details.errorCode : undefined,
     name:
       typeof details.errorName === "string"
@@ -237,6 +263,12 @@ const getTerminalProviderStreamError = (
   );
 };
 
+const isTerminalProviderStreamError = (
+  state:
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
+): boolean => state?.streamFinishReason === "error";
+
 const recordAgentLongFailureForDashboard = async (
   error: unknown,
   context: {
@@ -247,8 +279,10 @@ const recordAgentLongFailureForDashboard = async (
   },
 ) => {
   const summary = classifyAgentLongError(error);
+  const runStatus =
+    summary.category === "chat_not_found" ? "chat_not_found" : "failed";
   metadata
-    .set("status", "failed")
+    .set("status", runStatus)
     .set("errorCategory", summary.category)
     .set("errorName", summary.name)
     .set("errorMessage", summary.message)
@@ -284,13 +318,21 @@ const recordAgentLongFailureForDashboard = async (
   }
   await tags.add(errorTags);
 
-  triggerLogger.error("[agent-long] run failed", {
+  const logFields = {
     chatId: context.chatId,
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
     ...summary,
-  });
+  };
+  if (summary.category === "chat_not_found") {
+    triggerLogger.warn("[agent-long] run ended because chat is missing", {
+      ...logFields,
+      status: runStatus,
+    });
+  } else {
+    triggerLogger.error("[agent-long] run failed", logFields);
+  }
 
   await metadata.flush();
 };
@@ -1120,15 +1162,21 @@ export const agentLongTask = task({
                               mode,
                               subscription,
                               sandboxInfo,
-                              outcome: retryAborted ? "aborted" : "success",
+                              outcome: retryAborted
+                                ? "aborted"
+                                : isTerminalProviderStreamError(state)
+                                  ? "error"
+                                  : "success",
                             });
-                            chatLogger?.emitSuccess({
-                              finishReason: state.streamFinishReason,
-                              wasAborted: retryAborted,
-                              wasPreemptiveTimeout: false,
-                              hadSummarization:
-                                summarizationTracker.hasSummarized,
-                            });
+                            if (!isTerminalProviderStreamError(state)) {
+                              chatLogger?.emitSuccess({
+                                finishReason: state.streamFinishReason,
+                                wasAborted: retryAborted,
+                                wasPreemptiveTimeout: false,
+                                hadSummarization:
+                                  summarizationTracker.hasSummarized,
+                              });
+                            }
 
                             const generatedTitle = await titlePromise;
                             if (!temporary) {
@@ -1226,14 +1274,20 @@ export const agentLongTask = task({
                     mode,
                     subscription,
                     sandboxInfo,
-                    outcome: isAborted ? "aborted" : "success",
+                    outcome: isAborted
+                      ? "aborted"
+                      : isTerminalProviderStreamError(state)
+                        ? "error"
+                        : "success",
                   });
-                  chatLogger?.emitSuccess({
-                    finishReason: state.streamFinishReason,
-                    wasAborted: isAborted,
-                    wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
-                    hadSummarization: summarizationTracker.hasSummarized,
-                  });
+                  if (!isTerminalProviderStreamError(state)) {
+                    chatLogger?.emitSuccess({
+                      finishReason: state.streamFinishReason,
+                      wasAborted: isAborted,
+                      wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
+                      hadSummarization: summarizationTracker.hasSummarized,
+                    });
+                  }
 
                   const generatedTitle = await titlePromise;
 
@@ -1463,6 +1517,10 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      const chatMissingAfterStream =
+        streamPiped &&
+        error instanceof ChatSDKError &&
+        isChatNotFoundError(error);
       await recordAgentLongFailureForDashboard(error, {
         chatId,
         userId,
@@ -1486,6 +1544,11 @@ export const agentLongTask = task({
         .catch((err) =>
           console.error("[agent-long] PTY closeAll (outer catch) failed:", err),
         );
+
+      if (chatMissingAfterStream) {
+        await phLogger.flush().catch(() => {});
+        return { chatId, assistantMessageId };
+      }
 
       // Pre-stream setup failed (DB fetch, message processing, etc.). Emit a
       // one-shot UI stream whose onError converts the caught error into the

@@ -5,10 +5,12 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Headers = class Headers {};
 
 const {
+  createChatLogger,
   captureAgentRun,
   captureToolCalls,
   captureUsageCost,
 } = require("../chat-logger");
+const { ChatSDKError } = require("../../errors");
 
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
@@ -163,5 +165,183 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+  });
+});
+
+describe("createChatLogger provider stream termination", () => {
+  it("logs terminated provider streams as warnings and suppresses duplicate unexpected route errors", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_terminated",
+        endpoint: "/api/agent",
+      });
+      const err = Object.assign(new TypeError("terminated"), {
+        cause: "other side closed",
+      });
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+        requestedModelSlug: "moonshotai/kimi-k2.6:exacto",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
+      const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvents = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(warnOutput).toContain("Provider stream terminated");
+      expect(warnOutput).toContain("provider_stream_terminated");
+      expect(errorOutput).not.toContain("Unexpected error in chat route");
+      expect(errorOutput).not.toContain("Provider streaming error");
+      expect(wideEvents).toContain('"type":"ProviderStreamTerminated"');
+      expect(wideEvents).toContain('"category":"stream_terminated"');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+});
+
+describe("createChatLogger ChatSDKError metadata", () => {
+  it("keeps wide event error metadata compact and drops bulky nested diagnostics", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_missing",
+        endpoint: "/api/agent",
+      });
+      const err = new ChatSDKError(
+        "not_found:chat",
+        "Chat no longer exists while saving message",
+        {
+          db_operation: "messages.saveMessage",
+          db_error_name: "ConvexError",
+          db_error_message: "[Request ID: abc] Server Error",
+          db_error_code: "CHAT_NOT_FOUND",
+          db_failure_stage: "verify_chat_ownership",
+          db_error_data: {
+            code: "MESSAGE_SAVE_FAILED",
+            causeData: {
+              code: "CHAT_NOT_FOUND",
+              message: "This chat doesn't exist",
+            },
+          },
+          part_types: {
+            reasoning: 90,
+            "tool-run_terminal_cmd": 74,
+          },
+          usage_keys: ["inputTokens", "outputTokens"],
+          parts_size_bytes: 564266,
+          parts_size_kb: 551,
+          part_count: 288,
+          tool_part_count: 99,
+        },
+      );
+
+      chatLogger.emitChatError(err);
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.error.metadata).toEqual({
+        db_operation: "messages.saveMessage",
+        db_error_name: "ConvexError",
+        db_error_message: "[Request ID: abc] Server Error",
+        db_error_code: "CHAT_NOT_FOUND",
+        db_failure_stage: "verify_chat_ownership",
+        parts_size_kb: 551,
+        part_count: 288,
+        tool_part_count: 99,
+      });
+      expect(wideEvent.error.metadata).not.toHaveProperty("db_error_data");
+      expect(wideEvent.error.metadata).not.toHaveProperty("part_types");
+      expect(wideEvent.error.metadata).not.toHaveProperty("usage_keys");
+      expect(wideEvent.error.metadata).not.toHaveProperty("parts_size_bytes");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});
+
+describe("createChatLogger provider stream timeout", () => {
+  it("logs upstream idle timeouts as provider timeout warnings with the provider message", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_timeout",
+        endpoint: "/api/agent",
+      });
+      const err = {
+        code: 502,
+        message: "Upstream idle timeout exceeded",
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+        requestedModelSlug: "moonshotai/kimi-k2.6:exacto",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
+      const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvents = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(warnOutput).toContain("Provider stream timeout");
+      expect(warnOutput).toContain('"provider_error_category":"timeout"');
+      expect(errorOutput).not.toContain("Unexpected error in chat route");
+      expect(errorOutput).not.toContain("Provider streaming error");
+      expect(wideEvents).toContain('"type":"ProviderTimeout"');
+      expect(wideEvents).toContain(
+        '"message":"Upstream idle timeout exceeded"',
+      );
+      expect(wideEvents).toContain('"retriable":true');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("uses nested provider status codes in wide events", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_code",
+        endpoint: "/api/agent",
+      });
+      const err = {
+        message: "Provider request failed",
+        responseBody: JSON.stringify({
+          error: {
+            code: 502,
+            message: "Provider overloaded",
+          },
+        }),
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.status_code).toBe(502);
+      expect(wideEvent.provider_error.status_code).toBe(502);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
+import { ConvexError } from "convex/values";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -168,6 +169,36 @@ describe("saveMessage — is_hidden handling", () => {
       "messages",
       expect.objectContaining({ is_hidden: true }),
     );
+  });
+
+  it("skips assistant inserts when the chat was deleted before save", async () => {
+    setupExistingMessage(null);
+    mockCtx.runQuery.mockRejectedValue(
+      new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "This chat doesn't exist",
+      }),
+    );
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-assistant",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "done" }],
+        finishReason: "preemptive-timeout",
+      }),
+    ).resolves.toBeNull();
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("convex_message_save_skipped_chat_not_found"),
+    );
+    expect(console.error).not.toHaveBeenCalled();
   });
 });
 

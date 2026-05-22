@@ -1,5 +1,11 @@
 import { describe, it, expect } from "@jest/globals";
-import { extractErrorDetails, extractRetryAttempts } from "../error-utils";
+import {
+  extractErrorDetails,
+  extractRetryAttempts,
+  getProviderErrorCategory,
+  getProviderStatusCode,
+  isProviderStreamTerminatedError,
+} from "../error-utils";
 
 const apiCallError = (overrides: Record<string, unknown>) =>
   Object.assign(new Error("Internal Server Error"), {
@@ -197,5 +203,84 @@ describe("extractRetryAttempts -> request_id", () => {
 
   it("returns undefined when error has no errors[] array", () => {
     expect(extractRetryAttempts(new Error("nope"))).toBeUndefined();
+  });
+});
+
+describe("provider error classification", () => {
+  it("classifies undici terminated errors as provider stream termination", () => {
+    const err = Object.assign(new TypeError("terminated"), {
+      cause: "other side closed",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "stream_terminated",
+    );
+    expect(isProviderStreamTerminatedError(err)).toBe(true);
+  });
+
+  it("classifies provider status codes before message patterns", () => {
+    const err = apiCallError({
+      statusCode: 503,
+      message: "terminated",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "provider_5xx",
+    );
+  });
+
+  it("classifies upstream idle timeouts without an HTTP status as provider timeouts", () => {
+    const err = {
+      code: 502,
+      message: "Upstream idle timeout exceeded",
+    };
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe("timeout");
+  });
+
+  it("uses nested provider status codes when direct HTTP status is missing", () => {
+    const err = apiCallError({
+      statusCode: undefined,
+      responseBody: JSON.stringify({
+        error: {
+          code: 502,
+          message: "Provider overloaded",
+        },
+      }),
+    });
+
+    const details = extractErrorDetails(err);
+    expect(getProviderStatusCode(details)).toBe(502);
+    expect(getProviderErrorCategory(details)).toBe("provider_5xx");
+  });
+
+  it("uses numeric string provider status codes when direct HTTP status is missing", () => {
+    const err = apiCallError({
+      statusCode: undefined,
+      responseBody: JSON.stringify({
+        error: {
+          code: "502",
+          message: "Provider overloaded",
+        },
+      }),
+    });
+
+    const details = extractErrorDetails(err);
+    expect(getProviderStatusCode(details)).toBe(502);
+    expect(getProviderErrorCategory(details)).toBe("provider_5xx");
+  });
+
+  it("classifies provider-specific messages when the top-level message is generic", () => {
+    const err = apiCallError({
+      statusCode: undefined,
+      message: "Provider request failed",
+      responseBody: JSON.stringify({
+        error: {
+          message: "Upstream idle timeout exceeded",
+        },
+      }),
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe("timeout");
   });
 });

@@ -20,13 +20,30 @@ const VALID_MESSAGE_TYPES = new Set([
   "error",
 ]);
 
-function parseSandboxMessage(data: unknown): CommandResponseMessage | null {
+const IGNORED_MESSAGE_TYPES = new Set([
+  "pty_create",
+  "pty_input",
+  "pty_resize",
+  "pty_kill",
+  "pty_ready",
+  "pty_data",
+  "pty_exit",
+  "pty_error",
+]);
+
+export function parseSandboxMessage(
+  data: unknown,
+): CommandResponseMessage | null {
   if (typeof data !== "object" || data === null) {
     console.warn("Invalid sandbox message: not an object", data);
     return null;
   }
 
   const msg = data as Record<string, unknown>;
+
+  if (typeof msg.type === "string" && IGNORED_MESSAGE_TYPES.has(msg.type)) {
+    return null;
+  }
 
   if (typeof msg.type !== "string" || !VALID_MESSAGE_TYPES.has(msg.type)) {
     console.warn("Invalid sandbox message: unknown type", msg.type);

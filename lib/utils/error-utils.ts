@@ -196,6 +196,60 @@ export const extractErrorDetails = (
   return details;
 };
 
+export type ProviderErrorCategory =
+  | "rate_limited"
+  | "provider_5xx"
+  | "provider_4xx"
+  | "stream_terminated"
+  | "timeout"
+  | "unknown";
+
+export const getProviderStatusCode = (
+  details: Record<string, unknown>,
+): number | undefined => {
+  const statusCode =
+    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  if (statusCode != null) return statusCode;
+
+  const rawProviderErrorCode = details.providerErrorCode;
+  const providerErrorCode =
+    typeof rawProviderErrorCode === "number"
+      ? rawProviderErrorCode
+      : typeof rawProviderErrorCode === "string"
+        ? Number(rawProviderErrorCode)
+        : undefined;
+  return providerErrorCode != null &&
+    Number.isInteger(providerErrorCode) &&
+    providerErrorCode >= 400 &&
+    providerErrorCode <= 599
+    ? providerErrorCode
+    : undefined;
+};
+
+export const getProviderErrorCategory = (
+  details: Record<string, unknown>,
+): ProviderErrorCategory => {
+  const statusCode = getProviderStatusCode(details);
+  if (statusCode === 429) return "rate_limited";
+  if (statusCode != null && statusCode >= 500) return "provider_5xx";
+  if (statusCode != null && statusCode >= 400) return "provider_4xx";
+
+  const message = [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.cause,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  if (/terminated|aborted|abort/i.test(message)) return "stream_terminated";
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  return "unknown";
+};
+
+export const isProviderStreamTerminatedError = (error: unknown): boolean =>
+  getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
+
 export interface ProviderAttempt {
   status_code?: number;
   message: string;
