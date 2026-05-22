@@ -433,6 +433,10 @@ export type AgentLongPayload = {
   regenerate?: boolean;
   isNewChat?: boolean;
   convexUrl?: string;
+  requestTiming?: {
+    routeStartedAt: number;
+    triggerRequestedAt: number;
+  };
 };
 
 export const agentLongTask = task({
@@ -504,7 +508,19 @@ export const agentLongTask = task({
     if (subscription !== "free") await tags.add(`sub_${subscription}`);
 
     // Lifecycle metadata so the dashboard shows progress for long runs.
-    metadata.set("status", "setup").set("chatId", chatId);
+    metadata
+      .set("status", "setup")
+      .set("chatId", chatId)
+      .set("triggerPayloadMessageCount", messages.length);
+    if (payload.requestTiming) {
+      metadata
+        .set("routeStartedAt", payload.requestTiming.routeStartedAt)
+        .set("triggerRequestedAt", payload.requestTiming.triggerRequestedAt)
+        .set(
+          "taskStartLatencyMs",
+          taskStartTime - payload.requestTiming.triggerRequestedAt,
+        );
+    }
 
     const usageRefundTracker = new UsageRefundTracker();
     usageRefundTracker.setUser(userId, subscription, organizationId);
@@ -533,19 +549,20 @@ export const agentLongTask = task({
     let streamPiped = false;
 
     try {
-      const userCustomization = await getUserCustomization({ userId });
-
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const fetched = await getMessagesByChatId({
-        chatId,
-        userId,
-        subscription,
-        newMessages: [],
-        regenerate,
-        isTemporary: temporary,
-        mode,
-      });
+      const [userCustomization, fetched] = await Promise.all([
+        getUserCustomization({ userId }),
+        getMessagesByChatId({
+          chatId,
+          userId,
+          subscription,
+          newMessages: [],
+          regenerate,
+          isTemporary: temporary,
+          mode,
+        }),
+      ]);
       const { chat, fileTokens } = fetched;
       const truncatedMessages = fetched.truncatedMessages;
 
@@ -1409,7 +1426,10 @@ export const agentLongTask = task({
         },
       });
 
-      metadata.set("status", "streaming").set("model", selectedModel);
+      metadata
+        .set("status", "streaming")
+        .set("model", selectedModel)
+        .set("setupBeforeStreamMs", Date.now() - taskStartTime);
       const { waitUntilComplete } = agentUiStream.pipe(uiStream);
       streamPiped = true;
       await waitUntilComplete();
