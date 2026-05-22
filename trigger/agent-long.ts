@@ -167,6 +167,13 @@ const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
   );
 };
 
+const isChatNotFoundError = (error: ChatSDKError): boolean => {
+  if (error.type === "not_found" && error.surface === "chat") return true;
+  return (
+    getStringMetadata(error.metadata, "db_error_code") === "CHAT_NOT_FOUND"
+  );
+};
+
 const classifyProviderDashboardCategory = (
   error: unknown,
   details: Record<string, unknown>,
@@ -196,7 +203,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         : undefined;
     const errorMetadata = error.metadata;
     return {
-      category: error.type === "unauthorized" ? "login_required" : "chat_error",
+      category:
+        error.type === "unauthorized"
+          ? "login_required"
+          : isChatNotFoundError(error)
+            ? "chat_not_found"
+            : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -267,8 +279,10 @@ const recordAgentLongFailureForDashboard = async (
   },
 ) => {
   const summary = classifyAgentLongError(error);
+  const runStatus =
+    summary.category === "chat_not_found" ? "chat_not_found" : "failed";
   metadata
-    .set("status", "failed")
+    .set("status", runStatus)
     .set("errorCategory", summary.category)
     .set("errorName", summary.name)
     .set("errorMessage", summary.message)
@@ -304,13 +318,21 @@ const recordAgentLongFailureForDashboard = async (
   }
   await tags.add(errorTags);
 
-  triggerLogger.error("[agent-long] run failed", {
+  const logFields = {
     chatId: context.chatId,
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
     ...summary,
-  });
+  };
+  if (summary.category === "chat_not_found") {
+    triggerLogger.warn("[agent-long] run ended because chat is missing", {
+      ...logFields,
+      status: runStatus,
+    });
+  } else {
+    triggerLogger.error("[agent-long] run failed", logFields);
+  }
 
   await metadata.flush();
 };
@@ -1475,6 +1497,10 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      const chatMissingAfterStream =
+        streamPiped &&
+        error instanceof ChatSDKError &&
+        isChatNotFoundError(error);
       await recordAgentLongFailureForDashboard(error, {
         chatId,
         userId,
@@ -1498,6 +1524,11 @@ export const agentLongTask = task({
         .catch((err) =>
           console.error("[agent-long] PTY closeAll (outer catch) failed:", err),
         );
+
+      if (chatMissingAfterStream) {
+        await phLogger.flush().catch(() => {});
+        return { chatId, assistantMessageId };
+      }
 
       // Pre-stream setup failed (DB fetch, message processing, etc.). Emit a
       // one-shot UI stream whose onError converts the caught error into the

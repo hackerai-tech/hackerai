@@ -179,6 +179,38 @@ const truncateDiagnosticString = (value: string): string =>
     ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
     : value;
 
+const getObjectString = (value: unknown, key: string): string | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return typeof child === "string" ? child : undefined;
+};
+
+const getNestedObject = (
+  value: unknown,
+  key: string,
+): Record<string, unknown> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" && !Array.isArray(child)
+    ? (child as Record<string, unknown>)
+    : undefined;
+};
+
+const getDatabaseErrorCode = (data: unknown): string | undefined =>
+  getObjectString(data, "code") ??
+  getObjectString(getNestedObject(data, "causeData"), "code");
+
+const isChatNotFoundMessageSaveError = (
+  operation: string,
+  dbErrorData: unknown,
+): boolean =>
+  operation === "messages.saveMessage" &&
+  getDatabaseErrorCode(dbErrorData) === "CHAT_NOT_FOUND";
+
 const databaseError = (
   operation: string,
   error: unknown,
@@ -186,27 +218,39 @@ const databaseError = (
 ) => {
   const dbErrorName = error instanceof Error ? error.name : typeof error;
   const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
+  const dbErrorData = getErrorData(error);
+  const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
   const diagnosticMetadata = {
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
-    db_error_data: getErrorData(error),
+    db_error_data: dbErrorData,
+    db_error_code: getDatabaseErrorCode(dbErrorData),
     ...metadata,
   };
 
-  console.error(
-    JSON.stringify({
-      level: "error",
-      event: "database_operation_failed",
-      service: "chat-handler",
-      timestamp: new Date().toISOString(),
-      ...diagnosticMetadata,
-    }),
-  );
+  const logPayload = {
+    level: isChatNotFound ? "warn" : "error",
+    event: isChatNotFound
+      ? "database_operation_skipped_chat_not_found"
+      : "database_operation_failed",
+    service: "chat-handler",
+    timestamp: new Date().toISOString(),
+    ...diagnosticMetadata,
+  };
+
+  const logLine = JSON.stringify(logPayload);
+  if (isChatNotFound) {
+    console.warn(logLine);
+  } else {
+    console.error(logLine);
+  }
 
   return new ChatSDKError(
-    "bad_request:database",
-    `Database operation failed: ${operation}: ${dbErrorMessage}`,
+    isChatNotFound ? "not_found:chat" : "bad_request:database",
+    isChatNotFound
+      ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
+      : `Database operation failed: ${operation}: ${dbErrorMessage}`,
     diagnosticMetadata,
   );
 };
