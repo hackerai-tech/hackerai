@@ -170,6 +170,7 @@ export async function createAgentStream(
 ) {
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  const maxOutputTokens = ctx.subscription === "free" ? 4096 : 30000;
   const prepareProviderMessages = (
     messages: ModelMessage[],
   ): ModelMessage[] => {
@@ -190,7 +191,7 @@ export async function createAgentStream(
 
   return streamText({
     model: requestedLanguageModel,
-    maxOutputTokens: 30000,
+    maxOutputTokens,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
     messages: prepareProviderMessages(
       await convertToModelMessages(state.finalMessages),
