@@ -20,6 +20,7 @@ jest.mock("@/lib/logger", () => ({
 // If the registry slug for a model changes, update both places intentionally.
 const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 const GEMINI_SLUG = "google/gemini-3-flash-preview";
+const GROK_SLUG = "x-ai/grok-4.3";
 
 describe("buildProviderOptions fallback chain", () => {
   it("resolves Opus 4.6 ask chain to Gemini slug", () => {
@@ -69,17 +70,20 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("keeps fallback for free auto agent model", () => {
+  it("falls back from free DeepSeek agent model to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model-free");
     expect(opts.openrouter).toMatchObject({
-      models: ["x-ai/grok-4.3"],
+      models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
 
-  it("emits no `models` field for a model without a chain entry", () => {
+  it("falls back from Gemini to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
-    expect(opts.openrouter).not.toHaveProperty("models");
+    expect(opts.openrouter).toMatchObject({
+      models: [GROK_SLUG],
+      user: "user-1",
+    });
   });
 
   it("does not throw for an unknown registry key — no chain, no slug", () => {

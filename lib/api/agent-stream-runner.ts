@@ -53,6 +53,7 @@ import {
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 import { isAnthropicModel } from "@/lib/ai/providers";
+import { FREE_MAX_OUTPUT_TOKENS } from "@/lib/rate-limit/free-config";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
@@ -170,6 +171,8 @@ export async function createAgentStream(
 ) {
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  const maxOutputTokens =
+    ctx.subscription === "free" ? FREE_MAX_OUTPUT_TOKENS : 30000;
   const prepareProviderMessages = (
     messages: ModelMessage[],
   ): ModelMessage[] => {
@@ -190,7 +193,7 @@ export async function createAgentStream(
 
   return streamText({
     model: requestedLanguageModel,
-    maxOutputTokens: 30000,
+    maxOutputTokens,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
     messages: prepareProviderMessages(
       await convertToModelMessages(state.finalMessages),

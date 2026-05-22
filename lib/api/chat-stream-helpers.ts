@@ -21,7 +21,12 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import {
+  isAnthropicModel,
+  isDeepSeekModel,
+  isGeminiModel,
+  myProvider,
+} from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -458,6 +463,9 @@ export class SummarizationTracker {
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
+  "model-deepseek-v4-flash": ["fallback-ask-model"],
+  "ask-model": ["fallback-grok-4.3"],
+  "model-gemini-3-flash": ["fallback-grok-4.3"],
 };
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
@@ -476,6 +484,19 @@ const getFallbackKeys = (
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
+
+export function getRetryFallbackModel(
+  modelName: ModelName,
+  mode: ChatMode,
+): ModelName {
+  if (isDeepSeekModel(modelName)) {
+    return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
+  }
+  if (isGeminiModel(modelName)) {
+    return "fallback-grok-4.3";
+  }
+  return "fallback-grok-4.3";
+}
 
 const resolveSlug = (modelName: string): string | undefined => {
   try {

@@ -53,6 +53,11 @@ export {
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export { acquireFreeRunConcurrencyLock } from "./free-concurrency";
+export {
+  checkFreeMonthlyCostLimit,
+  recordFreeMonthlyCost,
+} from "./free-monthly-cost";
 
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";

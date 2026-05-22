@@ -34,6 +34,7 @@ import {
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
+  getRetryFallbackModel,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
@@ -41,8 +42,11 @@ import {
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
+  acquireFreeRunConcurrencyLock,
+  checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
+  recordFreeMonthlyCost,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
@@ -99,6 +103,7 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
+import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 // Leave 2 min for cleanup before trigger.dev hits maxDuration: 60 * 60.
 const AGENT_LONG_MAX_DURATION_MS = 58 * 60 * 1000;
@@ -566,6 +571,13 @@ export const agentLongTask = task({
 
     const usageRefundTracker = new UsageRefundTracker();
     usageRefundTracker.setUser(userId, subscription, organizationId);
+    let releaseFreeRunLock: (() => Promise<void>) | undefined;
+    const releaseFreeRunLockOnce = async () => {
+      const release = releaseFreeRunLock;
+      if (!release) return;
+      releaseFreeRunLock = undefined;
+      await release();
+    };
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
@@ -699,784 +711,846 @@ export const agentLongTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
-          await assertUserCanMakeCostIncurringRequest(userId);
-
-          extraUsageConfig = await buildExtraUsageConfig({
-            userId,
-            subscription,
-            userCustomization,
-            organizationId,
-          });
-
-          rateLimitInfo = await checkRateLimit(
-            userId,
-            mode,
-            subscription,
-            estimatedInputTokens,
-            extraUsageConfig,
-            selectedModel,
-            organizationId,
-          );
-
-          usageRefundTracker.recordDeductions(rateLimitInfo);
-          chatLogger?.setRateLimit(
-            {
-              pointsDeducted: rateLimitInfo.pointsDeducted,
-              extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
-              monthly: rateLimitInfo.monthly,
-              remaining: rateLimitInfo.remaining,
-              subscription,
-            },
-            extraUsageConfig,
-          );
-
-          sendRateLimitWarnings(writer, {
-            subscription,
-            mode,
-            rateLimitInfo,
-          });
-
-          const {
-            tools,
-            ensureSandbox,
-            getTodoManager,
-            getFileAccumulator,
-            sandboxManager,
-            getSandboxSessionCost,
-          } = createTools(
-            userId,
-            chatId,
-            writer,
-            mode,
-            userLocation,
-            baseTodos,
-            memoryEnabled,
-            !!temporary,
-            assistantMessageId,
-            sandboxPreference,
-            process.env.CONVEX_SERVICE_ROLE_KEY,
-            userCustomization?.guardrails_config,
-            false,
-            undefined,
-            undefined,
-            (costDollars: number) => {
-              usageTracker.providerCost += costDollars;
-              usageTracker.nonModelCost += costDollars;
-              chatLogger?.getBuilder().addToolCost(costDollars);
-            },
-            subscription,
-            (info) => chatLogger?.setSandboxBoot(info),
-            undefined,
-          );
-
-          const sendFileMetadataToStream = (
-            fileMetadata: Array<{
-              fileId: Id<"files">;
-              name: string;
-              mediaType: string;
-              s3Key?: string;
-              storageId?: Id<"_storage">;
-            }>,
-          ) => {
-            if (!fileMetadata || fileMetadata.length === 0) return;
-            writer.write({
-              type: "data-file-metadata",
-              data: {
-                messageId: assistantMessageId,
-                fileDetails: fileMetadata,
-              },
-            });
-          };
-
-          let sandboxContext: string | null = null;
-          if ("getSandboxContextForPrompt" in sandboxManager) {
-            try {
-              sandboxContext = await (
-                sandboxManager as {
-                  getSandboxContextForPrompt: () => Promise<string | null>;
-                }
-              ).getSandboxContextForPrompt();
-            } catch (err) {
-              console.warn("[agent-long] Failed to get sandbox context:", err);
-            }
-          }
-
-          if (sandboxFiles && sandboxFiles.length > 0) {
-            writeUploadStartStatus(
-              writer,
-              sandboxFiles.every((file) => file.kind === "localPath")
-                ? "Preparing local attachments on your computer"
-                : "Uploading attachments to the computer",
-            );
-            let uploadResult: { failedCount: number } = { failedCount: 0 };
-            try {
-              uploadResult = await uploadSandboxFiles(
-                sandboxFiles,
-                ensureSandbox,
-              );
-            } finally {
-              writeUploadCompleteStatus(writer);
-            }
-            if (uploadResult.failedCount > 0) {
-              const noun =
-                uploadResult.failedCount === 1 ? "attachment" : "attachments";
-              const uploadError = new ChatSDKError(
-                "bad_request:stream",
-                `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
-              );
-              await usageRefundTracker.refund();
-              chatLogger?.emitChatError(uploadError);
-              throw uploadError;
-            }
-          }
-
-          const titlePromise =
-            isNewChat && !temporary
-              ? generateTitleFromUserMessageWithWriter(
-                  processedMessages,
-                  writer,
-                )
-              : Promise.resolve(undefined);
-
-          const trackedProvider = createTrackedProvider();
-          const currentSystemPrompt = await systemPrompt(
-            userId,
-            mode,
-            subscription,
-            selectedModel,
-            userCustomization,
-            temporary,
-            sandboxContext,
-          );
-          const systemPromptTokens = countTokens(currentSystemPrompt);
-
-          const contextUsageOn = isContextUsageEnabled(subscription, mode);
-          const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
-          const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(subscription, { mode })
-            : 0;
-          const initialCtxUsage = contextUsageOn
-            ? computeContextUsage(
-                messagesForAccounting,
-                fileTokens,
-                ctxSystemTokens,
-                ctxMaxTokens,
-              )
-            : { usedTokens: 0, maxTokens: 0 };
-
-          let finalMessages = processedMessages;
-
-          const resumeContext = getResumeSection(chat?.finish_reason);
-          if (resumeContext) {
-            finalMessages = appendSystemReminderToLastUserMessage(
-              finalMessages,
-              resumeContext,
-            );
-          }
-
-          const noteInjectionOpts = {
-            userId,
-            subscription,
-            shouldIncludeNotes:
-              userCustomization?.include_memory_entries ?? true,
-            isTemporary: !!temporary as boolean | undefined,
-          };
-          finalMessages = await injectNotesIntoMessages(
-            finalMessages,
-            noteInjectionOpts,
-          );
-
-          // Mutable stream state — updated in-place by the shared runner and
-          // read back here in toUIMessageStream.onFinish.
-          const state = initAgentStreamState(finalMessages, initialCtxUsage);
-          terminalAgentState = state;
-
-          const budgetSnapshot = captureBudgetSnapshot({
-            rateLimitInfo,
-            extraUsageConfig,
-            subscription,
-          });
-          const budgetMonitor = budgetSnapshot
-            ? new BudgetMonitor(budgetSnapshot, writer, subscription)
-            : null;
-
-          // Use task start time (not stream start time) so the 58-min stop
-          // condition always fires 2 min before the 60-min hard SIGKILL.
-          const streamStartTime = taskStartTime;
-          const configuredModelId =
-            trackedProvider.languageModel(selectedModel).modelId;
-
-          let isRetryWithFallback = false;
-          const isAutoModel = [
-            "ask-model",
-            "ask-model-free",
-            "agent-model",
-            "agent-model-free",
-          ].includes(selectedModel);
-          const fallbackModel = "fallback-agent-model";
-          const fallbackModelId =
-            trackedProvider.languageModel(fallbackModel).modelId;
-
-          const usageTracker = new UsageTracker();
-          let hasRecordedUsage = false;
-          let preFallbackCacheRead = 0;
-          let preFallbackCacheWrite = 0;
-
-          const deductAccumulatedUsage = async () => {
-            if (hasRecordedUsage) return;
-            const sandboxCost = getSandboxSessionCost();
-            if (sandboxCost > 0) {
-              usageTracker.providerCost += sandboxCost;
-              usageTracker.nonModelCost += sandboxCost;
-              chatLogger?.getBuilder().addToolCost(sandboxCost);
-            }
-            if (!usageTracker.hasUsage) return;
-            hasRecordedUsage = true;
-            const usageCostRecord = usageTracker.createUsageCostRecord({
-              selectedModel,
-              selectedModelOverride,
-              responseModel: state.responseModel,
-              configuredModelId,
-              rateLimitInfo,
-            });
-            const providerCost =
-              usageTracker.modelProviderCost > 0
-                ? usageTracker.providerCost
-                : undefined;
-            if (subscription !== "free") {
-              await deductUsage(
+          try {
+            await assertUserCanMakeCostIncurringRequest(userId);
+            if (subscription === "free") {
+              const lock = await acquireFreeRunConcurrencyLock(
                 userId,
-                subscription,
-                estimatedInputTokens,
-                usageTracker.inputTokens,
-                usageTracker.outputTokens,
-                extraUsageConfig,
-                providerCost,
-                selectedModel,
-                usageTracker.nonModelCost,
-                organizationId,
+                FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
               );
-              usageTracker.log({
-                userId,
-                selectedModel,
-                selectedModelOverride,
-                responseModel: state.responseModel,
-                configuredModelId,
-                rateLimitInfo,
-              });
+              releaseFreeRunLock = lock.release;
             }
-            captureUsageCost({
-              posthog,
+
+            extraUsageConfig = await buildExtraUsageConfig({
               userId,
               subscription,
+              userCustomization,
               organizationId,
-              chatId,
-              endpoint: "/api/agent",
-              mode,
-              usage: usageCostRecord,
             });
-          };
 
-          // Shared runner context — immutable deps + platform hook.
-          const streamCtx: AgentStreamContext = {
-            trackedProvider,
-            currentSystemPrompt,
-            tools,
-            mode,
-            userId,
-            subscription,
-            chatId,
-            temporary,
-            fileTokens,
-            noteInjectionOpts,
-            systemPromptTokens,
-            ctxSystemTokens,
-            ctxMaxTokens,
-            streamStartTime,
-            contextUsageOn,
-            isReasoningModel: true, // long mode is always agent mode
-            maxDurationMs: AGENT_LONG_MAX_DURATION_MS,
-            writer,
-            abortController: userStopSignal,
-            summarizationTracker,
-            usageTracker,
-            budgetMonitor,
-            sandboxManager,
-            getTodoManager,
-            ensureSandbox,
-            chatLogger,
-            usageRefundTracker,
-            // trigger.dev has no Vercel-style hard preemptive timeout
-            getHardTimeoutReason: () => null,
-          };
+            rateLimitInfo = await checkRateLimit(
+              userId,
+              mode,
+              subscription,
+              estimatedInputTokens,
+              extraUsageConfig,
+              selectedModel,
+              organizationId,
+            );
 
-          const createStream = (modelName: string) =>
-            createAgentStream(modelName, streamCtx, state);
+            const freeMonthlyBudgetSnapshot =
+              subscription === "free"
+                ? await checkFreeMonthlyCostLimit(userId)
+                : null;
 
-          let result;
-          try {
-            result = await createStream(selectedModel);
-          } catch (error) {
-            if (
-              isProviderApiError(error) &&
-              !isRetryWithFallback &&
-              isAutoModel
-            ) {
-              phLogger.error(
-                "[agent-long] Provider API error, retrying with fallback",
-                {
-                  error,
-                  chatId,
-                  providerGateway: "openrouter",
-                  originalModel: selectedModel,
-                  requestedModelSlug: configuredModelId,
-                  fallbackModel,
-                  fallbackModelSlug: fallbackModelId,
+            usageRefundTracker.recordDeductions(rateLimitInfo);
+            chatLogger?.setRateLimit(
+              {
+                pointsDeducted: rateLimitInfo.pointsDeducted,
+                extraUsagePointsDeducted:
+                  rateLimitInfo.extraUsagePointsDeducted,
+                monthly: rateLimitInfo.monthly,
+                remaining: rateLimitInfo.remaining,
+                subscription,
+              },
+              extraUsageConfig,
+            );
+
+            sendRateLimitWarnings(writer, {
+              subscription,
+              mode,
+              rateLimitInfo,
+            });
+
+            const {
+              tools,
+              ensureSandbox,
+              getTodoManager,
+              getFileAccumulator,
+              sandboxManager,
+              getSandboxSessionCost,
+            } = createTools(
+              userId,
+              chatId,
+              writer,
+              mode,
+              userLocation,
+              baseTodos,
+              memoryEnabled,
+              !!temporary,
+              assistantMessageId,
+              sandboxPreference,
+              process.env.CONVEX_SERVICE_ROLE_KEY,
+              userCustomization?.guardrails_config,
+              false,
+              undefined,
+              undefined,
+              (costDollars: number) => {
+                usageTracker.providerCost += costDollars;
+                usageTracker.nonModelCost += costDollars;
+                chatLogger?.getBuilder().addToolCost(costDollars);
+              },
+              subscription,
+              (info) => chatLogger?.setSandboxBoot(info),
+              undefined,
+            );
+
+            const sendFileMetadataToStream = (
+              fileMetadata: Array<{
+                fileId: Id<"files">;
+                name: string;
+                mediaType: string;
+                s3Key?: string;
+                storageId?: Id<"_storage">;
+              }>,
+            ) => {
+              if (!fileMetadata || fileMetadata.length === 0) return;
+              writer.write({
+                type: "data-file-metadata",
+                data: {
+                  messageId: assistantMessageId,
+                  fileDetails: fileMetadata,
+                },
+              });
+            };
+
+            let sandboxContext: string | null = null;
+            if ("getSandboxContextForPrompt" in sandboxManager) {
+              try {
+                sandboxContext = await (
+                  sandboxManager as {
+                    getSandboxContextForPrompt: () => Promise<string | null>;
+                  }
+                ).getSandboxContextForPrompt();
+              } catch (err) {
+                console.warn(
+                  "[agent-long] Failed to get sandbox context:",
+                  err,
+                );
+              }
+            }
+
+            if (sandboxFiles && sandboxFiles.length > 0) {
+              writeUploadStartStatus(
+                writer,
+                sandboxFiles.every((file) => file.kind === "localPath")
+                  ? "Preparing local attachments on your computer"
+                  : "Uploading attachments to the computer",
+              );
+              let uploadResult: { failedCount: number } = { failedCount: 0 };
+              try {
+                uploadResult = await uploadSandboxFiles(
+                  sandboxFiles,
+                  ensureSandbox,
+                );
+              } finally {
+                writeUploadCompleteStatus(writer);
+              }
+              if (uploadResult.failedCount > 0) {
+                const noun =
+                  uploadResult.failedCount === 1 ? "attachment" : "attachments";
+                const uploadError = new ChatSDKError(
+                  "bad_request:stream",
+                  `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                );
+                await usageRefundTracker.refund();
+                chatLogger?.emitChatError(uploadError);
+                throw uploadError;
+              }
+            }
+
+            const titlePromise =
+              isNewChat && !temporary
+                ? generateTitleFromUserMessageWithWriter(
+                    processedMessages,
+                    writer,
+                  )
+                : Promise.resolve(undefined);
+
+            const trackedProvider = createTrackedProvider();
+            const currentSystemPrompt = await systemPrompt(
+              userId,
+              mode,
+              subscription,
+              selectedModel,
+              userCustomization,
+              temporary,
+              sandboxContext,
+            );
+            const systemPromptTokens = countTokens(currentSystemPrompt);
+
+            const contextUsageOn = isContextUsageEnabled(subscription, mode);
+            const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
+            const ctxMaxTokens = contextUsageOn
+              ? getMaxTokensForSubscription(subscription, { mode })
+              : 0;
+            const initialCtxUsage = contextUsageOn
+              ? computeContextUsage(
+                  messagesForAccounting,
+                  fileTokens,
+                  ctxSystemTokens,
+                  ctxMaxTokens,
+                )
+              : { usedTokens: 0, maxTokens: 0 };
+
+            let finalMessages = processedMessages;
+
+            const resumeContext = getResumeSection(chat?.finish_reason);
+            if (resumeContext) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                resumeContext,
+              );
+            }
+
+            const noteInjectionOpts = {
+              userId,
+              subscription,
+              shouldIncludeNotes:
+                userCustomization?.include_memory_entries ?? true,
+              isTemporary: !!temporary as boolean | undefined,
+            };
+            finalMessages = await injectNotesIntoMessages(
+              finalMessages,
+              noteInjectionOpts,
+            );
+
+            // Mutable stream state — updated in-place by the shared runner and
+            // read back here in toUIMessageStream.onFinish.
+            const state = initAgentStreamState(finalMessages, initialCtxUsage);
+            terminalAgentState = state;
+
+            const budgetSnapshot = captureBudgetSnapshot({
+              rateLimitInfo,
+              extraUsageConfig,
+              subscription,
+            });
+            const effectiveBudgetSnapshot =
+              budgetSnapshot ??
+              (freeMonthlyBudgetSnapshot?.rateLimitSkipped
+                ? null
+                : freeMonthlyBudgetSnapshot);
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
+              : null;
+
+            // Use task start time (not stream start time) so the 58-min stop
+            // condition always fires 2 min before the 60-min hard SIGKILL.
+            const streamStartTime = taskStartTime;
+            const configuredModelId =
+              trackedProvider.languageModel(selectedModel).modelId;
+
+            let isRetryWithFallback = false;
+            const isAutoModel = [
+              "ask-model",
+              "ask-model-free",
+              "agent-model",
+              "agent-model-free",
+            ].includes(selectedModel);
+            const fallbackModel = getRetryFallbackModel(selectedModel, mode);
+            const fallbackModelId =
+              trackedProvider.languageModel(fallbackModel).modelId;
+
+            const usageTracker = new UsageTracker();
+            let hasRecordedUsage = false;
+            let preFallbackCacheRead = 0;
+            let preFallbackCacheWrite = 0;
+
+            const deductAccumulatedUsage = async () => {
+              try {
+                if (hasRecordedUsage) return;
+                const sandboxCost = getSandboxSessionCost();
+                if (sandboxCost > 0) {
+                  usageTracker.providerCost += sandboxCost;
+                  usageTracker.nonModelCost += sandboxCost;
+                  chatLogger?.getBuilder().addToolCost(sandboxCost);
+                }
+                if (!usageTracker.hasUsage) return;
+                hasRecordedUsage = true;
+                const usageCostRecord = usageTracker.createUsageCostRecord({
+                  selectedModel,
+                  selectedModelOverride,
+                  responseModel: state.responseModel,
+                  configuredModelId,
+                  rateLimitInfo,
+                });
+                const providerCost =
+                  usageTracker.modelProviderCost > 0
+                    ? usageTracker.providerCost
+                    : undefined;
+                if (subscription === "free") {
+                  await recordFreeMonthlyCost(
+                    userId,
+                    usageCostRecord.costDollars,
+                  );
+                } else {
+                  await deductUsage(
+                    userId,
+                    subscription,
+                    estimatedInputTokens,
+                    usageTracker.inputTokens,
+                    usageTracker.outputTokens,
+                    extraUsageConfig,
+                    providerCost,
+                    selectedModel,
+                    usageTracker.nonModelCost,
+                    organizationId,
+                  );
+                  usageTracker.log({
+                    userId,
+                    selectedModel,
+                    selectedModelOverride,
+                    responseModel: state.responseModel,
+                    configuredModelId,
+                    rateLimitInfo,
+                  });
+                }
+                captureUsageCost({
+                  posthog,
                   userId,
                   subscription,
-                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
-                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
-                  ...extractErrorDetails(error),
-                },
-              );
-              isRetryWithFallback = true;
-              state.lastStepInputTokens = 0;
-              state.stoppedDueToTokenExhaustion = false;
-              state.stoppedDueToElapsedTimeout = false;
-              state.stoppedDueToDoomLoop = false;
-              state.stoppedDueToBudgetExhaustion = false;
-              preFallbackCacheRead = usageTracker.cacheReadTokens;
-              preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-              usageTracker.resetModelLeg();
-              result = await createStream(fallbackModel);
-            } else {
-              throw error;
-            }
-          }
+                  organizationId,
+                  chatId,
+                  endpoint: "/api/agent",
+                  mode,
+                  usage: usageCostRecord,
+                });
+              } finally {
+                await releaseFreeRunLockOnce();
+              }
+            };
 
-          writer.merge(
-            withAgentLongStreamHeartbeat(
-              result.toUIMessageStream({
-                generateMessageId: () => assistantMessageId,
-                sendReasoning: true,
-                messageMetadata: ({ part }) => {
-                  if (part.type === "start") {
-                    return { mode, generationStartedAt: streamStartTime };
-                  }
+            // Shared runner context — immutable deps + platform hook.
+            const streamCtx: AgentStreamContext = {
+              trackedProvider,
+              currentSystemPrompt,
+              tools,
+              mode,
+              userId,
+              subscription,
+              chatId,
+              temporary,
+              fileTokens,
+              noteInjectionOpts,
+              systemPromptTokens,
+              ctxSystemTokens,
+              ctxMaxTokens,
+              streamStartTime,
+              contextUsageOn,
+              isReasoningModel: true, // long mode is always agent mode
+              maxDurationMs: AGENT_LONG_MAX_DURATION_MS,
+              writer,
+              abortController: userStopSignal,
+              summarizationTracker,
+              usageTracker,
+              budgetMonitor,
+              sandboxManager,
+              getTodoManager,
+              ensureSandbox,
+              chatLogger,
+              usageRefundTracker,
+              // trigger.dev has no Vercel-style hard preemptive timeout
+              getHardTimeoutReason: () => null,
+            };
 
-                  if (part.type === "finish") {
-                    return {
-                      mode,
-                      generationStartedAt: streamStartTime,
-                      generationTimeMs: Date.now() - streamStartTime,
-                    };
-                  }
-                },
-                onFinish: async ({ messages: finishedMessages, isAborted }) => {
-                  // Retry with fallback if stream only produced step-start (incomplete response)
-                  const lastAssistantMessage = finishedMessages
-                    .slice()
-                    .reverse()
-                    .find((m) => m.role === "assistant");
-                  const lastAssistantMessageParts =
-                    stripAgentLongHeartbeatParts(
-                      lastAssistantMessage ?? { parts: [] },
-                    ).parts ?? [];
-                  const hasOnlyStepStart =
-                    lastAssistantMessageParts.length === 1 &&
-                    (lastAssistantMessageParts[0] as { type?: string })
-                      ?.type === "step-start";
+            const createStream = (modelName: string) =>
+              createAgentStream(modelName, streamCtx, state);
 
-                  if (
-                    hasOnlyStepStart &&
-                    !isRetryWithFallback &&
-                    !isAborted &&
-                    isAutoModel
-                  ) {
-                    isRetryWithFallback = true;
-                    state.lastStepInputTokens = 0;
-                    state.stoppedDueToTokenExhaustion = false;
-                    state.stoppedDueToElapsedTimeout = false;
-                    state.stoppedDueToDoomLoop = false;
-                    state.stoppedDueToBudgetExhaustion = false;
-                    const fallbackStartTime = Date.now();
-                    preFallbackCacheRead = usageTracker.cacheReadTokens;
-                    preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                    usageTracker.resetModelLeg();
-                    const retryResult = await createStream(fallbackModel);
-                    const retryMessageId = generateId();
-
-                    writer.merge(
-                      withAgentLongStreamHeartbeat(
-                        retryResult.toUIMessageStream({
-                          generateMessageId: () => retryMessageId,
-                          sendReasoning: true,
-                          messageMetadata: ({ part }) => {
-                            if (part.type === "start") {
-                              return {
-                                mode,
-                                generationStartedAt: fallbackStartTime,
-                              };
-                            }
-
-                            if (part.type === "finish") {
-                              return {
-                                mode,
-                                generationStartedAt: fallbackStartTime,
-                                generationTimeMs:
-                                  Date.now() - fallbackStartTime,
-                              };
-                            }
-                          },
-                          onFinish: async ({
-                            messages: retryMessages,
-                            isAborted: retryAborted,
-                          }) => {
-                            const fallbackCacheRead =
-                              usageTracker.cacheReadTokens -
-                              preFallbackCacheRead;
-                            const fallbackCacheWrite =
-                              usageTracker.cacheWriteTokens -
-                              preFallbackCacheWrite;
-                            const fallbackCacheTotal =
-                              fallbackCacheRead + fallbackCacheWrite;
-                            const sandboxInfo = sandboxManager.getSandboxInfo();
-                            chatLogger?.setSandbox(sandboxInfo);
-                            chatLogger?.setCacheMetrics({
-                              cacheHitRate:
-                                fallbackCacheTotal > 0
-                                  ? fallbackCacheRead / fallbackCacheTotal
-                                  : null,
-                              cacheReadTokens: fallbackCacheRead,
-                              cacheWriteTokens: fallbackCacheWrite,
-                            });
-                            captureToolCalls({
-                              posthog,
-                              chatLogger,
-                              userId,
-                              mode,
-                            });
-                            captureAgentRun({
-                              posthog,
-                              userId,
-                              mode,
-                              subscription,
-                              sandboxInfo,
-                              outcome: retryAborted
-                                ? "aborted"
-                                : isTerminalProviderStreamError(state)
-                                  ? "error"
-                                  : "success",
-                            });
-                            if (!isTerminalProviderStreamError(state)) {
-                              chatLogger?.emitSuccess({
-                                finishReason: state.streamFinishReason,
-                                wasAborted: retryAborted,
-                                wasPreemptiveTimeout: false,
-                                hadSummarization:
-                                  summarizationTracker.hasSummarized,
-                              });
-                            }
-
-                            const generatedTitle = await titlePromise;
-                            if (!temporary) {
-                              const mergedTodos = getTodoManager().mergeWith(
-                                baseTodos,
-                                retryMessageId,
-                              );
-                              if (
-                                generatedTitle ||
-                                state.streamFinishReason ||
-                                mergedTodos.length > 0
-                              ) {
-                                await updateChat({
-                                  chatId,
-                                  title: generatedTitle,
-                                  finishReason: state.streamFinishReason,
-                                  todos: mergedTodos,
-                                  defaultModelSlug: "agent",
-                                  sandboxType:
-                                    sandboxManager.getEffectivePreference(),
-                                  selectedModel: selectedModelOverride,
-                                });
-                              } else {
-                                await prepareForNewStream({ chatId });
-                              }
-                              const accumulatedFiles =
-                                getFileAccumulator().getAll();
-                              const newFileIds = accumulatedFiles.map(
-                                (f) => f.fileId,
-                              );
-                              const fallbackGenerationTimeMs =
-                                Date.now() - fallbackStartTime;
-                              for (const msg of retryMessages) {
-                                if (msg.role !== "assistant") continue;
-                                const processed = stripAgentLongHeartbeatParts(
-                                  summarizationTracker.processMessageForSave(
-                                    msg,
-                                  ),
-                                );
-                                await saveMessage({
-                                  chatId,
-                                  userId,
-                                  message: processed,
-                                  extraFileIds: newFileIds,
-                                  usage: state.streamUsage,
-                                  model: state.responseModel,
-                                  mode,
-                                  generationStartedAt: fallbackStartTime,
-                                  generationTimeMs: fallbackGenerationTimeMs,
-                                  finishReason: state.streamFinishReason,
-                                });
-                              }
-                              writer.write({
-                                type: "message-metadata",
-                                messageMetadata: {
-                                  mode,
-                                  generationStartedAt: fallbackStartTime,
-                                  generationTimeMs: fallbackGenerationTimeMs,
-                                },
-                              });
-                              sendFileMetadataToStream(accumulatedFiles);
-                            }
-                            await deductAccumulatedUsage();
-                            posthog?.shutdown();
-                          },
-                        }),
-                        userStopSignal.signal,
-                      ),
-                    );
-                    return;
-                  }
-
-                  // User-initiated cancel via trigger.dev: clear finish reason
-                  // so the client doesn't show spurious "going off course" messages.
-                  if (
-                    isAborted &&
-                    triggerSignal.aborted &&
-                    !state.stoppedDueToBudgetExhaustion &&
-                    !state.stoppedDueToElapsedTimeout
-                  ) {
-                    state.streamFinishReason = undefined;
-                  }
-
-                  const sandboxInfo = sandboxManager.getSandboxInfo();
-                  chatLogger?.setSandbox(sandboxInfo);
-                  chatLogger?.setCacheMetrics({
-                    cacheHitRate: usageTracker.cacheHitRate,
-                    cacheReadTokens: usageTracker.cacheReadTokens,
-                    cacheWriteTokens: usageTracker.cacheWriteTokens,
-                  });
-                  captureToolCalls({ posthog, chatLogger, userId, mode });
-                  captureAgentRun({
-                    posthog,
+            let result;
+            try {
+              result = await createStream(selectedModel);
+            } catch (error) {
+              if (
+                isProviderApiError(error) &&
+                !isRetryWithFallback &&
+                isAutoModel
+              ) {
+                phLogger.error(
+                  "[agent-long] Provider API error, retrying with fallback",
+                  {
+                    error,
+                    chatId,
+                    providerGateway: "openrouter",
+                    originalModel: selectedModel,
+                    requestedModelSlug: configuredModelId,
+                    fallbackModel,
+                    fallbackModelSlug: fallbackModelId,
                     userId,
-                    mode,
                     subscription,
-                    sandboxInfo,
-                    outcome: isAborted
-                      ? "aborted"
-                      : isTerminalProviderStreamError(state)
-                        ? "error"
-                        : "success",
-                  });
-                  if (!isTerminalProviderStreamError(state)) {
-                    chatLogger?.emitSuccess({
-                      finishReason: state.streamFinishReason,
-                      wasAborted: isAborted,
-                      wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
-                      hadSummarization: summarizationTracker.hasSummarized,
-                    });
-                  }
+                    preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                    preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
+                    ...extractErrorDetails(error),
+                  },
+                );
+                isRetryWithFallback = true;
+                state.lastStepInputTokens = 0;
+                state.stoppedDueToTokenExhaustion = false;
+                state.stoppedDueToElapsedTimeout = false;
+                state.stoppedDueToDoomLoop = false;
+                state.stoppedDueToBudgetExhaustion = false;
+                preFallbackCacheRead = usageTracker.cacheReadTokens;
+                preFallbackCacheWrite = usageTracker.cacheWriteTokens;
+                usageTracker.resetModelLeg();
+                result = await createStream(fallbackModel);
+              } else {
+                throw error;
+              }
+            }
 
-                  const generatedTitle = await titlePromise;
+            writer.merge(
+              withAgentLongStreamHeartbeat(
+                result.toUIMessageStream({
+                  generateMessageId: () => assistantMessageId,
+                  sendReasoning: true,
+                  messageMetadata: ({ part }) => {
+                    if (part.type === "start") {
+                      return { mode, generationStartedAt: streamStartTime };
+                    }
 
-                  if (!temporary) {
-                    const mergedTodos = getTodoManager().mergeWith(
-                      baseTodos,
-                      assistantMessageId,
-                    );
-                    const shouldPersist = regenerate
-                      ? true
-                      : Boolean(
-                          generatedTitle ||
-                          state.streamFinishReason ||
-                          mergedTodos.length > 0,
+                    if (part.type === "finish") {
+                      return {
+                        mode,
+                        generationStartedAt: streamStartTime,
+                        generationTimeMs: Date.now() - streamStartTime,
+                      };
+                    }
+                  },
+                  onFinish: async ({
+                    messages: finishedMessages,
+                    isAborted,
+                  }) => {
+                    let retryScheduled = false;
+                    try {
+                      // Retry with fallback if stream only produced step-start (incomplete response)
+                      const lastAssistantMessage = finishedMessages
+                        .slice()
+                        .reverse()
+                        .find((m) => m.role === "assistant");
+                      const lastAssistantMessageParts =
+                        stripAgentLongHeartbeatParts(
+                          lastAssistantMessage ?? { parts: [] },
+                        ).parts ?? [];
+                      const hasOnlyStepStart =
+                        lastAssistantMessageParts.length === 1 &&
+                        (lastAssistantMessageParts[0] as { type?: string })
+                          ?.type === "step-start";
+
+                      if (
+                        hasOnlyStepStart &&
+                        !isRetryWithFallback &&
+                        !isAborted &&
+                        isAutoModel
+                      ) {
+                        isRetryWithFallback = true;
+                        state.lastStepInputTokens = 0;
+                        state.stoppedDueToTokenExhaustion = false;
+                        state.stoppedDueToElapsedTimeout = false;
+                        state.stoppedDueToDoomLoop = false;
+                        state.stoppedDueToBudgetExhaustion = false;
+                        const fallbackStartTime = Date.now();
+                        preFallbackCacheRead = usageTracker.cacheReadTokens;
+                        preFallbackCacheWrite = usageTracker.cacheWriteTokens;
+                        usageTracker.resetModelLeg();
+                        const retryResult = await createStream(fallbackModel);
+                        const retryMessageId = generateId();
+
+                        writer.merge(
+                          withAgentLongStreamHeartbeat(
+                            retryResult.toUIMessageStream({
+                              generateMessageId: () => retryMessageId,
+                              sendReasoning: true,
+                              messageMetadata: ({ part }) => {
+                                if (part.type === "start") {
+                                  return {
+                                    mode,
+                                    generationStartedAt: fallbackStartTime,
+                                  };
+                                }
+
+                                if (part.type === "finish") {
+                                  return {
+                                    mode,
+                                    generationStartedAt: fallbackStartTime,
+                                    generationTimeMs:
+                                      Date.now() - fallbackStartTime,
+                                  };
+                                }
+                              },
+                              onFinish: async ({
+                                messages: retryMessages,
+                                isAborted: retryAborted,
+                              }) => {
+                                try {
+                                  const fallbackCacheRead =
+                                    usageTracker.cacheReadTokens -
+                                    preFallbackCacheRead;
+                                  const fallbackCacheWrite =
+                                    usageTracker.cacheWriteTokens -
+                                    preFallbackCacheWrite;
+                                  const fallbackCacheTotal =
+                                    fallbackCacheRead + fallbackCacheWrite;
+                                  const sandboxInfo =
+                                    sandboxManager.getSandboxInfo();
+                                  chatLogger?.setSandbox(sandboxInfo);
+                                  chatLogger?.setCacheMetrics({
+                                    cacheHitRate:
+                                      fallbackCacheTotal > 0
+                                        ? fallbackCacheRead / fallbackCacheTotal
+                                        : null,
+                                    cacheReadTokens: fallbackCacheRead,
+                                    cacheWriteTokens: fallbackCacheWrite,
+                                  });
+                                  captureToolCalls({
+                                    posthog,
+                                    chatLogger,
+                                    userId,
+                                    mode,
+                                  });
+                                  captureAgentRun({
+                                    posthog,
+                                    userId,
+                                    mode,
+                                    subscription,
+                                    sandboxInfo,
+                                    outcome: retryAborted
+                                      ? "aborted"
+                                      : isTerminalProviderStreamError(state)
+                                        ? "error"
+                                        : "success",
+                                  });
+                                  if (!isTerminalProviderStreamError(state)) {
+                                    chatLogger?.emitSuccess({
+                                      finishReason: state.streamFinishReason,
+                                      wasAborted: retryAborted,
+                                      wasPreemptiveTimeout: false,
+                                      hadSummarization:
+                                        summarizationTracker.hasSummarized,
+                                    });
+                                  }
+
+                                  const generatedTitle = await titlePromise;
+                                  if (!temporary) {
+                                    const mergedTodos =
+                                      getTodoManager().mergeWith(
+                                        baseTodos,
+                                        retryMessageId,
+                                      );
+                                    if (
+                                      generatedTitle ||
+                                      state.streamFinishReason ||
+                                      mergedTodos.length > 0
+                                    ) {
+                                      await updateChat({
+                                        chatId,
+                                        title: generatedTitle,
+                                        finishReason: state.streamFinishReason,
+                                        todos: mergedTodos,
+                                        defaultModelSlug: "agent",
+                                        sandboxType:
+                                          sandboxManager.getEffectivePreference(),
+                                        selectedModel: selectedModelOverride,
+                                      });
+                                    } else {
+                                      await prepareForNewStream({ chatId });
+                                    }
+                                    const accumulatedFiles =
+                                      getFileAccumulator().getAll();
+                                    const newFileIds = accumulatedFiles.map(
+                                      (f) => f.fileId,
+                                    );
+                                    const fallbackGenerationTimeMs =
+                                      Date.now() - fallbackStartTime;
+                                    for (const msg of retryMessages) {
+                                      if (msg.role !== "assistant") continue;
+                                      const processed =
+                                        stripAgentLongHeartbeatParts(
+                                          summarizationTracker.processMessageForSave(
+                                            msg,
+                                          ),
+                                        );
+                                      await saveMessage({
+                                        chatId,
+                                        userId,
+                                        message: processed,
+                                        extraFileIds: newFileIds,
+                                        usage: state.streamUsage,
+                                        model: state.responseModel,
+                                        mode,
+                                        generationStartedAt: fallbackStartTime,
+                                        generationTimeMs:
+                                          fallbackGenerationTimeMs,
+                                        finishReason: state.streamFinishReason,
+                                      });
+                                    }
+                                    writer.write({
+                                      type: "message-metadata",
+                                      messageMetadata: {
+                                        mode,
+                                        generationStartedAt: fallbackStartTime,
+                                        generationTimeMs:
+                                          fallbackGenerationTimeMs,
+                                      },
+                                    });
+                                    sendFileMetadataToStream(accumulatedFiles);
+                                  }
+                                  await deductAccumulatedUsage();
+                                  posthog?.shutdown();
+                                } finally {
+                                  await releaseFreeRunLockOnce();
+                                }
+                              },
+                            }),
+                            userStopSignal.signal,
+                          ),
+                        );
+                        retryScheduled = true;
+                        return;
+                      }
+
+                      // User-initiated cancel via trigger.dev: clear finish reason
+                      // so the client doesn't show spurious "going off course" messages.
+                      if (
+                        isAborted &&
+                        triggerSignal.aborted &&
+                        !state.stoppedDueToBudgetExhaustion &&
+                        !state.stoppedDueToElapsedTimeout
+                      ) {
+                        state.streamFinishReason = undefined;
+                      }
+
+                      const sandboxInfo = sandboxManager.getSandboxInfo();
+                      chatLogger?.setSandbox(sandboxInfo);
+                      chatLogger?.setCacheMetrics({
+                        cacheHitRate: usageTracker.cacheHitRate,
+                        cacheReadTokens: usageTracker.cacheReadTokens,
+                        cacheWriteTokens: usageTracker.cacheWriteTokens,
+                      });
+                      captureToolCalls({ posthog, chatLogger, userId, mode });
+                      captureAgentRun({
+                        posthog,
+                        userId,
+                        mode,
+                        subscription,
+                        sandboxInfo,
+                        outcome: isAborted
+                          ? "aborted"
+                          : isTerminalProviderStreamError(state)
+                            ? "error"
+                            : "success",
+                      });
+                      if (!isTerminalProviderStreamError(state)) {
+                        chatLogger?.emitSuccess({
+                          finishReason: state.streamFinishReason,
+                          wasAborted: isAborted,
+                          wasPreemptiveTimeout:
+                            state.stoppedDueToElapsedTimeout,
+                          hadSummarization: summarizationTracker.hasSummarized,
+                        });
+                      }
+
+                      const generatedTitle = await titlePromise;
+
+                      if (!temporary) {
+                        const mergedTodos = getTodoManager().mergeWith(
+                          baseTodos,
+                          assistantMessageId,
+                        );
+                        const shouldPersist = regenerate
+                          ? true
+                          : Boolean(
+                              generatedTitle ||
+                              state.streamFinishReason ||
+                              mergedTodos.length > 0,
+                            );
+
+                        if (shouldPersist) {
+                          await updateChat({
+                            chatId,
+                            title: generatedTitle,
+                            finishReason: state.streamFinishReason,
+                            todos: mergedTodos,
+                            defaultModelSlug: "agent",
+                            sandboxType:
+                              sandboxManager.getEffectivePreference(),
+                            selectedModel: selectedModelOverride,
+                          });
+                        } else {
+                          await prepareForNewStream({ chatId });
+                        }
+
+                        const accumulatedFiles = getFileAccumulator().getAll();
+                        const newFileIds = accumulatedFiles.map(
+                          (f) => f.fileId,
                         );
 
-                    if (shouldPersist) {
-                      await updateChat({
-                        chatId,
-                        title: generatedTitle,
-                        finishReason: state.streamFinishReason,
-                        todos: mergedTodos,
-                        defaultModelSlug: "agent",
-                        sandboxType: sandboxManager.getEffectivePreference(),
-                        selectedModel: selectedModelOverride,
-                      });
-                    } else {
-                      await prepareForNewStream({ chatId });
-                    }
+                        let resolvedUsage: Record<string, unknown> | undefined =
+                          state.streamUsage;
+                        if (!resolvedUsage && isAborted) {
+                          try {
+                            resolvedUsage = (await result.usage) as Record<
+                              string,
+                              unknown
+                            >;
+                          } catch {
+                            // Usage unavailable on abort
+                          }
+                        }
 
-                    const accumulatedFiles = getFileAccumulator().getAll();
-                    const newFileIds = accumulatedFiles.map((f) => f.fileId);
+                        const hasIncompleteToolCalls = finishedMessages.some(
+                          (msg) =>
+                            msg.role === "assistant" &&
+                            msg.parts?.some(
+                              (p: {
+                                type?: string;
+                                state?: string;
+                                toolCallId?: string;
+                              }) =>
+                                p.type?.startsWith("tool-") &&
+                                p.state !== "output-available" &&
+                                p.toolCallId,
+                            ),
+                        );
+                        const incompleteToolSummaries = isAborted
+                          ? summarizeIncompleteToolParts(finishedMessages)
+                          : [];
+                        if (incompleteToolSummaries.length > 0) {
+                          console.info(
+                            JSON.stringify({
+                              level: "info",
+                              event:
+                                "agent_long_abort_incomplete_tool_calls_detected",
+                              service: "agent-long",
+                              timestamp: new Date().toISOString(),
+                              chat_id: chatId,
+                              user_id: userId,
+                              mode: "agent",
+                              finish_reason: state.streamFinishReason,
+                              trigger_signal_aborted: triggerSignal.aborted,
+                              incomplete_tool_count:
+                                incompleteToolSummaries.length,
+                              incomplete_tools: incompleteToolSummaries,
+                            }),
+                          );
+                        }
+                        if (
+                          isAborted &&
+                          !triggerSignal.aborted &&
+                          newFileIds.length === 0 &&
+                          !hasIncompleteToolCalls &&
+                          !resolvedUsage
+                        ) {
+                          console.info(
+                            JSON.stringify({
+                              level: "info",
+                              event: "agent_long_abort_message_save_skipped",
+                              service: "agent-long",
+                              timestamp: new Date().toISOString(),
+                              chat_id: chatId,
+                              user_id: userId,
+                              mode: "agent",
+                              finish_reason: state.streamFinishReason,
+                              new_file_count: newFileIds.length,
+                              has_incomplete_tool_calls: hasIncompleteToolCalls,
+                              has_usage_to_record: Boolean(resolvedUsage),
+                            }),
+                          );
+                          await deductAccumulatedUsage();
+                          posthog?.shutdown();
+                          return;
+                        }
 
-                    let resolvedUsage: Record<string, unknown> | undefined =
-                      state.streamUsage;
-                    if (!resolvedUsage && isAborted) {
-                      try {
-                        resolvedUsage = (await result.usage) as Record<
-                          string,
-                          unknown
-                        >;
-                      } catch {
-                        // Usage unavailable on abort
+                        const finalGenerationTimeMs =
+                          Date.now() - streamStartTime;
+                        let savedAssistantMessage = false;
+                        for (const message of finishedMessages) {
+                          const processed = stripAgentLongHeartbeatParts(
+                            summarizationTracker.processMessageForSave(message),
+                          );
+                          if (
+                            (!processed.parts ||
+                              processed.parts.length === 0) &&
+                            newFileIds.length === 0
+                          ) {
+                            continue;
+                          }
+                          await saveMessage({
+                            chatId,
+                            userId,
+                            message: processed,
+                            extraFileIds: newFileIds,
+                            model: state.responseModel || configuredModelId,
+                            mode,
+                            generationStartedAt:
+                              processed.role === "assistant"
+                                ? streamStartTime
+                                : undefined,
+                            generationTimeMs: finalGenerationTimeMs,
+                            finishReason: state.streamFinishReason,
+                            usage: resolvedUsage ?? state.streamUsage,
+                            updateOnly:
+                              isAborted && !state.stoppedDueToElapsedTimeout
+                                ? true
+                                : undefined,
+                            isHidden:
+                              isAutoContinue && processed.role === "user"
+                                ? true
+                                : undefined,
+                          });
+                          if (processed.role === "assistant") {
+                            savedAssistantMessage = true;
+                          }
+                        }
+
+                        if (savedAssistantMessage) {
+                          writer.write({
+                            type: "message-metadata",
+                            messageMetadata: {
+                              mode,
+                              generationStartedAt: streamStartTime,
+                              generationTimeMs: finalGenerationTimeMs,
+                            },
+                          });
+                        }
+
+                        sendFileMetadataToStream(accumulatedFiles);
                       }
-                    }
 
-                    const hasIncompleteToolCalls = finishedMessages.some(
-                      (msg) =>
-                        msg.role === "assistant" &&
-                        msg.parts?.some(
-                          (p: {
-                            type?: string;
-                            state?: string;
-                            toolCallId?: string;
-                          }) =>
-                            p.type?.startsWith("tool-") &&
-                            p.state !== "output-available" &&
-                            p.toolCallId,
-                        ),
-                    );
-                    const incompleteToolSummaries = isAborted
-                      ? summarizeIncompleteToolParts(finishedMessages)
-                      : [];
-                    if (incompleteToolSummaries.length > 0) {
-                      console.info(
-                        JSON.stringify({
-                          level: "info",
-                          event:
-                            "agent_long_abort_incomplete_tool_calls_detected",
-                          service: "agent-long",
-                          timestamp: new Date().toISOString(),
-                          chat_id: chatId,
-                          user_id: userId,
-                          mode: "agent",
-                          finish_reason: state.streamFinishReason,
-                          trigger_signal_aborted: triggerSignal.aborted,
-                          incomplete_tool_count: incompleteToolSummaries.length,
-                          incomplete_tools: incompleteToolSummaries,
-                        }),
-                      );
-                    }
-                    if (
-                      isAborted &&
-                      !triggerSignal.aborted &&
-                      newFileIds.length === 0 &&
-                      !hasIncompleteToolCalls &&
-                      !resolvedUsage
-                    ) {
-                      console.info(
-                        JSON.stringify({
-                          level: "info",
-                          event: "agent_long_abort_message_save_skipped",
-                          service: "agent-long",
-                          timestamp: new Date().toISOString(),
-                          chat_id: chatId,
-                          user_id: userId,
-                          mode: "agent",
-                          finish_reason: state.streamFinishReason,
-                          new_file_count: newFileIds.length,
-                          has_incomplete_tool_calls: hasIncompleteToolCalls,
-                          has_usage_to_record: Boolean(resolvedUsage),
-                        }),
-                      );
+                      if (contextUsageOn) {
+                        writeContextUsage(writer, {
+                          usedTokens:
+                            state.ctxUsage.usedTokens +
+                            usageTracker.streamOutputTokens,
+                          maxTokens: state.ctxUsage.maxTokens,
+                        });
+                      }
+
+                      // Don't auto-continue on elapsed timeout — a 58-min run is large enough
+                      // that the user should explicitly decide whether to continue rather than
+                      // silently chaining up to 5 more hour-long runs.
+                      if (
+                        (state.stoppedDueToTokenExhaustion ||
+                          state.streamFinishReason === "tool-calls") &&
+                        !temporary
+                      ) {
+                        writeAutoContinue(writer);
+                      }
+
                       await deductAccumulatedUsage();
                       posthog?.shutdown();
-                      return;
-                    }
-
-                    const finalGenerationTimeMs = Date.now() - streamStartTime;
-                    let savedAssistantMessage = false;
-                    for (const message of finishedMessages) {
-                      const processed = stripAgentLongHeartbeatParts(
-                        summarizationTracker.processMessageForSave(message),
-                      );
-                      if (
-                        (!processed.parts || processed.parts.length === 0) &&
-                        newFileIds.length === 0
-                      ) {
-                        continue;
-                      }
-                      await saveMessage({
-                        chatId,
-                        userId,
-                        message: processed,
-                        extraFileIds: newFileIds,
-                        model: state.responseModel || configuredModelId,
-                        mode,
-                        generationStartedAt:
-                          processed.role === "assistant"
-                            ? streamStartTime
-                            : undefined,
-                        generationTimeMs: finalGenerationTimeMs,
-                        finishReason: state.streamFinishReason,
-                        usage: resolvedUsage ?? state.streamUsage,
-                        updateOnly:
-                          isAborted && !state.stoppedDueToElapsedTimeout
-                            ? true
-                            : undefined,
-                        isHidden:
-                          isAutoContinue && processed.role === "user"
-                            ? true
-                            : undefined,
-                      });
-                      if (processed.role === "assistant") {
-                        savedAssistantMessage = true;
+                    } finally {
+                      if (!retryScheduled) {
+                        await releaseFreeRunLockOnce();
                       }
                     }
-
-                    if (savedAssistantMessage) {
-                      writer.write({
-                        type: "message-metadata",
-                        messageMetadata: {
-                          mode,
-                          generationStartedAt: streamStartTime,
-                          generationTimeMs: finalGenerationTimeMs,
-                        },
-                      });
-                    }
-
-                    sendFileMetadataToStream(accumulatedFiles);
-                  }
-
-                  if (contextUsageOn) {
-                    writeContextUsage(writer, {
-                      usedTokens:
-                        state.ctxUsage.usedTokens +
-                        usageTracker.streamOutputTokens,
-                      maxTokens: state.ctxUsage.maxTokens,
-                    });
-                  }
-
-                  // Don't auto-continue on elapsed timeout — a 58-min run is large enough
-                  // that the user should explicitly decide whether to continue rather than
-                  // silently chaining up to 5 more hour-long runs.
-                  if (
-                    (state.stoppedDueToTokenExhaustion ||
-                      state.streamFinishReason === "tool-calls") &&
-                    !temporary
-                  ) {
-                    writeAutoContinue(writer);
-                  }
-
-                  await deductAccumulatedUsage();
-                  posthog?.shutdown();
-                },
-              }),
-              userStopSignal.signal,
-            ),
-          );
+                  },
+                }),
+                userStopSignal.signal,
+              ),
+            );
+          } catch (error) {
+            await releaseFreeRunLockOnce();
+            throw error;
+          }
         },
       });
 
@@ -1517,6 +1591,7 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      await releaseFreeRunLockOnce();
       const chatMissingAfterStream =
         streamPiped &&
         error instanceof ChatSDKError &&

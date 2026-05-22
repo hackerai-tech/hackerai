@@ -84,6 +84,9 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
+      if (data.subscription === "free") {
+        return `You've reached your free monthly usage limit and this response was cut off. Upgrade to continue. Resets ${timeString}.`;
+      }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
