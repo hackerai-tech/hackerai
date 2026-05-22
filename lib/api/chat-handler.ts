@@ -109,8 +109,7 @@ import {
   initAgentStreamState,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
-
-const FREE_RUN_LOCK_TTL_SECONDS = 15 * 60;
+import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
   try {

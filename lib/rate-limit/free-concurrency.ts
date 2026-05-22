@@ -1,7 +1,6 @@
 import { ChatSDKError } from "@/lib/errors";
+import { FREE_RUN_LOCK_TTL_SECONDS } from "./free-config";
 import { createRedisClient } from "./redis";
-
-const FREE_RUN_LOCK_TTL_SECONDS_DEFAULT = 15 * 60;
 
 const RELEASE_FREE_RUN_LOCK_SCRIPT = `
 local key = KEYS[1]
@@ -23,7 +22,7 @@ const freeRunLockKey = (userId: string) => `free_run_lock:${userId}`;
 
 export async function acquireFreeRunConcurrencyLock(
   userId: string,
-  ttlSeconds = FREE_RUN_LOCK_TTL_SECONDS_DEFAULT,
+  ttlSeconds = FREE_RUN_LOCK_TTL_SECONDS,
 ): Promise<FreeRunConcurrencyLock> {
   const redis = createRedisClient();
 

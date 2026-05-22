@@ -2,8 +2,9 @@ import { UIMessage, UIMessagePart } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import { FREE_MAX_CONTEXT_TOKENS } from "@/lib/rate-limit/free-config";
 
-export const MAX_TOKENS_FREE = 128000;
+export const MAX_TOKENS_FREE = FREE_MAX_CONTEXT_TOKENS;
 export const MAX_TOKENS_PAID = 200000;
 /**
  * Percentage of context window budget allocated to file uploads in Ask mode.

@@ -7,11 +7,13 @@
 
 import { ChatSDKError } from "@/lib/errors";
 import type { RateLimitInfo } from "@/types";
+import {
+  FREE_AGENT_REQUEST_COST,
+  FREE_ASK_REQUEST_COST,
+  getFreeRequestLimit,
+} from "./free-config";
 import { createRedisClient } from "./redis";
 
-const FREE_RATE_LIMIT_REQUESTS_DEFAULT = 10;
-const FREE_ASK_REQUEST_COST = 1;
-const FREE_AGENT_REQUEST_COST = 2;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 // Upstash fixedWindow supports `{ rate: 2 }`, but failed multi-unit calls are
@@ -36,16 +38,6 @@ end
 
 return {1, requestLimit - nextUsed}
 `;
-
-const getFreeRequestLimit = (): number => {
-  const configuredLimit = parseInt(
-    process.env.FREE_RATE_LIMIT_REQUESTS || "",
-    10,
-  );
-  return Number.isFinite(configuredLimit) && configuredLimit > 0
-    ? configuredLimit
-    : FREE_RATE_LIMIT_REQUESTS_DEFAULT;
-};
 
 const getCurrentUtcDayWindow = () => {
   const now = Date.now();

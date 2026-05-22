@@ -103,10 +103,10 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
+import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 // Leave 2 min for cleanup before trigger.dev hits maxDuration: 60 * 60.
 const AGENT_LONG_MAX_DURATION_MS = 58 * 60 * 1000;
-const AGENT_LONG_FREE_RUN_LOCK_TTL_SECONDS = 65 * 60;
 
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
 
@@ -716,7 +716,7 @@ export const agentLongTask = task({
             if (subscription === "free") {
               const lock = await acquireFreeRunConcurrencyLock(
                 userId,
-                AGENT_LONG_FREE_RUN_LOCK_TTL_SECONDS,
+                FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
               );
               releaseFreeRunLock = lock.release;
             }

@@ -1,8 +1,7 @@
 import { ChatSDKError } from "@/lib/errors";
+import { getFreeMonthlyCostLimitDollars } from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
-
-const FREE_MONTHLY_COST_LIMIT_USD_DEFAULT = 0.25;
 
 const RECORD_FREE_MONTHLY_COST_SCRIPT = `
 local key = KEYS[1]
@@ -29,13 +28,6 @@ export interface FreeMonthlyCostSnapshot {
   extraUsageAutoReload: false;
   rateLimitSkipped?: boolean;
 }
-
-const getFreeMonthlyCostLimitDollars = (): number => {
-  const configuredLimit = Number(process.env.FREE_MONTHLY_COST_LIMIT_USD);
-  return Number.isFinite(configuredLimit) && configuredLimit > 0
-    ? configuredLimit
-    : FREE_MONTHLY_COST_LIMIT_USD_DEFAULT;
-};
 
 const dollarsToPoints = (dollars: number): number => {
   if (!Number.isFinite(dollars) || dollars <= 0) return 0;
