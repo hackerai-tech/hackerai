@@ -26,6 +26,8 @@ import type { UsageCostRecord } from "@/lib/usage-tracker";
 import {
   extractErrorDetails,
   extractRetryAttempts,
+  getProviderErrorCategory,
+  type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
 export interface ChatLoggerConfig {
@@ -69,20 +71,6 @@ export interface StreamResult {
   hadSummarization: boolean;
 }
 
-function providerErrorCategory(details: Record<string, unknown>): string {
-  const statusCode =
-    typeof details.statusCode === "number" ? details.statusCode : undefined;
-  if (statusCode === 429) return "rate_limited";
-  if (statusCode != null && statusCode >= 500) return "provider_5xx";
-  if (statusCode != null && statusCode >= 400) return "provider_4xx";
-
-  const message =
-    typeof details.errorMessage === "string" ? details.errorMessage : "";
-  if (/terminated|aborted|abort/i.test(message)) return "stream_terminated";
-  if (/timeout|timed out/i.test(message)) return "timeout";
-  return "unknown";
-}
-
 function posthogProviderException(
   error: unknown,
   details: Record<string, unknown>,
@@ -98,6 +86,24 @@ function posthogProviderException(
 const truncateLogString = (value: string, maxLength = 500): string =>
   value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 
+const providerErrorEventName = (category: ProviderErrorCategory): string =>
+  category === "stream_terminated"
+    ? "provider_stream_terminated"
+    : "provider_streaming_error";
+
+const providerErrorMessage = (category: ProviderErrorCategory): string =>
+  category === "stream_terminated"
+    ? "Provider stream terminated"
+    : "Provider streaming error";
+
+const isRetriableProviderCategory = (
+  category: ProviderErrorCategory,
+): boolean =>
+  category === "rate_limited" ||
+  category === "provider_5xx" ||
+  category === "stream_terminated" ||
+  category === "timeout";
+
 /**
  * Creates a chat logger instance for tracking wide events
  */
@@ -111,6 +117,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
   let subscription: string | undefined;
   let mode: ChatMode | undefined;
   let monthlyRemainingPercent: number | undefined;
+  let lastProviderErrorCategory: ProviderErrorCategory | undefined;
+  let lastProviderErrorStatusCode: number | undefined;
 
   return {
     /**
@@ -273,8 +281,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
 
     /**
      * Record a provider streaming error. Fans out to:
-     *   - Vercel runtime logs (structured JSON via logger.error)
-     *   - PostHog exception capture (phLogger.error)
+     *   - Vercel runtime logs (structured JSON via logger.warn/logger.error)
+     *   - PostHog telemetry (warnings for transport closes, exceptions for errors)
      *   - The wide event (had_provider_error + provider_error fields)
      *
      * Does NOT change outcome — emitSuccess/emitChatError still decides that.
@@ -293,24 +301,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
     ) {
       const details = extractErrorDetails(error);
       const attempts = extractRetryAttempts(error);
-      const category = providerErrorCategory(details);
+      const category = getProviderErrorCategory(details);
+      lastProviderErrorCategory = category;
+      lastProviderErrorStatusCode =
+        typeof details.statusCode === "number" ? details.statusCode : undefined;
 
-      logger.error(
-        "Provider streaming error",
-        error instanceof Error ? error : undefined,
-        {
-          chat_id: config.chatId,
-          endpoint: config.endpoint,
-          provider_gateway: "openrouter",
-          provider_error_category: category,
-          ...context,
-          ...details,
-          ...(attempts && { provider_attempts: attempts }),
-        },
-      );
+      const logContext = {
+        event: providerErrorEventName(category),
+        chat_id: config.chatId,
+        endpoint: config.endpoint,
+        provider_gateway: "openrouter",
+        provider_error_category: category,
+        ...context,
+        ...details,
+        ...(attempts && { provider_attempts: attempts }),
+      };
 
-      phLogger.error("Provider streaming error", {
-        error: posthogProviderException(error, details),
+      if (category === "stream_terminated") {
+        logger.warn(providerErrorMessage(category), logContext);
+      } else {
+        logger.error(
+          providerErrorMessage(category),
+          error instanceof Error ? error : undefined,
+          logContext,
+        );
+      }
+
+      const phContext = {
+        event: providerErrorEventName(category),
         chatId: config.chatId,
         endpoint: config.endpoint,
         providerGateway: "openrouter",
@@ -318,9 +336,19 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...context,
         ...details,
         ...(attempts && { provider_attempts: attempts }),
-      });
+      };
+
+      if (category === "stream_terminated") {
+        phLogger.warn(providerErrorMessage(category), phContext);
+      } else {
+        phLogger.error(providerErrorMessage(category), {
+          error: posthogProviderException(error, details),
+          ...phContext,
+        });
+      }
 
       builder.markProviderError({
+        category,
         statusCode: details.statusCode as number | undefined,
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
@@ -390,23 +418,33 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
-     * Finalize and emit error event for unexpected errors
+     * Finalize and emit error event for unexpected or previously recorded
+     * provider errors.
      */
     emitUnexpectedError(error: unknown) {
       const message =
         error instanceof Error ? error.message : "Unknown error occurred";
 
-      logger.error(
-        "Unexpected error in chat route",
-        error instanceof Error ? error : undefined,
-        { chatId: config.chatId },
-      );
+      if (!lastProviderErrorCategory) {
+        logger.error(
+          "Unexpected error in chat route",
+          error instanceof Error ? error : undefined,
+          { event: "chat_route_unexpected_error", chatId: config.chatId },
+        );
+      }
 
       builder.setError({
-        type: "UnexpectedError",
+        type:
+          lastProviderErrorCategory === "stream_terminated"
+            ? "ProviderStreamTerminated"
+            : lastProviderErrorCategory
+              ? "ProviderError"
+              : "UnexpectedError",
         message,
-        statusCode: 503,
-        retriable: false,
+        statusCode: lastProviderErrorStatusCode ?? 503,
+        retriable: lastProviderErrorCategory
+          ? isRetriableProviderCategory(lastProviderErrorCategory)
+          : false,
       });
       logger.info(builder.build());
     },

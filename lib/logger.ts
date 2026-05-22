@@ -174,6 +174,7 @@ export interface ChatWideEvent {
   // one where the model leg died and we recovered (fallback, partial output).
   had_provider_error?: boolean;
   provider_error?: {
+    category?: string;
     status_code?: number;
     url?: string;
     reason?: string;
@@ -534,6 +535,7 @@ export class WideEventBuilder {
    * outcome — call setSuccess/setError separately based on overall result.
    */
   markProviderError(details: {
+    category?: string;
     statusCode?: number;
     url?: string;
     reason?: string;
@@ -543,6 +545,7 @@ export class WideEventBuilder {
   }): this {
     this.event.had_provider_error = true;
     this.event.provider_error = {
+      category: details.category,
       status_code: details.statusCode,
       url: details.url,
       reason: details.reason,

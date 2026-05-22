@@ -5,6 +5,7 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Headers = class Headers {};
 
 const {
+  createChatLogger,
   captureAgentRun,
   captureToolCalls,
   captureUsageCost,
@@ -163,5 +164,45 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+  });
+});
+
+describe("createChatLogger provider stream termination", () => {
+  it("logs terminated provider streams as warnings and suppresses duplicate unexpected route errors", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_terminated",
+        endpoint: "/api/agent",
+      });
+      const err = Object.assign(new TypeError("terminated"), {
+        cause: "other side closed",
+      });
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+        requestedModelSlug: "moonshotai/kimi-k2.6:exacto",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
+      const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvents = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(warnOutput).toContain("Provider stream terminated");
+      expect(warnOutput).toContain("provider_stream_terminated");
+      expect(errorOutput).not.toContain("Unexpected error in chat route");
+      expect(errorOutput).not.toContain("Provider streaming error");
+      expect(wideEvents).toContain('"type":"ProviderStreamTerminated"');
+      expect(wideEvents).toContain('"category":"stream_terminated"');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });

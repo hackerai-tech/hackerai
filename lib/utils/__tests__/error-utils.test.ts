@@ -1,5 +1,10 @@
 import { describe, it, expect } from "@jest/globals";
-import { extractErrorDetails, extractRetryAttempts } from "../error-utils";
+import {
+  extractErrorDetails,
+  extractRetryAttempts,
+  getProviderErrorCategory,
+  isProviderStreamTerminatedError,
+} from "../error-utils";
 
 const apiCallError = (overrides: Record<string, unknown>) =>
   Object.assign(new Error("Internal Server Error"), {
@@ -197,5 +202,29 @@ describe("extractRetryAttempts -> request_id", () => {
 
   it("returns undefined when error has no errors[] array", () => {
     expect(extractRetryAttempts(new Error("nope"))).toBeUndefined();
+  });
+});
+
+describe("provider error classification", () => {
+  it("classifies undici terminated errors as provider stream termination", () => {
+    const err = Object.assign(new TypeError("terminated"), {
+      cause: "other side closed",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "stream_terminated",
+    );
+    expect(isProviderStreamTerminatedError(err)).toBe(true);
+  });
+
+  it("classifies provider status codes before message patterns", () => {
+    const err = apiCallError({
+      statusCode: 503,
+      message: "terminated",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "provider_5xx",
+    );
   });
 });

@@ -76,6 +76,7 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
+  getProviderErrorCategory,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError } from "@/lib/errors";
@@ -166,6 +167,19 @@ const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
   );
 };
 
+const classifyProviderDashboardCategory = (
+  error: unknown,
+  details: Record<string, unknown>,
+): string => {
+  const category = getProviderErrorCategory(details);
+  if (category === "stream_terminated") return "provider_stream_terminated";
+  if (category === "timeout") return "provider_timeout";
+  if (category !== "unknown" || isProviderApiError(error)) {
+    return "provider_error";
+  }
+  return "unexpected_error";
+};
+
 const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   const details = extractErrorDetails(error);
   const errorMessage = truncateForTriggerMetadata(
@@ -206,7 +220,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
   }
 
   return {
-    category: isProviderApiError(error) ? "provider_error" : "unexpected_error",
+    category: classifyProviderDashboardCategory(error, details),
     code: typeof details.errorCode === "string" ? details.errorCode : undefined,
     name:
       typeof details.errorName === "string"

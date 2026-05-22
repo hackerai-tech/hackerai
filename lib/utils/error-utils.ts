@@ -196,6 +196,33 @@ export const extractErrorDetails = (
   return details;
 };
 
+export type ProviderErrorCategory =
+  | "rate_limited"
+  | "provider_5xx"
+  | "provider_4xx"
+  | "stream_terminated"
+  | "timeout"
+  | "unknown";
+
+export const getProviderErrorCategory = (
+  details: Record<string, unknown>,
+): ProviderErrorCategory => {
+  const statusCode =
+    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  if (statusCode === 429) return "rate_limited";
+  if (statusCode != null && statusCode >= 500) return "provider_5xx";
+  if (statusCode != null && statusCode >= 400) return "provider_4xx";
+
+  const message =
+    typeof details.errorMessage === "string" ? details.errorMessage : "";
+  if (/terminated|aborted|abort/i.test(message)) return "stream_terminated";
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  return "unknown";
+};
+
+export const isProviderStreamTerminatedError = (error: unknown): boolean =>
+  getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
+
 export interface ProviderAttempt {
   status_code?: number;
   message: string;
