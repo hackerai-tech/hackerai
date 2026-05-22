@@ -62,10 +62,11 @@ If Redis is not configured, rate limiting is automatically disabled in local dev
 
 Two different strategies are used based on subscription tier:
 
-**Free tier — Fixed daily window (resets at midnight UTC):**
+**Free tier — Shared fixed daily request window (resets at midnight UTC):**
 
-- Ask mode: 10 requests per day (configure via `FREE_RATE_LIMIT_REQUESTS`)
-- Agent mode (local sandbox only): 5 requests per day (configure via `FREE_AGENT_RATE_LIMIT_REQUESTS`)
+- 10 request units per day (configure via `FREE_RATE_LIMIT_REQUESTS`)
+- Ask mode costs 1 unit
+- Agent mode (local sandbox only) costs 2 units, so the default budget allows up to 5 agent requests
 
 **Paid tiers — Cost-based token bucket (monthly, shared across all modes):**
 

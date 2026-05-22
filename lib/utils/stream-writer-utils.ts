@@ -95,7 +95,7 @@ export const findSummarizationInsertIndex = (
 // Unified rate limit warning data types
 export type RateLimitWarningData =
   | {
-      // Free users: sliding window (remaining count)
+      // Free users: sliding window (remaining request units)
       warningType: "sliding-window";
       remaining: number;
       resetTime: string;
