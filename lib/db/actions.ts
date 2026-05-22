@@ -204,6 +204,9 @@ const getDatabaseErrorCode = (data: unknown): string | undefined =>
   getObjectString(data, "code") ??
   getObjectString(getNestedObject(data, "causeData"), "code");
 
+const getDatabaseFailureStage = (data: unknown): string | undefined =>
+  getObjectString(data, "failureStage");
+
 const isChatNotFoundMessageSaveError = (
   operation: string,
   dbErrorData: unknown,
@@ -226,6 +229,7 @@ const databaseError = (
     db_error_message: dbErrorMessage,
     db_error_data: dbErrorData,
     db_error_code: getDatabaseErrorCode(dbErrorData),
+    db_failure_stage: getDatabaseFailureStage(dbErrorData),
     ...metadata,
   };
 

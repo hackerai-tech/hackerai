@@ -10,6 +10,7 @@ const {
   captureToolCalls,
   captureUsageCost,
 } = require("../chat-logger");
+const { ChatSDKError } = require("../../errors");
 
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
@@ -202,6 +203,66 @@ describe("createChatLogger provider stream termination", () => {
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+});
+
+describe("createChatLogger ChatSDKError metadata", () => {
+  it("keeps wide event error metadata compact and drops bulky nested diagnostics", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_missing",
+        endpoint: "/api/agent",
+      });
+      const err = new ChatSDKError(
+        "not_found:chat",
+        "Chat no longer exists while saving message",
+        {
+          db_operation: "messages.saveMessage",
+          db_error_name: "ConvexError",
+          db_error_message: "[Request ID: abc] Server Error",
+          db_error_code: "CHAT_NOT_FOUND",
+          db_failure_stage: "verify_chat_ownership",
+          db_error_data: {
+            code: "MESSAGE_SAVE_FAILED",
+            causeData: {
+              code: "CHAT_NOT_FOUND",
+              message: "This chat doesn't exist",
+            },
+          },
+          part_types: {
+            reasoning: 90,
+            "tool-run_terminal_cmd": 74,
+          },
+          usage_keys: ["inputTokens", "outputTokens"],
+          parts_size_bytes: 564266,
+          parts_size_kb: 551,
+          part_count: 288,
+          tool_part_count: 99,
+        },
+      );
+
+      chatLogger.emitChatError(err);
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.error.metadata).toEqual({
+        db_operation: "messages.saveMessage",
+        db_error_name: "ConvexError",
+        db_error_message: "[Request ID: abc] Server Error",
+        db_error_code: "CHAT_NOT_FOUND",
+        db_failure_stage: "verify_chat_ownership",
+        parts_size_kb: 551,
+        part_count: 288,
+        tool_part_count: 99,
+      });
+      expect(wideEvent.error.metadata).not.toHaveProperty("db_error_data");
+      expect(wideEvent.error.metadata).not.toHaveProperty("part_types");
+      expect(wideEvent.error.metadata).not.toHaveProperty("usage_keys");
+      expect(wideEvent.error.metadata).not.toHaveProperty("parts_size_bytes");
+    } finally {
       logSpy.mockRestore();
     }
   });

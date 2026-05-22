@@ -86,6 +86,40 @@ function posthogProviderException(
 const truncateLogString = (value: string, maxLength = 500): string =>
   value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 
+const COMPACT_CHAT_ERROR_METADATA_KEYS = [
+  "db_operation",
+  "db_error_name",
+  "db_error_message",
+  "db_error_code",
+  "db_failure_stage",
+  "finish_reason",
+  "message_role",
+  "mode",
+  "parts_size_kb",
+  "part_count",
+  "largest_part_type",
+  "largest_part_size_kb",
+  "tool_part_count",
+  "data_part_count",
+  "reasoning_chars",
+  "was_aborted",
+  "was_preemptive_timeout",
+] as const;
+
+const compactChatErrorMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!metadata) return undefined;
+
+  const compact: Record<string, unknown> = {};
+  for (const key of COMPACT_CHAT_ERROR_METADATA_KEYS) {
+    const value = metadata[key];
+    if (value !== undefined) compact[key] = value;
+  }
+
+  return Object.keys(compact).length > 0 ? compact : undefined;
+};
+
 const providerErrorEventName = (category: ProviderErrorCategory): string =>
   category === "stream_terminated"
     ? "provider_stream_terminated"
@@ -398,7 +432,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         cause,
         statusCode: error.statusCode,
         retriable: error.type === "rate_limit",
-        metadata: error.metadata,
+        metadata: compactChatErrorMetadata(error.metadata),
       });
       logger.info(builder.build());
 
