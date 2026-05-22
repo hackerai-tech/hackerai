@@ -63,6 +63,21 @@ describe("acquireFreeRunConcurrencyLock", () => {
     });
   });
 
+  it("allows release to be retried when Redis unlock fails", async () => {
+    mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
+    mockEval
+      .mockRejectedValueOnce(new Error("temporary redis failure"))
+      .mockResolvedValueOnce(1);
+    const { acquireFreeRunConcurrencyLock } = getIsolatedModule();
+
+    const lock = await acquireFreeRunConcurrencyLock("user-123", 60);
+
+    await expect(lock.release()).rejects.toThrow("temporary redis failure");
+    await expect(lock.release()).resolves.toBeUndefined();
+
+    expect(mockEval).toHaveBeenCalledTimes(2);
+  });
+
   it("skips the lock outside production when Redis is unavailable", async () => {
     mockCreateRedisClient.mockReturnValue(null);
     const { acquireFreeRunConcurrencyLock } = getIsolatedModule();

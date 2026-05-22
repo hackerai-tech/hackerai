@@ -57,8 +57,8 @@ export async function acquireFreeRunConcurrencyLock(
   return {
     release: async () => {
       if (released) return;
-      released = true;
       await redis.eval(RELEASE_FREE_RUN_LOCK_SCRIPT, [lockKey], [lockToken]);
+      released = true;
     },
   };
 }
