@@ -27,6 +27,7 @@ import {
   ProcessRunner,
   ProcessRunOptions,
   ProcessRunResult,
+  isPtyAvailable,
 } from "./process-runner";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
@@ -171,6 +172,11 @@ interface OsInfo {
   arch: string;
   release: string;
   hostname: string;
+}
+
+interface ClientCapabilities {
+  commands: boolean;
+  pty: boolean;
 }
 
 interface CentrifugoCommandMessage {
@@ -424,6 +430,13 @@ class LocalSandboxClient {
     };
   }
 
+  private getCapabilities(): ClientCapabilities {
+    return {
+      commands: true,
+      pty: isPtyAvailable(),
+    };
+  }
+
   private async connect(): Promise<void> {
     console.log(chalk.blue("Connecting to HackerAI..."));
 
@@ -435,6 +448,7 @@ class LocalSandboxClient {
           connectionName: this.config.name,
           clientVersion: "1.0.0",
           osInfo: this.getOsInfo(),
+          capabilities: this.getCapabilities(),
         } as never,
       )) as ConnectResult;
 

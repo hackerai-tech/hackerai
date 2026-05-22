@@ -51,8 +51,17 @@ interface PtyModule {
 const FLUSH_INTERVAL_MS = 16;
 const FLUSH_THRESHOLD_BYTES = 32 * 1024; // 32 KB
 const SIGTERM_GRACE_MS = 5_000;
-const NODE_PTY_UNAVAILABLE_MESSAGE =
+export const NODE_PTY_UNAVAILABLE_MESSAGE =
   "Interactive terminal sessions are unavailable because node-pty could not be loaded. Non-interactive commands still work.";
+
+export function isPtyAvailable(): boolean {
+  try {
+    require("node-pty");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function loadPty(): PtyModule {
   try {
