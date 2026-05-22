@@ -110,6 +110,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
+  test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
+    expect(routeSrc).toMatch(
+      /const messagesForPayload\s*=\s*temporary\s*\|\|\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
+    );
+    expect(routeSrc).toMatch(/messages:\s*messagesForPayload/);
+  });
+
+  test("public token creation and active run persistence are overlapped", () => {
+    const parallelIdx = routeSrc.indexOf("await Promise.all([");
+    const tokenIdx = routeSrc.indexOf("auth.createPublicToken", parallelIdx);
+    const activeRunIdx = routeSrc.indexOf("setActiveTriggerRun", parallelIdx);
+
+    expect(parallelIdx).toBeGreaterThan(-1);
+    expect(tokenIdx).toBeGreaterThan(parallelIdx);
+    expect(activeRunIdx).toBeGreaterThan(parallelIdx);
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);

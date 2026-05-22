@@ -27,6 +27,7 @@ import {
 export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
+  const routeStartedAt = Date.now();
   try {
     const {
       messages,
@@ -133,6 +134,14 @@ export async function POST(req: NextRequest) {
     const triggerTags = [`user_${userId}`, `chat_${chatId}`];
     if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
 
+    // Persisted chats are rehydrated from Convex inside the task after the
+    // route saves the latest user message. Avoid sending the same history
+    // through Trigger unless the task cannot rehydrate it, or the route has
+    // prepared desktop-local attachment tags that only exist in this payload.
+    const messagesForPayload =
+      temporary || localDesktopAttachmentsPrepared ? messagesForTrigger : [];
+
+    const triggerRequestedAt = Date.now();
     const handle = await tasks.trigger<typeof agentLongTask>(
       "agent-long",
       {
@@ -140,7 +149,7 @@ export async function POST(req: NextRequest) {
         userId,
         subscription,
         organizationId,
-        messages: messagesForTrigger,
+        messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
         sandboxPreference,
@@ -151,6 +160,10 @@ export async function POST(req: NextRequest) {
         regenerate,
         isNewChat,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+        requestTiming: {
+          routeStartedAt,
+          triggerRequestedAt,
+        },
       },
       {
         tags: triggerTags,
@@ -160,20 +173,39 @@ export async function POST(req: NextRequest) {
           userId,
           subscription,
           loginRequired: false,
+          routeStartedAt,
+          triggerRequestedAt,
+          triggerPayloadMessageCount: messagesForPayload.length,
         },
       },
     );
 
-    if (!temporary) {
-      await setActiveTriggerRun({ chatId, triggerRunId: handle.id });
-    }
+    const triggerCompletedAt = Date.now();
 
     // Public access token scoped to this run only — the client uses it to
     // subscribe to the realtime stream without ever seeing TRIGGER_SECRET_KEY.
-    const publicAccessToken = await auth.createPublicToken({
-      scopes: { read: { runs: [handle.id] } },
-      // 6h is enough to cover the 1h max task duration plus reconnect grace.
-      expirationTime: "6h",
+    // Updating Convex with the active run id is independent, so overlap both
+    // network calls before returning the handle to the browser.
+    const [publicAccessToken] = await Promise.all([
+      auth.createPublicToken({
+        scopes: { read: { runs: [handle.id] } },
+        // 6h is enough to cover the 1h max task duration plus reconnect grace.
+        expirationTime: "6h",
+      }),
+      temporary
+        ? Promise.resolve(null)
+        : setActiveTriggerRun({ chatId, triggerRunId: handle.id }),
+    ]);
+
+    console.info("[/api/agent-long] started trigger run", {
+      chatId,
+      runId: handle.id,
+      routeDurationMs: Date.now() - routeStartedAt,
+      triggerDurationMs: triggerCompletedAt - triggerRequestedAt,
+      triggerPayloadMessageCount: messagesForPayload.length,
+      persistedMessageCount: messagesForPersistence.length,
+      temporary: !!temporary,
+      localDesktopAttachmentsPrepared,
     });
 
     return NextResponse.json({
