@@ -206,3 +206,47 @@ describe("createChatLogger provider stream termination", () => {
     }
   });
 });
+
+describe("createChatLogger provider stream timeout", () => {
+  it("logs upstream idle timeouts as provider timeout warnings with the provider message", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_timeout",
+        endpoint: "/api/agent",
+      });
+      const err = {
+        code: 502,
+        message: "Upstream idle timeout exceeded",
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+        requestedModelSlug: "moonshotai/kimi-k2.6:exacto",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
+      const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvents = logSpy.mock.calls.flat().map(String).join("\n");
+
+      expect(warnOutput).toContain("Provider stream timeout");
+      expect(warnOutput).toContain('"provider_error_category":"timeout"');
+      expect(errorOutput).not.toContain("Unexpected error in chat route");
+      expect(errorOutput).not.toContain("Provider streaming error");
+      expect(wideEvents).toContain('"type":"ProviderTimeout"');
+      expect(wideEvents).toContain(
+        '"message":"Upstream idle timeout exceeded"',
+      );
+      expect(wideEvents).toContain('"retriable":true');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+});

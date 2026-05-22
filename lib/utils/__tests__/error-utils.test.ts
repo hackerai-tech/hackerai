@@ -227,4 +227,13 @@ describe("provider error classification", () => {
       "provider_5xx",
     );
   });
+
+  it("classifies upstream idle timeouts without an HTTP status as provider timeouts", () => {
+    const err = {
+      code: 502,
+      message: "Upstream idle timeout exceeded",
+    };
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe("timeout");
+  });
 });

@@ -251,6 +251,12 @@ const getTerminalProviderStreamError = (
   );
 };
 
+const isTerminalProviderStreamError = (
+  state:
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
+): boolean => state?.streamFinishReason === "error";
+
 const recordAgentLongFailureForDashboard = async (
   error: unknown,
   context: {
@@ -1117,15 +1123,21 @@ export const agentLongTask = task({
                               mode,
                               subscription,
                               sandboxInfo,
-                              outcome: retryAborted ? "aborted" : "success",
+                              outcome: retryAborted
+                                ? "aborted"
+                                : isTerminalProviderStreamError(state)
+                                  ? "error"
+                                  : "success",
                             });
-                            chatLogger?.emitSuccess({
-                              finishReason: state.streamFinishReason,
-                              wasAborted: retryAborted,
-                              wasPreemptiveTimeout: false,
-                              hadSummarization:
-                                summarizationTracker.hasSummarized,
-                            });
+                            if (!isTerminalProviderStreamError(state)) {
+                              chatLogger?.emitSuccess({
+                                finishReason: state.streamFinishReason,
+                                wasAborted: retryAborted,
+                                wasPreemptiveTimeout: false,
+                                hadSummarization:
+                                  summarizationTracker.hasSummarized,
+                              });
+                            }
 
                             const generatedTitle = await titlePromise;
                             if (!temporary) {
@@ -1223,14 +1235,20 @@ export const agentLongTask = task({
                     mode,
                     subscription,
                     sandboxInfo,
-                    outcome: isAborted ? "aborted" : "success",
+                    outcome: isAborted
+                      ? "aborted"
+                      : isTerminalProviderStreamError(state)
+                        ? "error"
+                        : "success",
                   });
-                  chatLogger?.emitSuccess({
-                    finishReason: state.streamFinishReason,
-                    wasAborted: isAborted,
-                    wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
-                    hadSummarization: summarizationTracker.hasSummarized,
-                  });
+                  if (!isTerminalProviderStreamError(state)) {
+                    chatLogger?.emitSuccess({
+                      finishReason: state.streamFinishReason,
+                      wasAborted: isAborted,
+                      wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
+                      hadSummarization: summarizationTracker.hasSummarized,
+                    });
+                  }
 
                   const generatedTitle = await titlePromise;
 

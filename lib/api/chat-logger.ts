@@ -94,7 +94,18 @@ const providerErrorEventName = (category: ProviderErrorCategory): string =>
 const providerErrorMessage = (category: ProviderErrorCategory): string =>
   category === "stream_terminated"
     ? "Provider stream terminated"
-    : "Provider streaming error";
+    : category === "timeout"
+      ? "Provider stream timeout"
+      : "Provider streaming error";
+
+const providerWideErrorType = (
+  category: ProviderErrorCategory | undefined,
+): string => {
+  if (category === "stream_terminated") return "ProviderStreamTerminated";
+  if (category === "timeout") return "ProviderTimeout";
+  if (category) return "ProviderError";
+  return "UnexpectedError";
+};
 
 const isRetriableProviderCategory = (
   category: ProviderErrorCategory,
@@ -317,7 +328,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...(attempts && { provider_attempts: attempts }),
       };
 
-      if (category === "stream_terminated") {
+      if (category === "stream_terminated" || category === "timeout") {
         logger.warn(providerErrorMessage(category), logContext);
       } else {
         logger.error(
@@ -338,7 +349,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...(attempts && { provider_attempts: attempts }),
       };
 
-      if (category === "stream_terminated") {
+      if (category === "stream_terminated" || category === "timeout") {
         phLogger.warn(providerErrorMessage(category), phContext);
       } else {
         phLogger.error(providerErrorMessage(category), {
@@ -422,10 +433,23 @@ export function createChatLogger(config: ChatLoggerConfig) {
      * provider errors.
      */
     emitUnexpectedError(error: unknown) {
+      const details = extractErrorDetails(error);
+      const inferredProviderCategory = getProviderErrorCategory(details);
+      const providerCategory =
+        lastProviderErrorCategory ??
+        (inferredProviderCategory !== "unknown"
+          ? inferredProviderCategory
+          : undefined);
       const message =
-        error instanceof Error ? error.message : "Unknown error occurred";
+        (typeof details.errorMessage === "string" &&
+          details.errorMessage !== "undefined" &&
+          details.errorMessage) ||
+        (typeof details.providerErrorMessage === "string"
+          ? details.providerErrorMessage
+          : undefined) ||
+        "Unknown error occurred";
 
-      if (!lastProviderErrorCategory) {
+      if (!providerCategory) {
         logger.error(
           "Unexpected error in chat route",
           error instanceof Error ? error : undefined,
@@ -434,16 +458,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
       }
 
       builder.setError({
-        type:
-          lastProviderErrorCategory === "stream_terminated"
-            ? "ProviderStreamTerminated"
-            : lastProviderErrorCategory
-              ? "ProviderError"
-              : "UnexpectedError",
+        type: providerWideErrorType(providerCategory),
         message,
         statusCode: lastProviderErrorStatusCode ?? 503,
-        retriable: lastProviderErrorCategory
-          ? isRetriableProviderCategory(lastProviderErrorCategory)
+        retriable: providerCategory
+          ? isRetriableProviderCategory(providerCategory)
           : false,
       });
       logger.info(builder.build());
