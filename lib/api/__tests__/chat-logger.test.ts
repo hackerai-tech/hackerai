@@ -310,4 +310,38 @@ describe("createChatLogger provider stream timeout", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("uses nested provider status codes in wide events", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_code",
+        endpoint: "/api/agent",
+      });
+      const err = {
+        message: "Provider request failed",
+        responseBody: JSON.stringify({
+          error: {
+            code: 502,
+            message: "Provider overloaded",
+          },
+        }),
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "agent-model",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.status_code).toBe(502);
+      expect(wideEvent.provider_error.status_code).toBe(502);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
 });

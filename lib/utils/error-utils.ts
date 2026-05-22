@@ -204,17 +204,40 @@ export type ProviderErrorCategory =
   | "timeout"
   | "unknown";
 
+export const getProviderStatusCode = (
+  details: Record<string, unknown>,
+): number | undefined => {
+  const statusCode =
+    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  if (statusCode != null) return statusCode;
+
+  const providerErrorCode =
+    typeof details.providerErrorCode === "number"
+      ? details.providerErrorCode
+      : undefined;
+  return providerErrorCode != null &&
+    providerErrorCode >= 400 &&
+    providerErrorCode <= 599
+    ? providerErrorCode
+    : undefined;
+};
+
 export const getProviderErrorCategory = (
   details: Record<string, unknown>,
 ): ProviderErrorCategory => {
-  const statusCode =
-    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  const statusCode = getProviderStatusCode(details);
   if (statusCode === 429) return "rate_limited";
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
-  const message =
-    typeof details.errorMessage === "string" ? details.errorMessage : "";
+  const message = [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.cause,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
   if (/terminated|aborted|abort/i.test(message)) return "stream_terminated";
   if (/timeout|timed out/i.test(message)) return "timeout";
   return "unknown";

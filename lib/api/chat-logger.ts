@@ -27,6 +27,7 @@ import {
   extractErrorDetails,
   extractRetryAttempts,
   getProviderErrorCategory,
+  getProviderStatusCode,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
@@ -347,9 +348,9 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const details = extractErrorDetails(error);
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
+      const providerStatusCode = getProviderStatusCode(details);
       lastProviderErrorCategory = category;
-      lastProviderErrorStatusCode =
-        typeof details.statusCode === "number" ? details.statusCode : undefined;
+      lastProviderErrorStatusCode = providerStatusCode;
 
       const logContext = {
         event: providerErrorEventName(category),
@@ -394,7 +395,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
 
       builder.markProviderError({
         category,
-        statusCode: details.statusCode as number | undefined,
+        statusCode: providerStatusCode,
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
         message: details.errorMessage as string | undefined,
