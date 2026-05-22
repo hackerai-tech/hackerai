@@ -211,11 +211,15 @@ export const getProviderStatusCode = (
     typeof details.statusCode === "number" ? details.statusCode : undefined;
   if (statusCode != null) return statusCode;
 
+  const rawProviderErrorCode = details.providerErrorCode;
   const providerErrorCode =
-    typeof details.providerErrorCode === "number"
-      ? details.providerErrorCode
-      : undefined;
+    typeof rawProviderErrorCode === "number"
+      ? rawProviderErrorCode
+      : typeof rawProviderErrorCode === "string"
+        ? Number(rawProviderErrorCode)
+        : undefined;
   return providerErrorCode != null &&
+    Number.isInteger(providerErrorCode) &&
     providerErrorCode >= 400 &&
     providerErrorCode <= 599
     ? providerErrorCode

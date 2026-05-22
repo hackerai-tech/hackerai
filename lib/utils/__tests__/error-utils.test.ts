@@ -254,6 +254,22 @@ describe("provider error classification", () => {
     expect(getProviderErrorCategory(details)).toBe("provider_5xx");
   });
 
+  it("uses numeric string provider status codes when direct HTTP status is missing", () => {
+    const err = apiCallError({
+      statusCode: undefined,
+      responseBody: JSON.stringify({
+        error: {
+          code: "502",
+          message: "Provider overloaded",
+        },
+      }),
+    });
+
+    const details = extractErrorDetails(err);
+    expect(getProviderStatusCode(details)).toBe(502);
+    expect(getProviderErrorCategory(details)).toBe("provider_5xx");
+  });
+
   it("classifies provider-specific messages when the top-level message is generic", () => {
     const err = apiCallError({
       statusCode: undefined,
