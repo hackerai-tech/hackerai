@@ -226,7 +226,12 @@ In using these tools, adhere to the following guidelines:
             };
           }
 
-          if (isCentrifugo && !sandbox.supportsPty()) {
+          const supportsCentrifugoPty =
+            !isCentrifugo ||
+            typeof sandbox.supportsPty !== "function" ||
+            sandbox.supportsPty();
+
+          if (!supportsCentrifugoPty) {
             return {
               result: {
                 output: "",
