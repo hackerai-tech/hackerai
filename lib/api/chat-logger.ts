@@ -24,6 +24,10 @@ import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import {
+  attributionProperties,
+  type InitialAttribution,
+} from "@/lib/analytics/attribution";
+import {
   extractErrorDetails,
   extractRetryAttempts,
   getProviderErrorCategory,
@@ -611,6 +615,7 @@ export function captureUsageCost({
   endpoint,
   mode,
   usage,
+  attribution,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -620,12 +625,15 @@ export function captureUsageCost({
   endpoint: "/api/chat" | "/api/agent";
   mode: ChatMode;
   usage: UsageCostRecord;
+  attribution?: InitialAttribution | null;
 }) {
   if (!posthog) return;
+  const attributionProps = attributionProperties(attribution);
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
     properties: {
+      ...attributionProps,
       user_id: userId,
       subscription,
       subscription_tier: subscription,
@@ -647,6 +655,10 @@ export function captureUsageCost({
       $set: {
         subscription_tier: subscription,
         last_usage_cost_at: new Date().toISOString(),
+      },
+      $set_once: {
+        ...attributionProps,
+        first_usage_at: new Date().toISOString(),
       },
     },
   });

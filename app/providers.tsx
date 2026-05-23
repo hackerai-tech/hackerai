@@ -3,10 +3,22 @@
 import posthog from "posthog-js";
 import { PostHogProvider as PHProvider } from "posthog-js/react";
 import { useEffect } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import {
+  attributionProperties,
+  captureInitialAttribution,
+  hasSyncedAttributionForUser,
+  markAttributionSyncedForUser,
+} from "@/lib/analytics/attribution";
 import { useGlobalState } from "./contexts/GlobalState";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
   const { subscription } = useGlobalState();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    captureInitialAttribution();
+  }, []);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return;
@@ -32,7 +44,41 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         autocapture: false, // Disable automatic event capture, as we capture manually
       });
     }
-  }, [subscription]);
+
+    const attribution = captureInitialAttribution();
+    const attributionProps = attributionProperties(attribution);
+    if (Object.keys(attributionProps).length > 0) {
+      posthog.register(attributionProps);
+    }
+
+    if (user?.id) {
+      posthog.identify(user.id);
+    }
+  }, [subscription, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || hasSyncedAttributionForUser(user.id)) return;
+
+    const attribution = captureInitialAttribution();
+    if (!attribution) return;
+
+    fetch("/api/analytics/attribution", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ attribution }),
+      keepalive: true,
+    })
+      .then((response) => {
+        if (response.ok) {
+          markAttributionSyncedForUser(user.id);
+        }
+      })
+      .catch(() => {
+        // Best-effort analytics sync.
+      });
+  }, [user?.id]);
 
   return <PHProvider client={posthog}>{children}</PHProvider>;
 }
