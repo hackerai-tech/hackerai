@@ -172,7 +172,13 @@ export async function createAgentStream(
   const getActiveTools = async (): Promise<
     Array<keyof typeof ctx.tools> | undefined
   > => {
-    const supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
+    let supportsPty: boolean | undefined;
+    try {
+      supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
+    } catch (error) {
+      console.warn("[agent-stream] PTY capability probe failed:", error);
+      return undefined;
+    }
     if (supportsPty !== false) {
       return undefined;
     }
