@@ -5,6 +5,7 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   getMaxFilesLimitForMode,
+  MAX_IMAGE_SIZE,
   validateFile,
   validateImageFile,
   createFileMessagePartFromUploadedFile,
@@ -164,14 +165,18 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
       for (const file of filesToProcess) {
         // Basic validation (size, etc.)
-        const basicValidation = validateFile(file);
+        const basicValidation = validateFile(file, { mode });
         if (!basicValidation.valid) {
           invalidFiles.push(`${file.name}: ${basicValidation.error}`);
           continue;
         }
 
-        // Image-specific validation
-        if (isImageFile(file)) {
+        // Provider-visible images should be decodable; larger Agent images are
+        // staged into the sandbox instead of sent inline to the model.
+        if (
+          isImageFile(file) &&
+          (mode !== "agent" || file.size <= MAX_IMAGE_SIZE)
+        ) {
           const imageValidation = await validateImageFile(file);
           if (!imageValidation.valid) {
             invalidFiles.push(`${file.name}: ${imageValidation.error}`);
@@ -189,7 +194,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         processedCount: filesToProcess.length,
       };
     },
-    [uploadedFiles.length, maxFilesLimit],
+    [uploadedFiles.length, maxFilesLimit, mode],
   );
 
   // Helper function to show feedback messages
@@ -246,6 +251,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           {
             fileName: file.name,
             contentType: file.type || "application/octet-stream",
+            size: file.size,
+            mode,
           },
         );
 
@@ -484,13 +491,18 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           size: file.size,
           hasLocalPath: Boolean(file.path),
         });
-        const validation = validateFile(file);
+        const validation = validateFile(file, { mode });
         if (!validation.valid) {
           invalidFiles.push(`${file.name}: ${validation.error}`);
           continue;
         }
 
         if (isImageFile(file)) {
+          if (isAgentMode(mode) && file.size > MAX_IMAGE_SIZE) {
+            validFiles.push({ storage: "local-desktop", file });
+            continue;
+          }
+
           const localFileData = await readLocalFile(path);
           if (!localFileData) {
             invalidFiles.push(`${file.name}: could not read image file`);
@@ -526,6 +538,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       uploadedFiles.length,
       maxFilesLimit,
       startDesktopSelectedFiles,
+      mode,
     ],
   );
 

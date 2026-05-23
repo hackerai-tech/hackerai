@@ -4,6 +4,20 @@ import {
   UploadedFileState,
 } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
+import {
+  AGENT_MODE_MAX_FILES_LIMIT,
+  getMaxFilesLimitForUploadMode,
+  isSupportedImageMediaType,
+  MAX_ASK_FILE_SIZE_BYTES,
+  MAX_PROVIDER_IMAGE_SIZE_BYTES,
+  validateUploadPolicy,
+} from "./upload-policy";
+
+export {
+  AGENT_MODE_MAX_FILES_LIMIT,
+  ASK_MODE_MAX_FILES_LIMIT,
+  isSupportedImageMediaType,
+} from "./upload-policy";
 
 /** Rate limit info returned from upload URL generation */
 export type RateLimitInfo = {
@@ -19,44 +33,20 @@ export type UploadUrlResult = {
 };
 
 /** Maximum file size allowed (10MB) */
-export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+export const MAX_FILE_SIZE = MAX_ASK_FILE_SIZE_BYTES;
 
 /**
  * Maximum image size allowed (5MB).
  * Anthropic's Vertex/API endpoints reject base64 images over 5 MiB of raw bytes,
  * and OpenRouter re-encodes our S3 URLs as base64 before forwarding.
  */
-export const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
-
-/** Maximum number of files allowed in Ask mode. */
-export const ASK_MODE_MAX_FILES_LIMIT = 10;
-
-/** Maximum number of files allowed in Agent mode. */
-export const AGENT_MODE_MAX_FILES_LIMIT = 20;
+export const MAX_IMAGE_SIZE = MAX_PROVIDER_IMAGE_SIZE_BYTES;
 
 /** Maximum number of files allowed to be uploaded at once */
 export const MAX_FILES_LIMIT = AGENT_MODE_MAX_FILES_LIMIT;
 
 export function getMaxFilesLimitForMode(mode: ChatMode): number {
-  return mode === "agent"
-    ? AGENT_MODE_MAX_FILES_LIMIT
-    : ASK_MODE_MAX_FILES_LIMIT;
-}
-
-/** Supported image formats for AI processing */
-const SUPPORTED_IMAGE_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-]);
-
-/**
- * Check if media type is a supported image format for AI
- */
-export function isSupportedImageMediaType(mediaType: string): boolean {
-  return SUPPORTED_IMAGE_TYPES.has(mediaType.toLowerCase());
+  return getMaxFilesLimitForUploadMode(mode);
 }
 
 /**
@@ -69,23 +59,21 @@ export function isImageFile(file: File | LocalDesktopFile): boolean {
 /**
  * Validate file for upload
  */
-export function validateFile(file: File | LocalDesktopFile): {
+export function validateFile(
+  file: File | LocalDesktopFile,
+  options: { mode?: ChatMode } = {},
+): {
   valid: boolean;
   error?: string;
 } {
-  if (file.size > MAX_FILE_SIZE) {
-    return {
-      valid: false,
-      error: `File size must be less than ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
-    };
-  }
-  if (isImageFile(file) && file.size > MAX_IMAGE_SIZE) {
-    return {
-      valid: false,
-      error: `Image size must be less than ${MAX_IMAGE_SIZE / (1024 * 1024)}MB`,
-    };
-  }
-  return { valid: true };
+  const validation = validateUploadPolicy({
+    mode: options.mode ?? "ask",
+    size: file.size,
+    mediaType: file.type || "application/octet-stream",
+  });
+  return validation.valid
+    ? { valid: true }
+    : { valid: false, error: validation.message };
 }
 
 /**

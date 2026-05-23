@@ -147,4 +147,39 @@ describe("processMessageFiles image size guards", () => {
       url: "https://example.com/small.png",
     });
   });
+
+  it("stages oversized Agent images into the sandbox instead of sending them inline", async () => {
+    global.fetch = jest.fn(async () => {
+      throw new Error("Agent image with declared size should not be probed");
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_large",
+        mediaType: "image/png",
+        name: "large.png",
+        size: 8 * 1024 * 1024,
+        url: "https://example.com/large.png",
+      }),
+      "agent",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toEqual([
+      {
+        kind: "url",
+        url: "https://example.com/large.png",
+        localPath: "/home/user/upload/large.png",
+      },
+    ]);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: '<attachment filename="large.png" local_path="/home/user/upload/large.png" />',
+      },
+    ]);
+  });
 });

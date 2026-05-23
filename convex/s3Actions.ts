@@ -8,6 +8,7 @@ import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
+import { validateUploadPolicy } from "../lib/utils/upload-policy";
 
 type StorageUsage = {
   usedBytes: number;
@@ -31,6 +32,8 @@ export const generateS3UploadUrlAction = action({
   args: {
     fileName: v.string(),
     contentType: v.string(),
+    size: v.optional(v.number()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -61,6 +64,22 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
+    if (args.size !== undefined) {
+      const validation = validateUploadPolicy({
+        mode: args.mode ?? "ask",
+        size: args.size,
+        mediaType: args.contentType,
+        surface: "client",
+      });
+
+      if (!validation.valid) {
+        throw new ConvexError({
+          code: validation.code,
+          message: validation.message,
+        });
+      }
+    }
+
     // Get user ID from identity
     const userId = identity.subject;
 
@@ -74,6 +93,14 @@ export const generateS3UploadUrlAction = action({
       throw new ConvexError({
         code: "STORAGE_LIMIT_EXCEEDED",
         message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB. Please delete some files to upload new ones.`,
+      });
+    }
+    if (args.size !== undefined && storageUsage.availableBytes < args.size) {
+      const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+      const requestedMB = (args.size / (1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB and this file requires ${requestedMB} MB. Please delete some files to upload new ones.`,
       });
     }
 
