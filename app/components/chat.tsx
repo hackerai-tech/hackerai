@@ -609,10 +609,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      if (error instanceof ChatSDKError && error.type !== "rate_limit") {
-        toast.error(
-          typeof error.cause === "string" ? error.cause : error.message,
-        );
+      if (error instanceof ChatSDKError) {
+        const errorMessage =
+          typeof error.cause === "string" ? error.cause : error.message;
+        if (error.type !== "rate_limit" || isMobile) {
+          toast.error(errorMessage);
+        }
+      } else if (isMobile && error.name !== "AbortError") {
+        toast.error(error.message || "An error occurred.");
       }
     },
   });
