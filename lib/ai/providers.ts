@@ -52,7 +52,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "fallback-agent-model": or("google/gemini-3-flash-preview"),
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
     "fallback-grok-4.3": or("x-ai/grok-4.3"),
-    "title-generator-model": or("deepseek/deepseek-v4-flash"),
+    "title-generator-model": or("google/gemini-2.5-flash-lite"),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -73,7 +73,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "fallback-grok-4.3": "December 2025",
-  "title-generator-model": "May 2025",
+  "title-generator-model": "January 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -90,8 +90,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model":
-    "Auto, an intelligent model router built by HackerAI",
+  "title-generator-model": "Google Gemini 2.5 Flash Lite",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
