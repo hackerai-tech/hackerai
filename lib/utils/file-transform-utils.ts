@@ -5,7 +5,11 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { UIMessage } from "ai";
 import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
-import { isSupportedImageMediaType, MAX_IMAGE_SIZE } from "./file-utils";
+import {
+  isSandboxOnlyAgentUpload,
+  isSupportedImageMediaType,
+  MAX_PROVIDER_IMAGE_SIZE_BYTES as MAX_IMAGE_SIZE,
+} from "./upload-policy";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
@@ -326,7 +330,7 @@ const applyUrlsToFileParts = async (
       effectiveImageSize != null &&
       effectiveImageSize > imageLimit;
 
-    if (shouldOmitImage) {
+    if (shouldOmitImage && mode !== "agent") {
       logger.warn("image_attachment_omitted_before_provider_call", {
         event: "image_attachment_omitted_before_provider_call",
         service: "chat-handler",
@@ -347,7 +351,7 @@ const applyUrlsToFileParts = async (
     file.positions.forEach(({ messageIndex, partIndex }) => {
       const filePart = messages[messageIndex].parts![partIndex] as any;
       if (filePart.type !== "file") return;
-      if (shouldOmitImage) {
+      if (shouldOmitImage && mode !== "agent") {
         messages[messageIndex].parts![partIndex] = {
           type: "text",
           text: imageOmittedText(
@@ -390,7 +394,7 @@ const applyModeSpecificTransforms = async (
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
       allowLocalDesktopFiles,
     });
-    removeNonMediaFileParts(messages);
+    removeNonMediaAndOversizedImageFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
@@ -451,7 +455,9 @@ export const processMessageFiles = async (
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
   const sandboxFiles: SandboxFile[] = [];
 
-  replaceOversizedImageParts(updatedMessages);
+  if (mode !== "agent") {
+    replaceOversizedImageParts(updatedMessages);
+  }
 
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
@@ -607,11 +613,20 @@ const pruneFileParts = (
   });
 };
 
-const removeNonMediaFileParts = (messages: UIMessage[]) =>
-  pruneFileParts(
-    messages,
-    (mediaType) => !!mediaType && isSupportedImageMediaType(mediaType),
-  );
+const removeNonMediaAndOversizedImageFileParts = (messages: UIMessage[]) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = msg.parts.filter((part: any) => {
+      if (part?.type !== "file") return true;
+      if (!isSupportedImageMediaType(part.mediaType ?? "")) return false;
+      return !isSandboxOnlyAgentUpload({
+        mode: "agent",
+        size: typeof part.size === "number" ? part.size : 0,
+        mediaType: part.mediaType ?? "",
+      });
+    });
+  });
+};
 
 const removeAudioFileParts = (messages: UIMessage[]) =>
   pruneFileParts(messages, (mediaType) => !mediaType?.startsWith("audio/"));

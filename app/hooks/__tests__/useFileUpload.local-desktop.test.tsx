@@ -72,7 +72,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
     global.fetch = originalFetch;
   });
 
-  it("uses Tauri file paths without calling S3 in desktop Agent mode", async () => {
+  it("uses Tauri file paths for large files without calling S3 in desktop Agent mode", async () => {
     (pickLocalFiles as jest.Mock).mockResolvedValue([
       "/Users/alice/report.txt",
     ]);
@@ -80,7 +80,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
       path: "/Users/alice/report.txt",
       name: "report.txt",
       mediaType: "text/plain",
-      size: 1024,
+      size: 25 * 1024 * 1024,
       lastModified: 123,
     });
 
@@ -101,6 +101,37 @@ describe("useFileUpload desktop-local agent attachments", () => {
         }),
       );
     });
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps large desktop-selected images local for sandbox-only Agent access", async () => {
+    (pickLocalFiles as jest.Mock).mockResolvedValue(["/Users/alice/large.png"]);
+    (getLocalFileMetadata as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/large.png",
+      name: "large.png",
+      mediaType: "image/png",
+      size: 8 * 1024 * 1024,
+      lastModified: 123,
+    });
+
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleAttachClick();
+    });
+
+    await waitFor(() => {
+      expect(addUploadedFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          uploaded: true,
+          uploading: false,
+          storage: "local-desktop",
+          localPath: "/Users/alice/large.png",
+        }),
+      );
+    });
+    expect(readLocalFile).not.toHaveBeenCalled();
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
   });
@@ -133,6 +164,8 @@ describe("useFileUpload desktop-local agent attachments", () => {
       expect(generateS3UploadUrlAction).toHaveBeenCalledWith({
         fileName: "logo.svg",
         contentType: "image/svg+xml",
+        size: expect.any(Number),
+        mode: "agent",
       });
     });
     expect(addUploadedFile).toHaveBeenCalledWith(
@@ -160,6 +193,8 @@ describe("useFileUpload desktop-local agent attachments", () => {
       expect(generateS3UploadUrlAction).toHaveBeenCalledWith({
         fileName: "report.txt",
         contentType: "text/plain",
+        size: file.size,
+        mode: "agent",
       });
     });
     expect(addUploadedFile).toHaveBeenCalledWith(

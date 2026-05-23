@@ -31,14 +31,12 @@ import type {
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import {
+  getUploadLimitsForMode,
   isSupportedImageMediaType,
-  MAX_IMAGE_SIZE,
-} from "../lib/utils/file-utils";
+  validateUploadPolicy,
+} from "../lib/utils/upload-policy";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
 import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
-
-// Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
-const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
 // File upload rate limit: 80 files per 5 hours for paid tiers
 const FILE_UPLOAD_LIMIT = 80;
@@ -658,10 +656,10 @@ export const saveFile = action({
     // Determine if we should skip token validation based on mode
     // Agent mode: files are accessed in sandbox, no token counting needed
     // Ask mode: files are included in context, token counting required
+    const isAgentUploadMode =
+      args.mode === "agent" || args.mode === "agent-long";
     const shouldSkipTokenValidation =
-      args.skipTokenValidation ||
-      args.mode === "agent" ||
-      args.mode === "agent-long";
+      args.skipTokenValidation || isAgentUploadMode;
 
     // Check if paid tier (free tier cannot upload)
     const hasPaidEntitlement =
@@ -687,8 +685,22 @@ export const saveFile = action({
     // Token was already consumed at URL generation step
     await checkFileUploadRateLimit(actingUserId, false);
 
-    // Enforce file size limit (20 MB) regardless of skipTokenValidation
-    if (args.size > MAX_FILE_SIZE_BYTES) {
+    const uploadLimits = getUploadLimitsForMode(args.mode, {
+      surface: "backend",
+    });
+    const uploadValidation = validateUploadPolicy({
+      mode: args.mode,
+      size: args.size,
+      mediaType: args.mediaType,
+      surface: "backend",
+    });
+
+    // Ask-mode uploads are processed for model context; Agent uploads may be
+    // larger because oversized attachments are staged into the sandbox only.
+    if (
+      !uploadValidation.valid &&
+      uploadValidation.code === "FILE_SIZE_EXCEEDED"
+    ) {
       // Clean up storage before throwing error
       try {
         if (args.s3Key) {
@@ -715,13 +727,13 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
-        message: `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `File "${args.name}" exceeds the maximum file size limit of ${uploadLimits.maxFileSizeBytes / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
     if (
-      isSupportedImageMediaType(args.mediaType) &&
-      args.size > MAX_IMAGE_SIZE
+      !uploadValidation.valid &&
+      uploadValidation.code === "IMAGE_SIZE_EXCEEDED"
     ) {
       try {
         if (args.s3Key) {
@@ -748,7 +760,7 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "IMAGE_SIZE_EXCEEDED",
-        message: `Image "${args.name}" exceeds the maximum image size limit of ${MAX_IMAGE_SIZE / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `Image "${args.name}" exceeds the maximum image size limit of ${uploadLimits.maxProviderImageSizeBytes / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
@@ -769,49 +781,59 @@ export const saveFile = action({
       });
     }
 
-    const response = await fetch(fileUrl);
-
-    if (!response.ok) {
-      throw new ConvexError({
-        code: "FILE_FETCH_FAILED",
-        message: `Failed to upload ${args.name}: ${response.statusText}`,
-      });
-    }
-
-    const file = await response.blob();
-
     // Calculate token size using the comprehensive file processing logic
     let tokenSize = 0;
     let fileContent: string | undefined = undefined;
 
     try {
-      // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
-      const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
+      if (isAgentUploadMode) {
+        convexLogger.info("agent_file_upload_saved_without_processing", {
+          userId: actingUserId,
+          fileName: args.name,
+          size: args.size,
+          mediaType: args.mediaType,
+          mode: args.mode,
+        });
+      } else {
+        const response = await fetch(fileUrl);
 
-      // Use the comprehensive file processing for all file types (including auto-detection and default handling)
-      const chunks = await processFileAuto(
-        file,
-        args.name,
-        args.mediaType,
-        undefined,
-        shouldSkipTokenValidation,
-        maxFileTokens,
-      );
-      tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
+        if (!response.ok) {
+          throw new ConvexError({
+            code: "FILE_FETCH_FAILED",
+            message: `Failed to upload ${args.name}: ${response.statusText}`,
+          });
+        }
 
-      // Save content for non-image, non-PDF, non-binary files
-      // Note: Unsupported image formats will have content extracted, so we check for supported images
-      const shouldSaveContent =
-        !isSupportedImageMediaType(args.mediaType) &&
-        args.mediaType !== "application/pdf" &&
-        chunks.length > 0 &&
-        chunks[0].content.length > 0;
+        const file = await response.blob();
 
-      if (shouldSaveContent) {
-        const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
-        // Always truncate content to maxFileTokens before saving to database
-        // This ensures database content field stays reasonable even for agent mode files
-        fileContent = truncateContentByTokens(rawContent, maxFileTokens);
+        // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
+        const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
+
+        // Use the comprehensive file processing for all file types (including auto-detection and default handling)
+        const chunks = await processFileAuto(
+          file,
+          args.name,
+          args.mediaType,
+          undefined,
+          shouldSkipTokenValidation,
+          maxFileTokens,
+        );
+        tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
+
+        // Save content for non-image, non-PDF, non-binary files
+        // Note: Unsupported image formats will have content extracted, so we check for supported images
+        const shouldSaveContent =
+          !isSupportedImageMediaType(args.mediaType) &&
+          args.mediaType !== "application/pdf" &&
+          chunks.length > 0 &&
+          chunks[0].content.length > 0;
+
+        if (shouldSaveContent) {
+          const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
+          // Always truncate content to maxFileTokens before saving to database
+          // This ensures database content field stays reasonable even for agent mode files
+          fileContent = truncateContentByTokens(rawContent, maxFileTokens);
+        }
       }
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
