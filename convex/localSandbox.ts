@@ -200,6 +200,12 @@ export const connect = mutation({
         hostname: v.string(),
       }),
     ),
+    capabilities: v.optional(
+      v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+      }),
+    ),
   },
   returns: v.object({
     success: v.boolean(),
@@ -236,6 +242,7 @@ export const connect = mutation({
       client_version: args.clientVersion,
       mode: "dangerous",
       os_info: args.osInfo,
+      capabilities: args.capabilities ?? { commands: true, pty: true },
       last_heartbeat: Date.now(),
       status: "connected",
       created_at: Date.now(),
@@ -461,6 +468,7 @@ export const connectDesktop = mutation({
       client_version: "desktop",
       mode: "dangerous",
       os_info: args.osInfo,
+      capabilities: { commands: true, pty: true },
       last_heartbeat: Date.now(),
       status: "connected",
       created_at: Date.now(),
@@ -603,6 +611,10 @@ export const listConnections = query({
       ),
       lastSeen: v.number(),
       isDesktop: v.boolean(),
+      capabilities: v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+      }),
     }),
   ),
   handler: async (ctx) => {
@@ -626,6 +638,7 @@ export const listConnections = query({
       osInfo: conn.os_info,
       lastSeen: conn.last_heartbeat,
       isDesktop: conn.client_version === "desktop",
+      capabilities: conn.capabilities ?? { commands: true, pty: true },
     }));
   },
 });
@@ -649,6 +662,10 @@ export const listConnectionsForBackend = query({
       ),
       lastSeen: v.number(),
       isDesktop: v.boolean(),
+      capabilities: v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+      }),
     }),
   ),
   handler: async (ctx, args) => {
@@ -667,6 +684,7 @@ export const listConnectionsForBackend = query({
       osInfo: conn.os_info,
       lastSeen: conn.last_heartbeat,
       isDesktop: conn.client_version === "desktop",
+      capabilities: conn.capabilities ?? { commands: true, pty: true },
     }));
   },
 });

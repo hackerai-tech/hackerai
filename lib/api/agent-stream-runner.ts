@@ -146,6 +146,7 @@ export type AgentStreamContext = {
   budgetMonitor: BudgetMonitor | null;
   sandboxManager: {
     getSandboxType(toolName: string): string | undefined;
+    supportsInteractivePty?(): Promise<boolean>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
@@ -169,6 +170,25 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const getActiveTools = async (): Promise<
+    Array<keyof typeof ctx.tools> | undefined
+  > => {
+    let supportsPty: boolean | undefined;
+    try {
+      supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
+    } catch (error) {
+      console.warn("[agent-stream] PTY capability probe failed:", error);
+      return undefined;
+    }
+    if (supportsPty !== false) {
+      return undefined;
+    }
+
+    return Object.keys(ctx.tools).filter(
+      (toolName) => toolName !== "interact_terminal_session",
+    ) as Array<keyof typeof ctx.tools>;
+  };
+  const initialActiveTools = await getActiveTools();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
   const maxOutputTokens =
@@ -199,6 +219,7 @@ export async function createAgentStream(
       await convertToModelMessages(state.finalMessages),
     ),
     tools: ctx.tools,
+    activeTools: initialActiveTools,
     abortSignal: ctx.abortController.signal,
     providerOptions: buildProviderOptions(
       ctx.isReasoningModel,
@@ -256,6 +277,7 @@ export async function createAgentStream(
               state.ctxUsage = result.contextUsage;
             }
             return {
+              activeTools: await getActiveTools(),
               messages: prepareProviderMessages(
                 await convertToModelMessages(result.summarizedMessages),
               ),
@@ -297,6 +319,7 @@ export async function createAgentStream(
         }
 
         return {
+          activeTools: await getActiveTools(),
           messages: prepareProviderMessages(
             addCacheBreakpointToLastUserMessage(
               updatedMessages,

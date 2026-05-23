@@ -15,6 +15,10 @@ export interface ConnectionInfo {
   osInfo?: OsInfo;
   lastSeen?: number;
   isDesktop?: boolean;
+  capabilities?: {
+    commands: boolean;
+    pty: boolean;
+  };
 }
 
 /**

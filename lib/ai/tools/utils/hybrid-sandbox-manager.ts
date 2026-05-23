@@ -173,6 +173,19 @@ export class HybridSandboxManager implements SandboxManager {
       : "remote-connection";
   }
 
+  async supportsInteractivePty(): Promise<boolean> {
+    if (this.sandboxPreference === "e2b") {
+      return true;
+    }
+
+    const connection = await this.getPreferredOrFallbackConnection();
+    if (!connection) {
+      return this.subscription !== "free";
+    }
+
+    return connection.capabilities?.pty !== false;
+  }
+
   /**
    * List available connections for this user
    */
@@ -261,6 +274,18 @@ export class HybridSandboxManager implements SandboxManager {
     return this.getE2BSandbox();
   }
 
+  private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
+    const connections = await this.listConnections();
+    const preferredConnection =
+      this.sandboxPreference === "desktop"
+        ? connections.find((conn) => conn.isDesktop)
+        : connections.find(
+            (conn) => conn.connectionId === this.sandboxPreference,
+          );
+
+    return preferredConnection ?? connections[0] ?? null;
+  }
+
   /**
    * Create and wire up a CentrifugoSandbox for the given connection.
    */
@@ -339,15 +364,7 @@ export class HybridSandboxManager implements SandboxManager {
       return null;
     }
 
-    const connections = await this.listConnections();
-    const preferredConnection =
-      this.sandboxPreference === "desktop"
-        ? connections.find((conn) => conn.isDesktop)
-        : connections.find(
-            (conn) => conn.connectionId === this.sandboxPreference,
-          );
-
-    const connection = preferredConnection || connections[0];
+    const connection = await this.getPreferredOrFallbackConnection();
     if (!connection) {
       return null;
     }
@@ -378,6 +395,7 @@ System Environment:
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
+- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
 
 Security Warning:
 - File system operations affect the host directly

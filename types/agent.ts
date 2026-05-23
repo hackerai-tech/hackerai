@@ -37,6 +37,8 @@ export interface SandboxManager {
   resetHealthFailures(): void;
   /** Check if the sandbox has been marked as permanently unavailable for this session. */
   isSandboxUnavailable(): boolean;
+  /** Whether the effective sandbox can create interactive PTY sessions. */
+  supportsInteractivePty?(): Promise<boolean>;
 }
 
 export interface SandboxBootInfo {

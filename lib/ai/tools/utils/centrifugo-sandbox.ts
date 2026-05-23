@@ -124,6 +124,10 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  supportsPty(): boolean {
+    return this.connectionInfo.capabilities?.pty !== false;
+  }
+
   getUserId(): string {
     return this.userId;
   }
@@ -144,7 +148,7 @@ export class CentrifugoSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
-    const { osInfo } = this.connectionInfo;
+    const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
       const { platform, arch, release, hostname } = osInfo;
@@ -159,7 +163,7 @@ ${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
-- Process management (can affect host system)`;
+- Process management (can affect host system)${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;

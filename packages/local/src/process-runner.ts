@@ -1,9 +1,5 @@
 import * as os from "os";
 
-import * as pty from "node-pty";
-
-import type { IPty } from "node-pty";
-
 // ---------------------------------------------------------------------------
 // Public interfaces
 // ---------------------------------------------------------------------------
@@ -25,6 +21,29 @@ export interface ProcessRunnerEvents {
   error: (sessionId: string, error: Error) => void;
 }
 
+interface PtyProcess {
+  pid: number;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal?: string): void;
+  onData(listener: (data: string) => void): void;
+  onExit(listener: (event: { exitCode?: number }) => void): void;
+}
+
+interface PtyModule {
+  spawn(
+    file: string,
+    args: string[],
+    options: {
+      name: string;
+      cols: number;
+      rows: number;
+      cwd: string;
+      env: Record<string, string>;
+    },
+  ): PtyProcess;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -32,13 +51,33 @@ export interface ProcessRunnerEvents {
 const FLUSH_INTERVAL_MS = 16;
 const FLUSH_THRESHOLD_BYTES = 32 * 1024; // 32 KB
 const SIGTERM_GRACE_MS = 5_000;
+export const NODE_PTY_UNAVAILABLE_MESSAGE =
+  "Interactive terminal sessions are unavailable because node-pty could not be loaded. Non-interactive commands still work.";
+
+export function isPtyAvailable(): boolean {
+  try {
+    require("node-pty");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadPty(): PtyModule {
+  try {
+    return require("node-pty") as PtyModule;
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? ` ${error.message}` : "";
+    throw new Error(`${NODE_PTY_UNAVAILABLE_MESSAGE}${cause}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ProcessRunner
 // ---------------------------------------------------------------------------
 
 export class ProcessRunner {
-  private readonly activeProcesses: Map<string, IPty> = new Map();
+  private readonly activeProcesses: Map<string, PtyProcess> = new Map();
   private readonly outputBuffers: Map<string, string> = new Map();
   private readonly killTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly listeners: Map<
@@ -87,7 +126,8 @@ export class ProcessRunner {
       Object.assign(env, opts.env);
     }
 
-    const proc: IPty = pty.spawn(shell, ["-l", "-c", command], {
+    const pty = loadPty();
+    const proc = pty.spawn(shell, ["-l", "-c", command], {
       name: "xterm-256color",
       cols,
       rows,

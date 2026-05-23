@@ -292,6 +292,12 @@ export default defineSchema({
         hostname: v.string(),
       }),
     ),
+    capabilities: v.optional(
+      v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+      }),
+    ),
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
