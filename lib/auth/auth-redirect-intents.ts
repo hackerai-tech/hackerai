@@ -1,9 +1,4 @@
 import { NextResponse } from "next/server";
-import {
-  ATTRIBUTION_COOKIE_NAME,
-  buildInitialAttribution,
-  encodeAttributionCookie,
-} from "@/lib/analytics/attribution";
 
 export const AUTH_REDIRECT_INTENTS: Record<string, string> = {
   pricing: "/#pricing",
@@ -28,7 +23,6 @@ export function getAuthRedirectPath(url: URL): string | null {
 export function redirectToAuthorizationUrl(
   authorizationUrl: string,
   requestUrl: URL,
-  options: { captureAttribution?: boolean; referrer?: string | null } = {},
 ): NextResponse {
   const response = NextResponse.redirect(authorizationUrl);
   const redirectPath = getAuthRedirectPath(requestUrl);
@@ -39,32 +33,6 @@ export function redirectToAuthorizationUrl(
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: 600,
-      path: "/",
-    });
-  }
-
-  const hasTrackingParams =
-    requestUrl.searchParams.has("utm_source") ||
-    requestUrl.searchParams.has("utm_medium") ||
-    requestUrl.searchParams.has("utm_campaign") ||
-    requestUrl.searchParams.has("gclid") ||
-    requestUrl.searchParams.has("fbclid") ||
-    requestUrl.searchParams.has("msclkid");
-  const shouldCaptureAttribution =
-    options.captureAttribution || hasTrackingParams || !!options.referrer;
-  const attributionCookie = shouldCaptureAttribution
-    ? encodeAttributionCookie(
-        buildInitialAttribution({
-          href: requestUrl.toString(),
-          referrer: options.referrer,
-        }),
-      )
-    : null;
-  if (attributionCookie) {
-    response.cookies.set(ATTRIBUTION_COOKIE_NAME, attributionCookie, {
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 90,
       path: "/",
     });
   }

@@ -5,11 +5,6 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
-import {
-  attributionProperties,
-  sanitizeAttribution,
-  stripeAttributionMetadata,
-} from "@/lib/analytics/attribution";
 
 function planLookupKeyToTier(
   lookupKey: string,
@@ -26,9 +21,6 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
     const requestedQuantity: number | undefined = body?.quantity;
-    const attribution = sanitizeAttribution(body?.attribution);
-    const attributionProps = attributionProperties(attribution);
-    const stripeAttribution = stripeAttributionMetadata(attribution);
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
@@ -208,14 +200,12 @@ export const POST = async (req: NextRequest) => {
         userId,
         workOSOrganizationId: organization.id,
         requestedPlan: subscriptionLevel,
-        ...stripeAttribution,
       },
       subscription_data: {
         metadata: {
           userId,
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
-          ...stripeAttribution,
         },
       },
       custom_text: {
@@ -229,7 +219,6 @@ export const POST = async (req: NextRequest) => {
     const selectedPrice = price.data[0];
     phLogger.event("checkout_started", {
       userId,
-      ...attributionProps,
       org_id: organization.id,
       from_tier: "free",
       to_tier: planLookupKeyToTier(subscriptionLevel),
@@ -245,7 +234,6 @@ export const POST = async (req: NextRequest) => {
       stripe_customer_id: customer.id,
       stripe_checkout_session_id: session.id,
       stripe_price_id: selectedPrice.id,
-      $set_once: attributionProps,
       $set: {
         last_checkout_started_at: new Date().toISOString(),
       },

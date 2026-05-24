@@ -50,7 +50,6 @@ import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
-import { getInitialAttribution } from "@/lib/analytics/attribution";
 import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
@@ -437,7 +436,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           body: {
             chatId: id,
             messages: messagesWithoutUrls,
-            attribution: getInitialAttribution(),
             ...body,
           },
         };

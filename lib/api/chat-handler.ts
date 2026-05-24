@@ -47,7 +47,6 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { sanitizeAttribution } from "@/lib/analytics/attribution";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -155,7 +154,6 @@ export const createChatHandler = (
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
-        attribution: rawAttribution,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -166,10 +164,8 @@ export const createChatHandler = (
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
-        attribution?: unknown;
       } = await req.json();
       outerChatId = chatId;
-      const attribution = sanitizeAttribution(rawAttribution);
 
       const selectedModelOverride: SelectedModel | undefined =
         coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
@@ -685,7 +681,6 @@ export const createChatHandler = (
                   endpoint,
                   mode,
                   usage: usageCostRecord,
-                  attribution,
                 });
               } finally {
                 await releaseFreeRunLockOnce();

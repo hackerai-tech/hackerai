@@ -1,10 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
-import {
-  getInitialAttribution,
-  type InitialAttribution,
-} from "@/lib/analytics/attribution";
 
 export const useUpgrade = () => {
   const { user } = useAuth();
@@ -39,17 +35,9 @@ export const useUpgrade = () => {
     setUpgradeLoading(true);
 
     try {
-      const requestBody: {
-        plan: string;
-        quantity?: number;
-        attribution?: InitialAttribution;
-      } = {
+      const requestBody: { plan: string; quantity?: number } = {
         plan: planKey || "pro-monthly-plan",
       };
-      const attribution = getInitialAttribution();
-      if (attribution) {
-        requestBody.attribution = attribution;
-      }
 
       // Add quantity for team plans
       if (quantity && quantity > 1) {

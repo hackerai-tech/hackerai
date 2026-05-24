@@ -13,7 +13,6 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import type { SubscriptionTier } from "@/types";
-import { attributionFromStripeMetadata } from "@/lib/analytics/attribution";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -245,14 +244,10 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     );
     const attributedRevenueDollars =
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
-    const attributionProps = attributionFromStripeMetadata(
-      subscription.metadata,
-    );
 
     for (const uid of userIds) {
       phLogger.event("subscription_started", {
         userId: uid,
-        ...attributionProps,
         from_tier: "free",
         to_tier: tier,
         conversion_type: "free_to_paid",
@@ -275,7 +270,6 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
           last_subscription_started_at: new Date().toISOString(),
         },
         $set_once: {
-          ...attributionProps,
           first_subscription_started_at: new Date().toISOString(),
           first_paid_tier: tier,
         },

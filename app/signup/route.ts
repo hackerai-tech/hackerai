@@ -4,8 +4,5 @@ import { redirectToAuthorizationUrl } from "@/lib/auth/auth-redirect-intents";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const authorizationUrl = await getSignUpUrl();
-  return redirectToAuthorizationUrl(authorizationUrl, url, {
-    captureAttribution: true,
-    referrer: request.headers.get("referer"),
-  });
+  return redirectToAuthorizationUrl(authorizationUrl, url);
 }
