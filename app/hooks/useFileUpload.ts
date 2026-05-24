@@ -311,9 +311,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           url,
         });
       } catch (error) {
-        if (isExpectedFileUploadError(error)) {
-          console.warn("File upload blocked:", error);
-        } else {
+        if (!isExpectedFileUploadError(error)) {
           console.error("Failed to upload file:", error);
         }
 

@@ -9,6 +9,8 @@ import { useGlobalState } from "./contexts/GlobalState";
 const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "Unauthorized: User not authenticated",
   "Invalid arguments provided",
+  "FILE_TOKEN_LIMIT_EXCEEDED",
+  "exceeds the maximum token limit",
 ];
 
 function getExceptionMessages(event: {
