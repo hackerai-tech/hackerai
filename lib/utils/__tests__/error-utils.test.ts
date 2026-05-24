@@ -218,6 +218,15 @@ describe("provider error classification", () => {
     expect(isProviderStreamTerminatedError(err)).toBe(true);
   });
 
+  it("classifies network-loss messages as provider stream termination", () => {
+    const err = new Error("Network connection lost.");
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "stream_terminated",
+    );
+    expect(isProviderStreamTerminatedError(err)).toBe(true);
+  });
+
   it("classifies provider status codes before message patterns", () => {
     const err = apiCallError({
       statusCode: 503,

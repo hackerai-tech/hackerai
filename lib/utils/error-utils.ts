@@ -242,7 +242,13 @@ export const getProviderErrorCategory = (
   ]
     .filter((value): value is string => typeof value === "string")
     .join(" ");
-  if (/terminated|aborted|abort/i.test(message)) return "stream_terminated";
+  if (
+    /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i.test(
+      message,
+    )
+  ) {
+    return "stream_terminated";
+  }
   if (/timeout|timed out/i.test(message)) return "timeout";
   return "unknown";
 };

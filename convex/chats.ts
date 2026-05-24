@@ -6,6 +6,7 @@ import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 import { coerceSelectedModel } from "../types/chat";
+import { convexLogger } from "./lib/logger";
 
 /**
  * Get a chat by its ID
@@ -398,6 +399,8 @@ export const getUserChats = query({
     }
 
     try {
+      const MAX_PINNED_CHATS = 100;
+
       // Step 1: Fetch pinned chats only, ordered by pinned_at asc (first pinned = first in list)
       const pinnedChats = await ctx.db
         .query("chats")
@@ -405,9 +408,18 @@ export const getUserChats = query({
           q.eq("user_id", identity.subject).gt("pinned_at", 0),
         )
         .order("asc")
-        .collect();
+        .take(MAX_PINNED_CHATS);
 
-      const pinnedIds = pinnedChats.map((c) => c.id);
+      if (pinnedChats.length === MAX_PINNED_CHATS) {
+        convexLogger.warn("chat_sidebar_pinned_cap_reached", {
+          user_id: identity.subject,
+          pinned_cap: MAX_PINNED_CHATS,
+          requested_page_size: args.paginationOpts.numItems,
+          has_cursor: Boolean(args.paginationOpts.cursor),
+        });
+      }
+
+      const pinnedIds = new Set(pinnedChats.map((c) => c.id));
 
       // Step 2: Fetch one page (no over-fetch: slicing would lose items permanently
       // because the cursor advances past all fetched items)
@@ -419,7 +431,7 @@ export const getUserChats = query({
         .order("desc")
         .paginate(args.paginationOpts);
 
-      const unpinnedPage = result.page.filter((c) => !pinnedIds.includes(c.id));
+      const unpinnedPage = result.page.filter((c) => !pinnedIds.has(c.id));
       const isFirstPage =
         args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
       const combinedPage = isFirstPage
@@ -472,7 +484,15 @@ export const getUserChats = query({
         page: enhancedChats,
       };
     } catch (error) {
-      console.error("Failed to get user chats:", error);
+      convexLogger.error("chat_sidebar_query_failed", {
+        user_id: identity.subject,
+        requested_page_size: args.paginationOpts.numItems,
+        has_cursor: Boolean(args.paginationOpts.cursor),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
       return {
         page: [],
         isDone: true,
