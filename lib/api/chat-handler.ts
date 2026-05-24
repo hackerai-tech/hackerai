@@ -1000,6 +1000,8 @@ export const createChatHandler = (
 
                                 phLogger.info("Fallback completed", {
                                   chatId,
+                                  endpoint,
+                                  mode,
                                   originalModel: selectedModel,
                                   originalAssistantMessageId:
                                     assistantMessageId,
@@ -1023,6 +1025,9 @@ export const createChatHandler = (
                                       : null,
                                   userId,
                                   subscription,
+                                  isTemporary: temporary,
+                                  paidAskMode:
+                                    mode === "ask" && subscription !== "free",
                                 });
 
                                 // Deduct accumulated usage (includes both original + retry streams)

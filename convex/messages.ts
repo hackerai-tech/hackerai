@@ -1058,7 +1058,10 @@ export const searchMessages = query({
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    if (!args.searchQuery.trim()) {
+    const searchQuery = args.searchQuery.trim().replace(/\s+/g, " ");
+    const MIN_SEARCH_QUERY_LENGTH = 3;
+
+    if (!searchQuery || searchQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return {
         page: [],
         isDone: true,
@@ -1068,23 +1071,62 @@ export const searchMessages = query({
 
     try {
       // Cap raw result sets to keep bandwidth predictable. Search relevance
-      // ordering means the top 200 per index covers any realistic page.
-      const SEARCH_RESULT_CAP = 200;
+      // ordering means the top results per index cover the visible pages while
+      // avoiding broad-query Convex search timeouts.
+      const SEARCH_RESULT_CAP = 75;
+      const SEARCH_CHAT_METADATA_CAP = 50;
 
-      const [messageResults, chatResults] = await Promise.all([
+      const searchStartedAt = Date.now();
+      const [messageSearch, chatSearch] = await Promise.allSettled([
         ctx.db
           .query("messages")
           .withSearchIndex("search_content", (q) =>
-            q.search("content", args.searchQuery).eq("user_id", user.subject),
+            q.search("content", searchQuery).eq("user_id", user.subject),
           )
           .take(SEARCH_RESULT_CAP),
         ctx.db
           .query("chats")
           .withSearchIndex("search_title", (q) =>
-            q.search("title", args.searchQuery).eq("user_id", user.subject),
+            q.search("title", searchQuery).eq("user_id", user.subject),
           )
           .take(SEARCH_RESULT_CAP),
       ]);
+
+      const failedIndexes: Array<{ index: string; error: string }> = [];
+      if (messageSearch.status === "rejected") {
+        failedIndexes.push({
+          index: "messages.search_content",
+          error: getErrorMessage(messageSearch.reason),
+        });
+      }
+      if (chatSearch.status === "rejected") {
+        failedIndexes.push({
+          index: "chats.search_title",
+          error: getErrorMessage(chatSearch.reason),
+        });
+      }
+
+      if (failedIndexes.length > 0) {
+        convexLogger.warn("message_search_index_failed", {
+          user_id: user.subject,
+          query_length: searchQuery.length,
+          failed_indexes: failedIndexes,
+          duration_ms: Date.now() - searchStartedAt,
+        });
+      }
+
+      const messageResults =
+        messageSearch.status === "fulfilled" ? messageSearch.value : [];
+      const chatResults =
+        chatSearch.status === "fulfilled" ? chatSearch.value : [];
+
+      if (messageResults.length === 0 && chatResults.length === 0) {
+        return {
+          page: [],
+          isDone: true,
+          continueCursor: "",
+        };
+      }
 
       // Filter out hidden messages from search results
       const visibleMessageResults = messageResults.filter(
@@ -1108,19 +1150,40 @@ export const searchMessages = query({
         (id) => !chatById.has(id),
       );
       if (missingChatIds.length > 0) {
-        const fetched = await Promise.all(
-          missingChatIds.map((id) =>
+        if (missingChatIds.length > SEARCH_CHAT_METADATA_CAP) {
+          convexLogger.warn("message_search_metadata_cap_reached", {
+            user_id: user.subject,
+            query_length: searchQuery.length,
+            missing_chat_count: missingChatIds.length,
+            metadata_cap: SEARCH_CHAT_METADATA_CAP,
+          });
+        }
+
+        const fetched = await Promise.allSettled(
+          missingChatIds.slice(0, SEARCH_CHAT_METADATA_CAP).map((id) =>
             ctx.db
               .query("chats")
               .withIndex("by_chat_id", (q) => q.eq("id", id))
               .first(),
           ),
         );
-        for (const chat of fetched) {
-          if (chat) {
-            chatById.set(chat.id, {
-              title: chat.title,
-              update_time: chat.update_time,
+        const metadataFailures = fetched.filter(
+          (result) => result.status === "rejected",
+        );
+        if (metadataFailures.length > 0) {
+          convexLogger.warn("message_search_metadata_fetch_failed", {
+            user_id: user.subject,
+            query_length: searchQuery.length,
+            failed_count: metadataFailures.length,
+            requested_count: fetched.length,
+          });
+        }
+
+        for (const result of fetched) {
+          if (result.status === "fulfilled" && result.value) {
+            chatById.set(result.value.id, {
+              title: result.value.title,
+              update_time: result.value.update_time,
             });
           }
         }
@@ -1220,7 +1283,16 @@ export const searchMessages = query({
         continueCursor: hasMoreItems ? nextOffset.toString() : "",
       };
     } catch (error) {
-      console.error("Failed to search messages:", error);
+      convexLogger.error("message_search_failed", {
+        user_id: user.subject,
+        query_length: searchQuery.length,
+        requested_page_size: args.paginationOpts.numItems,
+        has_cursor: Boolean(args.paginationOpts.cursor),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
       return {
         page: [],
         isDone: true,
