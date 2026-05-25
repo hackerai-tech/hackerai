@@ -99,6 +99,18 @@ export const addTeamCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    if (args.idempotencyKey) {
+      const durableExisting = await ctx.db
+        .query("processed_checkout_sessions")
+        .withIndex("by_session_key", (q) =>
+          q.eq("session_key", args.idempotencyKey!),
+        )
+        .first();
+      if (durableExisting) {
+        return { newBalance: 0, alreadyProcessed: true };
+      }
+    }
+
     const dedupKeys = [args.idempotencyKey, args.legacyIdempotencyKey].filter(
       (k): k is string => typeof k === "string" && k.length > 0,
     );
@@ -147,6 +159,10 @@ export const addTeamCredits = mutation({
     }
 
     if (args.idempotencyKey) {
+      await ctx.db.insert("processed_checkout_sessions", {
+        session_key: args.idempotencyKey,
+        processed_at: Date.now(),
+      });
       await ctx.db.insert("processed_webhooks", {
         event_id: args.idempotencyKey,
         processed_at: Date.now(),

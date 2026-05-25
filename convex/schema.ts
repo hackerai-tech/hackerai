@@ -356,4 +356,12 @@ export default defineSchema({
     status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
     claimed_at: v.optional(v.number()),
   }).index("by_event_id", ["event_id"]),
+
+  // Durable idempotency records for user-visible checkout session confirms.
+  // Unlike webhook retry deduplication, these keys must not be time-purged
+  // because a paid Checkout Session ID can be replayed by the purchaser.
+  processed_checkout_sessions: defineTable({
+    session_key: v.string(),
+    processed_at: v.number(),
+  }).index("by_session_key", ["session_key"]),
 });
