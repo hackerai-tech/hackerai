@@ -13,6 +13,7 @@ import { convexLogger } from "./lib/logger";
 
 let stripeInstance: Stripe | null = null;
 let workosInstance: WorkOS | null = null;
+const POINTS_PER_DOLLAR = 10_000;
 
 function getStripe(): Stripe {
   if (!stripeInstance) {
@@ -341,15 +342,16 @@ export const deductWithAutoReloadForTeam = action({
 
     // If deduction was blocked for reasons unrelated to available balance,
     // do not attempt to auto-reload.
-    if (
-      deductResult.success ||
-      !deductResult.insufficientFunds ||
-      deductResult.monthlyCapExceeded ||
-      deductResult.memberCapExceeded ||
-      deductResult.memberDisabled ||
-      deductResult.poolDisabled ||
-      deductResult.trustCapExceeded
-    ) {
+    const blockedForNonBalanceReason =
+      !deductResult.success &&
+      (!deductResult.insufficientFunds ||
+        deductResult.monthlyCapExceeded ||
+        deductResult.memberCapExceeded ||
+        deductResult.memberDisabled ||
+        deductResult.poolDisabled ||
+        deductResult.trustCapExceeded);
+
+    if (blockedForNonBalanceReason) {
       return {
         success: deductResult.success,
         newBalanceDollars: deductResult.newBalanceDollars,
@@ -366,6 +368,12 @@ export const deductWithAutoReloadForTeam = action({
 
     const thresholdPoints = state.autoReloadThresholdPoints ?? 0;
     const reloadAmount = state.autoReloadAmountDollars ?? 0;
+    const balanceForReloadPoints = deductResult.success
+      ? deductResult.newBalancePoints
+      : state.balancePoints;
+    const balanceForReloadDollars = deductResult.success
+      ? deductResult.newBalanceDollars
+      : state.balanceDollars;
     let autoReloadTriggered = false;
     let autoReloadResult:
       | { success: boolean; chargedAmountDollars?: number; reason?: string }
@@ -375,7 +383,7 @@ export const deductWithAutoReloadForTeam = action({
       state.enabled &&
       !state.memberDisabled &&
       state.autoReloadEnabled &&
-      state.balancePoints <= thresholdPoints &&
+      balanceForReloadPoints <= thresholdPoints &&
       reloadAmount > 0;
 
     if (allConditionsMet) {
@@ -404,7 +412,7 @@ export const deductWithAutoReloadForTeam = action({
                 reason: "no_default_payment_method",
               };
             } else {
-              const currentBalanceDollars = state.balanceDollars;
+              const currentBalanceDollars = balanceForReloadDollars;
               const targetBalanceDollars = reloadAmount;
               const amountToCharge = Math.max(
                 0,
@@ -427,11 +435,22 @@ export const deductWithAutoReloadForTeam = action({
                 );
 
                 if (paymentResult.success) {
-                  await ctx.runMutation(api.teamExtraUsage.addTeamCredits, {
+                  const creditResult: {
+                    newBalance: number;
+                  } = await ctx.runMutation(api.teamExtraUsage.addTeamCredits, {
                     serviceKey: args.serviceKey,
                     organizationId: args.organizationId,
                     amountDollars: amountToCharge,
                   });
+                  if (deductResult.success) {
+                    deductResult = {
+                      ...deductResult,
+                      newBalancePoints: Math.round(
+                        creditResult.newBalance * POINTS_PER_DOLLAR,
+                      ),
+                      newBalanceDollars: creditResult.newBalance,
+                    };
+                  }
                   autoReloadResult = {
                     success: true,
                     chargedAmountDollars: amountToCharge,
@@ -476,7 +495,7 @@ export const deductWithAutoReloadForTeam = action({
       );
     }
 
-    if (autoReloadResult?.success) {
+    if (autoReloadResult?.success && deductWithoutReload.insufficientFunds) {
       deductResult = await ctx.runMutation(
         api.teamExtraUsage.deductTeamPoints,
         {
