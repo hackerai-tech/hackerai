@@ -351,11 +351,16 @@ export async function saveMessage({
             },
           })
         : message.parts;
+    const convexSafeParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
+      any,
+      any
+    >[];
     const storageSafeMessage =
       message.role === "assistant"
-        ? compactMessageForStorage({ ...message, parts: fixedParts })
+        ? compactMessageForStorage({ ...message, parts: convexSafeParts })
         : null;
-    const storageSafeParts = storageSafeMessage?.message.parts ?? fixedParts;
+    const storageSafeParts =
+      storageSafeMessage?.message.parts ?? convexSafeParts;
     if (storageSafeMessage?.compacted) {
       console.info("[db] compacted assistant message before save", {
         chatId,
