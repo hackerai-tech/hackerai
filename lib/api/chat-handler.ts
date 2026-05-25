@@ -90,6 +90,7 @@ import {
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
 } from "@/lib/utils/sandbox-file-utils";
+import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import {
@@ -155,6 +156,7 @@ export const createChatHandler = (
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
+        useClientMessagesForRegenerate,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -165,6 +167,7 @@ export const createChatHandler = (
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
+        useClientMessagesForRegenerate?: boolean;
       } = await req.json();
       outerChatId = chatId;
 
@@ -226,6 +229,7 @@ export const createChatHandler = (
         regenerate,
         isTemporary: temporary,
         mode,
+        useClientMessagesForRegenerate,
       });
       const { chat, isNewChat, fileTokens } = fetched;
       const truncatedMessages =
@@ -275,7 +279,7 @@ export const createChatHandler = (
       if (!processedMessages || processedMessages.length === 0) {
         throw new ChatSDKError(
           "bad_request:api",
-          "Your message could not be processed. Please include some text with your file attachments and try again.",
+          getEmptyProcessedMessagesCause(truncatedMessages),
         );
       }
 

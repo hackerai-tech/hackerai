@@ -71,6 +71,7 @@ import {
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
 } from "@/lib/utils/sandbox-file-utils";
+import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
 import {
   captureAgentRun,
   captureToolCalls,
@@ -658,7 +659,7 @@ export const agentLongTask = task({
       if (!processedMessages.length) {
         throw new ChatSDKError(
           "bad_request:api",
-          "Your message could not be processed. Please include some text with your file attachments and try again.",
+          getEmptyProcessedMessagesCause(messagesForProcessing),
         );
       }
 
