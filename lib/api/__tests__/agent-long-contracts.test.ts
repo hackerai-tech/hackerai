@@ -175,6 +175,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("outer catch checks live usage tracker before refunding", () => {
+    const liveUsagePredicateIdx = taskSrc.indexOf(
+      "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",
+    );
+    const refundGuardIdx = taskSrc.indexOf("if (!hasObservedUsage())");
+
+    expect(liveUsagePredicateIdx).toBeGreaterThan(-1);
+    expect(refundGuardIdx).toBeGreaterThan(liveUsagePredicateIdx);
+    expect(taskSrc).not.toMatch(/hasObservedUsage\s*=\s*hasObservedUsage/);
+  });
+
   test("task catch records structured metadata for dashboard filtering", () => {
     expect(taskSrc).toMatch(/recordAgentLongFailureForDashboard/);
     expect(taskSrc).toMatch(/errorCategory/);

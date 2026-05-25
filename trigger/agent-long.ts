@@ -602,8 +602,8 @@ export const agentLongTask = task({
     // synthetic error stream so the frontend receives a proper error chunk
     // instead of a silent abort.
     let streamPiped = false;
-    let hasObservedUsage = false;
     let observedUsageTracker: UsageTracker | undefined;
+    const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -1562,9 +1562,6 @@ export const agentLongTask = task({
           } catch (error) {
             await releaseFreeRunLockOnce();
             throw error;
-          } finally {
-            hasObservedUsage =
-              hasObservedUsage || !!observedUsageTracker?.hasUsage;
           }
         },
       });
@@ -1623,7 +1620,7 @@ export const agentLongTask = task({
           metadataError,
         );
       });
-      if (!hasObservedUsage) {
+      if (!hasObservedUsage()) {
         await usageRefundTracker.refund().catch(() => {});
       }
       if (error instanceof ChatSDKError) {
