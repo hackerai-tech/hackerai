@@ -9,21 +9,18 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { FREE_MAX_CONTEXT_TOKENS } from "@/lib/rate-limit/free-config";
 
 const DISALLOWED_SPECIAL_TOKEN_MESSAGE = "Disallowed special token";
-const SPECIAL_TOKEN_PATTERN = /<\|[^|]+?\|>/g;
+const TOKENIZE_SPECIAL_TOKENS_AS_TEXT: NonNullable<
+  Parameters<typeof encodeGptTokens>[1]
+> = {
+  disallowedSpecial: new Set(),
+};
 let hasLoggedSpecialTokenFallback = false;
-
-const escapeTokenizerSpecialTokens = (content: string): string =>
-  content.replace(SPECIAL_TOKEN_PATTERN, (token) =>
-    token.replace("<|", "<\\|"),
-  );
 
 const logSpecialTokenFallback = (): void => {
   if (hasLoggedSpecialTokenFallback) return;
 
   hasLoggedSpecialTokenFallback = true;
-  console.warn(
-    "[token-utils] Escaped tokenizer special token while counting untrusted text",
-  );
+  console.warn("[token-utils] Tokenized special token sentinel as plain text");
 };
 
 export const safeCountTokens = (content: string): number => {
@@ -35,7 +32,7 @@ export const safeCountTokens = (content: string): number => {
       error.message.includes(DISALLOWED_SPECIAL_TOKEN_MESSAGE)
     ) {
       logSpecialTokenFallback();
-      return countGptTokens(escapeTokenizerSpecialTokens(content));
+      return countGptTokens(content, TOKENIZE_SPECIAL_TOKENS_AS_TEXT);
     }
 
     throw error;
@@ -51,7 +48,7 @@ const safeEncode = (content: string): ReturnType<typeof encodeGptTokens> => {
       error.message.includes(DISALLOWED_SPECIAL_TOKEN_MESSAGE)
     ) {
       logSpecialTokenFallback();
-      return encodeGptTokens(escapeTokenizerSpecialTokens(content));
+      return encodeGptTokens(content, TOKENIZE_SPECIAL_TOKENS_AS_TEXT);
     }
 
     throw error;
