@@ -97,13 +97,9 @@ export class BudgetMonitor {
     let decision: "continue" | "abort" = "continue";
 
     for (const threshold of BUDGET_THRESHOLDS) {
-      if (
-        usedPercent < threshold ||
-        threshold <= this.highestThresholdEmitted
-      ) {
+      if (usedPercent < threshold) {
         continue;
       }
-      this.highestThresholdEmitted = threshold;
 
       if (threshold === 100) {
         const overflowDollars =
@@ -114,6 +110,10 @@ export class BudgetMonitor {
           snapshot.extraUsageBalanceAtStart - overflowDollars > 0;
 
         if (hasExtraCushion) {
+          if (threshold <= this.highestThresholdEmitted) {
+            continue;
+          }
+          this.highestThresholdEmitted = threshold;
           writeRateLimitWarning(this.writer, {
             warningType: "extra-usage-active",
             bucketType: "monthly",
@@ -130,6 +130,10 @@ export class BudgetMonitor {
           decision = "abort";
         }
       } else {
+        if (threshold <= this.highestThresholdEmitted) {
+          continue;
+        }
+        this.highestThresholdEmitted = threshold;
         this.emit({ usedPercent, projectedUsedPoints });
       }
     }
