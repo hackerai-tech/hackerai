@@ -1,8 +1,62 @@
 import { UIMessage, UIMessagePart } from "ai";
-import { countTokens, encode, decode } from "gpt-tokenizer";
+import {
+  countTokens as countGptTokens,
+  encode as encodeGptTokens,
+  decode,
+} from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { FREE_MAX_CONTEXT_TOKENS } from "@/lib/rate-limit/free-config";
+
+const DISALLOWED_SPECIAL_TOKEN_MESSAGE = "Disallowed special token";
+const SPECIAL_TOKEN_PATTERN = /<\|[^|]+?\|>/g;
+let hasLoggedSpecialTokenFallback = false;
+
+const escapeTokenizerSpecialTokens = (content: string): string =>
+  content.replace(SPECIAL_TOKEN_PATTERN, (token) =>
+    token.replace("<|", "<\\|"),
+  );
+
+const logSpecialTokenFallback = (): void => {
+  if (hasLoggedSpecialTokenFallback) return;
+
+  hasLoggedSpecialTokenFallback = true;
+  console.warn(
+    "[token-utils] Escaped tokenizer special token while counting untrusted text",
+  );
+};
+
+export const safeCountTokens = (content: string): number => {
+  try {
+    return countGptTokens(content);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes(DISALLOWED_SPECIAL_TOKEN_MESSAGE)
+    ) {
+      logSpecialTokenFallback();
+      return countGptTokens(escapeTokenizerSpecialTokens(content));
+    }
+
+    throw error;
+  }
+};
+
+const safeEncode = (content: string): ReturnType<typeof encodeGptTokens> => {
+  try {
+    return encodeGptTokens(content);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes(DISALLOWED_SPECIAL_TOKEN_MESSAGE)
+    ) {
+      logSpecialTokenFallback();
+      return encodeGptTokens(escapeTokenizerSpecialTokens(content));
+    }
+
+    throw error;
+  }
+};
 
 export const MAX_TOKENS_FREE = FREE_MAX_CONTEXT_TOKENS;
 export const MAX_TOKENS_PAID = 200000;
@@ -64,7 +118,7 @@ const countPartTokens = (
   fileTokens: Record<Id<"files">, number> = {},
 ): number => {
   if (part.type === "text" && "text" in part) {
-    return countTokens((part as { text?: string }).text || "");
+    return safeCountTokens((part as { text?: string }).text || "");
   }
   if (
     part.type === "file" &&
@@ -82,10 +136,10 @@ const countPartTokens = (
   if (hasMetadata) {
     const { providerMetadata, callProviderMetadata, ...partWithoutMetadata } =
       partAny;
-    return countTokens(JSON.stringify(partWithoutMetadata));
+    return safeCountTokens(JSON.stringify(partWithoutMetadata));
   }
 
-  return countTokens(JSON.stringify(part));
+  return safeCountTokens(JSON.stringify(part));
 };
 
 /**
@@ -160,12 +214,12 @@ export const truncateContent = (
   marker: string = TRUNCATION_MESSAGE,
   maxTokens: number = TOOL_DEFAULT_MAX_TOKENS,
 ): string => {
-  const tokens = encode(content);
+  const tokens = safeEncode(content);
   if (tokens.length <= maxTokens) return content;
 
-  const markerTokens = countTokens(marker);
+  const markerTokens = safeCountTokens(marker);
   if (maxTokens <= markerTokens) {
-    return maxTokens <= 0 ? "" : decode(encode(marker).slice(-maxTokens));
+    return maxTokens <= 0 ? "" : decode(safeEncode(marker).slice(-maxTokens));
   }
 
   const budgetForContent = maxTokens - markerTokens;
@@ -186,7 +240,7 @@ export const truncateContent = (
 export const sliceByTokens = (content: string, maxTokens: number): string => {
   if (maxTokens <= 0) return "";
 
-  const tokens = encode(content);
+  const tokens = safeEncode(content);
   if (tokens.length <= maxTokens) return content;
 
   return decode(tokens.slice(0, maxTokens));
@@ -199,7 +253,7 @@ export const countInputTokens = (
   input: string,
   uploadedFiles: Array<{ tokens?: number }> = [],
 ): number => {
-  const textTokens = countTokens(input);
+  const textTokens = safeCountTokens(input);
   const fileTokens = uploadedFiles.reduce(
     (total, file) => total + (file.tokens || 0),
     0,

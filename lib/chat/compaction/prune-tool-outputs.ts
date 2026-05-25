@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { countTokens } from "gpt-tokenizer";
+import { safeCountTokens } from "@/lib/token-utils";
 
 /**
  * Default rolling token budget for tool outputs (protection window).
@@ -158,8 +158,8 @@ const buildPlaceholder = (part: ToolPart): string => {
 
 const countOutputTokens = (output: unknown): number => {
   if (output == null) return 0;
-  if (typeof output === "string") return countTokens(output);
-  return countTokens(JSON.stringify(output));
+  if (typeof output === "string") return safeCountTokens(output);
+  return safeCountTokens(JSON.stringify(output));
 };
 
 export const estimateSerializedSizeBytes = (value: unknown): number =>
@@ -416,7 +416,7 @@ export function pruneToolOutputs(
     if (remainingBudget <= 0) {
       toPrune.add(`${entry.msgIdx}:${entry.partIdx}`);
       prunedCount++;
-      const placeholderTokens = countTokens(buildPlaceholder(entry.part));
+      const placeholderTokens = safeCountTokens(buildPlaceholder(entry.part));
       tokensSaved += entry.tokens - placeholderTokens;
       continue;
     }
@@ -600,7 +600,7 @@ export function pruneModelMessages(
         args,
         entry.output,
       );
-      tokensSaved += entry.tokens - countTokens(placeholder);
+      tokensSaved += entry.tokens - safeCountTokens(placeholder);
       continue;
     }
     remainingBudget -= entry.tokens;
