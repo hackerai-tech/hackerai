@@ -78,6 +78,7 @@ describe("fileActions saveFile upload policy", () => {
       storage: {
         delete: jest.fn().mockResolvedValue(undefined),
         getUrl: jest.fn().mockResolvedValue("https://storage.example/file"),
+        getMetadata: jest.fn().mockResolvedValue({ size: 1024 }),
       },
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
@@ -129,6 +130,29 @@ describe("fileActions saveFile upload policy", () => {
       "internal.s3Cleanup.deleteS3ObjectAction",
       { s3Key: "users/user123/large.bin" },
     );
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  it("rejects storageId uploads based on storage metadata, not client size", async () => {
+    const { saveFile } = await import("../fileActions");
+    const ctx = makeCtx();
+    ctx.storage.getMetadata.mockResolvedValueOnce({ size: 21 * 1024 * 1024 });
+
+    await expect(
+      saveFile.handler(ctx, {
+        storageId: "storage_large_bin",
+        name: "large.bin",
+        mediaType: "application/octet-stream",
+        size: 1024,
+        mode: "ask",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({ code: "FILE_SIZE_EXCEEDED" }),
+    });
+
+    expect(ctx.storage.getMetadata).toHaveBeenCalledWith("storage_large_bin");
+    expect(ctx.storage.delete).toHaveBeenCalledWith("storage_large_bin");
     expect(global.fetch).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });

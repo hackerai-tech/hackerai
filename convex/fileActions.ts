@@ -705,6 +705,29 @@ export const saveFile = action({
           message: `Failed to upload ${args.name}: File not found in storage`,
         });
       }
+    } else if (args.storageId) {
+      try {
+        const metadata = await ctx.storage.getMetadata(args.storageId);
+        if (!metadata) {
+          throw new Error("Storage metadata not found");
+        }
+        verifiedSize = metadata.size;
+      } catch (error) {
+        convexLogger.error("file_upload_storage_metadata_fetch_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          storageId: args.storageId,
+          mode: args.mode,
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: `Failed to upload ${args.name}: File not found in storage`,
+        });
+      }
     }
 
     const uploadLimits = getUploadLimitsForMode(args.mode, {
