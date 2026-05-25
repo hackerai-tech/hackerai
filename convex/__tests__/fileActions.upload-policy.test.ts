@@ -47,6 +47,7 @@ jest.mock("../_generated/api", () => ({
 
 jest.mock("../s3Utils", () => ({
   generateS3DownloadUrl: jest.fn(),
+  getS3ObjectSizeBytes: jest.fn(),
 }));
 
 jest.mock("pdfjs-serverless", () => ({
@@ -87,9 +88,19 @@ describe("fileActions saveFile upload policy", () => {
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     global.fetch = jest.fn() as any;
 
-    const { generateS3DownloadUrl } = await import("../s3Utils");
+    const { generateS3DownloadUrl, getS3ObjectSizeBytes } =
+      await import("../s3Utils");
     (generateS3DownloadUrl as jest.Mock).mockResolvedValue(
       "https://s3.example/download",
+    );
+    (getS3ObjectSizeBytes as jest.Mock).mockImplementation(
+      async (s3Key: string) => {
+        if (s3Key.includes("large.bin")) return 21 * 1024 * 1024;
+        if (s3Key.includes("large.png")) return 8 * 1024 * 1024;
+        if (s3Key.includes("archive.zip")) return 25 * 1024 * 1024;
+        if (s3Key.includes("huge.bin")) return 251 * 1024 * 1024;
+        return 1024;
+      },
     );
   });
 

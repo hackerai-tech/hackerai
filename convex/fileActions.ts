@@ -21,7 +21,7 @@ import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
-import { generateS3DownloadUrl } from "./s3Utils";
+import { generateS3DownloadUrl, getS3ObjectSizeBytes } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
 import type {
   FileItemChunk,
@@ -685,12 +685,34 @@ export const saveFile = action({
     // Token was already consumed at URL generation step
     await checkFileUploadRateLimit(actingUserId, false);
 
+    let verifiedSize = args.size;
+    if (args.s3Key) {
+      try {
+        verifiedSize = await getS3ObjectSizeBytes(args.s3Key);
+      } catch (error) {
+        convexLogger.error("file_upload_s3_metadata_fetch_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          s3Key: args.s3Key,
+          mode: args.mode,
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: `Failed to upload ${args.name}: File not found in storage`,
+        });
+      }
+    }
+
     const uploadLimits = getUploadLimitsForMode(args.mode, {
       surface: "backend",
     });
     const uploadValidation = validateUploadPolicy({
       mode: args.mode,
-      size: args.size,
+      size: verifiedSize,
       mediaType: args.mediaType,
       surface: "backend",
     });
@@ -727,7 +749,7 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
-        message: `File "${args.name}" exceeds the maximum file size limit of ${uploadLimits.maxFileSizeBytes / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `File "${args.name}" exceeds the maximum file size limit of ${uploadLimits.maxFileSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
@@ -760,7 +782,7 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "IMAGE_SIZE_EXCEEDED",
-        message: `Image "${args.name}" exceeds the maximum image size limit of ${uploadLimits.maxProviderImageSizeBytes / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `Image "${args.name}" exceeds the maximum image size limit of ${uploadLimits.maxProviderImageSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
@@ -790,7 +812,7 @@ export const saveFile = action({
         convexLogger.info("agent_file_upload_saved_without_processing", {
           userId: actingUserId,
           fileName: args.name,
-          size: args.size,
+          size: verifiedSize,
           mediaType: args.mediaType,
           mode: args.mode,
         });
@@ -981,7 +1003,7 @@ export const saveFile = action({
       userId: actingUserId,
       name: args.name,
       mediaType: args.mediaType,
-      size: args.size,
+      size: verifiedSize,
       fileTokenSize: tokenSize,
       content: fileContent,
     })) as Id<"files">;

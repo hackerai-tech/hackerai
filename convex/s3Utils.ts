@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
@@ -133,6 +134,33 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
     console.error("Failed to delete S3 object:", error);
     throw new Error(
       "Failed to delete S3 object: " +
+        (error instanceof Error ? error.message : "Unknown error"),
+    );
+  }
+}
+
+/**
+ * Get S3 object size in bytes.
+ */
+export async function getS3ObjectSizeBytes(s3Key: string): Promise<number> {
+  try {
+    const s3Client = getS3Client();
+    const bucketName = getRequiredEnvVar("AWS_S3_BUCKET_NAME");
+
+    const command = new HeadObjectCommand({
+      Bucket: bucketName,
+      Key: s3Key,
+    });
+
+    const result = await s3Client.send(command);
+    if (typeof result.ContentLength !== "number") {
+      throw new Error("S3 object ContentLength is missing");
+    }
+    return result.ContentLength;
+  } catch (error) {
+    console.error("Failed to fetch S3 object metadata:", error);
+    throw new Error(
+      "Failed to fetch S3 object metadata: " +
         (error instanceof Error ? error.message : "Unknown error"),
     );
   }
