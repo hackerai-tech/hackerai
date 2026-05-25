@@ -31,7 +31,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 agent chain to Kimi slug", () => {
+  it("resolves Opus 4.6 agent chain to Kimi then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -39,7 +39,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -57,7 +57,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 agent chain to Kimi slug", () => {
+  it("resolves Sonnet 4.6 agent chain to Kimi then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -65,7 +65,28 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("falls back from auto agent Kimi to Grok", () => {
+    const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
+    expect(opts.openrouter).toMatchObject({
+      models: [GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("falls back from explicit Kimi to Grok", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-kimi-k2.6",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
@@ -108,7 +129,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [KIMI_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
     });
 
     const noReasoning = buildProviderOptions(
@@ -119,7 +140,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
-      models: [KIMI_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
     });
   });
 });
