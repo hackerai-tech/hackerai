@@ -234,8 +234,8 @@ const collectFilesToProcess = (
           typeof part.fileId === "string" ? part.fileId : undefined;
         const url =
           typeof (part as any).url === "string" ? (part as any).url : undefined;
-        const key = fileId ? `file:${fileId}` : url ? `url:${url}` : null;
-        if (!key) return;
+        if (!fileId) return;
+        const key = `file:${fileId}`;
 
         if (!files.has(key)) {
           files.set(key, {
