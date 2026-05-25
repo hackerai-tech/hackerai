@@ -22,6 +22,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import type { ChatMode } from "@/types/chat";
 import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
 import { sanitizeForConvexValue } from "./convex-value-sanitizer";
@@ -552,6 +553,7 @@ export async function getMessagesByChatId({
   subscription,
   isTemporary,
   mode,
+  useClientMessagesForRegenerate,
 }: {
   chatId: string;
   userId: string;
@@ -560,6 +562,7 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   isTemporary?: boolean;
   mode?: import("@/types").ChatMode;
+  useClientMessagesForRegenerate?: boolean;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -571,8 +574,22 @@ export async function getMessagesByChatId({
     chat = await getChatById({ id: chatId });
     isNewChat = !chat;
 
+    const shouldUseClientMessagesForRegenerate =
+      !!regenerate &&
+      !!useClientMessagesForRegenerate &&
+      Array.isArray(newMessages) &&
+      newMessages.length > 0 &&
+      hasRestageableLocalDesktopAttachments(newMessages);
+
+    if (!isNewChat && shouldUseClientMessagesForRegenerate) {
+      // Persisted local desktop attachments are saved without source paths.
+      // When the current client still has those paths, use that trimmed
+      // history for this regenerate so the files can be staged again.
+      existingMessages = newMessages;
+    }
+
     // Only fetch existing messages if chat exists
-    if (!isNewChat) {
+    if (!isNewChat && !shouldUseClientMessagesForRegenerate) {
       try {
         // Fetch latest summary only if chat has a summary ID
         const latestSummary = chat?.latest_summary_id
