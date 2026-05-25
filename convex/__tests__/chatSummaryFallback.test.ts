@@ -92,6 +92,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.spyOn(console, "log").mockImplementation(() => {});
     jest.spyOn(console, "warn").mockImplementation(() => {});
 
     mockCtx = {
@@ -112,16 +113,55 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     mockCtx.db.query.mockReturnValue({ withIndex: withIndexMock });
   });
 
-  function setupChatQuery(chat: Record<string, any> | null): void {
-    const withIndexMock = jest.fn().mockReturnValue({
-      first: jest.fn<any>().mockResolvedValue(chat),
+  function setupSaveSummaryQueries(
+    chat: Record<string, any> | null,
+    opts: {
+      incomingCutoffCreationTime?: number | null;
+      previousCutoffCreationTime?: number | null;
+    } = {},
+  ): void {
+    const {
+      incomingCutoffCreationTime = 10_000,
+      previousCutoffCreationTime = 5_000,
+    } = opts;
+    let messageQueryCount = 0;
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "chats") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(chat),
+          }),
+        };
+      }
+
+      if (table === "messages") {
+        const creationTime =
+          messageQueryCount++ === 0
+            ? incomingCutoffCreationTime
+            : previousCutoffCreationTime;
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest
+              .fn<any>()
+              .mockResolvedValue(
+                creationTime === null ? null : { _creationTime: creationTime },
+              ),
+          }),
+        };
+      }
+
+      return {
+        withIndex: jest.fn().mockReturnValue({
+          first: jest.fn<any>().mockResolvedValue(null),
+        }),
+      };
     });
-    mockCtx.db.query.mockReturnValue({ withIndex: withIndexMock });
   }
 
   it("should set previous_summaries to [] when no existing summary", async () => {
     const chat = makeChatDoc({ latest_summary_id: undefined });
-    setupChatQuery(chat);
+    setupSaveSummaryQueries(chat);
 
     const { saveLatestSummary } = await import("../chats");
 
@@ -136,17 +176,19 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       "chat_summaries",
       expect.objectContaining({
         previous_summaries: [],
+        summary_up_to_message_creation_time: 10_000,
       }),
     );
   });
 
   it("should push old summary into previous_summaries[0] on second save", async () => {
     const chat = makeChatDoc();
-    setupChatQuery(chat);
+    setupSaveSummaryQueries(chat);
 
     const oldSummary = makeSummaryDoc({
       summary_text: "old text",
       summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
       previous_summaries: [],
     });
     mockCtx.db.get.mockResolvedValue(oldSummary);
@@ -164,15 +206,20 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       "chat_summaries",
       expect.objectContaining({
         previous_summaries: [
-          { summary_text: "old text", summary_up_to_message_id: "msg-5" },
+          {
+            summary_text: "old text",
+            summary_up_to_message_id: "msg-5",
+            summary_up_to_message_creation_time: 5_000,
+          },
         ],
       }),
     );
+    expect(mockCtx.db.delete).not.toHaveBeenCalledWith(SUMMARY_DOC_ID);
   });
 
   it("should preserve the chain: [old, ...old_previous_summaries]", async () => {
     const chat = makeChatDoc();
-    setupChatQuery(chat);
+    setupSaveSummaryQueries(chat);
 
     const existingChain = [
       { summary_text: "even-older", summary_up_to_message_id: "msg-1" },
@@ -180,6 +227,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     const oldSummary = makeSummaryDoc({
       summary_text: "old text",
       summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
       previous_summaries: existingChain,
     });
     mockCtx.db.get.mockResolvedValue(oldSummary);
@@ -197,7 +245,11 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       "chat_summaries",
       expect.objectContaining({
         previous_summaries: [
-          { summary_text: "old text", summary_up_to_message_id: "msg-5" },
+          {
+            summary_text: "old text",
+            summary_up_to_message_id: "msg-5",
+            summary_up_to_message_creation_time: 5_000,
+          },
           { summary_text: "even-older", summary_up_to_message_id: "msg-1" },
         ],
       }),
@@ -206,7 +258,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
 
   it("should truncate previous_summaries at MAX_PREVIOUS_SUMMARIES (10)", async () => {
     const chat = makeChatDoc();
-    setupChatQuery(chat);
+    setupSaveSummaryQueries(chat);
 
     const existingChain = Array.from({ length: 11 }, (_, i) => ({
       summary_text: `prev-${i}`,
@@ -215,6 +267,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     const oldSummary = makeSummaryDoc({
       summary_text: "old text",
       summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
       previous_summaries: existingChain,
     });
     mockCtx.db.get.mockResolvedValue(oldSummary);
@@ -234,7 +287,81 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     expect(insertedDoc.previous_summaries[0]).toEqual({
       summary_text: "old text",
       summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
     });
+  });
+
+  it("should skip stale saves when an existing summary has a newer cutoff", async () => {
+    const chat = makeChatDoc();
+    setupSaveSummaryQueries(chat, { incomingCutoffCreationTime: 5_000 });
+
+    const oldSummary = makeSummaryDoc({
+      summary_text: "newer summary",
+      summary_up_to_message_id: "msg-10",
+      summary_up_to_message_creation_time: 10_000,
+    });
+    mockCtx.db.get.mockResolvedValue(oldSummary);
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "stale summary",
+      summaryUpToMessageId: "msg-5",
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("should save a different cutoff message with the same creation time", async () => {
+    const chat = makeChatDoc();
+    setupSaveSummaryQueries(chat, { incomingCutoffCreationTime: 10_000 });
+
+    const oldSummary = makeSummaryDoc({
+      summary_text: "same-ms summary",
+      summary_up_to_message_id: "msg-10",
+      summary_up_to_message_creation_time: 10_000,
+    });
+    mockCtx.db.get.mockResolvedValue(oldSummary);
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "new same-ms summary",
+      summaryUpToMessageId: "msg-11",
+    });
+
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.objectContaining({
+        summary_up_to_message_id: "msg-11",
+        summary_up_to_message_creation_time: 10_000,
+      }),
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(CHAT_DOC_ID, {
+      latest_summary_id: "new-summary-id",
+    });
+  });
+
+  it("should skip saves when the incoming cutoff message was deleted", async () => {
+    const chat = makeChatDoc({ latest_summary_id: undefined });
+    setupSaveSummaryQueries(chat, { incomingCutoffCreationTime: null });
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "orphaned summary",
+      summaryUpToMessageId: "deleted-msg",
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
   });
 });
 
