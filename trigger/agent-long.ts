@@ -460,6 +460,7 @@ const withAgentLongStreamHeartbeat = (
 // Shared between run() and onCancel() since onCancel is defined at task scope.
 type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
+  hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
 };
@@ -510,7 +511,9 @@ export const agentLongTask = task({
       runPromise.catch(() => undefined),
       new Promise((r) => setTimeout(r, 5000)),
     ]);
-    await cleanup.usageRefundTracker.refund().catch(() => {});
+    if (!cleanup.hasObservedUsage()) {
+      await cleanup.usageRefundTracker.refund().catch(() => {});
+    }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
     await phLogger.flush().catch(() => {});
     runCleanupMap.delete(ctx.run.id);
@@ -595,13 +598,19 @@ export const agentLongTask = task({
       region: userLocation?.region,
     });
 
-    runCleanupMap.set(ctx.run.id, { usageRefundTracker, chatLogger, chatId });
-
     // Set to true once the real UI stream is piped to agentUiStream. If a
     // pre-stream setup step throws before this, the outer catch emits a
     // synthetic error stream so the frontend receives a proper error chunk
     // instead of a silent abort.
     let streamPiped = false;
+    let observedUsageTracker: UsageTracker | undefined;
+    const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+    runCleanupMap.set(ctx.run.id, {
+      usageRefundTracker,
+      hasObservedUsage,
+      chatLogger,
+      chatId,
+    });
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -961,6 +970,7 @@ export const agentLongTask = task({
               trackedProvider.languageModel(fallbackModel).modelId;
 
             const usageTracker = new UsageTracker();
+            observedUsageTracker = usageTracker;
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
@@ -1617,7 +1627,9 @@ export const agentLongTask = task({
           metadataError,
         );
       });
-      await usageRefundTracker.refund().catch(() => {});
+      if (!hasObservedUsage()) {
+        await usageRefundTracker.refund().catch(() => {});
+      }
       if (error instanceof ChatSDKError) {
         chatLogger?.emitChatError(error);
       } else {
