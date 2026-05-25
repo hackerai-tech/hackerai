@@ -55,11 +55,13 @@ export default defineSchema({
     chat_id: v.string(),
     summary_text: v.string(),
     summary_up_to_message_id: v.string(),
+    summary_up_to_message_creation_time: v.optional(v.number()),
     previous_summaries: v.optional(
       v.array(
         v.object({
           summary_text: v.string(),
           summary_up_to_message_id: v.string(),
+          summary_up_to_message_creation_time: v.optional(v.number()),
         }),
       ),
     ),
