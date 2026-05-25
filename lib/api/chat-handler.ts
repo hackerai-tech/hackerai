@@ -87,6 +87,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
   getUploadBasePath,
+  rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
 } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
@@ -259,7 +260,7 @@ export const createChatHandler = (
         ? getUploadBasePath(sandboxPreference)
         : undefined;
 
-      const { processedMessages, selectedModel, sandboxFiles } =
+      let { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
           messages: truncatedMessages,
           mode,
@@ -475,7 +476,11 @@ export const createChatHandler = (
                   ? "Preparing local attachments on your computer"
                   : "Uploading attachments to the computer",
               );
-              let uploadResult: { failedCount: number } = { failedCount: 0 };
+              let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>> =
+                {
+                  failedCount: 0,
+                  pathRewrites: [],
+                };
               try {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
@@ -499,6 +504,10 @@ export const createChatHandler = (
                 chatLogger?.emitChatError(uploadError);
                 throw uploadError;
               }
+              processedMessages = rewriteSandboxFilePathsInMessages(
+                processedMessages,
+                uploadResult.pathRewrites,
+              );
             }
 
             // Generate title in parallel only for non-temporary new chats

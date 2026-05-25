@@ -20,6 +20,7 @@ import {
   getUploadBasePath,
   hasLocalDesktopSourcePaths,
   prepareLocalDesktopAttachmentsForTrigger,
+  rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const { messages: preparedMessages, sandboxFiles } =
+      let { messages: preparedMessages, sandboxFiles } =
         prepareLocalDesktopAttachmentsForTrigger(
           messages,
           getUploadBasePath("desktop"),
@@ -115,6 +116,10 @@ export async function POST(req: NextRequest) {
             `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
           );
         }
+        preparedMessages = rewriteSandboxFilePathsInMessages(
+          preparedMessages,
+          uploadResult.pathRewrites,
+        );
       }
       messagesForTrigger = preparedMessages;
       localDesktopAttachmentsPrepared = true;

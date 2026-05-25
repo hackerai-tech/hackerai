@@ -17,6 +17,16 @@ export type SandboxFile = {
     }
 );
 
+export type SandboxFilePathRewrite = {
+  from: string;
+  to: string;
+};
+
+type SandboxUploadResult = {
+  failedCount: number;
+  pathRewrites: SandboxFilePathRewrite[];
+};
+
 const logLocalAttachmentDebug = (
   event: string,
   data: Record<string, unknown>,
@@ -166,6 +176,36 @@ export const hasLocalDesktopSourcePaths = (
         part.localPath.length > 0,
     ),
   );
+
+const replaceAllPathOccurrences = (
+  value: string,
+  rewrites: SandboxFilePathRewrite[],
+): string =>
+  rewrites.reduce(
+    (text, rewrite) => text.split(rewrite.from).join(rewrite.to),
+    value,
+  );
+
+export const rewriteSandboxFilePathsInMessages = <T extends { parts?: any[] }>(
+  messages: T[],
+  rewrites: SandboxFilePathRewrite[],
+): T[] => {
+  if (rewrites.length === 0) return messages;
+
+  return messages.map((message) => {
+    if (!message.parts) return message;
+    return {
+      ...message,
+      parts: message.parts.map((part) => {
+        if (typeof part?.text !== "string") return part;
+        return {
+          ...part,
+          text: replaceAllPathOccurrences(part.text, rewrites),
+        };
+      }),
+    };
+  });
+};
 
 export const prepareLocalDesktopAttachmentsForTrigger = (
   messages: UIMessage[],
@@ -318,6 +358,107 @@ const copyLocalFileToSandbox = async (
   return sandbox.files.copyLocal(sourcePath, localPath);
 };
 
+const shellQuote = (value: string): string =>
+  `'${value.replace(/'/g, "'\\''")}'`;
+
+const shouldTryUploadPathFallback = (
+  localPath: string,
+  error: unknown,
+): boolean => {
+  if (!localPath.startsWith("/tmp/hackerai-upload/")) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /permission denied|read-only file system|cannot create directory|failed to create directory/i.test(
+    message,
+  );
+};
+
+const resolveWritableUploadFallbackPath = async (
+  sandbox: any,
+  originalLocalPath: string,
+): Promise<string | null> => {
+  const fileName = originalLocalPath.split(/[/\\]/).pop();
+  if (!fileName || !sandbox.commands?.run) return null;
+
+  const script = [
+    `filename=${shellQuote(fileName)}`,
+    `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
+    `  [ -n "$base" ] || continue`,
+    `  dir="$base/hackerai-upload"`,
+    `  if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then`,
+    `    cd "$dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$filename"`,
+    `    exit 0`,
+    `  fi`,
+    `done`,
+    `exit 1`,
+  ].join("\n");
+
+  const result = await sandbox.commands.run(script, {
+    displayName: "",
+  });
+  if (result.exitCode !== 0) return null;
+  const fallbackPath = result.stdout.trim();
+  return fallbackPath ? fallbackPath : null;
+};
+
+const stageSandboxFile = async (
+  sandbox: any,
+  file: SandboxFile,
+): Promise<SandboxFilePathRewrite | null> => {
+  try {
+    if (file.kind === "url") {
+      await downloadFileToSandbox(sandbox, file.url, file.localPath);
+    } else {
+      await copyLocalFileToSandbox(sandbox, file.path, file.localPath);
+    }
+    return null;
+  } catch (error) {
+    if (!shouldTryUploadPathFallback(file.localPath, error)) {
+      throw error;
+    }
+
+    const fallbackPath = await resolveWritableUploadFallbackPath(
+      sandbox,
+      file.localPath,
+    );
+    if (!fallbackPath || fallbackPath === file.localPath) {
+      throw error;
+    }
+
+    console.warn(
+      `[sandbox-upload] ${file.localPath} is not writable, retrying attachment staging at ${fallbackPath}`,
+    );
+
+    const fallbackFile = { ...file, localPath: fallbackPath } as SandboxFile;
+    try {
+      if (fallbackFile.kind === "url") {
+        await downloadFileToSandbox(
+          sandbox,
+          fallbackFile.url,
+          fallbackFile.localPath,
+        );
+      } else {
+        await copyLocalFileToSandbox(
+          sandbox,
+          fallbackFile.path,
+          fallbackFile.localPath,
+        );
+      }
+    } catch (fallbackError) {
+      const originalMessage =
+        error instanceof Error ? error.message : String(error);
+      const fallbackMessage =
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+      throw new Error(
+        `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
+      );
+    }
+
+    return { from: file.localPath, to: fallbackPath };
+  }
+};
+
 const safeUrlForLog = (url: string): string => {
   try {
     const parsed = new URL(url);
@@ -363,8 +504,8 @@ const redactSandboxUploadError = (
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
   ensureSandbox: () => Promise<any>,
-): Promise<{ failedCount: number }> => {
-  if (sandboxFiles.length === 0) return { failedCount: 0 };
+): Promise<SandboxUploadResult> => {
+  if (sandboxFiles.length === 0) return { failedCount: 0, pathRewrites: [] };
 
   logLocalAttachmentDebug("sandbox-staging-start", {
     totalCount: sandboxFiles.length,
@@ -378,15 +519,11 @@ export const uploadSandboxFiles = async (
     sandbox = await ensureSandbox();
   } catch (e) {
     console.error("Failed to acquire sandbox for upload:", e);
-    return { failedCount: sandboxFiles.length };
+    return { failedCount: sandboxFiles.length, pathRewrites: [] };
   }
 
   const results = await Promise.allSettled(
-    sandboxFiles.map((file) =>
-      file.kind === "url"
-        ? downloadFileToSandbox(sandbox, file.url, file.localPath)
-        : copyLocalFileToSandbox(sandbox, file.path, file.localPath),
-    ),
+    sandboxFiles.map((file) => stageSandboxFile(sandbox, file)),
   );
 
   const failedIndices = results
@@ -407,5 +544,9 @@ export const uploadSandboxFiles = async (
     });
   }
 
-  return { failedCount: failedIndices.length };
+  const pathRewrites = results.flatMap((result) =>
+    result.status === "fulfilled" && result.value ? [result.value] : [],
+  );
+
+  return { failedCount: failedIndices.length, pathRewrites };
 };
