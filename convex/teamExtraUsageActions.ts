@@ -319,6 +319,51 @@ export const deductWithAutoReloadForTeam = action({
       },
     );
 
+    const deductWithoutReload: {
+      success: boolean;
+      newBalancePoints: number;
+      newBalanceDollars: number;
+      insufficientFunds: boolean;
+      monthlyCapExceeded: boolean;
+      memberCapExceeded: boolean;
+      memberDisabled: boolean;
+      poolDisabled: boolean;
+      trustCapExceeded?: boolean;
+      trustCapDollars?: number | null;
+    } = await ctx.runMutation(api.teamExtraUsage.deductTeamPoints, {
+      serviceKey: args.serviceKey,
+      organizationId: args.organizationId,
+      userId: args.userId,
+      amountPoints: args.amountPoints,
+    });
+
+    let deductResult = deductWithoutReload;
+
+    // If deduction was blocked for reasons unrelated to available balance,
+    // do not attempt to auto-reload.
+    if (
+      deductResult.success ||
+      !deductResult.insufficientFunds ||
+      deductResult.monthlyCapExceeded ||
+      deductResult.memberCapExceeded ||
+      deductResult.memberDisabled ||
+      deductResult.poolDisabled ||
+      deductResult.trustCapExceeded
+    ) {
+      return {
+        success: deductResult.success,
+        newBalanceDollars: deductResult.newBalanceDollars,
+        insufficientFunds: deductResult.insufficientFunds,
+        monthlyCapExceeded: deductResult.monthlyCapExceeded,
+        memberCapExceeded: deductResult.memberCapExceeded,
+        memberDisabled: deductResult.memberDisabled,
+        poolDisabled: deductResult.poolDisabled,
+        trustCapExceeded: deductResult.trustCapExceeded,
+        trustCapDollars: deductResult.trustCapDollars,
+        autoReloadTriggered: false,
+      };
+    }
+
     const thresholdPoints = state.autoReloadThresholdPoints ?? 0;
     const reloadAmount = state.autoReloadAmountDollars ?? 0;
     let autoReloadTriggered = false;
@@ -431,23 +476,17 @@ export const deductWithAutoReloadForTeam = action({
       );
     }
 
-    const deductResult: {
-      success: boolean;
-      newBalancePoints: number;
-      newBalanceDollars: number;
-      insufficientFunds: boolean;
-      monthlyCapExceeded: boolean;
-      memberCapExceeded: boolean;
-      memberDisabled: boolean;
-      poolDisabled: boolean;
-      trustCapExceeded?: boolean;
-      trustCapDollars?: number | null;
-    } = await ctx.runMutation(api.teamExtraUsage.deductTeamPoints, {
-      serviceKey: args.serviceKey,
-      organizationId: args.organizationId,
-      userId: args.userId,
-      amountPoints: args.amountPoints,
-    });
+    if (autoReloadResult?.success) {
+      deductResult = await ctx.runMutation(
+        api.teamExtraUsage.deductTeamPoints,
+        {
+          serviceKey: args.serviceKey,
+          organizationId: args.organizationId,
+          userId: args.userId,
+          amountPoints: args.amountPoints,
+        },
+      );
+    }
 
     convexLogger.info("team_deduct_with_auto_reload", {
       organization_id: args.organizationId,
