@@ -304,13 +304,12 @@ export const addCredits = mutation({
 
     // Idempotency: skip if already processed (prevents double-credit on webhook retries
     // and across both the post-checkout confirm path and the async webhook path)
-    if (args.idempotencyKey) {
+    const sessionKey = args.idempotencyKey;
+    if (sessionKey) {
       const durableExisting = await ctx.db
         .query("processed_checkout_sessions")
-        .withIndex("by_session_key", (q) =>
-          q.eq("session_key", args.idempotencyKey!),
-        )
-        .first();
+        .withIndex("by_session_key", (q) => q.eq("session_key", sessionKey))
+        .unique();
       if (durableExisting) {
         return { newBalance: 0, alreadyProcessed: true };
       }
