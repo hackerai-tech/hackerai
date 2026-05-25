@@ -69,6 +69,7 @@ import {
 import {
   uploadSandboxFiles,
   getUploadBasePath,
+  rewriteSandboxFilePathsInMessages,
 } from "@/lib/utils/sandbox-file-utils";
 import {
   captureAgentRun,
@@ -635,7 +636,7 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
 
-      const { processedMessages, selectedModel, sandboxFiles } =
+      let { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
           messages: messagesForProcessing,
           mode,
@@ -837,7 +838,11 @@ export const agentLongTask = task({
                   ? "Preparing local attachments on your computer"
                   : "Uploading attachments to the computer",
               );
-              let uploadResult: { failedCount: number } = { failedCount: 0 };
+              let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>> =
+                {
+                  failedCount: 0,
+                  pathRewrites: [],
+                };
               try {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
@@ -857,6 +862,10 @@ export const agentLongTask = task({
                 chatLogger?.emitChatError(uploadError);
                 throw uploadError;
               }
+              processedMessages = rewriteSandboxFilePathsInMessages(
+                processedMessages,
+                uploadResult.pathRewrites,
+              );
             }
 
             const titlePromise =
