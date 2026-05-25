@@ -465,12 +465,14 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model-free": ["fallback-agent-model"],
   "model-deepseek-v4-flash": ["fallback-ask-model"],
   "ask-model": ["fallback-grok-4.3"],
+  "agent-model": ["fallback-grok-4.3"],
   "model-gemini-3-flash": ["fallback-grok-4.3"],
+  "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-kimi-k2.6"],
+    agent: ["model-kimi-k2.6", "fallback-grok-4.3"],
     ask: ["model-gemini-3-flash"],
   };
 
