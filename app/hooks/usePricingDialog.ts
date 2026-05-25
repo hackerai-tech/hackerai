@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SubscriptionTier } from "@/types";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 export const usePricingDialog = (subscription?: SubscriptionTier) => {
   const [showPricing, setShowPricing] = useState(false);
+  const capturedPricingViewRef = useRef(false);
 
   useEffect(() => {
     // Check if URL hash is #pricing
@@ -22,6 +24,20 @@ export const usePricingDialog = (subscription?: SubscriptionTier) => {
       }
 
       setShowPricing(shouldShow);
+      if (!shouldShow) {
+        capturedPricingViewRef.current = false;
+        return;
+      }
+
+      if (!capturedPricingViewRef.current) {
+        if (
+          captureAuthenticatedEvent("pricing_viewed", {
+            subscription,
+          })
+        ) {
+          capturedPricingViewRef.current = true;
+        }
+      }
     };
 
     // Check on mount
