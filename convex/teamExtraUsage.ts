@@ -267,25 +267,24 @@ export const deductTeamPoints = mutation({
       memberMonthlySpent = 0;
     }
 
-    // Compute effective team cap from the admin-set cap only. The trust-based
-    // protection cap is intentionally ignored for now.
+    // Compute effective team cap (user-set vs trust)
     const teamCap = team.monthly_cap_points;
-    let effectiveTeamCap = teamCap;
-
-    // TEMPORARY TRUST-CAP BYPASS:
-    // Restore this block if HackerAI's own trust-based protection caps should
-    // be combined with admin-set team spending limits again.
-    /*
     const { capDollars: trustCapDollars } = computeExtraUsageCap(team);
     const trustCapPoints =
       trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
 
-    if (effectiveTeamCap !== undefined && trustCapPoints !== undefined) {
-      effectiveTeamCap = Math.min(effectiveTeamCap, trustCapPoints);
+    let effectiveTeamCap: number | undefined;
+    if (teamCap !== undefined && trustCapPoints !== undefined) {
+      effectiveTeamCap = Math.min(teamCap, trustCapPoints);
     } else {
-      effectiveTeamCap = effectiveTeamCap ?? trustCapPoints;
+      effectiveTeamCap = teamCap ?? trustCapPoints;
     }
-    */
+
+    const isTrustCap =
+      effectiveTeamCap !== undefined &&
+      trustCapPoints !== undefined &&
+      effectiveTeamCap === trustCapPoints &&
+      (teamCap === undefined || trustCapPoints <= teamCap);
 
     // Team monthly cap check
     if (effectiveTeamCap !== undefined) {
@@ -300,7 +299,8 @@ export const deductTeamPoints = mutation({
           memberCapExceeded: false,
           memberDisabled: false,
           poolDisabled: false,
-          trustCapExceeded: false,
+          trustCapExceeded: isTrustCap,
+          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
         };
       }
     }
