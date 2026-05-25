@@ -64,6 +64,30 @@ export async function POST(req: NextRequest) {
       rawSelectedModel,
     });
 
+    const requestMessages = Array.isArray(messages) ? messages : [];
+    if (!regenerate && !isAutoContinue && requestMessages.length === 0) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "agent_long_empty_message_payload_rejected",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          chat_id: chatId,
+          user_id: userId,
+          temporary: !!temporary,
+          subscription,
+        }),
+      );
+      throw new ChatSDKError(
+        "bad_request:api",
+        "No message content was found for this request. Please send a new message and try again.",
+        {
+          empty_prompt: true,
+          new_messages_count: 0,
+        },
+      );
+    }
+
     // Fetch existing chat to: (a) detect isNewChat for title generation,
     // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
     //     regenerate/auto-continue and does the ownership check instead.
@@ -71,11 +95,11 @@ export async function POST(req: NextRequest) {
     const isNewChat =
       !temporary && !existingChat && !regenerate && !isAutoContinue;
 
-    let messagesForPersistence = stripLocalDesktopSourcePaths(messages);
+    let messagesForPersistence = stripLocalDesktopSourcePaths(requestMessages);
     let messagesForTrigger = messagesForPersistence;
     let localDesktopAttachmentsPrepared = false;
 
-    if (hasLocalDesktopSourcePaths(messages)) {
+    if (hasLocalDesktopSourcePaths(requestMessages)) {
       if (sandboxPreference !== "desktop") {
         throw new ChatSDKError(
           "bad_request:api",
@@ -85,7 +109,7 @@ export async function POST(req: NextRequest) {
 
       let { messages: preparedMessages, sandboxFiles } =
         prepareLocalDesktopAttachmentsForTrigger(
-          messages,
+          requestMessages,
           getUploadBasePath("desktop"),
         );
       if (sandboxFiles.length > 0) {

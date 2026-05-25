@@ -105,6 +105,15 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "reasoning_chars",
   "was_aborted",
   "was_preemptive_timeout",
+  "empty_prompt",
+  "truncation_dropped_all_messages",
+  "existing_messages_count",
+  "new_messages_count",
+  "all_messages_count",
+  "total_tokens_before",
+  "max_tokens",
+  "file_ids_count",
+  "largest_file_token",
 ] as const;
 
 const compactChatErrorMetadata = (

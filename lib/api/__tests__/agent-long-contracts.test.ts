@@ -41,6 +41,11 @@ const taskSrc = fs.readFileSync(
   "utf8",
 );
 
+const dbActionsSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../db/actions.ts"),
+  "utf8",
+);
+
 describe("agent-long-transport — STREAM_TIMEOUT_MS guard", () => {
   test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
     expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
@@ -210,5 +215,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/login_required/);
     expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
     expect(taskSrc).toMatch(/metadata\.flush\(\)/);
+  });
+
+  test("empty rehydrated history is classified separately from oversized input", () => {
+    const emptyPromptIdx = dbActionsSrc.indexOf("chat_prompt_empty");
+    const emptyMessageIdx = dbActionsSrc.indexOf(
+      "No message content was found for this request",
+      emptyPromptIdx,
+    );
+    const tooLargeIdx = dbActionsSrc.indexOf(
+      "Your input (including any attached files) is too large",
+      emptyMessageIdx,
+    );
+
+    expect(emptyPromptIdx).toBeGreaterThan(-1);
+    expect(emptyMessageIdx).toBeGreaterThan(emptyPromptIdx);
+    expect(tooLargeIdx).toBeGreaterThan(emptyMessageIdx);
+    expect(dbActionsSrc).toMatch(/empty_prompt:\s*true/);
+    expect(taskSrc).toMatch(/errorMetadata\?\.empty_prompt\s*===\s*true/);
+    expect(taskSrc).toMatch(/"empty_prompt"/);
+  });
+
+  test("agent-long DB rehydrate failures are not swallowed when no payload messages exist", () => {
+    const fetchFailedIdx = dbActionsSrc.indexOf("chat_history_fetch_failed");
+    const zeroNewMessagesIdx = dbActionsSrc.indexOf(
+      "newMessages.length === 0",
+      fetchFailedIdx,
+    );
+    const rethrowIdx = dbActionsSrc.indexOf(
+      'databaseError("messages.getMessagesPageForBackend"',
+      zeroNewMessagesIdx,
+    );
+
+    expect(fetchFailedIdx).toBeGreaterThan(-1);
+    expect(zeroNewMessagesIdx).toBeGreaterThan(fetchFailedIdx);
+    expect(rethrowIdx).toBeGreaterThan(zeroNewMessagesIdx);
+  });
+
+  test("normal agent-long sends reject empty message payloads before triggering", () => {
+    const guardIdx = routeSrc.indexOf("requestMessages.length === 0");
+    const emptyPayloadIdx = routeSrc.indexOf(
+      "agent_long_empty_message_payload_rejected",
+    );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", emptyPayloadIdx);
+
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(emptyPayloadIdx).toBeGreaterThan(guardIdx);
+    expect(triggerIdx).toBeGreaterThan(emptyPayloadIdx);
   });
 });
