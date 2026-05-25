@@ -74,6 +74,7 @@ describe("processMessageFiles image size guards", () => {
       makeMessage({
         type: "file",
         mediaType: "image/png",
+        fileId: "file_huge",
         name: "huge.png",
         url: "https://example.com/huge.png",
       }),
@@ -107,6 +108,7 @@ describe("processMessageFiles image size guards", () => {
       makeMessage({
         type: "file",
         mediaType: "image/png",
+        fileId: "file_unknown",
         name: "unknown-size.png",
         url: "https://example.com/unknown-size.png",
       }),
@@ -132,6 +134,7 @@ describe("processMessageFiles image size guards", () => {
       makeMessage({
         type: "file",
         mediaType: "image/png",
+        fileId: "file_small",
         name: "small.png",
         url: "https://example.com/small.png",
       }),
@@ -145,6 +148,30 @@ describe("processMessageFiles image size guards", () => {
       mediaType: "image/png",
       name: "small.png",
       url: "https://example.com/small.png",
+    });
+  });
+
+  it("does not probe or convert inline URL file parts without fileId", async () => {
+    const fetchSpy = jest.fn();
+    global.fetch = fetchSpy as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "application/pdf",
+        name: "inline.pdf",
+        url: "https://example.com/inline.pdf",
+      }),
+      "ask",
+      undefined,
+      "pro",
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.messages[0].parts[1]).toMatchObject({
+      type: "file",
+      mediaType: "application/pdf",
+      url: "https://example.com/inline.pdf",
     });
   });
 
