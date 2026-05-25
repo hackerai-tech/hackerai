@@ -61,15 +61,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return;
 
-    // Determine if we should track this user:
-    // - By default (env not set): only track paid users (pro, ultra, team)
-    // - If NEXT_PUBLIC_POSTHOG_TRACK_FREE_USERS=true: only track free users
-    const trackFreeUsers =
-      process.env.NEXT_PUBLIC_POSTHOG_TRACK_FREE_USERS === "true";
-    const isPaidUser = subscription !== "free";
-
-    const shouldTrack =
-      Boolean(user) && (trackFreeUsers ? !isPaidUser : isPaidUser);
+    const shouldTrack = Boolean(user);
 
     if (!shouldTrack) {
       if (posthog.__loaded) {

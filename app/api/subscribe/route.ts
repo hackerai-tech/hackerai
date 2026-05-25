@@ -21,6 +21,8 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
     const requestedQuantity: number | undefined = body?.quantity;
+    const posthogDistinctId = req.headers.get("x-posthog-distinct-id");
+    const posthogSessionId = req.headers.get("x-posthog-session-id");
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
@@ -234,6 +236,8 @@ export const POST = async (req: NextRequest) => {
       stripe_customer_id: customer.id,
       stripe_checkout_session_id: session.id,
       stripe_price_id: selectedPrice.id,
+      client_distinct_id: posthogDistinctId ?? undefined,
+      $session_id: posthogSessionId ?? undefined,
       $set: {
         last_checkout_started_at: new Date().toISOString(),
       },
