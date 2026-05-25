@@ -1,6 +1,5 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { copyChatSummary } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 
 /**
@@ -331,7 +330,7 @@ export const forkSharedChat = mutation({
     // Create new chat owned by the current user
     const newChatId = crypto.randomUUID();
 
-    const newChatDocId = await ctx.db.insert("chats", {
+    await ctx.db.insert("chats", {
       id: newChatId,
       title: chat.title,
       user_id: identity.subject,
@@ -339,11 +338,9 @@ export const forkSharedChat = mutation({
       update_time: Date.now(),
     });
 
-    // Copy messages to new chat, tracking old→new ID mapping for summary remapping
-    const messageIdMap = new Map<string, string>();
+    // Copy messages to new chat
     for (const msg of frozenMessages) {
       const newMessageId = crypto.randomUUID();
-      messageIdMap.set(msg.id, newMessageId);
       // Remove file/image parts entirely — the forking user doesn't own the
       // original files, signed URLs will expire, and placeholder parts render
       // as broken "Unknown file" cards in the regular chat view.
@@ -365,16 +362,6 @@ export const forkSharedChat = mutation({
         generation_time_ms: msg.generation_time_ms,
         finish_reason: msg.finish_reason,
         usage: msg.usage,
-      });
-    }
-
-    // Copy summary from original chat if it covers the forked messages
-    if (chat.latest_summary_id) {
-      await copyChatSummary(ctx.db, {
-        sourceSummaryId: chat.latest_summary_id,
-        targetChatDocId: newChatDocId,
-        targetChatId: newChatId,
-        messageIdMap,
       });
     }
 
