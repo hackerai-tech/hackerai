@@ -184,14 +184,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       liveUsagePredicateIdx,
     );
     const refundGuardIdx = taskSrc.indexOf("if (!hasObservedUsage())");
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
     const cancelRefundGuardIdx = taskSrc.indexOf(
       "if (!cleanup.hasObservedUsage())",
+      onCancelIdx,
+    );
+    const cancelRefundIdx = taskSrc.indexOf(
+      "cleanup.usageRefundTracker.refund()",
+      onCancelIdx,
     );
 
     expect(liveUsagePredicateIdx).toBeGreaterThan(-1);
     expect(cleanupMapIdx).toBeGreaterThan(liveUsagePredicateIdx);
     expect(refundGuardIdx).toBeGreaterThan(liveUsagePredicateIdx);
-    expect(cancelRefundGuardIdx).toBeGreaterThan(-1);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(cancelRefundGuardIdx).toBeGreaterThan(onCancelIdx);
+    expect(cancelRefundIdx).toBeGreaterThan(cancelRefundGuardIdx);
     expect(taskSrc).not.toMatch(/hasObservedUsage\s*=\s*hasObservedUsage/);
   });
 
