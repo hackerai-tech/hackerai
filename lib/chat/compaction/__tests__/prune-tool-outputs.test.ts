@@ -61,6 +61,27 @@ describe("pruneToolOutputs", () => {
     expect(result.messages).toBe(messages); // same reference
   });
 
+  it("counts tool outputs containing tokenizer special tokens without throwing", () => {
+    const messages: UIMessage[] = [
+      makeAssistantMessage([
+        makeToolPart(
+          "file",
+          {
+            content:
+              "Shell script contains a literal sentinel: <|im_start|>\nDone.",
+          },
+          { action: "read", path: "/tmp/script.sh" },
+        ),
+      ]),
+    ];
+
+    const result = pruneToolOutputs(messages, 50_000, NO_MIN);
+
+    expect(result.prunedCount).toBe(0);
+    expect(result.skipReason).toBe("within-budget");
+    expect(result.messages).toBe(messages);
+  });
+
   it("prunes oldest tool outputs first when over budget", () => {
     // Create a large output string that will exceed a small budget
     const largeOutput = "x".repeat(5000); // ~1250 tokens
@@ -862,6 +883,34 @@ describe("pruneModelMessages", () => {
     ];
 
     const result = pruneModelMessages(messages, 50_000, NO_MIN);
+    expect(result.prunedCount).toBe(0);
+    expect(result.skipReason).toBe("within-budget");
+    expect(result.messages).toBe(messages);
+  });
+
+  it("counts model tool results containing tokenizer special tokens without throwing", () => {
+    const messages = [
+      makeAssistantModelMsg([
+        {
+          toolCallId: "c1",
+          toolName: "file",
+          args: { action: "read", path: "/tmp/upgrade_model.sh" },
+        },
+      ]),
+      makeToolModelMsg([
+        {
+          toolCallId: "c1",
+          toolName: "file",
+          output: {
+            content:
+              "Template text includes reserved model syntax: <|im_start|>system",
+          },
+        },
+      ]),
+    ];
+
+    const result = pruneModelMessages(messages, 50_000, NO_MIN);
+
     expect(result.prunedCount).toBe(0);
     expect(result.skipReason).toBe("within-budget");
     expect(result.messages).toBe(messages);
