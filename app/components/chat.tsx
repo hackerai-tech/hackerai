@@ -29,12 +29,12 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import {
-  fetchAgentLongStream,
-  resumeAgentLongStream,
-} from "@/lib/chat/agent-long-transport";
-import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
+  fetchTriggerChatStream,
+  resumeTriggerChatStream,
+} from "@/lib/chat/trigger-chat-transport";
+import { shouldUseTriggerForChat } from "@/lib/chat/agent-routing";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
+import { stripTriggerChatHeartbeatPartsFromMessages } from "@/lib/chat/trigger-chat-heartbeat";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
@@ -338,27 +338,27 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
 
-  // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  // Default transport - stored in ref since it's created before useChat
   const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
-        const useTriggerAgent = shouldUseAgentLongForAgent({
+        const useTriggerChat = shouldUseTriggerForChat({
           mode,
           subscription: subscriptionRef.current,
           isTauri: isTauriEnvironment(),
         });
-        if (useTriggerAgent) {
+        if (useTriggerChat) {
           // useChat reuses this fetch for both POST sendMessages and GET
           // reconnectToStream — dispatch on method.
           if (init?.method === "GET") {
-            return resumeAgentLongStream(
+            return resumeTriggerChatStream(
               typeof input === "string" ? input : input.toString(),
               init,
             );
           }
-          return fetchAgentLongStream(init);
+          return fetchTriggerChatStream(init);
         }
         // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
         // load — prepareReconnectToStreamRequest already pointed at the resume
@@ -370,7 +370,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             "/api/agent-long/resume",
           )
         ) {
-          return resumeAgentLongStream(
+          return resumeTriggerChatStream(
             typeof input === "string" ? input : input.toString(),
             init,
           );
@@ -380,15 +380,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return fetchWithErrorHandlers(url, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
-        // Use the agent-long resume endpoint when there is a stored trigger run
-        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
-        // when the current run is using Trigger.dev for agent mode.
-        const useTriggerAgent = shouldUseAgentLongForAgent({
+        // Use the Trigger resume endpoint when there is a stored run (covers
+        // legacy "agent-long" chats normalised to "agent" on load) OR when the
+        // current mode/subscription routes through Trigger.dev.
+        const useTriggerChat = shouldUseTriggerForChat({
           mode: chatModeRef.current,
           subscription: subscriptionRef.current,
           isTauri: isTauriEnvironment(),
         });
-        if (useTriggerAgent || !!activeTriggerRunRef.current) {
+        if (useTriggerChat || !!activeTriggerRunRef.current) {
           return {
             api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
           };
@@ -410,7 +410,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
         const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
           const messagesWithoutHeartbeats =
-            stripAgentLongHeartbeatPartsFromMessages(msgs);
+            stripTriggerChatHeartbeatPartsFromMessages(msgs);
           return messagesWithoutHeartbeats.map((msg) => {
             if (!msg.parts || msg.parts.length === 0) return msg;
             const strippedParts = msg.parts.map((part: any) => {

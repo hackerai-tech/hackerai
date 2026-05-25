@@ -1,5 +1,5 @@
 /**
- * Structural contract tests for the three non-obvious agent-long reliability
+ * Structural contract tests for the non-obvious Trigger chat reliability
  * invariants that are easy to break in a well-meaning refactor:
  *
  *   1. Transport STREAM_TIMEOUT_MS guard — prevents SSE hanging forever when
@@ -17,7 +17,7 @@ import fs from "fs";
 import path from "path";
 
 const transportSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../chat/agent-long-transport.ts"),
+  path.resolve(__dirname, "../../chat/trigger-chat-transport.ts"),
   "utf8",
 );
 
@@ -37,11 +37,26 @@ const routeSrc = fs.readFileSync(
 );
 
 const taskSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/chat-task.ts"),
+  "utf8",
+);
+
+const taskDashboardSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/chat-task-dashboard.ts"),
+  "utf8",
+);
+
+const agentLongTaskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
 );
 
-describe("agent-long-transport — STREAM_TIMEOUT_MS guard", () => {
+const paidAskTaskSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/paid-ask.ts"),
+  "utf8",
+);
+
+describe("trigger-chat-transport — STREAM_TIMEOUT_MS guard", () => {
   test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
     expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
   });
@@ -102,12 +117,30 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
   });
 });
 
-describe("agent-long task — Trigger.dev dashboard error visibility", () => {
+describe("Trigger chat task — Trigger.dev dashboard error visibility", () => {
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(/metadata:\s*{/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
+    expect(routeSrc).toMatch(/mode,/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+  });
+
+  test("route passes the requested chat mode through to the Trigger task", () => {
+    expect(routeSrc).toMatch(/mode:\s*rawMode/);
+    expect(routeSrc).toMatch(
+      /const mode:\s*ChatMode\s*=\s*rawMode\s*\?\?\s*"agent"/,
+    );
+    expect(routeSrc).toMatch(/mode,\s*subscription/s);
+  });
+
+  test("paid ask uses its own Trigger task id", () => {
+    expect(routeSrc).toMatch(/typeof paidAskTask/);
+    expect(routeSrc).toMatch(/"paid-ask"/);
+    expect(paidAskTaskSrc).toMatch(/id:\s*"paid-ask"/);
+    expect(paidAskTaskSrc).toMatch(/defaultMode:\s*"ask"/);
+    expect(agentLongTaskSrc).toMatch(/id:\s*"agent-long"/);
+    expect(agentLongTaskSrc).toMatch(/defaultMode:\s*"agent"/);
   });
 
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
@@ -175,12 +208,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("task uses payload mode for endpoint logging and persisted chat metadata", () => {
+    expect(taskSrc).toMatch(
+      /const mode:\s*ChatMode\s*=\s*payloadMode\s*\?\?\s*options\.defaultMode/,
+    );
+    expect(taskSrc).toMatch(
+      /const endpoint\s*=\s*isAgentMode\(mode\)\s*\?\s*"\/api\/agent"\s*:\s*"\/api\/chat"/,
+    );
+    expect(taskSrc).toMatch(/defaultModelSlug:\s*mode/);
+  });
+
   test("task catch records structured metadata for dashboard filtering", () => {
-    expect(taskSrc).toMatch(/recordAgentLongFailureForDashboard/);
-    expect(taskSrc).toMatch(/errorCategory/);
-    expect(taskSrc).toMatch(/loginRequired/);
-    expect(taskSrc).toMatch(/login_required/);
-    expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
-    expect(taskSrc).toMatch(/metadata\.flush\(\)/);
+    expect(taskSrc).toMatch(/recordTriggerChatFailureForDashboard/);
+    expect(taskDashboardSrc).toMatch(/errorCategory/);
+    expect(taskDashboardSrc).toMatch(/loginRequired/);
+    expect(taskDashboardSrc).toMatch(/login_required/);
+    expect(taskDashboardSrc).toMatch(/error_\$\{summary\.category\}/);
+    expect(taskDashboardSrc).toMatch(/metadata\.flush\(\)/);
   });
 });

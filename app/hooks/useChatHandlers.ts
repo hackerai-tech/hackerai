@@ -4,7 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
+import { shouldUseTriggerForChat } from "@/lib/chat/agent-routing";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
@@ -117,7 +117,7 @@ export const useChatHandlers = ({
   // chats only; temporary chats use the legacy Redis pub/sub cancel path.
   const shouldCancelTriggerRun = () =>
     !temporaryChatsEnabledRef.current &&
-    shouldUseAgentLongForAgent({
+    shouldUseTriggerForChat({
       mode: chatModeRef.current,
       subscription: subscriptionRef.current,
       isTauri: isTauriEnvironment(),
