@@ -215,6 +215,26 @@ const isChatNotFoundMessageSaveError = (
   operation === "messages.saveMessage" &&
   getDatabaseErrorCode(dbErrorData) === "CHAT_NOT_FOUND";
 
+const logChatMessagePreparationFailure = (
+  event: string,
+  level: "warn" | "error",
+  fields: Record<string, unknown>,
+) => {
+  const payload = {
+    level,
+    event,
+    service: "chat-handler",
+    timestamp: new Date().toISOString(),
+    ...fields,
+  };
+  const line = JSON.stringify(payload);
+  if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.error(line);
+  }
+};
+
 const databaseError = (
   operation: string,
   error: unknown,
@@ -764,8 +784,28 @@ export async function getMessagesByChatId({
           };
         }
       } catch (error) {
-        // If error fetching, use empty array
-        console.warn("Failed to fetch existing messages:", error);
+        logChatMessagePreparationFailure("chat_history_fetch_failed", "warn", {
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          is_temporary: !!isTemporary,
+          regenerate: !!regenerate,
+          new_messages_count: newMessages.length,
+          error_name: error instanceof Error ? error.name : typeof error,
+          error_message: truncateDiagnosticString(stringifyError(error)),
+          db_error_data: getErrorData(error),
+        });
+
+        if (newMessages.length === 0) {
+          throw databaseError("messages.getMessagesPageForBackend", error, {
+            chat_id: chatId,
+            user_id: userId,
+            mode,
+            is_temporary: !!isTemporary,
+            regenerate: !!regenerate,
+            new_messages_count: newMessages.length,
+          });
+        }
       }
     }
   }
@@ -801,7 +841,7 @@ export async function getMessagesByChatId({
   const fileTokens = truncateResult.fileTokens;
 
   if (!truncatedMessages || truncatedMessages.length === 0) {
-    // Structured diagnostic log (no user content)
+    let emptyPromptMetadata: Record<string, unknown> | undefined;
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any);
@@ -809,30 +849,54 @@ export async function getMessagesByChatId({
         mode,
       });
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
-      console.error("chat-truncation-empty", {
-        chatId,
-        userId,
-        isTemporary: !!isTemporary,
+      const largestFileToken = Object.values(fileTokens).length
+        ? Math.max(...Object.values(fileTokens))
+        : 0;
+      emptyPromptMetadata = {
+        chat_id: chatId,
+        user_id: userId,
+        is_temporary: !!isTemporary,
         regenerate: !!regenerate,
         subscription,
-        existingMessagesCount: existingMessages.length,
-        newMessagesCount: newMessages.length,
-        allMessagesCount: allMessages.length,
-        totalTokensBefore,
-        maxTokens,
-        fileIdsCount: fileIds.length,
-        fileTokensSample: Object.entries(fileTokens)
+        mode,
+        existing_messages_count: existingMessages.length,
+        new_messages_count: newMessages.length,
+        all_messages_count: allMessages.length,
+        total_tokens_before: totalTokensBefore,
+        max_tokens: maxTokens,
+        file_ids_count: fileIds.length,
+        file_tokens_sample: Object.entries(fileTokens)
           .slice(0, 5)
           .map(([k, v]) => ({ fileId: k, tokens: v })),
-        largestFileToken: Object.values(fileTokens).length
-          ? Math.max(...Object.values(fileTokens))
-          : 0,
-      });
+        largest_file_token: largestFileToken,
+      };
+      logChatMessagePreparationFailure(
+        allMessages.length === 0
+          ? "chat_prompt_empty"
+          : "chat_truncation_dropped_all_messages",
+        "error",
+        emptyPromptMetadata,
+      );
     } catch {}
+
+    if (allMessages.length === 0) {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "No message content was found for this request. Please send a new message and try again.",
+        {
+          empty_prompt: true,
+          ...emptyPromptMetadata,
+        },
+      );
+    }
 
     throw new ChatSDKError(
       "bad_request:api",
       "Your input (including any attached files) is too large to process. Please remove some attachments or shorten your message and try again.",
+      {
+        truncation_dropped_all_messages: true,
+        ...emptyPromptMetadata,
+      },
     );
   }
 

@@ -162,6 +162,15 @@ type AgentLongErrorSummary = {
   toolPartCount?: number;
   dataPartCount?: number;
   reasoningChars?: number;
+  emptyPrompt?: boolean;
+  truncationDroppedAllMessages?: boolean;
+  existingMessagesCount?: number;
+  newMessagesCount?: number;
+  allMessagesCount?: number;
+  totalTokensBefore?: number;
+  maxTokens?: number;
+  fileIdsCount?: number;
+  largestFileToken?: number;
 };
 
 const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
@@ -215,7 +224,11 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
           ? "login_required"
           : isChatNotFoundError(error)
             ? "chat_not_found"
-            : "chat_error",
+            : errorMetadata?.empty_prompt === true
+              ? "empty_prompt"
+              : errorMetadata?.truncation_dropped_all_messages === true
+                ? "input_too_large"
+                : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -235,6 +248,22 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       toolPartCount: getNumberMetadata(errorMetadata, "tool_part_count"),
       dataPartCount: getNumberMetadata(errorMetadata, "data_part_count"),
       reasoningChars: getNumberMetadata(errorMetadata, "reasoning_chars"),
+      emptyPrompt: errorMetadata?.empty_prompt === true,
+      truncationDroppedAllMessages:
+        errorMetadata?.truncation_dropped_all_messages === true,
+      existingMessagesCount: getNumberMetadata(
+        errorMetadata,
+        "existing_messages_count",
+      ),
+      newMessagesCount: getNumberMetadata(errorMetadata, "new_messages_count"),
+      allMessagesCount: getNumberMetadata(errorMetadata, "all_messages_count"),
+      totalTokensBefore: getNumberMetadata(
+        errorMetadata,
+        "total_tokens_before",
+      ),
+      maxTokens: getNumberMetadata(errorMetadata, "max_tokens"),
+      fileIdsCount: getNumberMetadata(errorMetadata, "file_ids_count"),
+      largestFileToken: getNumberMetadata(errorMetadata, "largest_file_token"),
     };
   }
 
@@ -318,6 +347,23 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("dataPartCount", summary.dataPartCount);
   if (summary.reasoningChars != null)
     metadata.set("reasoningChars", summary.reasoningChars);
+  if (summary.emptyPrompt) metadata.set("emptyPrompt", true);
+  if (summary.truncationDroppedAllMessages) {
+    metadata.set("truncationDroppedAllMessages", true);
+  }
+  if (summary.existingMessagesCount != null)
+    metadata.set("existingMessagesCount", summary.existingMessagesCount);
+  if (summary.newMessagesCount != null)
+    metadata.set("newMessagesCount", summary.newMessagesCount);
+  if (summary.allMessagesCount != null)
+    metadata.set("allMessagesCount", summary.allMessagesCount);
+  if (summary.totalTokensBefore != null)
+    metadata.set("totalTokensBefore", summary.totalTokensBefore);
+  if (summary.maxTokens != null) metadata.set("maxTokens", summary.maxTokens);
+  if (summary.fileIdsCount != null)
+    metadata.set("fileIdsCount", summary.fileIdsCount);
+  if (summary.largestFileToken != null)
+    metadata.set("largestFileToken", summary.largestFileToken);
 
   const errorTags = [`error_${summary.category}`];
   if (summary.code) {
