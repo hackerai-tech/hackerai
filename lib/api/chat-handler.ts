@@ -40,7 +40,7 @@ import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
-  captureAgentRun,
+  captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
   createChatLogger,
@@ -907,13 +907,19 @@ export const createChatHandler = (
                                   userId,
                                   mode,
                                 });
-                                captureAgentRun({
+                                const outcome = retryAborted
+                                  ? "aborted"
+                                  : "success";
+                                captureAgentCompletionAnalytics({
                                   posthog,
                                   userId,
+                                  chatId,
+                                  endpoint,
                                   mode,
                                   subscription,
                                   sandboxInfo,
-                                  outcome: retryAborted ? "aborted" : "success",
+                                  outcome,
+                                  chatLogger,
                                 });
                                 shutdownPostHog(posthog);
                                 chatLogger!.emitSuccess({
@@ -1118,13 +1124,17 @@ export const createChatHandler = (
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
-                    captureAgentRun({
+                    const outcome = isAborted ? "aborted" : "success";
+                    captureAgentCompletionAnalytics({
                       posthog,
                       userId,
+                      chatId,
+                      endpoint,
                       mode,
                       subscription,
                       sandboxInfo,
-                      outcome: isAborted ? "aborted" : "success",
+                      outcome,
+                      chatLogger,
                     });
                     shutdownPostHog(posthog);
                     chatLogger!.emitSuccess({
