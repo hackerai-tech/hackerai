@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
-import { createToolInputDedupFilter } from "../trigger-chat-tool-input-dedup";
+import { createToolInputDedupFilter } from "../agent-long-tool-input-dedup";
 
 describe("createToolInputDedupFilter", () => {
   it("keeps tool-input-delta chunks before tool-input-available", () => {

@@ -1,14 +1,14 @@
 import { describe, expect, it } from "@jest/globals";
 import {
-  TRIGGER_CHAT_HEARTBEAT_INTERVAL_MS,
-  TRIGGER_CHAT_HEARTBEAT_PART_TYPE,
-  stripTriggerChatHeartbeatParts,
-  stripTriggerChatHeartbeatPartsFromMessages,
-} from "../trigger-chat-heartbeat";
+  AGENT_LONG_HEARTBEAT_INTERVAL_MS,
+  AGENT_LONG_HEARTBEAT_PART_TYPE,
+  stripAgentLongHeartbeatParts,
+  stripAgentLongHeartbeatPartsFromMessages,
+} from "../agent-long-heartbeat";
 
-describe("trigger-chat heartbeat helpers", () => {
+describe("agent-long heartbeat helpers", () => {
   it("uses a heartbeat interval below the 300 second quiet window", () => {
-    expect(TRIGGER_CHAT_HEARTBEAT_INTERVAL_MS).toBeLessThan(300_000);
+    expect(AGENT_LONG_HEARTBEAT_INTERVAL_MS).toBeLessThan(300_000);
   });
 
   it("strips heartbeat parts without touching visible parts", () => {
@@ -17,12 +17,12 @@ describe("trigger-chat heartbeat helpers", () => {
       role: "assistant",
       parts: [
         { type: "step-start" },
-        { type: TRIGGER_CHAT_HEARTBEAT_PART_TYPE, data: { at: 1 } },
+        { type: AGENT_LONG_HEARTBEAT_PART_TYPE, data: { at: 1 } },
         { type: "data-terminal", data: { terminal: "done", toolCallId: "t1" } },
       ],
     };
 
-    expect(stripTriggerChatHeartbeatParts(message)).toEqual({
+    expect(stripAgentLongHeartbeatParts(message)).toEqual({
       id: "assistant-1",
       role: "assistant",
       parts: [
@@ -35,6 +35,6 @@ describe("trigger-chat heartbeat helpers", () => {
   it("returns the original array when no heartbeat parts are present", () => {
     const messages = [{ parts: [{ type: "text", text: "hello" }] }];
 
-    expect(stripTriggerChatHeartbeatPartsFromMessages(messages)).toBe(messages);
+    expect(stripAgentLongHeartbeatPartsFromMessages(messages)).toBe(messages);
   });
 });

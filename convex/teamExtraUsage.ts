@@ -252,22 +252,8 @@ export const deductTeamPoints = mutation({
       };
     }
 
-    const currentBalancePoints = team.balance_points ?? 0;
-
-    if (currentBalancePoints < args.amountPoints) {
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: false,
-      };
-    }
-
     const currentMonth = currentMonthString();
+    const currentBalancePoints = team.balance_points ?? 0;
 
     // Reset team monthly spent if cycle rolled over
     let teamMonthlySpent = team.monthly_spent_points ?? 0;
@@ -336,6 +322,19 @@ export const deductTeamPoints = mutation({
           poolDisabled: false,
         };
       }
+    }
+
+    if (currentBalancePoints < args.amountPoints) {
+      return {
+        success: false,
+        newBalancePoints: currentBalancePoints,
+        newBalanceDollars: pointsToDollars(currentBalancePoints),
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: false,
+      };
     }
 
     // All checks passed — commit
