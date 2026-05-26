@@ -16,6 +16,14 @@ function planLookupKeyToTier(
   return null;
 }
 
+function canManageOrganizationBilling(
+  membership: Awaited<
+    ReturnType<typeof workos.userManagement.listOrganizationMemberships>
+  >["data"][number],
+) {
+  return membership.role?.slug === "admin" || membership.role?.slug === "owner";
+}
+
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
@@ -60,6 +68,7 @@ export const POST = async (req: NextRequest) => {
     const existingMemberships =
       await workos.userManagement.listOrganizationMemberships({
         userId,
+        statuses: ["active"],
       });
 
     let organization;
@@ -67,6 +76,13 @@ export const POST = async (req: NextRequest) => {
     if (existingMemberships.data && existingMemberships.data.length > 0) {
       // User already has an organization, use the first one
       const membership = existingMemberships.data[0];
+      if (!canManageOrganizationBilling(membership)) {
+        return NextResponse.json(
+          { error: "Only organization admins can manage billing" },
+          { status: 403 },
+        );
+      }
+
       organization = await workos.organizations.getOrganization(
         membership.organizationId,
       );
@@ -119,31 +135,46 @@ export const POST = async (req: NextRequest) => {
     // Check if organization already has a Stripe customer
     let customer;
 
-    // Try to find existing customer by email and organization metadata
-    const existingCustomers = await stripe.customers.list({
-      email: user.email,
-      limit: 10, // Get more to check metadata
-    });
+    if (organization.stripeCustomerId) {
+      const existingCustomer = await stripe.customers.retrieve(
+        organization.stripeCustomerId,
+      );
 
-    // Look for a customer with matching organization ID in metadata
-    const matchingCustomer = existingCustomers.data.find(
-      (c) => c.metadata.workOSOrganizationId === organization.id,
-    );
+      if ("deleted" in existingCustomer && existingCustomer.deleted) {
+        return NextResponse.json(
+          { error: "Billing account is no longer available" },
+          { status: 409 },
+        );
+      }
 
-    if (matchingCustomer) {
+      customer = existingCustomer;
+    } else {
+      // Try to find existing customer by email and organization metadata
+      const existingCustomers = await stripe.customers.list({
+        email: user.email,
+        limit: 10, // Get more to check metadata
+      });
+
+      // Look for a customer with matching organization ID in metadata
+      const matchingCustomer = existingCustomers.data.find(
+        (c) => c.metadata.workOSOrganizationId === organization.id,
+      );
+
+      if (matchingCustomer) {
+        customer = matchingCustomer;
+      }
+    }
+
+    if (customer) {
       // Reject blocked customers (flagged by fraud webhook)
-      if (matchingCustomer.metadata.blocked === "true") {
+      if (customer.metadata.blocked === "true") {
         return NextResponse.json(
           {
-            error: getSuspensionMessage(
-              matchingCustomer.metadata.blocked_reason,
-            ),
+            error: getSuspensionMessage(customer.metadata.blocked_reason),
           },
           { status: 403 },
         );
       }
-
-      customer = matchingCustomer;
     }
 
     if (!customer) {
