@@ -278,6 +278,32 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls.length).toBe(before);
   });
 
+  test("send blocks destructive input assembled across split sends", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+
+    const tool = createInteractTerminalSession(context);
+    const first = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "rm -",
+    })) as { result: { error?: string } };
+    expect(first.result.error).toBeUndefined();
+
+    const beforeBlockedChunk = handle.sendInputCalls.length;
+    const result = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "rf /\n",
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toMatch(/Input blocked by security guardrail/);
+    expect(handle.sendInputCalls.length).toBe(beforeBlockedChunk);
+  });
+
   test("send translates tmux key names and passes raw text verbatim", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
