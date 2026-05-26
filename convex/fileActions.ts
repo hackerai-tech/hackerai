@@ -37,6 +37,10 @@ import {
 } from "../lib/utils/upload-policy";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
 import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
+import {
+  hasPaidEntitlement,
+  parseEntitlements,
+} from "../lib/auth/entitlements";
 
 const FILE_UPLOAD_WINDOW = "5 h";
 
@@ -694,11 +698,7 @@ export const saveFile = action({
         });
       }
       actingUserId = user.subject;
-      entitlements = Array.isArray(user.entitlements)
-        ? user.entitlements.filter(
-            (e: unknown): e is string => typeof e === "string",
-          )
-        : [];
+      entitlements = parseEntitlements(user.entitlements);
 
       // Security: Only backend (service key) flows can directly set skipTokenValidation
       // Client can use mode="agent" to skip validation
@@ -720,19 +720,7 @@ export const saveFile = action({
       args.skipTokenValidation || isAgentUploadMode;
 
     // Check if paid tier (free tier cannot upload)
-    const hasPaidEntitlement =
-      entitlements.includes("ultra-plan") ||
-      entitlements.includes("ultra-monthly-plan") ||
-      entitlements.includes("ultra-yearly-plan") ||
-      entitlements.includes("pro-plus-plan") ||
-      entitlements.includes("pro-plus-monthly-plan") ||
-      entitlements.includes("pro-plus-yearly-plan") ||
-      entitlements.includes("team-plan") ||
-      entitlements.includes("pro-plan") ||
-      entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan");
-
-    if (!hasPaidEntitlement) {
+    if (!hasPaidEntitlement(entitlements)) {
       throw new ConvexError({
         code: "PAID_PLAN_REQUIRED",
         message: "Paid plan required for file uploads",
