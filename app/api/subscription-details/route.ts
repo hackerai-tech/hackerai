@@ -8,9 +8,22 @@ import { getSuspensionMessage } from "@/lib/suspensionMessage";
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
-    const targetPlan: string | undefined = body?.plan;
+    const requestedPlan = body?.plan;
     const confirm: boolean = body?.confirm === true;
     const requestedQuantity: number | undefined = body?.quantity;
+
+    const allowedPlans = new Set([
+      "pro-monthly-plan",
+      "ultra-monthly-plan",
+      "pro-yearly-plan",
+      "ultra-yearly-plan",
+      "team-monthly-plan",
+      "team-yearly-plan",
+    ]);
+    const targetPlan =
+      typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
+        ? requestedPlan
+        : "pro-monthly-plan";
 
     const userId = await getUserID(req);
     const user = await workos.userManagement.getUser(userId);
@@ -29,6 +42,13 @@ export const POST = async (req: NextRequest) => {
     }
 
     const membership = existingMemberships.data[0];
+    if (membership.role?.slug !== "admin") {
+      return NextResponse.json(
+        { error: "Only organization admins can manage billing" },
+        { status: 403 },
+      );
+    }
+
     const organization = await workos.organizations.getOrganization(
       membership.organizationId,
     );
@@ -62,7 +82,7 @@ export const POST = async (req: NextRequest) => {
 
     // Get target price
     const targetPrices = await stripe.prices.list({
-      lookup_keys: [targetPlan || "pro-monthly-plan"],
+      lookup_keys: [targetPlan],
     });
 
     if (!targetPrices.data || targetPrices.data.length === 0) {
