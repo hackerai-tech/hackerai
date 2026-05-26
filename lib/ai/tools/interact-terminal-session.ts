@@ -13,6 +13,11 @@ import {
   peekExited,
 } from "./utils/pty-wait-utils";
 import { translateInput } from "./utils/pty-keys";
+import {
+  parseGuardrailConfig,
+  getEffectiveGuardrails,
+  checkCommandGuardrails,
+} from "./utils/guardrails";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -28,7 +33,9 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 const WAIT_QUIET_WINDOW_MS = 500;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
-  const { writer, chatId, ptySessionManager } = context;
+  const { writer, chatId, ptySessionManager, guardrailsConfig } = context;
+  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
+  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
   return tool({
     description: `Interact with persistent shell sessions in the sandbox environment.
@@ -221,6 +228,15 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
         // raw text passes through unchanged with trailing newline normalized
         // to CR so "echo hi\n" submits the line as a real Enter.
+        const guardrailResult = checkCommandGuardrails(
+          input,
+          effectiveGuardrails,
+        );
+        if (!guardrailResult.allowed) {
+          return errorResult(
+            `Input blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This input pattern has been blocked for safety.`,
+          );
+        }
         const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
