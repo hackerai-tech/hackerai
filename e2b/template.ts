@@ -1,6 +1,7 @@
+import { resolve } from "path";
 import { Template } from "e2b";
 
 export const template = Template()
   .skipCache()
-  .fromImage("hackerai/sandbox:latest")
+  .fromDockerfile(resolve(__dirname, "../docker/Dockerfile"))
   .setWorkdir("/home/user");
