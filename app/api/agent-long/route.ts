@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { tasks, auth } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
-import type { paidAskTask } from "@/trigger/paid-ask";
 import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
 
@@ -13,16 +12,9 @@ import {
   setActiveTriggerRun,
 } from "@/lib/db/actions";
 import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
+import { coerceSelectedModel } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
-import {
-  coerceSelectedModel,
-  isChatMode,
-  type ChatMode,
-  type Todo,
-  type SandboxPreference,
-  type SelectedModel,
-} from "@/types";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
+import type { Todo, SandboxPreference, SelectedModel } from "@/types";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import {
   getUploadBasePath,
@@ -41,7 +33,6 @@ export async function POST(req: NextRequest) {
     const {
       messages,
       chatId,
-      mode: rawMode,
       todos,
       regenerate,
       temporary,
@@ -51,7 +42,6 @@ export async function POST(req: NextRequest) {
     }: {
       messages: UIMessage[];
       chatId: string;
-      mode?: string;
       todos?: Todo[];
       regenerate?: boolean;
       temporary?: boolean;
@@ -62,24 +52,13 @@ export async function POST(req: NextRequest) {
 
     const selectedModelOverride: SelectedModel | undefined =
       coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
-    if (rawMode !== undefined && !isChatMode(rawMode)) {
-      throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
-    }
-    const mode: ChatMode = rawMode ?? "agent";
 
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
     await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
 
-    if (mode === "ask" && subscription === "free") {
-      throw new ChatSDKError(
-        "forbidden:chat",
-        "Ask mode on Trigger.dev requires a paid plan.",
-      );
-    }
-
     assertFreeAgentGates({
-      mode,
+      mode: "agent",
       subscription,
       sandboxPreference,
       rawSelectedModel,
@@ -120,7 +99,7 @@ export async function POST(req: NextRequest) {
     let messagesForTrigger = messagesForPersistence;
     let localDesktopAttachmentsPrepared = false;
 
-    if (isAgentMode(mode) && hasLocalDesktopSourcePaths(requestMessages)) {
+    if (hasLocalDesktopSourcePaths(requestMessages)) {
       if (sandboxPreference !== "desktop") {
         throw new ChatSDKError(
           "bad_request:api",
@@ -192,55 +171,43 @@ export async function POST(req: NextRequest) {
       temporary || localDesktopAttachmentsPrepared ? messagesForTrigger : [];
 
     const triggerRequestedAt = Date.now();
-    const triggerPayload = {
-      chatId,
-      userId,
-      mode,
-      subscription,
-      organizationId,
-      messages: messagesForPayload,
-      localDesktopAttachmentsPrepared,
-      baseTodos: Array.isArray(todos) ? todos : [],
-      sandboxPreference,
-      selectedModel: selectedModelOverride,
-      userLocation,
-      temporary,
-      isAutoContinue,
-      regenerate,
-      isNewChat,
-      convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
-      requestTiming: {
-        routeStartedAt,
-        triggerRequestedAt,
-      },
-    };
-
-    const triggerOptions = {
-      tags: triggerTags,
-      metadata: {
-        status: "queued",
+    const handle = await tasks.trigger<typeof agentLongTask>(
+      "agent-long",
+      {
         chatId,
         userId,
         subscription,
-        mode,
-        loginRequired: false,
-        routeStartedAt,
-        triggerRequestedAt,
-        triggerPayloadMessageCount: messagesForPayload.length,
+        organizationId,
+        messages: messagesForPayload,
+        localDesktopAttachmentsPrepared,
+        baseTodos: Array.isArray(todos) ? todos : [],
+        sandboxPreference,
+        selectedModel: selectedModelOverride,
+        userLocation,
+        temporary,
+        isAutoContinue,
+        regenerate,
+        isNewChat,
+        convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+        requestTiming: {
+          routeStartedAt,
+          triggerRequestedAt,
+        },
       },
-    };
-    const handle =
-      mode === "ask"
-        ? await tasks.trigger<typeof paidAskTask>(
-            "paid-ask",
-            triggerPayload,
-            triggerOptions,
-          )
-        : await tasks.trigger<typeof agentLongTask>(
-            "agent-long",
-            triggerPayload,
-            triggerOptions,
-          );
+      {
+        tags: triggerTags,
+        metadata: {
+          status: "queued",
+          chatId,
+          userId,
+          subscription,
+          loginRequired: false,
+          routeStartedAt,
+          triggerRequestedAt,
+          triggerPayloadMessageCount: messagesForPayload.length,
+        },
+      },
+    );
 
     const triggerCompletedAt = Date.now();
 
@@ -262,8 +229,6 @@ export async function POST(req: NextRequest) {
     console.info("[/api/agent-long] started trigger run", {
       chatId,
       runId: handle.id,
-      taskId: mode === "ask" ? "paid-ask" : "agent-long",
-      mode,
       routeDurationMs: Date.now() - routeStartedAt,
       triggerDurationMs: triggerCompletedAt - triggerRequestedAt,
       triggerPayloadMessageCount: messagesForPayload.length,

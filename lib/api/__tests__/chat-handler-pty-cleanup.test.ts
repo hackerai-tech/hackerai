@@ -3,7 +3,7 @@
  * from the agent loop's streamText callbacks.
  *
  * After the shared-runner refactor, the onFinish/onError/onAbort PTY hooks
- * live in agent-stream-runner.ts (shared by both chat-handler and Trigger.dev tasks).
+ * live in agent-stream-runner.ts (shared by both chat-handler and agent-long).
  * The outer-catch backstop remains in chat-handler.ts directly.
  *
  * We read source files and assert structural presence — lighter than a full

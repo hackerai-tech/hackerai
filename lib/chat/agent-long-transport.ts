@@ -1,9 +1,9 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
-import { createToolInputDedupFilter } from "./trigger-chat-tool-input-dedup";
+import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
 
 /**
- * `fetch` adapter for chat modes that run through Trigger.dev.
+ * `fetch` adapter for "agent-long" mode used by the chat transport.
  *
  *   1. POST the request body to /api/agent-long, which triggers a durable
  *      trigger.dev task and returns { runId, publicAccessToken }.
@@ -14,7 +14,7 @@ import { createToolInputDedupFilter } from "./trigger-chat-tool-input-dedup";
  *
  * On reconnect (page reload while a run is still executing), useChat fires
  * a GET against the configured reconnect URL; we route that through
- * `resumeTriggerChatStream`, which fetches the active runId from
+ * `resumeAgentLongStream`, which fetches the active runId from
  * /api/agent-long/resume and pipes the same trigger.dev stream. Trigger.dev
  * streams are durable for 28 days, so a fresh subscription replays every
  * chunk from the beginning — useChat reconstructs the in-progress
@@ -275,7 +275,7 @@ const buildSSEResponseFromRun = (
   return new Response(stream, { status: 200, headers: sseHeaders });
 };
 
-export const fetchTriggerChatStream = async (
+export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
 ): Promise<Response> => {
   const startResponse = await fetchWithErrorHandlers("/api/agent-long", init);
@@ -285,7 +285,7 @@ export const fetchTriggerChatStream = async (
   return buildSSEResponseFromRun(handle, init?.signal ?? undefined);
 };
 
-export const resumeTriggerChatStream = async (
+export const resumeAgentLongStream = async (
   url: string,
   init: RequestInit | undefined,
 ): Promise<Response> => {
