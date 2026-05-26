@@ -12,6 +12,7 @@ import {
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
+import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import type { SubscriptionTier } from "@/types";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
@@ -157,6 +158,14 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     return;
   }
 
+  const resetMode = getInvoicePaidBucketResetMode(invoice);
+  if (resetMode.mode === "skip") {
+    console.log(
+      `[Subscription Webhook] invoice.paid (${resetMode.reason}): skipping bucket reset for invoice ${invoice.id}`,
+    );
+    return;
+  }
+
   const [customerResult, resolved] = await Promise.all([
     resolveUserIdsFromCustomer(customerId),
     resolveSubscription(subscriptionId),
@@ -172,13 +181,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const { tier, subscription } = resolved;
-  const billingReason = (invoice as any).billing_reason as string | undefined;
 
   // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
   // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
   // a real tier change). Other subscription_update reasons (quantity changes,
-  // billing anchor changes) fall through to the full reset path.
-  if (billingReason === "subscription_update") {
+  // billing anchor changes) are ignored so they cannot mint fresh credits.
+  if (resetMode.mode === "subscription_update_proration") {
     // Check each user for a tier-change stash; collect those that have one
     const stashResults = await Promise.all(
       userIds.map(async (uid) => ({
@@ -227,16 +235,20 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
       return;
     }
-    // No stash found for any user — not a tier change, fall through to full reset
+
+    console.log(
+      `[Subscription Webhook] invoice.paid (subscription_update): no tier-change stash for invoice ${invoice.id}; skipping bucket reset`,
+    );
+    return;
   }
 
   // Regular renewal or new subscription: full credits
   console.log(
-    `[Subscription Webhook] invoice.paid (${billingReason ?? "unknown"}): resetting ${tier} buckets for ${userIds.length} user(s)`,
+    `[Subscription Webhook] invoice.paid (${resetMode.reason}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
 
-  if (billingReason === "subscription_create") {
+  if (resetMode.reason === "subscription_create") {
     const item = subscription.items?.data[0];
     const price = item?.price;
     const invoiceAmountPaidDollars = centsToDollars(
