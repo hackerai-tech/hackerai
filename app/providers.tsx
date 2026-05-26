@@ -10,7 +10,9 @@ const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "Unauthorized: User not authenticated",
   "Invalid arguments provided",
   "FILE_TOKEN_LIMIT_EXCEEDED",
+  "FILE_UPLOAD_RATE_LIMIT",
   "exceeds the maximum token limit",
+  "cloud file upload limit",
 ];
 
 function getExceptionMessages(event: {

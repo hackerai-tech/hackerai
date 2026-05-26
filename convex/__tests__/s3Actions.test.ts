@@ -43,8 +43,8 @@ describe("s3Actions", () => {
 
     // Reset checkFileUploadRateLimit mock to return success by default
     mockCheckFileUploadRateLimit.mockResolvedValue({
-      remaining: 79,
-      limit: 80,
+      remaining: 399,
+      limit: 400,
       reset: Date.now() + 5 * 60 * 60 * 1000,
     });
 
@@ -93,8 +93,8 @@ describe("s3Actions", () => {
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
         s3Key: "users/user123/123-uuid-test.pdf",
         rateLimit: {
-          remaining: 79,
-          limit: 80,
+          remaining: 399,
+          limit: 400,
           reset: expect.any(Number),
         },
       });
@@ -108,6 +108,7 @@ describe("s3Actions", () => {
       expect(mockCheckFileUploadRateLimit).toHaveBeenCalledWith(
         "user123",
         true,
+        { entitlements: [] },
       );
     });
 

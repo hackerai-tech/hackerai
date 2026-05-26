@@ -38,29 +38,72 @@ import {
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
 import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
 
-// File upload rate limit: 80 files per 5 hours for paid tiers
-const FILE_UPLOAD_LIMIT = 80;
 const FILE_UPLOAD_WINDOW = "5 h";
+
+type FileUploadRateLimitTier = "pro" | "pro-plus" | "team" | "ultra";
+
+type FileUploadRateLimitConfig = {
+  tier: FileUploadRateLimitTier;
+  limit: number;
+  window: typeof FILE_UPLOAD_WINDOW;
+};
+
+const FILE_UPLOAD_RATE_LIMITS: Record<
+  FileUploadRateLimitTier,
+  FileUploadRateLimitConfig
+> = {
+  pro: { tier: "pro", limit: 400, window: FILE_UPLOAD_WINDOW },
+  "pro-plus": { tier: "pro-plus", limit: 800, window: FILE_UPLOAD_WINDOW },
+  team: { tier: "team", limit: 800, window: FILE_UPLOAD_WINDOW },
+  ultra: { tier: "ultra", limit: 1600, window: FILE_UPLOAD_WINDOW },
+};
+
+const entitlementIncludesAny = (
+  entitlements: Array<string>,
+  fragments: Array<string>,
+) =>
+  entitlements.some((entitlement) =>
+    fragments.some((fragment) => entitlement.includes(fragment)),
+  );
+
+export const getFileUploadRateLimitConfig = (
+  entitlements: Array<string> = [],
+): FileUploadRateLimitConfig => {
+  if (entitlementIncludesAny(entitlements, ["ultra"])) {
+    return FILE_UPLOAD_RATE_LIMITS.ultra;
+  }
+  if (entitlementIncludesAny(entitlements, ["team"])) {
+    return FILE_UPLOAD_RATE_LIMITS.team;
+  }
+  if (entitlementIncludesAny(entitlements, ["pro-plus"])) {
+    return FILE_UPLOAD_RATE_LIMITS["pro-plus"];
+  }
+  return FILE_UPLOAD_RATE_LIMITS.pro;
+};
 
 /** Rate limit check result with remaining count */
 export type RateLimitResult = {
   remaining: number;
   limit: number;
   reset: number;
+  tier: FileUploadRateLimitTier;
 };
 
 /**
- * Check file upload rate limit using sliding window algorithm.
- * Allows 80 file uploads per 5 hours for paid tiers.
+ * Check cloud file upload rate limit using sliding window algorithm.
+ * This protects S3 writes and presigned URL generation; local desktop
+ * attachments bypass this path and are governed by per-turn/file-size limits.
  *
  * @param userId - The user's unique identifier
  * @param consume - If true, consumes a token from the bucket. If false, just peeks at the current state.
+ * @param options.entitlements - WorkOS entitlements used to choose a paid-tier quota.
  * @returns RateLimitResult with remaining count, or null if Redis is not configured
  * @throws ConvexError if rate limited
  */
 export const checkFileUploadRateLimit = async (
   userId: string,
   consume: boolean = true,
+  options: { entitlements?: Array<string> } = {},
 ): Promise<RateLimitResult | null> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -72,6 +115,7 @@ export const checkFileUploadRateLimit = async (
   }
 
   try {
+    const config = getFileUploadRateLimitConfig(options.entitlements);
     // Dynamic imports in Convex Node runtime expose modules via .default
     const ratelimitModule = await import("@upstash/ratelimit");
     const Ratelimit = ratelimitModule.default.Ratelimit;
@@ -85,11 +129,11 @@ export const checkFileUploadRateLimit = async (
 
     const ratelimit = new Ratelimit({
       redis,
-      limiter: Ratelimit.slidingWindow(FILE_UPLOAD_LIMIT, FILE_UPLOAD_WINDOW),
+      limiter: Ratelimit.slidingWindow(config.limit, config.window),
       prefix: "file_upload_limit",
     });
 
-    const rateLimitKey = `${userId}:file_upload`;
+    const rateLimitKey = `${userId}:${config.tier}:s3_upload`;
 
     let success: boolean;
     let reset: number;
@@ -123,11 +167,11 @@ export const checkFileUploadRateLimit = async (
 
       throw new ConvexError({
         code: "FILE_UPLOAD_RATE_LIMIT",
-        message: `You've reached your file upload limit of ${FILE_UPLOAD_LIMIT} files per 5 hours. Please try again after ${timeString}.`,
+        message: `You've reached your cloud file upload limit of ${config.limit} files per 5 hours. Desktop Agent attachments from your local workspace do not count toward this limit. Please try again after ${timeString}.`,
       });
     }
 
-    return { remaining, limit, reset };
+    return { remaining, limit, reset, tier: config.tier };
   } catch (error) {
     // Re-throw ConvexError
     if (error instanceof ConvexError) {
@@ -683,7 +727,7 @@ export const saveFile = action({
 
     // Check file upload rate limit (peek mode - verify limit not exceeded)
     // Token was already consumed at URL generation step
-    await checkFileUploadRateLimit(actingUserId, false);
+    await checkFileUploadRateLimit(actingUserId, false, { entitlements });
 
     let verifiedSize = args.size;
     if (args.s3Key) {
