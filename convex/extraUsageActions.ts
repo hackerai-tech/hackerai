@@ -38,19 +38,44 @@ function getWorkOS(): WorkOS {
 // Helper Functions
 // =============================================================================
 
+type BillingMembership = {
+  organizationId: string;
+  status?: string;
+  role?: { slug?: string } | null;
+  roles?: Array<{ slug?: string } | null> | null;
+};
+
+function canManageOrganizationBilling(membership: BillingMembership): boolean {
+  const status = membership.status;
+  const roleSlug = membership.role?.slug;
+  const roles = membership.roles;
+  const hasBillingRole =
+    roleSlug === "admin" ||
+    roleSlug === "owner" ||
+    roles?.some((role) => role?.slug === "admin" || role?.slug === "owner");
+
+  return (status === undefined || status === "active") && !!hasBillingRole;
+}
+
 async function getStripeCustomerId(userId: string): Promise<string | null> {
   const workos = getWorkOS();
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    statuses: ["active"],
   });
 
   if (!memberships.data || memberships.data.length === 0) {
     return null;
   }
 
+  const billingMembership = memberships.data.find(canManageOrganizationBilling);
+  if (!billingMembership) {
+    return null;
+  }
+
   const organization = await workos.organizations.getOrganization(
-    memberships.data[0].organizationId,
+    billingMembership.organizationId,
   );
 
   return organization.stripeCustomerId || null;
