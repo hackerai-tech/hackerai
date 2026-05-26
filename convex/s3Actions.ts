@@ -9,6 +9,7 @@ import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
+import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
 type StorageUsage = {
   usedBytes: number;
@@ -98,9 +99,15 @@ export const generateS3UploadUrlAction = action({
       }
     }
 
-    // Get user ID from identity
     const userId = identity.subject;
     const entitlements = getIdentityEntitlements(identity);
+
+    if (!hasPaidEntitlement(entitlements)) {
+      throw new ConvexError({
+        code: "PAID_PLAN_REQUIRED",
+        message: "Paid plan required for file uploads",
+      });
+    }
 
     // Check storage limit before allowing upload
     const storageUsage: StorageUsage = await ctx.runQuery(

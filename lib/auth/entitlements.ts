@@ -44,3 +44,7 @@ export function resolveSubscriptionTier(
   }
   return "free";
 }
+
+export function hasPaidEntitlement(entitlements: readonly string[]): boolean {
+  return resolveSubscriptionTier(entitlements) !== "free";
+}

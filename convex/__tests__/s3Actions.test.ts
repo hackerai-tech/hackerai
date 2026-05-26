@@ -74,6 +74,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         // Mock runQuery to return storage usage (user has space available)
@@ -108,8 +109,40 @@ describe("s3Actions", () => {
       expect(mockCheckFileUploadRateLimit).toHaveBeenCalledWith(
         "user123",
         true,
-        { entitlements: [] },
+        { entitlements: ["pro-plan"] },
       );
+    });
+
+    it("should reject free users before generating an upload URL", async () => {
+      const { generateS3UploadUrl } = await import("../s3Utils");
+      const mockGenerateS3UploadUrl =
+        generateS3UploadUrl as jest.MockedFunction<typeof generateS3UploadUrl>;
+      const { generateS3UploadUrlAction } = await import("../s3Actions");
+
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: "free-user",
+            email: "free@example.com",
+            entitlements: [],
+          }),
+        },
+        runQuery: jest.fn<any>(),
+      };
+
+      await expect(
+        generateS3UploadUrlAction.handler(mockCtx, {
+          fileName: "test.pdf",
+          contentType: "application/pdf",
+          size: 1024,
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "PAID_PLAN_REQUIRED" }),
+      });
+
+      expect(mockCtx.runQuery).not.toHaveBeenCalled();
+      expect(mockCheckFileUploadRateLimit).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
     });
 
     it("should throw error for unauthenticated user", async () => {
@@ -139,6 +172,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
       } as any;
@@ -160,6 +194,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
       } as any;
@@ -181,6 +216,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
       } as any;
@@ -210,6 +246,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn<any>().mockResolvedValue({
@@ -238,6 +275,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn<any>(),
@@ -286,6 +324,7 @@ describe("s3Actions", () => {
             getUserIdentity: jest.fn<any>().mockResolvedValue({
               subject: "user123",
               email: "test@example.com",
+              entitlements: ["pro-plan"],
             }),
           },
           runQuery: jest.fn<any>().mockResolvedValue({
@@ -325,6 +364,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn<any>().mockResolvedValue({
@@ -362,6 +402,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn<any>().mockResolvedValue({
@@ -417,6 +458,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -460,6 +502,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -500,6 +543,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(null),
@@ -532,6 +576,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -564,6 +609,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -596,6 +642,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -638,6 +685,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -674,6 +722,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
@@ -751,6 +800,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
@@ -821,6 +871,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
@@ -891,6 +942,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
@@ -947,6 +999,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
@@ -992,6 +1045,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile1),
@@ -1030,6 +1084,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest.fn().mockResolvedValue(mockFile1),
@@ -1107,6 +1162,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
@@ -1153,6 +1209,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
       } as any;
@@ -1173,6 +1230,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
       } as any;
@@ -1221,6 +1279,7 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
         runQuery: jest
