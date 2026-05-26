@@ -20,7 +20,7 @@ import type {
   SelectedModel,
   RateLimitInfo,
 } from "@/types";
-import { coerceSelectedModel } from "@/types";
+import { coerceSelectedModel, isChatMode } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
@@ -148,7 +148,7 @@ export const createChatHandler = (
     try {
       const {
         messages,
-        mode,
+        mode: rawMode,
         todos,
         chatId,
         regenerate,
@@ -159,7 +159,7 @@ export const createChatHandler = (
         useClientMessagesForRegenerate,
       }: {
         messages: UIMessage[];
-        mode: ChatMode;
+        mode?: string;
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
@@ -169,6 +169,11 @@ export const createChatHandler = (
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
       } = await req.json();
+      const parsedMode = typeof rawMode === "string" ? rawMode : null;
+      if (!isChatMode(parsedMode)) {
+        throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
+      }
+      const mode: ChatMode = parsedMode;
       outerChatId = chatId;
 
       const selectedModelOverride: SelectedModel | undefined =

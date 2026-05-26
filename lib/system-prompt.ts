@@ -1,6 +1,10 @@
-import type { ChatMode, SubscriptionTier } from "@/types";
+import {
+  isChatMode,
+  type ChatMode,
+  type SubscriptionTier,
+  type UserCustomization,
+} from "@/types";
 import { getPersonalityInstructions } from "./system-prompt/personality";
-import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 import {
@@ -382,6 +386,10 @@ export const systemPrompt = async (
   isTemporary?: boolean,
   sandboxContext?: string | null,
 ): Promise<string> => {
+  if (!isChatMode(mode)) {
+    throw new Error("Invalid chat mode.");
+  }
+
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
     (userCustomization?.include_memory_entries ?? true);

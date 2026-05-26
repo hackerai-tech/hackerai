@@ -33,6 +33,7 @@ import type {
   SandboxBootInfo,
   CaidoReadyInfo,
 } from "@/types";
+import { isChatMode } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
@@ -64,6 +65,10 @@ export const createTools = (
   onSandboxBoot?: (info: SandboxBootInfo) => void,
   onCaidoReady?: (info: CaidoReadyInfo) => void,
 ) => {
+  if (!isChatMode(mode)) {
+    throw new Error("Invalid chat mode.");
+  }
+
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
 
