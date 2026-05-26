@@ -78,7 +78,7 @@ export const POST = async (req: NextRequest) => {
       const membership = existingMemberships.data[0];
       if (!canManageOrganizationBilling(membership)) {
         return NextResponse.json(
-          { error: "Only organization admins can manage billing" },
+          { error: "Only organization admins or owners can manage billing" },
           { status: 403 },
         );
       }
@@ -134,6 +134,7 @@ export const POST = async (req: NextRequest) => {
 
     // Check if organization already has a Stripe customer
     let customer;
+    let shouldAttachCustomerToOrganization = false;
 
     if (organization.stripeCustomerId) {
       const existingCustomer = await stripe.customers.retrieve(
@@ -162,6 +163,7 @@ export const POST = async (req: NextRequest) => {
 
       if (matchingCustomer) {
         customer = matchingCustomer;
+        shouldAttachCustomerToOrganization = true;
       }
     }
 
@@ -186,6 +188,10 @@ export const POST = async (req: NextRequest) => {
         },
       });
 
+      shouldAttachCustomerToOrganization = true;
+    }
+
+    if (shouldAttachCustomerToOrganization) {
       // Update WorkOS organization with Stripe customer ID
       // This will allow WorkOS to automatically add entitlements to the access token
       await workos.organizations.updateOrganization({

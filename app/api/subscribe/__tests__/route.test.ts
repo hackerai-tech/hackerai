@@ -125,7 +125,7 @@ describe("POST /api/subscribe", () => {
 
     expect(response.status).toBe(403);
     expect(body).toEqual({
-      error: "Only organization admins can manage billing",
+      error: "Only organization admins or owners can manage billing",
     });
     expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
       userId: "user_123",
@@ -172,6 +172,48 @@ describe("POST /api/subscribe", () => {
         metadata: expect.objectContaining({
           workOSOrganizationId: "org_team",
         }),
+      }),
+    );
+  });
+
+  it("persists a metadata-matched Stripe customer onto the organization", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+    } as never);
+    mockListCustomers.mockResolvedValue({
+      data: [
+        {
+          id: "cus_matched",
+          metadata: {
+            workOSOrganizationId: "org_team",
+          },
+        },
+      ],
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeRequest({ plan: "team-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ url: "https://stripe.example/checkout" });
+    expect(mockCreateCustomer).not.toHaveBeenCalled();
+    expect(mockUpdateOrganization).toHaveBeenCalledWith({
+      organization: "org_team",
+      stripeCustomerId: "cus_matched",
+    });
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: "cus_matched",
       }),
     );
   });
