@@ -5,12 +5,48 @@ import { NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
+const MAX_TEAM_SEATS = 999;
+
+function resolveQuantity(
+  targetPlan: string,
+  requestedQuantity: unknown,
+): { valid: true; value: number } | { valid: false; error: string } {
+  if (!targetPlan.includes("team")) {
+    return { valid: true, value: 1 };
+  }
+
+  if (requestedQuantity === undefined) {
+    return { valid: true, value: 2 };
+  }
+
+  if (
+    typeof requestedQuantity !== "number" ||
+    !Number.isFinite(requestedQuantity) ||
+    !Number.isInteger(requestedQuantity) ||
+    requestedQuantity < 2
+  ) {
+    return {
+      valid: false,
+      error: "Quantity must be a finite integer of at least 2",
+    };
+  }
+
+  if (requestedQuantity > MAX_TEAM_SEATS) {
+    return {
+      valid: false,
+      error: `Maximum ${MAX_TEAM_SEATS} seats allowed`,
+    };
+  }
+
+  return { valid: true, value: requestedQuantity };
+}
+
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan = body?.plan;
     const confirm: boolean = body?.confirm === true;
-    const requestedQuantity: number | undefined = body?.quantity;
+    const requestedQuantity: unknown = body?.quantity;
 
     const allowedPlans = new Set([
       "pro-monthly-plan",
@@ -97,22 +133,14 @@ export const POST = async (req: NextRequest) => {
       ? targetPrice.unit_amount / 100
       : 0;
 
-    // Validate and set quantity for team plans
-    const isTeamPlan = targetPlan?.includes("team");
-    const quantity = isTeamPlan
-      ? Math.max(requestedQuantity || 2, 2) // Minimum 2 seats for team
-      : 1;
-
-    if (
-      isTeamPlan &&
-      requestedQuantity !== undefined &&
-      requestedQuantity < 2
-    ) {
+    const quantityResult = resolveQuantity(targetPlan, requestedQuantity);
+    if (!quantityResult.valid) {
       return NextResponse.json(
-        { error: "Team plans require minimum 2 seats" },
+        { error: quantityResult.error },
         { status: 400 },
       );
     }
+    const quantity = quantityResult.value;
 
     // Get active subscription for prorated calculation
     const subscriptions = await stripe.subscriptions.list({
