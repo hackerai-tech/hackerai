@@ -5,54 +5,7 @@ import { PostHogProvider as PHProvider } from "posthog-js/react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useEffect } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
-
-const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
-  "Unauthorized: User not authenticated",
-  "Invalid arguments provided",
-  "FILE_TOKEN_LIMIT_EXCEEDED",
-  "exceeds the maximum token limit",
-];
-
-function getExceptionMessages(event: {
-  properties?: Record<string, unknown>;
-}): string[] {
-  const properties = event.properties ?? {};
-  const messages: string[] = [];
-
-  if (typeof properties.$exception_message === "string") {
-    messages.push(properties.$exception_message);
-  }
-
-  if (Array.isArray(properties.$exception_list)) {
-    for (const exception of properties.$exception_list) {
-      if (
-        exception &&
-        typeof exception === "object" &&
-        "value" in exception &&
-        typeof exception.value === "string"
-      ) {
-        messages.push(exception.value);
-      }
-    }
-  }
-
-  return messages;
-}
-
-function shouldDropExpectedConvexException(event: {
-  event?: string;
-  properties?: Record<string, unknown>;
-}) {
-  if (event.event !== "$exception") {
-    return false;
-  }
-
-  return getExceptionMessages(event).some((message) =>
-    IGNORED_CONVEX_EXCEPTION_MESSAGES.some((ignoredMessage) =>
-      message.includes(ignoredMessage),
-    ),
-  );
-}
+import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
   const { subscription } = useGlobalState();
