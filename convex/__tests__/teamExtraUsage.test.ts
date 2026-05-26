@@ -356,6 +356,30 @@ describe("deductTeamPoints", () => {
     });
   });
 
+  it("returns monthlyCapExceeded even when balance is insufficient", async () => {
+    const { ctx } = makeMockCtx({
+      team: [
+        enabledTeamRow({
+          balance_points: 100,
+          monthly_cap_points: 500,
+          monthly_spent_points: 400,
+          monthly_reset_date: new Date().toISOString().slice(0, 7),
+        }),
+      ],
+    });
+    const result = await callDeduct(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      monthlyCapExceeded: true,
+      memberCapExceeded: false,
+    });
+  });
+
   it("returns monthlyCapExceeded when team cap would be breached", async () => {
     const { ctx } = makeMockCtx({
       team: [
@@ -400,6 +424,34 @@ describe("deductTeamPoints", () => {
     });
     expect(result).toMatchObject({
       success: false,
+      memberCapExceeded: true,
+      monthlyCapExceeded: false,
+    });
+  });
+
+  it("returns memberCapExceeded even when balance is insufficient", async () => {
+    const { ctx } = makeMockCtx({
+      team: [enabledTeamRow({ balance_points: 100 })],
+      members: [
+        {
+          _id: "m-1",
+          organization_id: ORG_ID,
+          user_id: USER_ID,
+          monthly_limit_points: 1000,
+          monthly_spent_points: 900,
+          monthly_reset_date: new Date().toISOString().slice(0, 7),
+          updated_at: 0,
+        },
+      ],
+    });
+    const result = await callDeduct(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
       memberCapExceeded: true,
       monthlyCapExceeded: false,
     });
@@ -546,6 +598,46 @@ describe("deductWithAutoReloadForTeam", () => {
       newBalanceDollars: 7,
       autoReloadTriggered: true,
       autoReloadResult: { success: false, reason: "no_stripe_customer" },
+    });
+  });
+
+  it("does not auto-reload when cap precheck blocks an underfunded request", async () => {
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        enabled: true,
+        balanceDollars: 0.01,
+        balancePoints: 100,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 7.5,
+        autoReloadThresholdPoints: 75_000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: false,
+        newBalancePoints: 100,
+        newBalanceDollars: 0.01,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: true,
+        memberDisabled: false,
+        poolDisabled: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+
+    expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      memberCapExceeded: true,
+      autoReloadTriggered: false,
     });
   });
 });
