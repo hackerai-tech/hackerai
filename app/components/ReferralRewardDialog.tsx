@@ -1,7 +1,6 @@
 "use client";
 
 import React from "react";
-import posthog from "posthog-js";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -20,47 +19,12 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { REFERRAL_REWARD_EXPERIMENT_FLAG } from "@/lib/referral-constants";
 import { Check, Copy, Gift, Share2, Sparkles, UserCheck } from "lucide-react";
 import { toast } from "sonner";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_BASE_URL ||
   (typeof window !== "undefined" ? window.location.origin : "");
-
-function useReferralExperimentEnabled(userId: string | undefined) {
-  const [enabled, setEnabled] = React.useState(() =>
-    userId
-      ? posthog.isFeatureEnabled(REFERRAL_REWARD_EXPERIMENT_FLAG) === true
-      : false,
-  );
-
-  React.useEffect(() => {
-    if (!userId) {
-      setEnabled(false);
-      return;
-    }
-
-    const update = () => {
-      setEnabled(
-        posthog.isFeatureEnabled(REFERRAL_REWARD_EXPERIMENT_FLAG) === true,
-      );
-    };
-
-    update();
-    const fallbackTimer = window.setTimeout(update, 500);
-    const unsubscribe = posthog.onFeatureFlags(update);
-
-    return () => {
-      window.clearTimeout(fallbackTimer);
-      if (typeof unsubscribe === "function") {
-        unsubscribe();
-      }
-    };
-  }, [userId]);
-
-  return enabled;
-}
 
 export function ReferralRewardEntry({
   isCollapsed,
@@ -70,13 +34,11 @@ export function ReferralRewardEntry({
   isFreeUser: boolean;
 }) {
   const { user } = useAuth();
-  const enabled = useReferralExperimentEnabled(user?.id);
 
   return (
     <ReferralRewardEntryContent
       isCollapsed={isCollapsed}
       isFreeUser={isFreeUser}
-      enabled={enabled}
       userId={user?.id}
     />
   );
@@ -85,12 +47,10 @@ export function ReferralRewardEntry({
 export function ReferralRewardEntryContent({
   isCollapsed,
   isFreeUser,
-  enabled,
   userId,
 }: {
   isCollapsed: boolean;
   isFreeUser: boolean;
-  enabled: boolean;
   userId?: string;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -101,7 +61,7 @@ export function ReferralRewardEntryContent({
       lastCapturedUserRef.current = null;
       return;
     }
-    if (!enabled || !isFreeUser || lastCapturedUserRef.current === userId) {
+    if (!isFreeUser || lastCapturedUserRef.current === userId) {
       return;
     }
     lastCapturedUserRef.current = userId;
@@ -109,9 +69,9 @@ export function ReferralRewardEntryContent({
       placement: "sidebar_footer",
       collapsed: isCollapsed,
     });
-  }, [enabled, isCollapsed, isFreeUser, userId]);
+  }, [isCollapsed, isFreeUser, userId]);
 
-  if (!userId || !enabled || !isFreeUser) return null;
+  if (!userId || !isFreeUser) return null;
 
   const openDialog = () => {
     captureAuthenticatedEvent("referral_invite_opened", {

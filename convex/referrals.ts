@@ -4,7 +4,6 @@ import { validateServiceKey } from "./lib/utils";
 
 export const REFERRAL_STARTER_CREDITS = 10;
 export const REFERRER_CONVERSION_CREDITS = 10;
-export const REFERRAL_REWARD_EXPERIMENT_FLAG = "referral_reward_experiment";
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const REFERRAL_CODE_LENGTH = 8;

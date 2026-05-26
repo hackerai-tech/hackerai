@@ -4,7 +4,6 @@ import { phLogger } from "@/lib/posthog/server";
 export {
   REFERRAL_COOKIE_MAX_AGE_SECONDS,
   REFERRAL_COOKIE_NAME,
-  REFERRAL_REWARD_EXPERIMENT_FLAG,
   REFERRED_STARTER_CREDITS,
   REFERRER_CONVERSION_CREDITS,
 } from "@/lib/referral-constants";

@@ -6,8 +6,6 @@ const mockUseAuth = jest.fn();
 const mockUseQuery = jest.fn();
 const mockGetOrCreateReferralCode = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
-const mockIsFeatureEnabled = jest.fn();
-const mockOnFeatureFlags = jest.fn();
 const mockToastError = jest.fn();
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
@@ -33,15 +31,6 @@ jest.mock("@/convex/_generated/api", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) =>
     mockCaptureAuthenticatedEvent(...args),
-}));
-
-jest.mock("posthog-js", () => ({
-  __esModule: true,
-  default: {
-    __loaded: true,
-    isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
-    onFeatureFlags: (...args: unknown[]) => mockOnFeatureFlags(...args),
-  },
 }));
 
 jest.mock("sonner", () => ({
@@ -70,19 +59,14 @@ describe("ReferralRewardEntry", () => {
       converted: 1,
     });
     mockGetOrCreateReferralCode.mockResolvedValue({ code: "ABCD1234" });
-    mockIsFeatureEnabled.mockReturnValue(true);
-    mockOnFeatureFlags.mockImplementation((callback: () => void) => {
-      callback();
-    });
   });
 
-  it("renders the sidebar referral action for free users when the flag is enabled", async () => {
+  it("renders the sidebar referral action for free users", async () => {
     const { ReferralRewardEntryContent } = require("../ReferralRewardDialog");
     render(
       <ReferralRewardEntryContent
         isCollapsed={false}
         isFreeUser={true}
-        enabled={true}
         userId="user-123"
       />,
     );
@@ -100,7 +84,6 @@ describe("ReferralRewardEntry", () => {
       <ReferralRewardEntryContent
         isCollapsed={false}
         isFreeUser={false}
-        enabled={true}
         userId="user-123"
       />,
     );
@@ -108,14 +91,13 @@ describe("ReferralRewardEntry", () => {
     expect(screen.queryByTestId("referral-button")).not.toBeInTheDocument();
   });
 
-  it("does not render when the experiment flag is disabled", async () => {
+  it("does not render without a signed-in user", async () => {
     const { ReferralRewardEntryContent } = require("../ReferralRewardDialog");
     render(
       <ReferralRewardEntryContent
         isCollapsed={false}
         isFreeUser={true}
-        enabled={false}
-        userId="user-123"
+        userId={undefined}
       />,
     );
 
@@ -130,7 +112,6 @@ describe("ReferralRewardEntry", () => {
       <ReferralRewardEntryContent
         isCollapsed={false}
         isFreeUser={true}
-        enabled={true}
         userId="user-123"
       />,
     );
