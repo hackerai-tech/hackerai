@@ -199,6 +199,19 @@ export const checkTokenBucketLimit = async (
           ? " or upgrade to Ultra for higher limits"
           : "";
 
+    const monthlyLimitError = (reset: number) => {
+      const resetTime = formatTimeRemaining(new Date(reset));
+      return new ChatSDKError(
+        "rate_limit:chat",
+        `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`,
+        {
+          resetTimestamp: reset,
+          subscription,
+          capReason: "monthly_exhausted",
+        },
+      );
+    };
+
     // Helper to build RateLimitInfo from a limiter result
     const buildResult = (
       result: { remaining: number; reset: number },
@@ -252,6 +265,22 @@ export const checkTokenBucketLimit = async (
           const monthlyResult = await monthly.limiter.limit(monthly.key, {
             rate: bucketDeduct,
           });
+
+          if (!monthlyResult.success) {
+            try {
+              if (isTeamPool) {
+                await refundToTeamBalance(organizationId!, userId, shortfall);
+              } else {
+                await refundToBalance(userId, shortfall);
+              }
+            } catch (refundError) {
+              console.error(
+                "[checkTokenBucketLimit] Failed to refund extra usage after bucket debit failed:",
+                refundError,
+              );
+            }
+            throw monthlyLimitError(monthlyResult.reset);
+          }
 
           return buildResult(monthlyResult, bucketDeduct, shortfall);
         }
@@ -373,6 +402,10 @@ export const checkTokenBucketLimit = async (
     const monthlyResult = await monthly.limiter.limit(monthly.key, {
       rate: estimatedCost,
     });
+
+    if (!monthlyResult.success) {
+      throw monthlyLimitError(monthlyResult.reset);
+    }
 
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
