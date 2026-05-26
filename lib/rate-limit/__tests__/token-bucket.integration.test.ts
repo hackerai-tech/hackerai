@@ -163,6 +163,31 @@ describe("token-bucket async functions", () => {
       expect(result.monthly!.resetTime).toEqual(result.resetTime);
     });
 
+    it("should throw when the final monthly deduction fails after a successful peek", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 7,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      try {
+        await checkTokenBucketLimit("user-123", "pro", 1000);
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.cause).toContain("monthly usage limit");
+      }
+    });
+
     it("should throw monthly cap exceeded error when extra usage cap hit", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
@@ -525,27 +550,38 @@ describe("token-bucket async functions", () => {
   });
 
   describe("concurrent deduction safety", () => {
-    it("should handle concurrent checkTokenBucketLimit calls without double-spending", async () => {
+    it("should reject a concurrent check when its final deduction fails", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
       // Simulate two concurrent requests seeing the same bucket state
+      let deductionCalls = 0;
       let callCount = 0;
       mockLimitFn.mockImplementation(
         async (_key: string, opts: { rate: number }) => {
           callCount++;
-          // Peek calls (rate: 0) return 100 remaining
+          // Peek calls (rate: 0) return enough remaining for one request.
           if (opts.rate === 0) {
             return {
               success: true,
-              remaining: 100,
+              remaining: 7,
               reset: Date.now() + 3600000,
               limit: 250000,
             };
           }
-          // Deduction calls succeed
+
+          deductionCalls++;
+          if (deductionCalls === 1) {
+            return {
+              success: true,
+              remaining: 0,
+              reset: Date.now() + 3600000,
+              limit: 250000,
+            };
+          }
+
           return {
-            success: true,
-            remaining: Math.max(0, 100 - opts.rate),
+            success: false,
+            remaining: 0,
             reset: Date.now() + 3600000,
             limit: 250000,
           };
@@ -553,14 +589,17 @@ describe("token-bucket async functions", () => {
       );
 
       // Run two concurrent checks
-      const [result1, result2] = await Promise.all([
+      const results = await Promise.allSettled([
         checkTokenBucketLimit("user-123", "pro", 1000),
         checkTokenBucketLimit("user-123", "pro", 1000),
       ]);
 
-      // Both should succeed and have deducted points
-      expect(result1.pointsDeducted).toBeDefined();
-      expect(result2.pointsDeducted).toBeDefined();
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "rejected"),
+      ).toHaveLength(1);
       // Limiter was called for both requests (peek + deduct each)
       expect(callCount).toBeGreaterThanOrEqual(4);
     });
