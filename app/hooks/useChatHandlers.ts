@@ -25,6 +25,7 @@ import {
   createFileMessagePartFromUploadedFile,
   getMaxFilesLimitForMode,
 } from "@/lib/utils/file-utils";
+import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -430,6 +431,12 @@ export const useChatHandlers = ({
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
     setMessages(trimmedMessages);
 
+    const shouldSendClientMessagesForRegenerate =
+      hasRestageableLocalDesktopAttachments(trimmedMessages);
+    const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
+      ? trimmedMessages
+      : [];
+
     if (!temporaryChatsEnabled) {
       // Delete the entire trailing auto-continue chain (all assistant + hidden user messages)
       // back to the last real user message, so regeneration starts from the original request
@@ -443,9 +450,10 @@ export const useChatHandlers = ({
       regenerate({
         body: {
           mode: chatModeRef.current,
-          messages: [],
+          messages: persistentRegenerateMessages,
           todos: cleanedTodos,
           regenerate: true,
+          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
           selectedModel,

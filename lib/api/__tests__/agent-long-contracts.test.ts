@@ -56,6 +56,11 @@ const paidAskTaskSrc = fs.readFileSync(
   "utf8",
 );
 
+const dbActionsSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../db/actions.ts"),
+  "utf8",
+);
+
 describe("trigger-chat-transport — STREAM_TIMEOUT_MS guard", () => {
   test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
     expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
@@ -218,6 +223,34 @@ describe("Trigger chat task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/defaultModelSlug:\s*mode/);
   });
 
+  test("outer catch checks live usage tracker before refunding", () => {
+    const liveUsagePredicateIdx = taskSrc.indexOf(
+      "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",
+    );
+    const cleanupMapIdx = taskSrc.indexOf(
+      "runCleanupMap.set(ctx.run.id",
+      liveUsagePredicateIdx,
+    );
+    const refundGuardIdx = taskSrc.indexOf("if (!hasObservedUsage())");
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const cancelRefundGuardIdx = taskSrc.indexOf(
+      "if (!cleanup.hasObservedUsage())",
+      onCancelIdx,
+    );
+    const cancelRefundIdx = taskSrc.indexOf(
+      "cleanup.usageRefundTracker.refund()",
+      onCancelIdx,
+    );
+
+    expect(liveUsagePredicateIdx).toBeGreaterThan(-1);
+    expect(cleanupMapIdx).toBeGreaterThan(liveUsagePredicateIdx);
+    expect(refundGuardIdx).toBeGreaterThan(liveUsagePredicateIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(cancelRefundGuardIdx).toBeGreaterThan(onCancelIdx);
+    expect(cancelRefundIdx).toBeGreaterThan(cancelRefundGuardIdx);
+    expect(taskSrc).not.toMatch(/hasObservedUsage\s*=\s*hasObservedUsage/);
+  });
+
   test("task catch records structured metadata for dashboard filtering", () => {
     expect(taskSrc).toMatch(/recordTriggerChatFailureForDashboard/);
     expect(taskDashboardSrc).toMatch(/errorCategory/);
@@ -225,5 +258,54 @@ describe("Trigger chat task — Trigger.dev dashboard error visibility", () => {
     expect(taskDashboardSrc).toMatch(/login_required/);
     expect(taskDashboardSrc).toMatch(/error_\$\{summary\.category\}/);
     expect(taskDashboardSrc).toMatch(/metadata\.flush\(\)/);
+  });
+
+  test("empty rehydrated history is classified separately from oversized input", () => {
+    const emptyPromptIdx = dbActionsSrc.indexOf("chat_prompt_empty");
+    const emptyMessageIdx = dbActionsSrc.indexOf(
+      "No message content was found for this request",
+      emptyPromptIdx,
+    );
+    const tooLargeIdx = dbActionsSrc.indexOf(
+      "Your input (including any attached files) is too large",
+      emptyMessageIdx,
+    );
+
+    expect(emptyPromptIdx).toBeGreaterThan(-1);
+    expect(emptyMessageIdx).toBeGreaterThan(emptyPromptIdx);
+    expect(tooLargeIdx).toBeGreaterThan(emptyMessageIdx);
+    expect(dbActionsSrc).toMatch(/empty_prompt:\s*true/);
+    expect(taskDashboardSrc).toMatch(
+      /errorMetadata\?\.empty_prompt\s*===\s*true/,
+    );
+    expect(taskDashboardSrc).toMatch(/"empty_prompt"/);
+  });
+
+  test("agent-long DB rehydrate failures are not swallowed when no payload messages exist", () => {
+    const fetchFailedIdx = dbActionsSrc.indexOf("chat_history_fetch_failed");
+    const zeroNewMessagesIdx = dbActionsSrc.indexOf(
+      "newMessages.length === 0",
+      fetchFailedIdx,
+    );
+    const rethrowIdx = dbActionsSrc.indexOf(
+      'databaseError("messages.getMessagesPageForBackend"',
+      zeroNewMessagesIdx,
+    );
+
+    expect(fetchFailedIdx).toBeGreaterThan(-1);
+    expect(zeroNewMessagesIdx).toBeGreaterThan(fetchFailedIdx);
+    expect(rethrowIdx).toBeGreaterThan(zeroNewMessagesIdx);
+  });
+
+  test("normal agent-long sends reject empty message payloads before triggering", () => {
+    const guardIdx = routeSrc.indexOf("requestMessages.length === 0");
+    const emptyPayloadIdx = routeSrc.indexOf(
+      "agent_long_empty_message_payload_rejected",
+    );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", emptyPayloadIdx);
+
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(emptyPayloadIdx).toBeGreaterThan(guardIdx);
+    expect(triggerIdx).toBeGreaterThan(emptyPayloadIdx);
   });
 });

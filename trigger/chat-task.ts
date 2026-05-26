@@ -61,6 +61,7 @@ import {
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
 } from "@/lib/utils/sandbox-file-utils";
+import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
 import {
   captureAgentRun,
   captureToolCalls,
@@ -108,6 +109,7 @@ const AGENT_LONG_MAX_DURATION_MS = 58 * 60 * 1000;
 // Shared between run() and onCancel() since onCancel is defined at task scope.
 type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
+  hasObservedUsage: () => boolean;
   chatLogger: ChatLogger | undefined;
   chatId: string;
 };
@@ -235,13 +237,20 @@ async function runChatTriggerTask(
     region: userLocation?.region,
   });
 
-  runCleanupMap.set(ctx.run.id, { usageRefundTracker, chatLogger, chatId });
-
   // Set to true once the real UI stream is piped to agentUiStream. If a
   // pre-stream setup step throws before this, the outer catch emits a
   // synthetic error stream so the frontend receives a proper error chunk
   // instead of a silent abort.
   let streamPiped = false;
+  let observedUsageTracker: UsageTracker | undefined;
+  const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+
+  runCleanupMap.set(ctx.run.id, {
+    usageRefundTracker,
+    hasObservedUsage,
+    chatLogger,
+    chatId,
+  });
 
   try {
     // Re-fetch from DB so we have fileTokens for summarization.
@@ -292,7 +301,7 @@ async function runChatTriggerTask(
     if (!processedMessages.length) {
       throw new ChatSDKError(
         "bad_request:api",
-        "Your message could not be processed. Please include some text with your file attachments and try again.",
+        getEmptyProcessedMessagesCause(messagesForProcessing),
       );
     }
 
@@ -600,6 +609,7 @@ async function runChatTriggerTask(
             trackedProvider.languageModel(fallbackModel).modelId;
 
           const usageTracker = new UsageTracker();
+          observedUsageTracker = usageTracker;
           let hasRecordedUsage = false;
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
@@ -1253,7 +1263,9 @@ async function runChatTriggerTask(
         metadataError,
       );
     });
-    await usageRefundTracker.refund().catch(() => {});
+    if (!hasObservedUsage()) {
+      await usageRefundTracker.refund().catch(() => {});
+    }
     if (error instanceof ChatSDKError) {
       chatLogger?.emitChatError(error);
     } else {
@@ -1346,7 +1358,9 @@ export const createChatTriggerTask = (options: ChatTriggerTaskOptions) =>
         runPromise.catch(() => undefined),
         new Promise((r) => setTimeout(r, 5000)),
       ]);
-      await cleanup.usageRefundTracker.refund().catch(() => {});
+      if (!cleanup.hasObservedUsage()) {
+        await cleanup.usageRefundTracker.refund().catch(() => {});
+      }
       await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
       await phLogger.flush().catch(() => {});
       runCleanupMap.delete(ctx.run.id);

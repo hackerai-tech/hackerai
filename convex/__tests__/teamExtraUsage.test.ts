@@ -10,10 +10,19 @@ import {
 } from "@jest/globals";
 
 jest.mock("../_generated/server", () => ({
+  action: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
   internalQuery: jest.fn((config: any) => config),
+}));
+const mockGetOrganization = jest.fn();
+jest.mock("@workos-inc/node", () => ({
+  WorkOS: jest.fn().mockImplementation(() => ({
+    organizations: {
+      getOrganization: mockGetOrganization,
+    },
+  })),
 }));
 jest.mock("convex/values", () => ({
   v: {
@@ -43,14 +52,21 @@ jest.mock("../lib/logger", () => ({
 
 const SERVICE_KEY = "test-service-key";
 const ORIGINAL_SERVICE_KEY = process.env.CONVEX_SERVICE_ROLE_KEY;
+const ORIGINAL_WORKOS_API_KEY = process.env.WORKOS_API_KEY;
 beforeAll(() => {
   process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
+  process.env.WORKOS_API_KEY = "test-workos-key";
 });
 afterAll(() => {
   if (ORIGINAL_SERVICE_KEY === undefined) {
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
   } else {
     process.env.CONVEX_SERVICE_ROLE_KEY = ORIGINAL_SERVICE_KEY;
+  }
+  if (ORIGINAL_WORKOS_API_KEY === undefined) {
+    delete process.env.WORKOS_API_KEY;
+  } else {
+    process.env.WORKOS_API_KEY = ORIGINAL_WORKOS_API_KEY;
   }
 });
 
@@ -240,6 +256,18 @@ async function callGetState(
   const { getTeamExtraUsageStateForBackend } =
     await import("../teamExtraUsage");
   return (getTeamExtraUsageStateForBackend as any).handler(ctx, {
+    serviceKey: SERVICE_KEY,
+    ...args,
+  });
+}
+
+async function callDeductWithAutoReloadForTeam(
+  ctx: any,
+  args: { organizationId: string; userId: string; amountPoints: number },
+) {
+  const { deductWithAutoReloadForTeam } =
+    await import("../teamExtraUsageActions");
+  return (deductWithAutoReloadForTeam as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
     ...args,
   });
@@ -475,6 +503,50 @@ describe("deductTeamPoints", () => {
     expect(result.success).toBe(true);
     // First member's spent should be untouched
     expect(members[0].monthly_spent_points).toBe(900);
+  });
+});
+
+describe("deductWithAutoReloadForTeam", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("checks auto-reload after a successful deduction crosses the threshold", async () => {
+    mockGetOrganization.mockResolvedValue({ stripeCustomerId: null });
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        enabled: true,
+        balanceDollars: 10,
+        balancePoints: 100_000,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 7.5,
+        autoReloadThresholdPoints: 75_000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: true,
+        newBalancePoints: 70_000,
+        newBalanceDollars: 7,
+        insufficientFunds: false,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 30_000,
+    });
+
+    expect(mockGetOrganization).toHaveBeenCalledWith(ORG_ID);
+    expect(result).toMatchObject({
+      success: true,
+      newBalanceDollars: 7,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: false, reason: "no_stripe_customer" },
+    });
   });
 });
 
