@@ -28,6 +28,29 @@ export function shouldUseAgentLongForAgent({
   return !isTauri || subscription === "free";
 }
 
+export function shouldUseTriggerForChat({
+  mode,
+  subscription,
+  isTauri,
+  userAgent,
+}: {
+  mode: ChatMode | string;
+  subscription?: string | null;
+  isTauri: boolean;
+  userAgent?: string | null;
+}): boolean {
+  if (mode === "ask") {
+    return !!subscription && subscription !== "free";
+  }
+
+  return shouldUseAgentLongForAgent({
+    mode,
+    subscription,
+    isTauri,
+    userAgent,
+  });
+}
+
 function getBrowserUserAgent(): string {
   if (typeof navigator === "undefined") return "";
   return navigator.userAgent;

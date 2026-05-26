@@ -1,7 +1,7 @@
 /**
  * Shared streamText factory for the agent loop.
  *
- * Both /api/agent (chat-handler.ts) and the trigger.dev agent-long task
+ * Both /api/agent (chat-handler.ts) and the Trigger.dev chat tasks
  * run the same multi-step tool loop. This module owns the single canonical
  * implementation of that loop — prepareStep, stopWhen, onChunk, onStepFinish,
  * streamText.onFinish, onError, onAbort — so divergence is impossible.
@@ -87,7 +87,7 @@ export type AgentStreamState = {
   providerError: unknown;
   /** Stop-condition flags set by the respective onFired callbacks. */
   stoppedDueToTokenExhaustion: boolean;
-  /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
+  /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in Trigger.dev tasks. */
   stoppedDueToElapsedTimeout: boolean;
   stoppedDueToDoomLoop: boolean;
   stoppedDueToBudgetExhaustion: boolean;

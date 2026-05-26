@@ -1,6 +1,7 @@
 import {
   isHackerAIDesktopUserAgent,
   shouldUseAgentLongForAgent,
+  shouldUseTriggerForChat,
 } from "../agent-routing";
 
 const DESKTOP_UA =
@@ -55,6 +56,43 @@ describe("agent routing", () => {
 
     expect(
       shouldUseAgentLongForAgent({
+        mode: "agent",
+        subscription: "pro",
+        isTauri: true,
+        userAgent: "Mozilla/5.0 Safari/605.1.15",
+      }),
+    ).toBe(false);
+  });
+
+  test("routes paid ask mode through Trigger.dev but keeps free ask on the chat route", () => {
+    expect(
+      shouldUseTriggerForChat({
+        mode: "ask",
+        subscription: "pro",
+        isTauri: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldUseTriggerForChat({
+        mode: "ask",
+        subscription: "free",
+        isTauri: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("keeps existing agent Trigger.dev routing through the generalized predicate", () => {
+    expect(
+      shouldUseTriggerForChat({
+        mode: "agent",
+        subscription: "pro",
+        isTauri: false,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldUseTriggerForChat({
         mode: "agent",
         subscription: "pro",
         isTauri: true,
