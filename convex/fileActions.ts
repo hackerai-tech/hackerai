@@ -58,24 +58,38 @@ const FILE_UPLOAD_RATE_LIMITS: Record<
   ultra: { tier: "ultra", limit: 1600, window: FILE_UPLOAD_WINDOW },
 };
 
-const entitlementIncludesAny = (
+const FILE_UPLOAD_RATE_LIMIT_ENTITLEMENTS: Record<
+  FileUploadRateLimitTier,
+  ReadonlySet<string>
+> = {
+  pro: new Set(["pro-plan", "pro-monthly-plan", "pro-yearly-plan"]),
+  "pro-plus": new Set([
+    "pro-plus-plan",
+    "pro-plus-monthly-plan",
+    "pro-plus-yearly-plan",
+  ]),
+  team: new Set(["team-plan"]),
+  ultra: new Set(["ultra-plan", "ultra-monthly-plan", "ultra-yearly-plan"]),
+};
+
+const hasEntitlement = (
   entitlements: Array<string>,
-  fragments: Array<string>,
+  tier: FileUploadRateLimitTier,
 ) =>
   entitlements.some((entitlement) =>
-    fragments.some((fragment) => entitlement.includes(fragment)),
+    FILE_UPLOAD_RATE_LIMIT_ENTITLEMENTS[tier].has(entitlement),
   );
 
 export const getFileUploadRateLimitConfig = (
   entitlements: Array<string> = [],
 ): FileUploadRateLimitConfig => {
-  if (entitlementIncludesAny(entitlements, ["ultra"])) {
+  if (hasEntitlement(entitlements, "ultra")) {
     return FILE_UPLOAD_RATE_LIMITS.ultra;
   }
-  if (entitlementIncludesAny(entitlements, ["team"])) {
+  if (hasEntitlement(entitlements, "team")) {
     return FILE_UPLOAD_RATE_LIMITS.team;
   }
-  if (entitlementIncludesAny(entitlements, ["pro-plus"])) {
+  if (hasEntitlement(entitlements, "pro-plus")) {
     return FILE_UPLOAD_RATE_LIMITS["pro-plus"];
   }
   return FILE_UPLOAD_RATE_LIMITS.pro;

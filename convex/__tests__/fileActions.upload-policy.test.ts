@@ -76,6 +76,11 @@ describe("file upload rate limit config", () => {
   it("scales cloud upload quotas by paid entitlement", async () => {
     const { getFileUploadRateLimitConfig } = await import("../fileActions");
 
+    expect(getFileUploadRateLimitConfig(["pro-monthly-plan"])).toEqual({
+      tier: "pro",
+      limit: 400,
+      window: "5 h",
+    });
     expect(getFileUploadRateLimitConfig(["pro-plus-plan"])).toEqual({
       tier: "pro-plus",
       limit: 800,
@@ -89,6 +94,22 @@ describe("file upload rate limit config", () => {
     expect(getFileUploadRateLimitConfig(["ultra-yearly-plan"])).toEqual({
       tier: "ultra",
       limit: 1600,
+      window: "5 h",
+    });
+  });
+
+  it("does not tier up on partial entitlement matches", async () => {
+    const { getFileUploadRateLimitConfig } = await import("../fileActions");
+
+    expect(
+      getFileUploadRateLimitConfig([
+        "not-ultra-plan",
+        "team-preview-feature",
+        "pro-plus-trial-expired",
+      ]),
+    ).toEqual({
+      tier: "pro",
+      limit: 400,
       window: "5 h",
     });
   });
