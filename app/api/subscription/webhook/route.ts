@@ -14,6 +14,10 @@ import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import type { SubscriptionTier } from "@/types";
+import {
+  awardReferralConversion,
+  getReferralAttribution,
+} from "@/lib/referrals";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -258,6 +262,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
 
     for (const uid of userIds) {
+      const referralAttribution = await getReferralAttribution(uid);
       phLogger.event("subscription_started", {
         userId: uid,
         from_tier: "free",
@@ -277,6 +282,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         stripe_subscription_id: subscription.id,
         stripe_invoice_id: invoice.id,
         stripe_price_id: price?.id,
+        referrer_user_id: referralAttribution?.referrerUserId,
+        referral_code: referralAttribution?.referralCode,
+        referral_landing_path: referralAttribution?.referralLandingPath,
         $set: {
           subscription_tier: tier,
           last_subscription_started_at: new Date().toISOString(),
@@ -286,6 +294,17 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
           first_paid_tier: tier,
         },
       });
+
+      if (referralAttribution) {
+        await awardReferralConversion({
+          referredUserId: uid,
+          qualifyingTier: tier,
+          idempotencyKey: `subscription:${subscription.id}`,
+          revenueDollars: attributedRevenueDollars,
+          stripeInvoiceId: invoice.id,
+          stripeSubscriptionId: subscription.id,
+        });
+      }
     }
   }
 

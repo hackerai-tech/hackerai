@@ -60,6 +60,7 @@ export interface ChatContext {
 export interface RateLimitContext {
   pointsDeducted?: number;
   extraUsagePointsDeducted?: number;
+  referralCreditsDeducted?: number;
   monthly?: { remaining: number; limit: number };
   remaining?: number;
   subscription: string;
@@ -215,6 +216,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       builder.setRateLimit({
         pointsDeducted: context.pointsDeducted,
         extraUsagePointsDeducted: context.extraUsagePointsDeducted,
+        referralCreditsDeducted: context.referralCreditsDeducted,
         monthlyRemainingPercent,
         freeRemaining:
           context.subscription === "free" ? context.remaining : undefined,

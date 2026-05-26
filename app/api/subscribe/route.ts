@@ -5,6 +5,7 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
+import { getReferralAttribution } from "@/lib/referrals";
 
 function planLookupKeyToTier(
   lookupKey: string,
@@ -256,6 +257,7 @@ export const POST = async (req: NextRequest) => {
     });
 
     const selectedPrice = price.data[0];
+    const referralAttribution = await getReferralAttribution(userId);
     phLogger.event("checkout_started", {
       userId,
       org_id: organization.id,
@@ -273,6 +275,9 @@ export const POST = async (req: NextRequest) => {
       stripe_customer_id: customer.id,
       stripe_checkout_session_id: session.id,
       stripe_price_id: selectedPrice.id,
+      referrer_user_id: referralAttribution?.referrerUserId,
+      referral_code: referralAttribution?.referralCode,
+      referral_landing_path: referralAttribution?.referralLandingPath,
       client_distinct_id: posthogDistinctId ?? undefined,
       $session_id: posthogSessionId ?? undefined,
       $set: {

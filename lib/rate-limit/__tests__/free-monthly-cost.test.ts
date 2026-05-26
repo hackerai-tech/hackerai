@@ -11,6 +11,7 @@ describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
   const mockGet = jest.fn();
   const mockEval = jest.fn();
+  const mockSpendReferralCreditsForFreeUsage = jest.fn();
   const originalEnv = process.env.FREE_MONTHLY_COST_LIMIT_USD;
 
   beforeEach(() => {
@@ -19,6 +20,7 @@ describe("free monthly cost limit", () => {
     delete process.env.FREE_MONTHLY_COST_LIMIT_USD;
     mockGet.mockResolvedValue(null);
     mockEval.mockResolvedValue(1);
+    mockSpendReferralCreditsForFreeUsage.mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -35,6 +37,10 @@ describe("free monthly cost limit", () => {
     jest.isolateModules(() => {
       jest.doMock("../redis", () => ({
         createRedisClient: mockCreateRedisClient,
+      }));
+
+      jest.doMock("@/lib/referrals", () => ({
+        spendReferralCreditsForFreeUsage: mockSpendReferralCreditsForFreeUsage,
       }));
 
       isolatedModule = require("../free-monthly-cost");
@@ -70,6 +76,19 @@ describe("free monthly cost limit", () => {
       surface: "chat",
       cause: expect.stringContaining("free monthly usage"),
     });
+  });
+
+  it("spends one referral credit when the monthly free cost cap is exhausted", async () => {
+    process.env.FREE_MONTHLY_COST_LIMIT_USD = "0.01";
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockGet.mockResolvedValue(100);
+    mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+
+    const snapshot = await checkFreeMonthlyCostLimit("user-123");
+
+    expect(snapshot.referralCreditsDeducted).toBe(1);
+    expect(snapshot.monthlyRemainingAtStart).toBe(0);
   });
 
   it("records actual free usage cost as monthly points", async () => {

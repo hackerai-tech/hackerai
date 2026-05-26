@@ -165,6 +165,57 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  referral_codes: defineTable({
+    user_id: v.string(),
+    code: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_code", ["code"]),
+
+  referrals: defineTable({
+    referrer_user_id: v.string(),
+    referred_user_id: v.string(),
+    referral_code: v.string(),
+    referral_landing_path: v.optional(v.string()),
+    status: v.union(
+      v.literal("signed_up"),
+      v.literal("activated"),
+      v.literal("converted"),
+    ),
+    signed_up_at: v.number(),
+    activated_at: v.optional(v.number()),
+    converted_at: v.optional(v.number()),
+    qualifying_tier: v.optional(v.string()),
+    conversion_idempotency_key: v.optional(v.string()),
+    updated_at: v.number(),
+  })
+    .index("by_referred_user", ["referred_user_id"])
+    .index("by_referrer", ["referrer_user_id"])
+    .index("by_referrer_and_status", ["referrer_user_id", "status"]),
+
+  referral_credit_balances: defineTable({
+    user_id: v.string(),
+    balance_credits: v.number(),
+    updated_at: v.number(),
+  }).index("by_user", ["user_id"]),
+
+  referral_credit_ledger: defineTable({
+    user_id: v.string(),
+    amount_credits: v.number(),
+    type: v.union(v.literal("grant"), v.literal("spend")),
+    reason: v.union(
+      v.literal("referred_signup_bonus"),
+      v.literal("referrer_conversion_bonus"),
+      v.literal("free_usage_overflow"),
+    ),
+    idempotency_key: v.string(),
+    related_referral_id: v.optional(v.id("referrals")),
+    created_at: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_idempotency_key", ["idempotency_key"]),
+
   // Team-shared extra usage pool. Admin funds it; any member of the org draws
   // from it for overflow once the team subscription bucket is exhausted.
   // Same units as extra_usage (points; auto-reload amount in dollars).

@@ -2,6 +2,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { getFreeMonthlyCostLimitDollars } from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
+import { spendReferralCreditsForFreeUsage } from "@/lib/referrals";
 
 const RECORD_FREE_MONTHLY_COST_SCRIPT = `
 local key = KEYS[1]
@@ -27,6 +28,7 @@ export interface FreeMonthlyCostSnapshot {
   extraUsageBalanceAtStart: 0;
   extraUsageAutoReload: false;
   rateLimitSkipped?: boolean;
+  referralCreditsDeducted?: number;
 }
 
 const dollarsToPoints = (dollars: number): number => {
@@ -89,6 +91,23 @@ export async function checkFreeMonthlyCostLimit(
   const remainingPoints = Math.max(0, limitPoints - usedPoints);
 
   if (remainingPoints <= 0) {
+    const spentReferralCredit = await spendReferralCreditsForFreeUsage({
+      userId,
+      amountCredits: 1,
+      idempotencyKey: `free_monthly_overflow:${userId}:${bucket}:${Date.now()}`,
+    });
+
+    if (spentReferralCredit) {
+      return {
+        monthlyLimitPoints: limitPoints,
+        monthlyRemainingAtStart: 0,
+        monthlyResetTime: new Date(reset),
+        extraUsageBalanceAtStart: 0,
+        extraUsageAutoReload: false,
+        referralCreditsDeducted: 1,
+      };
+    }
+
     throw new ChatSDKError("rate_limit:chat", getLimitMessage(reset));
   }
 

@@ -16,6 +16,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
 import { useTypingAnimation } from "../hooks/useTypingAnimation";
+import { useReferralClaim } from "../hooks/useReferralClaim";
 import { upsertDraft } from "@/lib/utils/client-storage";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
@@ -112,6 +113,8 @@ const UnauthenticatedContent = () => {
 
 // Authenticated content that shows chat (UUID generated internally)
 const AuthenticatedContent = () => {
+  useReferralClaim();
+
   return <Chat autoResume={false} />;
 };
 

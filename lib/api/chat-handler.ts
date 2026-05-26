@@ -39,6 +39,7 @@ import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
+import { markReferralActivation } from "@/lib/referrals";
 import {
   captureAgentRun,
   captureToolCalls,
@@ -330,7 +331,7 @@ export const createChatHandler = (
         ));
 
       const freeMonthlyBudgetSnapshot =
-        subscription === "free"
+        subscription === "free" && !rateLimitInfo.referralCreditsDeducted
           ? await checkFreeMonthlyCostLimit(userId)
           : null;
 
@@ -340,6 +341,9 @@ export const createChatHandler = (
         {
           pointsDeducted: rateLimitInfo.pointsDeducted,
           extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
+          referralCreditsDeducted:
+            rateLimitInfo.referralCreditsDeducted ??
+            freeMonthlyBudgetSnapshot?.referralCreditsDeducted,
           monthly: rateLimitInfo.monthly,
           remaining: rateLimitInfo.remaining,
           subscription,
@@ -915,6 +919,9 @@ export const createChatHandler = (
                                   sandboxInfo,
                                   outcome: retryAborted ? "aborted" : "success",
                                 });
+                                if (!retryAborted) {
+                                  await markReferralActivation(userId);
+                                }
                                 shutdownPostHog(posthog);
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1126,6 +1133,9 @@ export const createChatHandler = (
                       sandboxInfo,
                       outcome: isAborted ? "aborted" : "success",
                     });
+                    if (!isAborted) {
+                      await markReferralActivation(userId);
+                    }
                     shutdownPostHog(posthog);
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,

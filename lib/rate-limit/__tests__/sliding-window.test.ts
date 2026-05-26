@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 describe("sliding-window", () => {
   const mockEvalFn = jest.fn();
   const mockCreateRedisClient = jest.fn();
+  const mockSpendReferralCreditsForFreeUsage = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
@@ -15,6 +16,7 @@ describe("sliding-window", () => {
 
     // Default mock responses
     mockEvalFn.mockResolvedValue([1, 5]);
+    mockSpendReferralCreditsForFreeUsage.mockResolvedValue(false);
   });
 
   const getIsolatedModule = () => {
@@ -23,6 +25,10 @@ describe("sliding-window", () => {
     jest.isolateModules(() => {
       jest.doMock("../redis", () => ({
         createRedisClient: mockCreateRedisClient,
+      }));
+
+      jest.doMock("@/lib/referrals", () => ({
+        spendReferralCreditsForFreeUsage: mockSpendReferralCreditsForFreeUsage,
       }));
 
       isolatedModule = require("../sliding-window");
@@ -73,6 +79,19 @@ describe("sliding-window", () => {
         expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
       }
+    });
+
+    it("should spend referral credits when rate limit is exceeded", async () => {
+      const { checkFreeUserRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      mockEvalFn.mockResolvedValue([0, 0]);
+      mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
+
+      const result = await checkFreeUserRateLimit("user-123");
+
+      expect(result.referralCreditsDeducted).toBe(1);
+      expect(result.remaining).toBe(0);
     });
 
     it("should throw ChatSDKError on Redis errors", async () => {
@@ -133,6 +152,19 @@ describe("sliding-window", () => {
         expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
       }
+    });
+
+    it("should spend two referral credits when the shared free limit is exceeded", async () => {
+      const { checkFreeAgentRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      mockEvalFn.mockResolvedValue([0, 1]);
+      mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
+
+      const result = await checkFreeAgentRateLimit("user-123");
+
+      expect(result.referralCreditsDeducted).toBe(2);
+      expect(result.remaining).toBe(0);
     });
   });
 });

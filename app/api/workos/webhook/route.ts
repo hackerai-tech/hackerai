@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import { workos } from "@/app/api/workos";
 import { captureUserSignedUp } from "@/lib/analytics/user-signup";
 import { phLogger } from "@/lib/posthog/server";
+import { getReferralAttribution } from "@/lib/referrals";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -89,10 +90,12 @@ export async function POST(req: NextRequest) {
 
   try {
     if (event.event === "user.created") {
+      const referralAttribution = await getReferralAttribution(event.data.id);
       captureUserSignedUp({
         user: event.data,
         workosEventId: event.id,
         workosEventCreatedAt: event.createdAt,
+        referralAttribution,
       });
     }
   } catch (error) {

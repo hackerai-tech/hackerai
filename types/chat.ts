@@ -306,6 +306,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  // Referral usage credits deducted for free-tier overflow.
+  referralCreditsDeducted?: number;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };

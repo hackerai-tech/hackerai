@@ -13,6 +13,7 @@ import {
   getFreeRequestLimit,
 } from "./free-config";
 import { createRedisClient } from "./redis";
+import { spendReferralCreditsForFreeUsage } from "@/lib/referrals";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -119,6 +120,21 @@ export const checkFreeUserRateLimit = async (
     });
 
     if (!success) {
+      const spentReferralCredits = await spendReferralCreditsForFreeUsage({
+        userId,
+        amountCredits: cost,
+        idempotencyKey: `free_overflow:${userId}:${bucket}:${Date.now()}`,
+      });
+
+      if (spentReferralCredits) {
+        return {
+          remaining: 0,
+          resetTime: new Date(reset),
+          limit: requestLimit,
+          referralCreditsDeducted: cost,
+        };
+      }
+
       throw new ChatSDKError(
         "rate_limit:chat",
         `You've used all your daily requests. Daily requests reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,

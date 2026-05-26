@@ -11,6 +11,7 @@ describe("checkRateLimit", () => {
   const mockEvalFn = jest.fn();
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
+  const mockSpendReferralCreditsForFreeUsage = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
@@ -25,6 +26,7 @@ describe("checkRateLimit", () => {
       limit: 10000,
       pointsDeducted: 100,
     });
+    mockSpendReferralCreditsForFreeUsage.mockResolvedValue(false);
   });
 
   const getIsolatedModule = () => {
@@ -42,6 +44,10 @@ describe("checkRateLimit", () => {
         calculateTokenCost: jest.fn(),
         getBudgetLimits: jest.fn(),
         getSubscriptionPrice: jest.fn(),
+      }));
+
+      jest.doMock("@/lib/referrals", () => ({
+        spendReferralCreditsForFreeUsage: mockSpendReferralCreditsForFreeUsage,
       }));
 
       isolatedModule = require("../index");
@@ -107,6 +113,19 @@ describe("checkRateLimit", () => {
         expect(error.cause).toContain("daily requests");
         expect(error.cause).toContain("Upgrade plan");
       }
+    });
+
+    it("should spend referral credits when the free limit is exceeded", async () => {
+      const { checkRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      mockEvalFn.mockResolvedValue([0, 0]);
+      mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
+
+      const result = await checkRateLimit("user-123", "ask", "free", 0);
+
+      expect(result.referralCreditsDeducted).toBe(1);
+      expect(result.remaining).toBe(0);
     });
   });
 

@@ -5,10 +5,16 @@ export function captureUserSignedUp({
   user,
   workosEventId,
   workosEventCreatedAt,
+  referralAttribution,
 }: {
   user: User;
   workosEventId: string;
   workosEventCreatedAt: string;
+  referralAttribution?: {
+    referrerUserId: string;
+    referralCode: string;
+    referralLandingPath?: string;
+  } | null;
 }) {
   phLogger.event("user_signed_up", {
     userId: user.id,
@@ -18,6 +24,9 @@ export function captureUserSignedUp({
     user_created_at: user.createdAt,
     workos_event_id: workosEventId,
     workos_event_created_at: workosEventCreatedAt,
+    referrer_user_id: referralAttribution?.referrerUserId,
+    referral_code: referralAttribution?.referralCode,
+    referral_landing_path: referralAttribution?.referralLandingPath,
     $insert_id: workosEventId,
     $set_once: {
       signed_up_at: user.createdAt,

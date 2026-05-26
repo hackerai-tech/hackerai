@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/tooltip";
 import { clientLogout } from "@/lib/utils/logout";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { ReferralRewardEntry } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -235,6 +236,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
+      <ReferralRewardEntry isCollapsed={isCollapsed} isFreeUser={!isProUser} />
+
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />
 
