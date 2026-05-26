@@ -236,7 +236,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
-      <ReferralRewardEntry isCollapsed={isCollapsed} isFreeUser={!isProUser} />
+      <ReferralRewardEntry
+        isCollapsed={isCollapsed}
+        isFreeUser={!isCheckingProPlan && !isProUser}
+      />
 
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />

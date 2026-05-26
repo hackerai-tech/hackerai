@@ -121,11 +121,16 @@ export async function awardReferralConversion(args: {
   stripeSubscriptionId?: string;
 }): Promise<void> {
   try {
+    const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      throw new Error("Missing server configuration: CONVEX_SERVICE_ROLE_KEY");
+    }
+
     const convex = getConvexClient();
     const result = await convex.mutation(
       api.referrals.awardReferralConversion,
       {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        serviceKey,
         referredUserId: args.referredUserId,
         qualifyingTier: args.qualifyingTier,
         idempotencyKey: args.idempotencyKey,
@@ -156,5 +161,6 @@ export async function awardReferralConversion(args: {
       qualifying_tier: args.qualifyingTier,
       error,
     });
+    throw error;
   }
 }

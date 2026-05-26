@@ -43,7 +43,7 @@ describe("sliding-window", () => {
 
       mockCreateRedisClient.mockReturnValue(null);
 
-      const result = await checkFreeUserRateLimit("user-123");
+      const result = await checkFreeUserRateLimit("user-123", "request-123");
       expect(result.remaining).toBe(10);
       expect(result.limit).toBe(10);
       expect(result.rateLimitSkipped).toBe(true);
@@ -55,7 +55,7 @@ describe("sliding-window", () => {
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
 
-      const result = await checkFreeUserRateLimit("user-123");
+      const result = await checkFreeUserRateLimit("user-123", "request-123");
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
@@ -72,7 +72,7 @@ describe("sliding-window", () => {
       mockEvalFn.mockResolvedValue([0, 0]);
 
       try {
-        await checkFreeUserRateLimit("user-123");
+        await checkFreeUserRateLimit("user-123", "request-123");
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("daily requests");
@@ -88,10 +88,17 @@ describe("sliding-window", () => {
       mockEvalFn.mockResolvedValue([0, 0]);
       mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
 
-      const result = await checkFreeUserRateLimit("user-123");
+      const result = await checkFreeUserRateLimit("user-123", "request-123");
 
       expect(result.referralCreditsDeducted).toBe(1);
       expect(result.remaining).toBe(0);
+      expect(mockSpendReferralCreditsForFreeUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idempotencyKey: expect.stringMatching(
+            /^free_overflow:user-123:\d+:request-123$/,
+          ),
+        }),
+      );
     });
 
     it("should throw ChatSDKError on Redis errors", async () => {
@@ -101,7 +108,7 @@ describe("sliding-window", () => {
       mockEvalFn.mockRejectedValue(new Error("Redis connection failed"));
 
       try {
-        await checkFreeUserRateLimit("user-123");
+        await checkFreeUserRateLimit("user-123", "request-123");
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("Rate limiting service unavailable");
@@ -116,7 +123,7 @@ describe("sliding-window", () => {
 
       mockCreateRedisClient.mockReturnValue(null);
 
-      const result = await checkFreeAgentRateLimit("user-123");
+      const result = await checkFreeAgentRateLimit("user-123", "request-123");
       expect(result.remaining).toBe(10);
       expect(result.limit).toBe(10);
       expect(result.rateLimitSkipped).toBe(true);
@@ -128,7 +135,7 @@ describe("sliding-window", () => {
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
 
-      const result = await checkFreeAgentRateLimit("user-123");
+      const result = await checkFreeAgentRateLimit("user-123", "request-123");
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
@@ -145,7 +152,7 @@ describe("sliding-window", () => {
       mockEvalFn.mockResolvedValue([0, 1]);
 
       try {
-        await checkFreeAgentRateLimit("user-123");
+        await checkFreeAgentRateLimit("user-123", "request-123");
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("daily requests");
@@ -161,7 +168,7 @@ describe("sliding-window", () => {
       mockEvalFn.mockResolvedValue([0, 1]);
       mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
 
-      const result = await checkFreeAgentRateLimit("user-123");
+      const result = await checkFreeAgentRateLimit("user-123", "request-123");
 
       expect(result.referralCreditsDeducted).toBe(2);
       expect(result.remaining).toBe(0);

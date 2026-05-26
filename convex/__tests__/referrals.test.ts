@@ -36,7 +36,10 @@ const SERVICE_KEY = "test-service-key";
 
 type Row = Record<string, any> & { _id: string };
 
-function makeMockCtx(initial?: Partial<Record<string, Row[]>>) {
+function makeMockCtx(
+  initial?: Partial<Record<string, Row[]>>,
+  authUserId = "user-referrer",
+) {
   const tables: Record<string, Row[]> = {
     referral_codes: [...(initial?.referral_codes ?? [])],
     referrals: [...(initial?.referrals ?? [])],
@@ -76,6 +79,7 @@ function makeMockCtx(initial?: Partial<Record<string, Row[]>>) {
               return matches[0];
             },
             collect: async () => matches,
+            take: async (limit: number) => matches.slice(0, limit),
           };
         }),
       })),
@@ -98,6 +102,11 @@ function makeMockCtx(initial?: Partial<Record<string, Row[]>>) {
             .find((candidate) => candidate._id === id) ?? null
         );
       }),
+    },
+    auth: {
+      getUserIdentity: jest
+        .fn()
+        .mockResolvedValue(authUserId ? { subject: authUserId } : null),
     },
   };
 
@@ -122,15 +131,20 @@ describe("referrals", () => {
     const { getOrCreateReferralCode } = await referralsModule();
     const { ctx, tables } = makeMockCtx();
 
-    const first = await (getOrCreateReferralCode as any).handler(ctx, {
-      userId: "user-referrer",
-    });
-    const second = await (getOrCreateReferralCode as any).handler(ctx, {
-      userId: "user-referrer",
-    });
+    const first = await (getOrCreateReferralCode as any).handler(ctx, {});
+    const second = await (getOrCreateReferralCode as any).handler(ctx, {});
 
     expect(first.code).toBe(second.code);
     expect(tables.referral_codes).toHaveLength(1);
+  });
+
+  it("rejects unauthenticated public referral code creation", async () => {
+    const { getOrCreateReferralCode } = await referralsModule();
+    const { ctx } = makeMockCtx(undefined, "");
+
+    await expect(
+      (getOrCreateReferralCode as any).handler(ctx, {}),
+    ).rejects.toThrow("Unauthorized");
   });
 
   it("rejects self-referrals", async () => {
@@ -273,6 +287,31 @@ describe("referrals", () => {
       insufficientCredits: true,
     });
     expect(tables.referral_credit_balances[0].balance_credits).toBe(1);
+    expect(tables.referral_credit_ledger).toHaveLength(0);
+  });
+
+  it("rejects invalid referral credit spend amounts", async () => {
+    const { spendReferralCredits } = await referralsModule();
+    const { ctx, tables } = makeMockCtx({
+      referral_credit_balances: [
+        {
+          _id: "balance-1",
+          user_id: "user-a",
+          balance_credits: 10,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    await expect(
+      (spendReferralCredits as any).handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        userId: "user-a",
+        amountCredits: 0,
+        idempotencyKey: "spend-0",
+      }),
+    ).rejects.toThrow("amountCredits must be at least 1");
+    expect(tables.referral_credit_balances[0].balance_credits).toBe(10);
     expect(tables.referral_credit_ledger).toHaveLength(0);
   });
 });

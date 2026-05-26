@@ -793,11 +793,12 @@ export const agentLongTask = task({
               extraUsageConfig,
               selectedModel,
               organizationId,
+              assistantMessageId,
             );
 
             const freeMonthlyBudgetSnapshot =
-              subscription === "free"
-                ? await checkFreeMonthlyCostLimit(userId)
+              subscription === "free" && !rateLimitInfo.referralCreditsDeducted
+                ? await checkFreeMonthlyCostLimit(userId, assistantMessageId)
                 : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);

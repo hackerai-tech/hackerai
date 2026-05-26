@@ -62,7 +62,16 @@ describe("checkRateLimit", () => {
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
 
-      const result = await checkRateLimit("user-123", "agent", "free", 0);
+      const result = await checkRateLimit(
+        "user-123",
+        "agent",
+        "free",
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "request-123",
+      );
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
@@ -78,7 +87,16 @@ describe("checkRateLimit", () => {
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
 
-      const result = await checkRateLimit("user-123", "ask", "free", 0);
+      const result = await checkRateLimit(
+        "user-123",
+        "ask",
+        "free",
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "request-123",
+      );
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
@@ -94,7 +112,16 @@ describe("checkRateLimit", () => {
 
       mockCreateRedisClient.mockReturnValue(null);
 
-      const result = await checkRateLimit("user-123", "ask", "free", 0);
+      const result = await checkRateLimit(
+        "user-123",
+        "ask",
+        "free",
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "request-123",
+      );
       expect(result.remaining).toBe(10);
       expect(result.limit).toBe(10);
       expect(result.rateLimitSkipped).toBe(true);
@@ -107,7 +134,16 @@ describe("checkRateLimit", () => {
       mockEvalFn.mockResolvedValue([0, 0]);
 
       try {
-        await checkRateLimit("user-123", "ask", "free", 0);
+        await checkRateLimit(
+          "user-123",
+          "ask",
+          "free",
+          0,
+          undefined,
+          undefined,
+          undefined,
+          "request-123",
+        );
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("daily requests");
@@ -122,7 +158,16 @@ describe("checkRateLimit", () => {
       mockEvalFn.mockResolvedValue([0, 0]);
       mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
 
-      const result = await checkRateLimit("user-123", "ask", "free", 0);
+      const result = await checkRateLimit(
+        "user-123",
+        "ask",
+        "free",
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "request-123",
+      );
 
       expect(result.referralCreditsDeducted).toBe(1);
       expect(result.remaining).toBe(0);

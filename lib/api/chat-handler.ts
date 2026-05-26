@@ -124,6 +124,23 @@ function getStreamContext() {
 
 export { getStreamContext };
 
+function getReferralCreditSpendRequestId({
+  chatId,
+  messages,
+  fallbackId,
+  regenerate,
+}: {
+  chatId: string;
+  messages: UIMessage[];
+  fallbackId: string;
+  regenerate?: boolean;
+}) {
+  const lastMessage = messages[messages.length - 1];
+  return lastMessage?.id
+    ? `${chatId}:${lastMessage.id}:${regenerate ? "regenerate" : "send"}`
+    : fallbackId;
+}
+
 export const createChatHandler = (
   endpoint: "/api/chat" | "/api/agent" = "/api/chat",
 ) => {
@@ -243,6 +260,13 @@ export const createChatHandler = (
         Array.isArray(todos) ? todos : [],
         { isTemporary: !!temporary, regenerate },
       );
+      const assistantMessageId = uuidv4();
+      const referralCreditSpendRequestId = getReferralCreditSpendRequestId({
+        chatId,
+        messages,
+        fallbackId: assistantMessageId,
+        regenerate,
+      });
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
@@ -258,7 +282,16 @@ export const createChatHandler = (
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
         mode === "ask" && subscription === "free"
-          ? await checkRateLimit(userId, mode, subscription)
+          ? await checkRateLimit(
+              userId,
+              mode,
+              subscription,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              referralCreditSpendRequestId,
+            )
           : null;
 
       const uploadBasePath = isAgentMode(mode)
@@ -328,11 +361,15 @@ export const createChatHandler = (
           extraUsageConfig,
           selectedModel,
           organizationId,
+          referralCreditSpendRequestId,
         ));
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free" && !rateLimitInfo.referralCreditsDeducted
-          ? await checkFreeMonthlyCostLimit(userId)
+          ? await checkFreeMonthlyCostLimit(
+              userId,
+              referralCreditSpendRequestId,
+            )
           : null;
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
@@ -354,7 +391,6 @@ export const createChatHandler = (
       // PostHog client for analytics (initialized once, used at end of request)
       const posthog = PostHogClient();
 
-      const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       if (temporary) {

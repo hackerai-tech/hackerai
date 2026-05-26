@@ -88,14 +88,18 @@ export const checkRateLimit = async (
   extraUsageConfig?: ExtraUsageConfig,
   modelName?: string,
   organizationId?: string,
+  requestId?: string,
 ): Promise<RateLimitInfo> => {
   // Free users: fixed daily window
   if (subscription === "free") {
+    if (!requestId) {
+      throw new Error("requestId is required for free rate limiting");
+    }
     if (isAgentMode(mode)) {
       // Free agent mode shares the daily free budget and consumes 2 units.
-      return checkFreeAgentRateLimit(userId);
+      return checkFreeAgentRateLimit(userId, requestId);
     }
-    return checkFreeUserRateLimit(userId);
+    return checkFreeUserRateLimit(userId, requestId);
   }
 
   // Paid users: token bucket (same budget for both modes)

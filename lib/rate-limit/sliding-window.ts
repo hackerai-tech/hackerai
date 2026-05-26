@@ -85,6 +85,7 @@ const consumeFreeRequestUnits = async ({
  */
 export const checkFreeUserRateLimit = async (
   userId: string,
+  requestId: string,
   requestCost = FREE_ASK_REQUEST_COST,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
@@ -123,7 +124,7 @@ export const checkFreeUserRateLimit = async (
       const spentReferralCredits = await spendReferralCreditsForFreeUsage({
         userId,
         amountCredits: cost,
-        idempotencyKey: `free_overflow:${userId}:${bucket}:${Date.now()}`,
+        idempotencyKey: `free_overflow:${userId}:${bucket}:${requestId}`,
       });
 
       if (spentReferralCredits) {
@@ -162,6 +163,7 @@ export const checkFreeUserRateLimit = async (
  */
 export const checkFreeAgentRateLimit = async (
   userId: string,
+  requestId: string,
 ): Promise<RateLimitInfo> => {
-  return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST);
+  return checkFreeUserRateLimit(userId, requestId, FREE_AGENT_REQUEST_COST);
 };

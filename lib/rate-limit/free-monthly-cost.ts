@@ -62,6 +62,7 @@ const getLimitMessage = (reset: number) =>
 
 export async function checkFreeMonthlyCostLimit(
   userId: string,
+  requestId: string,
 ): Promise<FreeMonthlyCostSnapshot> {
   const limitPoints = dollarsToPoints(getFreeMonthlyCostLimitDollars());
   const { bucket, reset } = getCurrentUtcMonthWindow();
@@ -94,7 +95,7 @@ export async function checkFreeMonthlyCostLimit(
     const spentReferralCredit = await spendReferralCreditsForFreeUsage({
       userId,
       amountCredits: 1,
-      idempotencyKey: `free_monthly_overflow:${userId}:${bucket}:${Date.now()}`,
+      idempotencyKey: `free_monthly_overflow:${userId}:${bucket}:${requestId}`,
     });
 
     if (spentReferralCredit) {

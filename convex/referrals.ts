@@ -8,6 +8,7 @@ export const REFERRAL_REWARD_EXPERIMENT_FLAG = "referral_reward_experiment";
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const REFERRAL_CODE_LENGTH = 8;
+const MAX_REFERRAL_SUMMARY_ROWS = 1000;
 
 type ReferralStatus = "signed_up" | "activated" | "converted";
 type LedgerReason =
@@ -21,6 +22,14 @@ function generateReferralCode(): string {
     code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
   }
   return code;
+}
+
+async function requireAuthenticatedUserId(ctx: any): Promise<string> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Unauthorized");
+  }
+  return identity.subject;
 }
 
 async function getOrCreateBalance(ctx: any, userId: string, now: number) {
@@ -92,12 +101,13 @@ async function insertLedgerEntry(
 }
 
 export const getOrCreateReferralCode = mutation({
-  args: { userId: v.string() },
+  args: {},
   returns: v.object({ code: v.string() }),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
+    const userId = await requireAuthenticatedUserId(ctx);
     const existing = await ctx.db
       .query("referral_codes")
-      .withIndex("by_user", (q) => q.eq("user_id", args.userId))
+      .withIndex("by_user", (q) => q.eq("user_id", userId))
       .unique();
 
     if (existing) return { code: existing.code };
@@ -111,7 +121,7 @@ export const getOrCreateReferralCode = mutation({
       if (collision) continue;
 
       await ctx.db.insert("referral_codes", {
-        user_id: args.userId,
+        user_id: userId,
         code,
         created_at: Date.now(),
       });
@@ -147,7 +157,7 @@ export const getReferralCode = query({
 });
 
 export const getReferralSummary = query({
-  args: { userId: v.string() },
+  args: {},
   returns: v.object({
     code: v.optional(v.string()),
     balanceCredits: v.number(),
@@ -155,20 +165,21 @@ export const getReferralSummary = query({
     activated: v.number(),
     converted: v.number(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
+    const userId = await requireAuthenticatedUserId(ctx);
     const [codeRow, balanceRow, referrals] = await Promise.all([
       ctx.db
         .query("referral_codes")
-        .withIndex("by_user", (q) => q.eq("user_id", args.userId))
+        .withIndex("by_user", (q) => q.eq("user_id", userId))
         .unique(),
       ctx.db
         .query("referral_credit_balances")
-        .withIndex("by_user", (q) => q.eq("user_id", args.userId))
+        .withIndex("by_user", (q) => q.eq("user_id", userId))
         .unique(),
       ctx.db
         .query("referrals")
-        .withIndex("by_referrer", (q) => q.eq("referrer_user_id", args.userId))
-        .collect(),
+        .withIndex("by_referrer", (q) => q.eq("referrer_user_id", userId))
+        .take(MAX_REFERRAL_SUMMARY_ROWS),
     ]);
 
     return {
@@ -422,7 +433,13 @@ export const spendReferralCredits = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const amount = Math.max(1, Math.trunc(args.amountCredits));
+    if (!Number.isFinite(args.amountCredits)) {
+      throw new Error("amountCredits must be a finite positive number");
+    }
+    const amount = Math.trunc(args.amountCredits);
+    if (amount < 1) {
+      throw new Error("amountCredits must be at least 1");
+    }
 
     const result = await insertLedgerEntry(ctx, {
       userId: args.userId,

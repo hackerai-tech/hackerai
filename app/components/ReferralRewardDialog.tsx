@@ -94,16 +94,22 @@ export function ReferralRewardEntryContent({
   userId?: string;
 }) {
   const [open, setOpen] = React.useState(false);
-  const hasCapturedImpression = React.useRef(false);
+  const lastCapturedUserRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    if (!enabled || !isFreeUser || hasCapturedImpression.current) return;
-    hasCapturedImpression.current = true;
+    if (!userId) {
+      lastCapturedUserRef.current = null;
+      return;
+    }
+    if (!enabled || !isFreeUser || lastCapturedUserRef.current === userId) {
+      return;
+    }
+    lastCapturedUserRef.current = userId;
     captureAuthenticatedEvent("referral_invite_impression", {
       placement: "sidebar_footer",
       collapsed: isCollapsed,
     });
-  }, [enabled, isCollapsed, isFreeUser]);
+  }, [enabled, isCollapsed, isFreeUser, userId]);
 
   if (!userId || !enabled || !isFreeUser) return null;
 
@@ -189,7 +195,7 @@ export function ReferralRewardDialog({
   );
   const summary = useQuery(
     api.referrals.getReferralSummary,
-    effectiveUserId ? { userId: effectiveUserId } : "skip",
+    effectiveUserId ? {} : "skip",
   );
 
   const code = summary?.code ?? generatedCode;
@@ -199,7 +205,7 @@ export function ReferralRewardDialog({
     if (!open || !effectiveUserId || code) return;
 
     let cancelled = false;
-    getOrCreateReferralCode({ userId: effectiveUserId })
+    getOrCreateReferralCode({})
       .then((result) => {
         if (!cancelled) setGeneratedCode(result.code);
       })

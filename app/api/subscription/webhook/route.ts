@@ -299,7 +299,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         await awardReferralConversion({
           referredUserId: uid,
           qualifyingTier: tier,
-          idempotencyKey: `subscription:${subscription.id}`,
+          idempotencyKey: `subscription:${subscription.id}:user:${uid}`,
           revenueDollars: attributedRevenueDollars,
           stripeInvoiceId: invoice.id,
           stripeSubscriptionId: subscription.id,

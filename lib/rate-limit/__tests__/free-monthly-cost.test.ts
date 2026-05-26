@@ -54,7 +54,7 @@ describe("free monthly cost limit", () => {
     mockGet.mockResolvedValue(1250);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
-    const snapshot = await checkFreeMonthlyCostLimit("user-123");
+    const snapshot = await checkFreeMonthlyCostLimit("user-123", "request-123");
 
     expect(mockGet).toHaveBeenCalledWith(
       expect.stringMatching(/^free_monthly_cost:user-123:\d{4}-\d{2}$/),
@@ -71,7 +71,9 @@ describe("free monthly cost limit", () => {
     mockGet.mockResolvedValue(100);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
-    await expect(checkFreeMonthlyCostLimit("user-123")).rejects.toMatchObject({
+    await expect(
+      checkFreeMonthlyCostLimit("user-123", "request-123"),
+    ).rejects.toMatchObject({
       type: "rate_limit",
       surface: "chat",
       cause: expect.stringContaining("free monthly usage"),
@@ -85,10 +87,17 @@ describe("free monthly cost limit", () => {
     mockSpendReferralCreditsForFreeUsage.mockResolvedValue(true);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
-    const snapshot = await checkFreeMonthlyCostLimit("user-123");
+    const snapshot = await checkFreeMonthlyCostLimit("user-123", "request-123");
 
     expect(snapshot.referralCreditsDeducted).toBe(1);
     expect(snapshot.monthlyRemainingAtStart).toBe(0);
+    expect(mockSpendReferralCreditsForFreeUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^free_monthly_overflow:user-123:\d{4}-\d{2}:request-123$/,
+        ),
+      }),
+    );
   });
 
   it("records actual free usage cost as monthly points", async () => {
@@ -109,7 +118,7 @@ describe("free monthly cost limit", () => {
     const { checkFreeMonthlyCostLimit, recordFreeMonthlyCost } =
       getIsolatedModule();
 
-    const snapshot = await checkFreeMonthlyCostLimit("user-123");
+    const snapshot = await checkFreeMonthlyCostLimit("user-123", "request-123");
 
     expect(snapshot.rateLimitSkipped).toBe(true);
     await expect(

@@ -25,9 +25,24 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      phLogger.error("referral_claim_missing_service_key", {
+        missing_env: "CONVEX_SERVICE_ROLE_KEY",
+      });
+      after(() => phLogger.flush());
+      return NextResponse.json(
+        {
+          claimed: false,
+          reason: "missing_server_configuration",
+        },
+        { status: 500 },
+      );
+    }
+
     const convex = getConvexClient();
     const result = await convex.mutation(api.referrals.claimReferralSignup, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      serviceKey,
       referredUserId: userId,
       referralCode: cookie.code,
       referralLandingPath: cookie.landingPath,
