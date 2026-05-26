@@ -73,7 +73,7 @@ import {
 } from "@/lib/utils/sandbox-file-utils";
 import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
 import {
-  captureAgentRun,
+  captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
   createChatLogger,
@@ -1272,17 +1272,21 @@ export const agentLongTask = task({
                                     userId,
                                     mode,
                                   });
-                                  captureAgentRun({
+                                  const outcome = retryAborted
+                                    ? "aborted"
+                                    : isTerminalProviderStreamError(state)
+                                      ? "error"
+                                      : "success";
+                                  captureAgentCompletionAnalytics({
                                     posthog,
                                     userId,
+                                    chatId,
+                                    endpoint: "/api/agent",
                                     mode,
                                     subscription,
                                     sandboxInfo,
-                                    outcome: retryAborted
-                                      ? "aborted"
-                                      : isTerminalProviderStreamError(state)
-                                        ? "error"
-                                        : "success",
+                                    outcome,
+                                    chatLogger,
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
                                     chatLogger?.emitSuccess({
@@ -1392,17 +1396,21 @@ export const agentLongTask = task({
                         cacheWriteTokens: usageTracker.cacheWriteTokens,
                       });
                       captureToolCalls({ posthog, chatLogger, userId, mode });
-                      captureAgentRun({
+                      const outcome = isAborted
+                        ? "aborted"
+                        : isTerminalProviderStreamError(state)
+                          ? "error"
+                          : "success";
+                      captureAgentCompletionAnalytics({
                         posthog,
                         userId,
+                        chatId,
+                        endpoint: "/api/agent",
                         mode,
                         subscription,
                         sandboxInfo,
-                        outcome: isAborted
-                          ? "aborted"
-                          : isTerminalProviderStreamError(state)
-                            ? "error"
-                            : "success",
+                        outcome,
+                        chatLogger,
                       });
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({

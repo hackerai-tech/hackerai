@@ -6,7 +6,9 @@ import { describe, expect, it, jest } from "@jest/globals";
 
 const {
   createChatLogger,
+  captureAgentCompletionAnalytics,
   captureAgentRun,
+  captureFreeAgentValueReached,
   captureToolCalls,
   captureUsageCost,
 } = require("../chat-logger");
@@ -107,6 +109,154 @@ describe("captureAgentRun", () => {
     });
 
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureFreeAgentValueReached", () => {
+  it("captures a free successful agent value event with user properties", () => {
+    const capture = jest.fn();
+
+    captureFreeAgentValueReached({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "free",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      chatLogger: {
+        getToolCalls: () => [{ name: "web_search" }, { name: "open_url" }],
+      } as any,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-free_agent_value_reached",
+      properties: expect.objectContaining({
+        user_id: "user_123",
+        chat_id: "chat_123",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "free",
+        subscription_tier: "free",
+        outcome: "success",
+        tool_call_count: 2,
+        agent_value_event_version: 1,
+        sandbox_type: "e2b",
+        $set_once: expect.objectContaining({
+          first_free_agent_value_reached_at: expect.any(String),
+        }),
+        $set: expect.objectContaining({
+          subscription_tier: "free",
+          last_free_agent_value_reached_at: expect.any(String),
+        }),
+      }),
+    });
+  });
+
+  it("does not capture for paid, ask mode, or unsuccessful runs", () => {
+    const capture = jest.fn();
+    const baseArgs = {
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent" as const,
+      mode: "agent" as const,
+      subscription: "free",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success" as const,
+      chatLogger: { getToolCalls: () => [] } as any,
+    };
+
+    captureFreeAgentValueReached({
+      ...baseArgs,
+      subscription: "pro",
+    });
+    captureFreeAgentValueReached({
+      ...baseArgs,
+      mode: "ask",
+    });
+    captureFreeAgentValueReached({
+      ...baseArgs,
+      outcome: "aborted",
+    });
+    captureFreeAgentValueReached({
+      ...baseArgs,
+      outcome: "error",
+    });
+
+    expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureAgentCompletionAnalytics", () => {
+  it("captures both agent completion and free value events for successful free agent runs", () => {
+    const capture = jest.fn();
+
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "free",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+    });
+
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: {
+        mode: "agent",
+        subscription: "free",
+        outcome: "success",
+        sandboxType: "e2b",
+      },
+    });
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-free_agent_value_reached",
+      properties: expect.objectContaining({
+        user_id: "user_123",
+        chat_id: "chat_123",
+        endpoint: "/api/agent",
+        subscription_tier: "free",
+        outcome: "success",
+        tool_call_count: 1,
+      }),
+    });
+  });
+
+  it("keeps paid agent runs on the existing completion event only", () => {
+    const capture = jest.fn();
+
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+    });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: {
+        mode: "agent",
+        subscription: "pro",
+        outcome: "success",
+        sandboxType: "e2b",
+      },
+    });
   });
 });
 

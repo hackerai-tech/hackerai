@@ -578,6 +578,20 @@ export function captureToolCalls({
   }
 }
 
+export type AgentRunOutcome = "success" | "aborted" | "error";
+
+type AgentCompletionAnalyticsArgs = {
+  posthog: PostHog | null;
+  userId: string;
+  chatId: string;
+  endpoint: "/api/chat" | "/api/agent";
+  mode: ChatMode;
+  subscription: string;
+  sandboxInfo: SandboxInfo | null;
+  outcome: AgentRunOutcome;
+  chatLogger: ChatLogger | undefined;
+};
+
 export function captureAgentRun({
   posthog,
   userId,
@@ -591,7 +605,7 @@ export function captureAgentRun({
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
-  outcome: "success" | "aborted" | "error";
+  outcome: AgentRunOutcome;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -604,6 +618,73 @@ export function captureAgentRun({
       ...(sandboxInfo?.type && { sandboxType: sandboxInfo.type }),
     },
   });
+}
+
+export function captureFreeAgentValueReached({
+  posthog,
+  userId,
+  chatId,
+  endpoint,
+  mode,
+  subscription,
+  sandboxInfo,
+  outcome,
+  chatLogger,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  chatId: string;
+  endpoint: "/api/chat" | "/api/agent";
+  mode: ChatMode;
+  subscription: string;
+  sandboxInfo: SandboxInfo | null;
+  outcome: AgentRunOutcome;
+  chatLogger: ChatLogger | undefined;
+}) {
+  if (!posthog || mode !== "agent" || subscription !== "free") return;
+  if (outcome !== "success") return;
+
+  const now = new Date().toISOString();
+  const toolCallCount = chatLogger?.getToolCalls().length ?? 0;
+
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-free_agent_value_reached",
+    properties: {
+      user_id: userId,
+      chat_id: chatId,
+      endpoint,
+      mode,
+      subscription,
+      subscription_tier: subscription,
+      outcome,
+      tool_call_count: toolCallCount,
+      agent_value_event_version: 1,
+      ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
+      $set_once: {
+        first_free_agent_value_reached_at: now,
+      },
+      $set: {
+        subscription_tier: subscription,
+        last_free_agent_value_reached_at: now,
+      },
+    },
+  });
+}
+
+export function captureAgentCompletionAnalytics(
+  args: AgentCompletionAnalyticsArgs,
+) {
+  const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  captureAgentRun({
+    posthog,
+    userId,
+    mode,
+    subscription,
+    sandboxInfo,
+    outcome,
+  });
+  captureFreeAgentValueReached(args);
 }
 
 /**
