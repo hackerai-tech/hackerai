@@ -47,16 +47,21 @@ const logLocalAttachmentDebug = (
 const getFilenameFromPath = (path: string) =>
   path.split(/[\\/]/).filter(Boolean).pop() || "selected file";
 
-const isExpectedFileUploadError = (error: unknown): boolean => {
+const getConvexErrorCode = (error: unknown): string | undefined => {
   if (error instanceof ConvexError) {
     const errorData = error.data as { code?: string };
-    return (
-      errorData?.code === "FILE_TOKEN_LIMIT_EXCEEDED" ||
-      errorData?.code === "FILE_UPLOAD_RATE_LIMIT" ||
-      errorData?.code === "PAID_PLAN_REQUIRED"
-    );
+    return errorData?.code;
   }
-  return false;
+  return undefined;
+};
+
+const isExpectedFileUploadError = (error: unknown): boolean => {
+  const code = getConvexErrorCode(error);
+  return (
+    code === "FILE_TOKEN_LIMIT_EXCEEDED" ||
+    code === "FILE_UPLOAD_RATE_LIMIT" ||
+    code === "PAID_PLAN_REQUIRED"
+  );
 };
 
 const fileFromBase64 = (
@@ -238,7 +243,13 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Upload file to S3 storage
   const uploadFileToS3 = useCallback(
-    async (file: File, uploadIndex: number) => {
+    async (
+      file: File,
+      uploadIndex: number,
+      options: {
+        fallbackLocalFile?: LocalDesktopFile & { path: string };
+      } = {},
+    ) => {
       try {
         logLocalAttachmentDebug("s3-upload-start", {
           fileName: file.name,
@@ -311,6 +322,35 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           url,
         });
       } catch (error) {
+        if (
+          getConvexErrorCode(error) === "FILE_UPLOAD_RATE_LIMIT" &&
+          options.fallbackLocalFile
+        ) {
+          const fallbackFile = options.fallbackLocalFile;
+          updateUploadedFile(uploadIndex, {
+            file: {
+              name: fallbackFile.name,
+              type: fallbackFile.type,
+              size: fallbackFile.size,
+              lastModified: fallbackFile.lastModified,
+            },
+            uploading: false,
+            uploaded: true,
+            storage: "local-desktop",
+            localAttachmentId:
+              typeof crypto !== "undefined" && crypto.randomUUID
+                ? crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            localPath: fallbackFile.path,
+            tokens: 0,
+            error: undefined,
+          });
+          toast.warning(
+            `${fallbackFile.name} was added for desktop Agent access. Cloud preview is temporarily limited.`,
+          );
+          return;
+        }
+
         if (!isExpectedFileUploadError(error)) {
           console.error("Failed to upload file:", error);
         }
@@ -378,7 +418,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             storage: "local-desktop";
             file: LocalDesktopFile & { path: string };
           }
-        | { storage: "s3"; file: File }
+        | {
+            storage: "s3";
+            file: File;
+            fallbackLocalFile?: LocalDesktopFile & { path: string };
+          }
       >,
     ) => {
       const startingIndex = uploadedFiles.length;
@@ -391,7 +435,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             uploaded: false,
             storage: "s3",
           });
-          uploadFileToS3(entry.file, startingIndex + index);
+          uploadFileToS3(entry.file, startingIndex + index, {
+            fallbackLocalFile: entry.fallbackLocalFile,
+          });
           return;
         }
 
@@ -451,7 +497,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             storage: "local-desktop";
             file: LocalDesktopFile & { path: string };
           }
-        | { storage: "s3"; file: File }
+        | {
+            storage: "s3";
+            file: File;
+            fallbackLocalFile?: LocalDesktopFile & { path: string };
+          }
       > = [];
       const invalidFiles: string[] = [];
 
@@ -517,7 +567,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             invalidFiles.push(`${browserFile.name}: ${imageValidation.error}`);
             continue;
           }
-          validFiles.push({ storage: "s3", file: browserFile });
+          validFiles.push({
+            storage: "s3",
+            file: browserFile,
+            fallbackLocalFile: file,
+          });
           continue;
         }
 

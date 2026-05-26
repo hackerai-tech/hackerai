@@ -19,6 +19,24 @@ type StorageUsage = {
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = Doc<"files"> | null;
 
+const getIdentityEntitlements = (identity: unknown) => {
+  if (
+    !identity ||
+    typeof identity !== "object" ||
+    !("entitlements" in identity)
+  ) {
+    return [];
+  }
+
+  const entitlements = identity.entitlements;
+  return Array.isArray(entitlements)
+    ? entitlements.filter(
+        (entitlement: unknown): entitlement is string =>
+          typeof entitlement === "string",
+      )
+    : [];
+};
+
 /**
  * Generate presigned S3 upload URL for authenticated users
  *
@@ -82,6 +100,7 @@ export const generateS3UploadUrlAction = action({
 
     // Get user ID from identity
     const userId = identity.subject;
+    const entitlements = getIdentityEntitlements(identity);
 
     // Check storage limit before allowing upload
     const storageUsage: StorageUsage = await ctx.runQuery(
@@ -106,7 +125,9 @@ export const generateS3UploadUrlAction = action({
 
     // Check rate limit and consume a token
     // This prevents abuse by spamming URL generation
-    const rateLimitResult = await checkFileUploadRateLimit(userId, true);
+    const rateLimitResult = await checkFileUploadRateLimit(userId, true, {
+      entitlements,
+    });
 
     try {
       // Generate presigned upload URL with user-scoped S3 key

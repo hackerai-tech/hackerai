@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { ConvexError } from "convex/values";
 import { useFileUpload } from "../useFileUpload";
 import {
   getLocalFileMetadata,
@@ -176,6 +177,52 @@ describe("useFileUpload desktop-local agent attachments", () => {
       }),
     );
     expect(saveFile).toHaveBeenCalled();
+  });
+
+  it("falls back to a local desktop attachment when cloud image upload is rate limited", async () => {
+    generateS3UploadUrlAction.mockRejectedValueOnce(
+      new ConvexError({
+        code: "FILE_UPLOAD_RATE_LIMIT",
+        message:
+          "You've reached your cloud file upload limit of 400 files per 5 hours.",
+      }),
+    );
+    (pickLocalFiles as jest.Mock).mockResolvedValue(["/Users/alice/logo.svg"]);
+    (getLocalFileMetadata as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/logo.svg",
+      name: "logo.svg",
+      mediaType: "image/svg+xml",
+      size: 36,
+      lastModified: 123,
+    });
+    (readLocalFile as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/logo.svg",
+      name: "logo.svg",
+      mediaType: "image/svg+xml",
+      size: 36,
+      lastModified: 123,
+      base64: btoa("<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+    });
+
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleAttachClick();
+    });
+
+    await waitFor(() => {
+      expect(updateUploadedFile).toHaveBeenCalledWith(
+        0,
+        expect.objectContaining({
+          uploaded: true,
+          uploading: false,
+          storage: "local-desktop",
+          localPath: "/Users/alice/logo.svg",
+          tokens: 0,
+        }),
+      );
+    });
+    expect(saveFile).not.toHaveBeenCalled();
   });
 
   it("keeps the S3 upload path outside desktop Agent mode", async () => {

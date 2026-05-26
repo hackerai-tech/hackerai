@@ -35,6 +35,18 @@ describe("shouldDropExpectedConvexException", () => {
     ).toBe(true);
   });
 
+  it("drops cloud upload rate-limit errors", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"FILE_UPLOAD_RATE_LIMIT","message":"You\\u0027ve reached your cloud file upload limit of 400 files per 5 hours."}',
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("keeps non-exception events with matching text", () => {
     expect(
       shouldDropExpectedConvexException({
