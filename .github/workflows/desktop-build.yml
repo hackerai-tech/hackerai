@@ -10,12 +10,6 @@ on:
     tags:
       - "desktop-v*"
   workflow_dispatch:
-    inputs:
-      release:
-        description: "Create a release"
-        required: false
-        default: false
-        type: boolean
 
 env:
   APP_URL: https://hackerai.co
@@ -24,7 +18,7 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag_name }}
@@ -47,34 +41,11 @@ jobs:
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
             echo "should_release=true" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # Triggered by push to main - create new tag
-            LATEST_TAG=$(git tag -l "desktop-v*" | sort -V | tail -1)
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="desktop-v0.0.0"
-            fi
-
-            VERSION="${LATEST_TAG#desktop-v}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            NEW_TAG="desktop-v${NEW_VERSION}"
-
-            echo "Creating new tag: $NEW_TAG"
-
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$NEW_TAG" -m "Auto-release: $NEW_TAG"
-            git push origin "$NEW_TAG"
-
-            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            echo "tag_name=$NEW_TAG" >> $GITHUB_OUTPUT
-            echo "should_release=true" >> $GITHUB_OUTPUT
           else
-            # Manual dispatch or other
+            # Main and manual runs build without publishing a release.
             echo "version=dev" >> $GITHUB_OUTPUT
             echo "tag_name=" >> $GITHUB_OUTPUT
-            echo "should_release=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> $GITHUB_OUTPUT
           fi
 
   build:
