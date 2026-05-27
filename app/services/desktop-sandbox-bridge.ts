@@ -1,7 +1,7 @@
 import { Centrifuge, type Subscription } from "centrifuge";
 import posthog from "posthog-js";
 import {
-  sandboxChannel,
+  sandboxConnectionChannel,
   type SandboxMessage,
   type CommandCancelMessage,
   type CommandMessage,
@@ -44,6 +44,35 @@ interface StreamChunk {
   data?: string;
   exitCode?: number;
   message?: string;
+}
+
+type TargetedIncomingMessage =
+  | CommandMessage
+  | CommandCancelMessage
+  | PtyCreateMessage
+  | PtyInputMessage
+  | PtyResizeMessage
+  | PtyKillMessage;
+
+function isTargetedIncomingMessage(
+  message: unknown,
+): message is TargetedIncomingMessage {
+  if (typeof message !== "object" || message === null) {
+    return false;
+  }
+  const { type, targetConnectionId } = message as {
+    type?: unknown;
+    targetConnectionId?: unknown;
+  };
+  return (
+    typeof targetConnectionId === "string" &&
+    (type === "command" ||
+      type === "command_cancel" ||
+      type === "pty_create" ||
+      type === "pty_input" ||
+      type === "pty_resize" ||
+      type === "pty_kill")
+  );
 }
 
 // "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
@@ -182,16 +211,17 @@ export class DesktopSandboxBridge {
     });
 
     const userId = this.extractUserIdFromToken(centrifugoToken);
-    const channel = sandboxChannel(userId);
+    const channel = sandboxConnectionChannel(userId, connectionId);
     this.subscription = this.client.newSubscription(channel);
 
     this.subscription.on("publication", (ctx) => {
-      const message = ctx.data as SandboxMessage;
+      const message = ctx.data;
 
-      // Gate on targetConnectionId for all message types that carry it
-      const targetId = (message as { targetConnectionId?: string })
-        .targetConnectionId;
-      if (targetId && targetId !== this.connectionId) {
+      if (!isTargetedIncomingMessage(message)) {
+        return;
+      }
+
+      if (message.targetConnectionId !== this.connectionId) {
         return;
       }
 

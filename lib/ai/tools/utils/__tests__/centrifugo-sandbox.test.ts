@@ -45,7 +45,10 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
 }));
 
 jest.mock("@/lib/centrifugo/types", () => ({
-  sandboxChannel: jest.fn((userId: string) => `sandbox:user#${userId}`),
+  sandboxConnectionChannel: jest.fn(
+    (userId: string, connectionId: string) =>
+      `sandbox:connection:${connectionId}#${userId}`,
+  ),
 }));
 
 // Use a stable UUID for assertions
@@ -163,6 +166,9 @@ describe("CentrifugoSandbox", () => {
 
       const sub = mockSubscriptions[0];
       expect(sub).toBeDefined();
+      expect(mockClients[0].newSubscription).toHaveBeenCalledWith(
+        "sandbox:connection:conn-1#user-1",
+      );
 
       // Simulate "subscribed" event, then publications
       sub.emit("subscribed");

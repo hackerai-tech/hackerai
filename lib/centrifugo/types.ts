@@ -7,13 +7,13 @@ export interface CommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 export interface CommandCancelMessage {
   type: "command_cancel";
   commandId: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 export interface StdoutMessage {
@@ -51,14 +51,14 @@ export interface PtyCreateMessage {
   rows?: number;
   cwd?: string;
   env?: Record<string, string>;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 export interface PtyInputMessage {
   type: "pty_input";
   sessionId: string;
   data: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 export interface PtyResizeMessage {
@@ -66,13 +66,13 @@ export interface PtyResizeMessage {
   sessionId: string;
   cols: number;
   rows: number;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 export interface PtyKillMessage {
   type: "pty_kill";
   sessionId: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 // ── PTY outgoing messages (local runner / desktop bridge → server) ────
@@ -123,12 +123,14 @@ export type SandboxMessage =
   | PtyErrorMessage;
 
 /**
- * Build the Centrifugo channel name for a user's sandbox.
- * The `#` is Centrifugo's user channel boundary separator: with
- * `allow_user_limited_channels: true` in the server config, Centrifugo
- * restricts subscription to clients whose JWT `sub` claim matches the
- * segment after `#`.
+ * Build the Centrifugo channel name for a single local/desktop sandbox
+ * connection. The `#` segment keeps Centrifugo's user-limited channel check,
+ * while the random connection id prevents same-user agents from sharing one
+ * command stream.
  */
-export function sandboxChannel(userId: string): string {
-  return `sandbox:user#${userId}`;
+export function sandboxConnectionChannel(
+  userId: string,
+  connectionId: string,
+): string {
+  return `sandbox:connection:${connectionId}#${userId}`;
 }

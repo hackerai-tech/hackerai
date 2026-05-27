@@ -3,7 +3,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
-  sandboxChannel,
+  sandboxConnectionChannel,
   type CommandResponseMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
@@ -197,7 +197,10 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     }> => {
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
-      const channel = sandboxChannel(this.userId);
+      const channel = sandboxConnectionChannel(
+        this.userId,
+        this.connectionInfo.connectionId,
+      );
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
