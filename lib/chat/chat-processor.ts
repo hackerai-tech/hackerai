@@ -623,6 +623,7 @@ const filterUIOnlyParts = <T extends { parts?: any[] }>(message: T): T => {
 export async function processChatMessages({
   messages,
   mode,
+  userId,
   subscription,
   uploadBasePath,
   modelOverride,
@@ -630,6 +631,7 @@ export async function processChatMessages({
 }: {
   messages: UIMessage[];
   mode: ChatMode;
+  userId: string;
   subscription: SubscriptionTier;
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
@@ -650,6 +652,7 @@ export async function processChatMessages({
     await processMessageFiles(
       messagesWithLimitedFiles,
       mode,
+      userId,
       uploadBasePath,
       subscription,
       allowLocalDesktopFiles,

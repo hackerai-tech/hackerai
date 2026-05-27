@@ -275,6 +275,7 @@ export const getFileUrlAction = action({
 export const getFileUrlsByFileIdsAction = action({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
@@ -302,6 +303,15 @@ export const getFileUrlsByFileIdsAction = action({
 
           // Return null if file not found
           if (!file) {
+            return null;
+          }
+
+          if (file.user_id !== args.userId) {
+            convexLogger.warn("file_batch_url_access_denied", {
+              fileId,
+              caller: "service",
+              userId: args.userId,
+            });
             return null;
           }
 

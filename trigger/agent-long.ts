@@ -696,6 +696,7 @@ export const agentLongTask = task({
         await processChatMessages({
           messages: messagesForProcessing,
           mode,
+          userId,
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,

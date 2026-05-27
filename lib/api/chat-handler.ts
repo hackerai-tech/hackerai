@@ -268,6 +268,7 @@ export const createChatHandler = (
         await processChatMessages({
           messages: truncatedMessages,
           mode,
+          userId,
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,

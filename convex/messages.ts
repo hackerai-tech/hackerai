@@ -1,7 +1,7 @@
 import { query, mutation, internalQuery } from "./_generated/server";
 import { v, ConvexError, type Value } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
@@ -269,6 +269,36 @@ export const saveMessage = mutation({
     let failureStage = "start";
 
     try {
+      const ensureOwnedFiles = async (
+        fileIds: Id<"files">[] | undefined,
+      ): Promise<Doc<"files">[]> => {
+        if (!fileIds || fileIds.length === 0) return [];
+
+        const files = await Promise.all(
+          fileIds.map((fileId) =>
+            ctx.db.get(fileId).catch((error) => {
+              console.error(
+                `Failed to read file ${fileId} while validating ownership:`,
+                error,
+              );
+              return null;
+            }),
+          ),
+        );
+
+        for (let i = 0; i < fileIds.length; i++) {
+          const file = files[i];
+          if (!file) {
+            throw new Error("File not found");
+          }
+          if (file.user_id !== args.userId) {
+            throw new Error("File does not belong to user");
+          }
+        }
+
+        return files as Doc<"files">[];
+      };
+
       failureStage = "find_existing_message";
       const existingMessage = await ctx.db
         .query("messages")
@@ -287,25 +317,16 @@ export const saveMessage = mutation({
           );
 
           if (newFileIds.length > 0) {
+            failureStage = "validate_existing_message_file_ownership";
+            const files = await ensureOwnedFiles(newFileIds);
             patch.file_ids = [...currentFileIds, ...newFileIds];
 
             // Batch-read files in parallel, then only patch those that still
             // need the attached flag set. Skipping no-op patches avoids
             // invalidating the `by_is_attached` index for already-attached
             // files that just got referenced from another message.
-            const files = await Promise.all(
-              newFileIds.map((fileId) =>
-                ctx.db.get(fileId).catch((error) => {
-                  console.error(
-                    `Failed to read file ${fileId} while attaching:`,
-                    error,
-                  );
-                  return null;
-                }),
-              ),
-            );
             for (const file of files) {
-              if (file && !file.is_attached) {
+              if (!file.is_attached) {
                 failureStage = "patch_existing_message_file_attachment";
                 await ctx.db.patch(file._id, { is_attached: true });
               }
@@ -373,6 +394,12 @@ export const saveMessage = mutation({
         }
       }
 
+      let newMessageFiles: Doc<"files">[] = [];
+      if (args.fileIds && args.fileIds.length > 0) {
+        failureStage = "validate_new_message_file_ownership";
+        newMessageFiles = await ensureOwnedFiles(args.fileIds);
+      }
+
       failureStage = "extract_content";
       const content = extractTextFromParts(args.parts);
 
@@ -397,26 +424,10 @@ export const saveMessage = mutation({
 
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
-      if (args.fileIds && args.fileIds.length > 0) {
-        failureStage = "read_new_message_files";
-        const files = await Promise.all(
-          args.fileIds.map((fileId) =>
-            ctx.db.get(fileId).catch((e) => {
-              console.warn("Failed to read file while attaching:", fileId, e);
-              return null;
-            }),
-          ),
-        );
-        for (const file of files) {
-          if (!file) continue;
-          if (file.user_id !== args.userId) {
-            console.warn("Skipping file not owned by user:", file._id);
-            continue;
-          }
-          if (!file.is_attached) {
-            failureStage = "patch_new_message_file_attachment";
-            await ctx.db.patch(file._id, { is_attached: true });
-          }
+      for (const file of newMessageFiles) {
+        if (!file.is_attached) {
+          failureStage = "patch_new_message_file_attachment";
+          await ctx.db.patch(file._id, { is_attached: true });
         }
       }
 
