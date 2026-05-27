@@ -120,7 +120,7 @@ describe("captureFreeAgentValueReached", () => {
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
-      endpoint: "/api/agent",
+      endpoint: "/api/agent-long",
       mode: "agent",
       subscription: "free",
       sandboxInfo: { type: "e2b" },
@@ -136,7 +136,7 @@ describe("captureFreeAgentValueReached", () => {
       properties: expect.objectContaining({
         user_id: "user_123",
         chat_id: "chat_123",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
         mode: "agent",
         subscription: "free",
         subscription_tier: "free",
@@ -161,7 +161,7 @@ describe("captureFreeAgentValueReached", () => {
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
-      endpoint: "/api/agent" as const,
+      endpoint: "/api/agent-long" as const,
       mode: "agent" as const,
       subscription: "free",
       sandboxInfo: { type: "e2b" },
@@ -198,7 +198,7 @@ describe("captureAgentCompletionAnalytics", () => {
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
-      endpoint: "/api/agent",
+      endpoint: "/api/agent-long",
       mode: "agent",
       subscription: "free",
       sandboxInfo: { type: "e2b" },
@@ -223,7 +223,7 @@ describe("captureAgentCompletionAnalytics", () => {
       properties: expect.objectContaining({
         user_id: "user_123",
         chat_id: "chat_123",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
         subscription_tier: "free",
         outcome: "success",
         tool_call_count: 1,
@@ -238,7 +238,7 @@ describe("captureAgentCompletionAnalytics", () => {
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
-      endpoint: "/api/agent",
+      endpoint: "/api/agent-long",
       mode: "agent",
       subscription: "pro",
       sandboxInfo: { type: "e2b" },
@@ -327,7 +327,7 @@ describe("createChatLogger provider stream termination", () => {
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_terminated",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
       });
       const err = Object.assign(new TypeError("terminated"), {
         cause: "other side closed",
@@ -365,7 +365,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_missing",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
       });
       const err = new ChatSDKError(
         "not_found:chat",
@@ -427,7 +427,7 @@ describe("createChatLogger provider stream timeout", () => {
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_timeout",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
       });
       const err = {
         code: 502,
@@ -468,7 +468,7 @@ describe("createChatLogger provider stream timeout", () => {
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_provider_code",
-        endpoint: "/api/agent",
+        endpoint: "/api/agent-long",
       });
       const err = {
         message: "Provider request failed",

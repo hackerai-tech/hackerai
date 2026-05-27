@@ -1,7 +1,7 @@
 /**
  * Shared streamText factory for the agent loop.
  *
- * Both /api/agent (chat-handler.ts) and the trigger.dev agent-long task
+ * Both the Next.js chat handler and the trigger.dev agent-long task
  * run the same multi-step tool loop. This module owns the single canonical
  * implementation of that loop — prepareStep, stopWhen, onChunk, onStepFinish,
  * streamText.onFinish, onError, onAbort — so divergence is impossible.

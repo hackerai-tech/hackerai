@@ -1,4 +1,5 @@
 import {
+  isLegacyDesktopAgentClient,
   isHackerAIDesktopUserAgent,
   shouldUseAgentLongForAgent,
 } from "../agent-routing";
@@ -25,7 +26,7 @@ describe("agent routing", () => {
     ).toBe(true);
   });
 
-  test("keeps the existing web and free-user Trigger.dev routing", () => {
+  test("routes web and current desktop free-user agent mode through Trigger.dev", () => {
     expect(
       shouldUseAgentLongForAgent({
         mode: "agent",
@@ -39,11 +40,12 @@ describe("agent routing", () => {
         mode: "agent",
         subscription: "free",
         isTauri: true,
+        userAgent: DESKTOP_UA,
       }),
     ).toBe(true);
   });
 
-  test("does not route non-agent modes or legacy desktop user agents through agent-long", () => {
+  test("does not route non-agent modes through agent-long", () => {
     expect(
       shouldUseAgentLongForAgent({
         mode: "ask",
@@ -52,13 +54,23 @@ describe("agent routing", () => {
         userAgent: DESKTOP_UA,
       }),
     ).toBe(false);
+  });
 
+  test("blocks legacy desktop user agents from agent mode until they update", () => {
+    const legacyUserAgent = "Mozilla/5.0 Safari/605.1.15";
+    expect(
+      isLegacyDesktopAgentClient({
+        mode: "agent",
+        isTauri: true,
+        userAgent: legacyUserAgent,
+      }),
+    ).toBe(true);
     expect(
       shouldUseAgentLongForAgent({
         mode: "agent",
         subscription: "pro",
         isTauri: true,
-        userAgent: "Mozilla/5.0 Safari/605.1.15",
+        userAgent: legacyUserAgent,
       }),
     ).toBe(false);
   });
