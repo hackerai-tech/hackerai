@@ -3,6 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
+import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 
 export type SandboxFile = {
   localPath: string;
@@ -275,6 +276,8 @@ const downloadFileToSandbox = async (
   url: string,
   localPath: string,
 ): Promise<void> => {
+  validateDownloadUrl(url);
+
   // CentrifugoSandbox has downloadFromUrl method
   if (sandbox.files?.downloadFromUrl) {
     return sandbox.files.downloadFromUrl(url, localPath);

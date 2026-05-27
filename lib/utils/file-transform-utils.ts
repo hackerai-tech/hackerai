@@ -16,6 +16,7 @@ import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
+import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
@@ -30,6 +31,36 @@ type FileToProcess = {
 type SizeProbeResult = {
   bytes: number;
   source: "content_length" | "content_range" | "download_probe";
+};
+
+const redactUrlForLog = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0];
+  }
+};
+
+const validateResolvedFileUrl = (
+  url: string | null | undefined,
+  fileId: string,
+): string | null => {
+  if (!url) return null;
+
+  try {
+    validateDownloadUrl(url);
+    return url;
+  } catch (error) {
+    logger.warn("resolved_file_url_rejected", {
+      event: "resolved_file_url_rejected",
+      service: "chat-handler",
+      file_id: fileId,
+      url: redactUrlForLog(url),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 };
 
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
@@ -222,6 +253,14 @@ const collectFilesToProcess = (
     (msg.parts as any[]).forEach((part, partIndex) => {
       if (!isFilePart(part)) return;
 
+      const fileId = typeof part.fileId === "string" ? part.fileId : undefined;
+      if (fileId) {
+        // File IDs are storage references, not proof that a request-supplied URL
+        // is safe. Clear any client URL so every server-side fetch/download uses
+        // an owner-checked URL resolved from storage below.
+        delete (part as any).url;
+      }
+
       if (isMediaFile(part.mediaType)) hasMedia = true;
 
       const shouldProcess =
@@ -230,17 +269,13 @@ const collectFilesToProcess = (
         isMediaFile(part.mediaType);
 
       if (shouldProcess) {
-        const fileId =
-          typeof part.fileId === "string" ? part.fileId : undefined;
-        const url =
-          typeof (part as any).url === "string" ? (part as any).url : undefined;
         if (!fileId) return;
+
         const key = `file:${fileId}`;
 
         if (!files.has(key)) {
           files.set(key, {
             fileId,
-            url,
             mediaType: part.mediaType,
             positions: [],
           });
@@ -291,8 +326,12 @@ const applyUrlsToFileParts = async (
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
   filesNeedingUrls.forEach((file, index) => {
-    if (fetchedUrls[index]) {
-      file.url = fetchedUrls[index];
+    const resolvedUrl = validateResolvedFileUrl(
+      fetchedUrls[index],
+      file.fileId!,
+    );
+    if (resolvedUrl) {
+      file.url = resolvedUrl;
     }
   });
 
