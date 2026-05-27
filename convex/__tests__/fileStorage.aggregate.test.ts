@@ -80,6 +80,104 @@ describe("fileStorage - Aggregate Integration", () => {
     mockFileCountAggregate.sum.mockResolvedValue(0);
   });
 
+  describe("service file retrieval ownership", () => {
+    it("should only return token counts for files owned by the requested user", async () => {
+      const { getFileTokensByFileIds } = await import("../fileStorage");
+      const ownedFileId = "owned-file-id" as Id<"files">;
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest
+            .fn<any>()
+            .mockResolvedValueOnce({
+              _id: ownedFileId,
+              user_id: testUserId,
+              file_token_size: 123,
+            })
+            .mockResolvedValueOnce({
+              _id: victimFileId,
+              user_id: "other-user",
+              file_token_size: 999,
+            }),
+        },
+      };
+
+      const result = await getFileTokensByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [ownedFileId, victimFileId],
+      });
+
+      expect(result).toEqual([123, 0]);
+    });
+
+    it("should not return file content or metadata for unowned files", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getFileContentByFileIds } = await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            content: "private content",
+            file_token_size: 999,
+          }),
+        },
+      };
+
+      const result = await getFileContentByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: victimFileId,
+          name: "Unknown",
+          mediaType: "unknown",
+          content: null,
+          tokenSize: 0,
+        },
+      ]);
+    });
+
+    it("should not return file metadata for unowned files", async () => {
+      const { getFileMetadataByFileIds } = await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            storage_id: "storage-secret",
+            s3_key: undefined,
+          }),
+        },
+      };
+
+      const result = await getFileMetadataByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([null]);
+    });
+  });
+
   describe("saveFileToDb", () => {
     it("should insert file into aggregate using insertIfDoesNotExist", async () => {
       const mockFile = {
