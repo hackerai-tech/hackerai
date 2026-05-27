@@ -201,6 +201,68 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.db.insert).not.toHaveBeenCalled();
   });
 
+  it("deduplicates owned file IDs before inserting a new message", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-owned" as Id<"files">,
+      user_id: USER_ID,
+      is_attached: true,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-duplicate-files",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "file", fileId: "file-owned" }],
+      fileIds: ["file-owned", "file-owned"] as Id<"files">[],
+    });
+
+    expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({
+        file_ids: ["file-owned"],
+      }),
+    );
+  });
+
+  it("deduplicates owned file IDs before patching an existing message", async () => {
+    const existing = makeMessage({
+      _id: "existing-doc" as Id<"messages">,
+      file_ids: ["file-existing" as Id<"files">],
+    });
+    setupExistingMessage(existing);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-new" as Id<"files">,
+      user_id: USER_ID,
+      is_attached: true,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "file", fileId: "file-new" }],
+      fileIds: ["file-new", "file-new"] as Id<"files">[],
+    });
+
+    expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "existing-doc",
+      expect.objectContaining({
+        file_ids: ["file-existing", "file-new"],
+      }),
+    );
+  });
+
   it("skips assistant inserts when the chat was deleted before save", async () => {
     setupExistingMessage(null);
     mockCtx.runQuery.mockRejectedValue(

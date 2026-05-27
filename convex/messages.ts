@@ -1,7 +1,12 @@
-import { query, mutation, internalQuery } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 import { v, ConvexError, type Value } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
@@ -90,11 +95,13 @@ const getConvexErrorCode = (data: Value | undefined): string | undefined => {
 };
 
 const requireOwnedFiles = async (
-  ctx: any,
+  ctx: MutationCtx,
   fileIds: Id<"files">[] | undefined,
   userId: string,
-) => {
-  if (!fileIds || fileIds.length === 0) return [];
+): Promise<{ fileIds: Id<"files">[]; files: Doc<"files">[] }> => {
+  if (!fileIds || fileIds.length === 0) {
+    return { fileIds: [], files: [] };
+  }
 
   const uniqueFileIds = Array.from(new Set(fileIds));
   const files = await Promise.all(
@@ -122,7 +129,10 @@ const requireOwnedFiles = async (
     }
   }
 
-  return files.map(({ file }) => file);
+  return {
+    fileIds: uniqueFileIds,
+    files: files.map(({ file }) => file as Doc<"files">),
+  };
 };
 
 /**
@@ -334,8 +344,12 @@ export const saveMessage = mutation({
 
           if (newFileIds.length > 0) {
             failureStage = "verify_existing_message_file_ownership";
-            const files = await requireOwnedFiles(ctx, newFileIds, args.userId);
-            patch.file_ids = [...currentFileIds, ...newFileIds];
+            const { fileIds: ownedNewFileIds, files } = await requireOwnedFiles(
+              ctx,
+              newFileIds,
+              args.userId,
+            );
+            patch.file_ids = [...currentFileIds, ...ownedNewFileIds];
 
             // Batch-read files in parallel, then only patch those that still
             // need the attached flag set. Skipping no-op patches avoids
@@ -414,11 +428,8 @@ export const saveMessage = mutation({
       const content = extractTextFromParts(args.parts);
 
       failureStage = "verify_new_message_file_ownership";
-      const ownedFiles = await requireOwnedFiles(
-        ctx,
-        args.fileIds,
-        args.userId,
-      );
+      const { fileIds: ownedFileIds, files: ownedFiles } =
+        await requireOwnedFiles(ctx, args.fileIds, args.userId);
 
       failureStage = "insert_message";
       await ctx.db.insert("messages", {
@@ -428,7 +439,7 @@ export const saveMessage = mutation({
         role: args.role,
         parts: args.parts,
         content: content || undefined,
-        file_ids: args.fileIds,
+        file_ids: args.fileIds ? ownedFileIds : undefined,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
