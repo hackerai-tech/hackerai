@@ -7,6 +7,7 @@ import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -19,7 +20,16 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { Check, Copy, Gift, Share2, Sparkles, UserCheck } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Crown,
+  Gift,
+  LinkIcon,
+  MessageSquareText,
+  X,
+  Zap,
+} from "lucide-react";
 import { toast } from "sonner";
 
 const BASE_URL =
@@ -197,102 +207,160 @@ export function ReferralRewardDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-2rem)] max-w-lg rounded-2xl p-0">
-        <div className="border-b px-5 py-4">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted">
-              <Gift className="h-4 w-4" />
-            </div>
-            <div>
-              <DialogTitle className="text-lg">Share HackerAI</DialogTitle>
-              <DialogDescription className="text-sm">
-                Give friends starter credits and earn credits when they upgrade.
-              </DialogDescription>
-            </div>
-          </div>
-        </div>
+      <DialogContent
+        showCloseButton={false}
+        className="max-h-[95vh] w-[calc(100vw-2rem)] max-w-lg gap-4 overflow-y-auto rounded-3xl border-0 p-6 shadow-2xl"
+      >
+        <DialogTitle className="sr-only">Refer and earn</DialogTitle>
+        <DialogDescription className="sr-only">
+          Share HackerAI with friends and earn referral credits.
+        </DialogDescription>
 
-        <div className="space-y-5 px-5 py-5">
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              ["Share", "your invite link", Share2],
-              ["They join", "and get 10 credits", UserCheck],
-              ["You earn", "10 credits on paid referral", Sparkles],
-            ].map(([title, body, Icon]) => (
-              <div
-                key={title as string}
-                className="rounded-lg border bg-muted/30 p-3"
-              >
-                <Icon className="mb-2 h-4 w-4 text-muted-foreground" />
-                <div className="text-sm font-medium">{title as string}</div>
-                <div className="text-xs text-muted-foreground">
-                  {body as string}
+        <div className="relative overflow-hidden rounded-xl border bg-muted/40">
+          <DialogClose asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-3 top-3 z-20 h-8 w-8 rounded-full bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </DialogClose>
+
+          <div className="absolute inset-0 bg-[linear-gradient(135deg,hsl(var(--muted)),hsl(var(--background)))]" />
+          <div className="absolute inset-x-0 bottom-0 h-20 border-t bg-background/45" />
+          <div className="relative flex min-h-[188px] flex-col justify-between p-5">
+            <div className="flex items-start gap-3 pr-10">
+              <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-background text-foreground shadow-sm">
+                <Gift className="h-5 w-5 fill-current" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xl font-semibold leading-tight text-foreground">
+                  Share HackerAI
+                </div>
+                <div className="mt-1 max-w-[18rem] text-sm leading-5 text-muted-foreground">
+                  Give friends 10 starter credits and earn 10 credits when they
+                  upgrade.
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
 
-          <div className="space-y-2">
-            <div className="text-sm font-medium">Invite link</div>
-            <div className="flex min-w-0 gap-2">
-              <div
-                data-testid="referral-link"
-                className="flex min-h-10 flex-1 items-center rounded-md border bg-muted/30 px-3 text-sm text-muted-foreground"
-              >
-                <span className="truncate">
-                  {inviteLink || "Creating referral link..."}
-                </span>
+            <div className="mt-8 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl border bg-background/85 p-3 shadow-sm backdrop-blur">
+                <div className="text-2xl font-semibold leading-none">
+                  10 credits
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  for referred users
+                </div>
               </div>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                onClick={copyInviteLink}
-                disabled={!inviteLink}
-                aria-label="Copy referral link"
-              >
-                {copied ? (
-                  <Check className="h-4 w-4" />
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
-              </Button>
+              <div className="rounded-2xl border bg-background/85 p-3 shadow-sm backdrop-blur">
+                <div className="text-2xl font-semibold leading-none">
+                  10 credits
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  for paid referrals
+                </div>
+              </div>
             </div>
           </div>
-
-          <div className="grid grid-cols-4 gap-2 text-center">
-            <div className="rounded-lg border p-3">
-              <div className="text-lg font-semibold">
-                {summary?.balanceCredits ?? 0}
-              </div>
-              <div className="text-xs text-muted-foreground">Credits</div>
-            </div>
-            <div className="rounded-lg border p-3">
-              <div className="text-lg font-semibold">
-                {summary?.signedUp ?? 0}
-              </div>
-              <div className="text-xs text-muted-foreground">Signed up</div>
-            </div>
-            <div className="rounded-lg border p-3">
-              <div className="text-lg font-semibold">
-                {summary?.activated ?? 0}
-              </div>
-              <div className="text-xs text-muted-foreground">Activated</div>
-            </div>
-            <div className="rounded-lg border p-3">
-              <div className="text-lg font-semibold">
-                {summary?.converted ?? 0}
-              </div>
-              <div className="text-xs text-muted-foreground">Paid</div>
-            </div>
-          </div>
-
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Rewards are limited to one per referred account. Self-referrals are
-            not eligible. Referrer credits are awarded after the referred user
-            starts a qualifying paid subscription.
-          </p>
         </div>
+
+        <div className="md:py-2">
+          <div className="mb-3 text-base font-normal text-muted-foreground">
+            How it works:
+          </div>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <Zap className="size-5 shrink-0 text-foreground" />
+              <span className="text-base font-normal text-foreground">
+                Share your invite link
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Crown className="size-5 shrink-0 text-foreground" />
+              <span className="text-base font-normal text-foreground">
+                They sign up and get <b>extra 10 credits</b>
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <MessageSquareText className="size-5 shrink-0 text-foreground" />
+              <span className="text-base font-normal text-foreground">
+                You get <b>10 credits</b> once they subscribe to a qualifying
+                paid plan
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col">
+          <span className="mb-3 flex items-center gap-4 pr-2 text-base font-normal text-muted-foreground">
+            <span>
+              <b>{summary?.signedUp ?? 0}</b> signed up,{" "}
+              <b>{summary?.converted ?? 0}</b> paid referrals
+            </span>
+          </span>
+
+          <div className="flex flex-col gap-3 rounded-xl bg-muted p-2 md:flex-row">
+            <div
+              data-testid="referral-link"
+              className="flex h-10 min-w-0 flex-1 items-center rounded-lg bg-background px-2 text-sm text-muted-foreground"
+            >
+              <LinkIcon className="mr-2 size-5 shrink-0" />
+              <span className="truncate">
+                {inviteLink || "Creating referral link..."}
+              </span>
+            </div>
+            <Button
+              type="button"
+              className="h-10 w-full rounded-lg px-4 md:w-auto"
+              onClick={copyInviteLink}
+              disabled={!inviteLink}
+              aria-label="Copy referral link"
+            >
+              {copied ? (
+                <Check className="h-4 w-4" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+              <span>{copied ? "Copied" : "Copy link"}</span>
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-4 gap-2 text-center">
+          <div className="rounded-lg border p-3">
+            <div className="text-lg font-semibold">
+              {summary?.balanceCredits ?? 0}
+            </div>
+            <div className="text-xs text-muted-foreground">Credits</div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <div className="text-lg font-semibold">
+              {summary?.signedUp ?? 0}
+            </div>
+            <div className="text-xs text-muted-foreground">Signed up</div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <div className="text-lg font-semibold">
+              {summary?.activated ?? 0}
+            </div>
+            <div className="text-xs text-muted-foreground">Activated</div>
+          </div>
+          <div className="rounded-lg border p-3">
+            <div className="text-lg font-semibold">
+              {summary?.converted ?? 0}
+            </div>
+            <div className="text-xs text-muted-foreground">Paid</div>
+          </div>
+        </div>
+
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          One reward per referred account. No self-referrals. Referrer credits
+          require a qualifying paid subscription.
+        </p>
       </DialogContent>
     </Dialog>
   );
