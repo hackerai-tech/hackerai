@@ -25,6 +25,7 @@ jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
       getUserStorageUsage: "internal.fileStorage.getUserStorageUsage",
+      createPendingS3File: "internal.fileStorage.createPendingS3File",
     },
   },
 }));
@@ -83,11 +84,13 @@ describe("s3Actions", () => {
           maxBytes: 10 * 1024 * 1024 * 1024, // 10 GB max
           availableBytes: 9 * 1024 * 1024 * 1024, // 9 GB available
         }),
+        runMutation: jest.fn<any>().mockResolvedValue("file_123"),
       };
 
       const result = await generateS3UploadUrlAction.handler(mockCtx, {
         fileName: "test.pdf",
         contentType: "application/pdf",
+        size: 1024,
       });
 
       expect(result).toEqual({
@@ -104,6 +107,17 @@ describe("s3Actions", () => {
         "test.pdf",
         "application/pdf",
         "user123",
+        1024,
+      );
+      expect(mockCtx.runMutation).toHaveBeenCalledWith(
+        "internal.fileStorage.createPendingS3File",
+        {
+          s3Key: "users/user123/123-uuid-test.pdf",
+          userId: "user123",
+          name: "test.pdf",
+          mediaType: "application/pdf",
+          size: 1024,
+        },
       );
 
       expect(mockCheckFileUploadRateLimit).toHaveBeenCalledWith(
@@ -142,6 +156,38 @@ describe("s3Actions", () => {
 
       expect(mockCtx.runQuery).not.toHaveBeenCalled();
       expect(mockCheckFileUploadRateLimit).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+    });
+
+    it("should reject missing size before generating an upload URL", async () => {
+      const { generateS3UploadUrl } = await import("../s3Utils");
+      const mockGenerateS3UploadUrl =
+        generateS3UploadUrl as jest.MockedFunction<typeof generateS3UploadUrl>;
+      const { generateS3UploadUrlAction } = await import("../s3Actions");
+
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: "user123",
+            email: "test@example.com",
+            entitlements: ["pro-plan"],
+          }),
+        },
+        runQuery: jest.fn<any>(),
+        runMutation: jest.fn<any>(),
+      };
+
+      await expect(
+        generateS3UploadUrlAction.handler(mockCtx, {
+          fileName: "test.pdf",
+          contentType: "application/pdf",
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "INVALID_FILE_SIZE" }),
+      });
+
+      expect(mockCtx.runQuery).not.toHaveBeenCalled();
+      expect(mockCtx.runMutation).not.toHaveBeenCalled();
       expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
     });
 
@@ -254,12 +300,14 @@ describe("s3Actions", () => {
           maxBytes: 10 * 1024 * 1024 * 1024,
           availableBytes: 9 * 1024 * 1024 * 1024,
         }),
+        runMutation: jest.fn<any>().mockResolvedValue("file_123"),
       };
 
       await expect(
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "test.pdf",
           contentType: "application/pdf",
+          size: 1024,
         }),
       ).rejects.toThrow("Failed to generate upload URL");
     });
@@ -305,10 +353,14 @@ describe("s3Actions", () => {
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
       const testCases = [
-        { fileName: "image.png", contentType: "image/png" },
-        { fileName: "document.pdf", contentType: "application/pdf" },
-        { fileName: "data.csv", contentType: "text/csv" },
-        { fileName: "notes.txt", contentType: "text/plain" },
+        { fileName: "image.png", contentType: "image/png", size: 1024 },
+        {
+          fileName: "document.pdf",
+          contentType: "application/pdf",
+          size: 1024,
+        },
+        { fileName: "data.csv", contentType: "text/csv", size: 1024 },
+        { fileName: "notes.txt", contentType: "text/plain", size: 1024 },
       ];
 
       for (const testCase of testCases) {
@@ -332,6 +384,7 @@ describe("s3Actions", () => {
             maxBytes: 10 * 1024 * 1024 * 1024,
             availableBytes: 9 * 1024 * 1024 * 1024,
           }),
+          runMutation: jest.fn<any>().mockResolvedValue("file_123"),
         };
 
         await generateS3UploadUrlAction.handler(mockCtx, testCase);
@@ -340,6 +393,7 @@ describe("s3Actions", () => {
           testCase.fileName,
           testCase.contentType,
           "user123",
+          testCase.size,
         );
       }
     });
@@ -378,6 +432,7 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "test.pdf",
           contentType: "application/pdf",
+          size: 1024,
         }),
       ).rejects.toThrow("file upload limit");
     });
@@ -410,11 +465,13 @@ describe("s3Actions", () => {
           maxBytes: 10 * 1024 * 1024 * 1024,
           availableBytes: 9 * 1024 * 1024 * 1024,
         }),
+        runMutation: jest.fn<any>().mockResolvedValue("file_123"),
       };
 
       const result = await generateS3UploadUrlAction.handler(mockCtx, {
         fileName: "test.pdf",
         contentType: "application/pdf",
+        size: 1024,
       });
 
       expect(result).toEqual({

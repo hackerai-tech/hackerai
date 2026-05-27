@@ -83,20 +83,30 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
-    if (args.size !== undefined) {
-      const validation = validateUploadPolicy({
-        mode: args.mode ?? "ask",
-        size: args.size,
-        mediaType: args.contentType,
-        surface: "client",
+    if (
+      args.size === undefined ||
+      !Number.isFinite(args.size) ||
+      args.size <= 0
+    ) {
+      throw new ConvexError({
+        code: "INVALID_FILE_SIZE",
+        message:
+          "A positive file size is required before generating an upload URL",
       });
+    }
 
-      if (!validation.valid) {
-        throw new ConvexError({
-          code: validation.code,
-          message: validation.message,
-        });
-      }
+    const validation = validateUploadPolicy({
+      mode: args.mode ?? "ask",
+      size: args.size,
+      mediaType: args.contentType,
+      surface: "client",
+    });
+
+    if (!validation.valid) {
+      throw new ConvexError({
+        code: validation.code,
+        message: validation.message,
+      });
     }
 
     const userId = identity.subject;
@@ -142,7 +152,16 @@ export const generateS3UploadUrlAction = action({
         args.fileName,
         args.contentType,
         userId,
+        args.size,
       );
+
+      await ctx.runMutation(internal.fileStorage.createPendingS3File, {
+        s3Key,
+        userId,
+        name: args.fileName,
+        mediaType: args.contentType,
+        size: args.size,
+      });
 
       return {
         uploadUrl,
@@ -156,6 +175,9 @@ export const generateS3UploadUrlAction = action({
           : undefined,
       };
     } catch (error) {
+      if (error instanceof ConvexError) {
+        throw error;
+      }
       convexLogger.error("file_upload_url_generation_failed", {
         userId,
         fileName: args.fileName,

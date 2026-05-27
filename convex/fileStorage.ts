@@ -338,6 +338,85 @@ export const getFileById = internalQuery({
   },
 });
 
+export const getFileByS3Key = internalQuery({
+  args: {
+    s3Key: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.id("files"),
+      storage_id: v.optional(v.id("_storage")),
+      s3_key: v.optional(v.string()),
+      user_id: v.string(),
+      name: v.string(),
+      media_type: v.string(),
+      size: v.number(),
+      file_token_size: v.number(),
+      content: v.optional(v.string()),
+      is_attached: v.boolean(),
+      _creationTime: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("files")
+      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+      .unique();
+  },
+});
+
+export const createPendingS3File = internalMutation({
+  args: {
+    s3Key: v.string(),
+    userId: v.string(),
+    name: v.string(),
+    mediaType: v.string(),
+    size: v.number(),
+  },
+  returns: v.id("files"),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("files")
+      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+      .unique();
+    if (existing) {
+      throw new ConvexError({
+        code: "DUPLICATE_S3_KEY",
+        message: "An upload reservation already exists for this S3 key",
+      });
+    }
+
+    const currentStorageBytes = await fileCountAggregate.sum(ctx, {
+      namespace: args.userId,
+    });
+    if (currentStorageBytes + args.size > MAX_STORAGE_BYTES) {
+      const usedGB = (currentStorageBytes / (1024 * 1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB.`,
+      });
+    }
+
+    const fileId = await ctx.db.insert("files", {
+      s3_key: args.s3Key,
+      user_id: args.userId,
+      name: args.name,
+      media_type: args.mediaType,
+      size: args.size,
+      file_token_size: 0,
+      is_attached: false,
+    });
+
+    const doc = await ctx.db.get(fileId);
+    if (doc) {
+      await fileCountAggregate.insertIfDoesNotExist(ctx, doc);
+    }
+
+    return fileId;
+  },
+});
+
 /**
  * Internal mutation to save file metadata to database
  * This is separated from the action to handle database operations
@@ -352,9 +431,47 @@ export const saveFileToDb = internalMutation({
     size: v.number(),
     fileTokenSize: v.number(),
     content: v.optional(v.string()),
+    trustedServiceGenerated: v.optional(v.boolean()),
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
+    if (args.s3Key) {
+      const existing = await ctx.db
+        .query("files")
+        .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+        .unique();
+      if (existing) {
+        if (existing.user_id !== args.userId) {
+          throw new ConvexError({
+            code: "UNAUTHORIZED",
+            message: "Upload reservation does not belong to this user.",
+          });
+        }
+        if (existing.size !== args.size) {
+          throw new ConvexError({
+            code: "FILE_SIZE_MISMATCH",
+            message: "Uploaded file size does not match reserved size.",
+          });
+        }
+
+        await ctx.db.patch(existing._id, {
+          storage_id: args.storageId,
+          name: args.name,
+          media_type: args.mediaType,
+          file_token_size: args.fileTokenSize,
+          content: args.content,
+          is_attached: false,
+        });
+        return existing._id;
+      }
+      if (!args.trustedServiceGenerated) {
+        throw new ConvexError({
+          code: "MISSING_UPLOAD_RESERVATION",
+          message: "S3 uploads must have an existing upload reservation.",
+        });
+      }
+    }
+
     // Check storage limit
     const currentStorageBytes = await fileCountAggregate.sum(ctx, {
       namespace: args.userId,

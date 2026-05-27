@@ -36,7 +36,10 @@ import {
   validateUploadPolicy,
 } from "../lib/utils/upload-policy";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
-import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
+import {
+  MAX_GENERATED_FILE_SIZE_BYTES,
+  S3_USER_FILES_PREFIX,
+} from "../lib/constants/s3";
 import {
   hasPaidEntitlement,
   parseEntitlements,
@@ -51,6 +54,9 @@ type FileUploadRateLimitConfig = {
   limit: number;
   window: typeof FILE_UPLOAD_WINDOW;
 };
+
+const isUserScopedS3Key = (s3Key: string, userId: string) =>
+  s3Key.startsWith(`${S3_USER_FILES_PREFIX}/${userId}/`);
 
 const FILE_UPLOAD_RATE_LIMITS: Record<
   FileUploadRateLimitTier,
@@ -751,6 +757,41 @@ export const saveFile = action({
           message: `Failed to upload ${args.name}: File not found in storage`,
         });
       }
+
+      const reservation = await ctx.runQuery(
+        internal.fileStorage.getFileByS3Key,
+        { s3Key: args.s3Key },
+      );
+      if (!reservation) {
+        if (isUserScopedS3Key(args.s3Key, actingUserId)) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        }
+        throw new ConvexError({
+          code: "INVALID_UPLOAD_RESERVATION",
+          message: `Failed to upload ${args.name}: Upload reservation not found`,
+        });
+      }
+      if (reservation.user_id !== actingUserId) {
+        throw new ConvexError({
+          code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+          message: `Failed to upload ${args.name}: Upload reservation belongs to another user`,
+        });
+      }
+      if (reservation.size !== verifiedSize) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.s3Cleanup.deleteS3ObjectAction,
+          { s3Key: args.s3Key },
+        );
+        throw new ConvexError({
+          code: "FILE_SIZE_MISMATCH",
+          message: `File "${args.name}" uploaded size does not match the reserved upload size`,
+        });
+      }
     } else if (args.storageId) {
       try {
         const metadata = await ctx.storage.getMetadata(args.storageId);
@@ -1161,6 +1202,7 @@ export const saveSandboxGeneratedFile = action({
         mediaType: args.mediaType,
         size: args.size,
         fileTokenSize: 0,
+        trustedServiceGenerated: true,
       })) as Id<"files">;
 
       return {
