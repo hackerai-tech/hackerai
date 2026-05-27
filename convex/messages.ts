@@ -306,6 +306,17 @@ export const saveMessage = mutation({
         .first();
 
       if (existingMessage) {
+        if (
+          existingMessage.chat_id !== args.chatId ||
+          existingMessage.user_id !== args.userId
+        ) {
+          failureStage = "verify_existing_message_ownership";
+          throw new ConvexError({
+            code: "MESSAGE_UNAUTHORIZED",
+            message: "You don't have permission to update this message",
+          });
+        }
+
         // Build patch for fields that need updating
         const patch: Record<string, unknown> = {};
 

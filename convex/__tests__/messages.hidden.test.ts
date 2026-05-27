@@ -147,6 +147,42 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("rejects hiding an existing message owned by another chat or user", async () => {
+    const existing = makeMessage({
+      _id: "victim-doc" as Id<"messages">,
+      id: "victim-message-id",
+      chat_id: "victim-chat",
+      user_id: "victim-user",
+      is_hidden: false,
+    });
+    setupExistingMessage(existing);
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "victim-message-id",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "continue" }],
+        isHidden: true,
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_existing_message_ownership",
+        causeData: expect.objectContaining({
+          code: "MESSAGE_UNAUTHORIZED",
+        }),
+      }),
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
   it("should not include is_hidden: true on insert when isHidden is not provided", async () => {
     setupExistingMessage(null);
 
