@@ -156,6 +156,7 @@ export const getFileTokensByFileIds = query({
 export const getFileMetadataByFileIds = query({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(
@@ -181,7 +182,7 @@ export const getFileMetadataByFileIds = query({
 
     // Return file metadata
     return files.map((file, index) => {
-      if (!file) {
+      if (!file || file.user_id !== args.userId) {
         return null;
       }
 
