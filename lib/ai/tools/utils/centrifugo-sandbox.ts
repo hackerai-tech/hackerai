@@ -324,11 +324,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
         subscription.on("publication", (ctx) => {
           if (settled) return;
-          if (!tFirstMessage) tFirstMessage = Date.now();
 
           const message = parseSandboxMessage(ctx.data);
           if (!message) return;
           if (message.commandId !== commandId) return;
+          if (message.type === "command" || message.type === "command_cancel") {
+            return;
+          }
+          if (!tFirstMessage) tFirstMessage = Date.now();
 
           switch (message.type) {
             case "stdout":

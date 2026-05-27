@@ -212,6 +212,33 @@ describe("CentrifugoSandbox", () => {
         `Command timeout after ${timeoutMs + 5000}ms`,
       );
     });
+
+    it("does not count the echoed command publication as the first response", async () => {
+      const sandbox = createSandbox();
+      const timeoutMs = 1000;
+
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      sub.emit("publication", {
+        data: {
+          type: "command",
+          commandId: FIXED_UUID,
+          command: "sleep 999",
+        },
+      });
+
+      jest.advanceTimersByTime(timeoutMs + 5000 + 1);
+
+      await expect(promise).rejects.toThrow("firstMsg: no");
+    });
   });
 
   describe("commands.run cleanup", () => {
