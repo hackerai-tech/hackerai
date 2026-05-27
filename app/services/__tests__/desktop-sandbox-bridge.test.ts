@@ -163,7 +163,7 @@ describe("targetConnectionId filtering", () => {
     );
   });
 
-  it("handles command when targetConnectionId is undefined (broadcast)", async () => {
+  it("ignores command when targetConnectionId is undefined", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
@@ -192,9 +192,36 @@ describe("targetConnectionId filtering", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(invoke).toHaveBeenCalledWith(
+    expect(invoke).not.toHaveBeenCalledWith(
       "execute_stream_command",
-      expect.objectContaining({ command: "echo broadcast" }),
+      expect.anything(),
+    );
+  });
+
+  it("ignores PTY control messages when targetConnectionId is undefined", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+    (invoke as jest.Mock).mockClear();
+
+    handler({
+      data: {
+        type: "pty_create",
+        sessionId: "pty-1",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      "execute_pty_create",
+      expect.anything(),
     );
   });
 });
@@ -208,7 +235,7 @@ describe("extractUserIdFromToken", () => {
     await bridge.start();
 
     expect(mockClient.newSubscription).toHaveBeenCalledWith(
-      "sandbox:user#user-456",
+      "sandbox:connection:conn-123#user-456",
     );
   });
 
