@@ -285,7 +285,7 @@ jobs:
 
       - name: Sign Windows executables with Azure Trusted Signing
         if: matrix.platform == 'windows-latest'
-        uses: azure/trusted-signing-action@v1
+        uses: azure/trusted-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
