@@ -3,6 +3,9 @@
 import { toast } from "sonner";
 import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 
+export const DESKTOP_UPDATE_URL =
+  "https://github.com/hackerai-tech/hackerai/releases/latest";
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -36,6 +39,18 @@ export async function openInBrowser(url: string): Promise<boolean> {
   } catch (err) {
     console.error("[Tauri] Failed to open URL in browser:", url, err);
     return false;
+  }
+}
+
+async function promptDesktopUpdate(): Promise<void> {
+  toast.error("Update HackerAI Desktop to sign in", {
+    description:
+      "This version is missing the secure sign-in bridge. Opening the latest desktop download in your browser.",
+  });
+
+  const opened = await openInBrowser(DESKTOP_UPDATE_URL);
+  if (!opened) {
+    window.location.href = DESKTOP_UPDATE_URL;
   }
 }
 
@@ -77,7 +92,18 @@ export async function navigateToAuth(
       let loginUrl = `${window.location.origin}/desktop-login`;
       const fallbackUrl = new URL(resolvedPath, window.location.origin);
       const authSearchParams = new URLSearchParams(fallbackUrl.search);
-      const { invoke } = await import("@tauri-apps/api/core");
+      let invoke: <T>(
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => Promise<T>;
+
+      try {
+        ({ invoke } = await import("@tauri-apps/api/core"));
+      } catch (err) {
+        console.error("[Tauri] Failed to load Tauri invoke API:", err);
+        await promptDesktopUpdate();
+        return;
+      }
 
       try {
         const desktopAuthState = await invoke<string>(
@@ -86,9 +112,7 @@ export async function navigateToAuth(
         authSearchParams.set("desktop_state", desktopAuthState);
       } catch (err) {
         console.error("[Tauri] Failed to prepare desktop auth state:", err);
-        toast.error(
-          "Could not start secure desktop sign-in. Please try again.",
-        );
+        await promptDesktopUpdate();
         return;
       }
 
