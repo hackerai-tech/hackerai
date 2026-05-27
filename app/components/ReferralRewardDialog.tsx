@@ -84,7 +84,7 @@ export function ReferralRewardEntryContent({
   return (
     <>
       {isCollapsed ? (
-        <div className="mb-1">
+        <div className="mb-2">
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -111,19 +111,21 @@ export function ReferralRewardEntryContent({
           data-testid="referral-button"
           onClick={openDialog}
           className={cn(
-            "mb-1 flex w-full items-center gap-2.5 rounded-t-2xl border border-sidebar-border px-4 py-2.5 text-left text-xs transition-colors",
-            "bg-sidebar-accent/40 hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+            "group/share-card pointer-events-auto mb-2 flex min-h-16 w-full cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-sidebar-border bg-muted/50 p-3 text-left transition-all hover:bg-muted/70 md:h-14",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
           )}
           aria-label="Share HackerAI"
         >
-          <Gift className="h-4 w-4 shrink-0 text-foreground" />
-          <span className="min-w-0">
-            <span className="block font-medium text-sidebar-foreground">
+          <span className="flex min-w-0 flex-col justify-between gap-1">
+            <span className="truncate text-base font-medium leading-none text-sidebar-foreground md:text-sm">
               Share HackerAI
             </span>
-            <span className="block truncate text-sidebar-accent-foreground">
-              Earn credits per paid referral
+            <span className="truncate text-sm text-muted-foreground md:text-xs">
+              10 credits per paid referral
             </span>
+          </span>
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-sidebar-border bg-muted/70 text-sidebar-foreground transition-all duration-200 group-hover/share-card:bg-sidebar-accent">
+            <Gift className="h-4 w-4 fill-current" />
           </span>
         </button>
       )}

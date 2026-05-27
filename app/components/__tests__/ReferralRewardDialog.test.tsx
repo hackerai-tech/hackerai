@@ -74,7 +74,7 @@ describe("ReferralRewardEntry", () => {
     expect(await screen.findByTestId("referral-button")).toBeInTheDocument();
     expect(screen.getByText("Share HackerAI")).toBeInTheDocument();
     expect(
-      screen.getByText("Earn credits per paid referral"),
+      screen.getByText("10 credits per paid referral"),
     ).toBeInTheDocument();
     expect(mockUseQuery).toHaveBeenCalledWith(
       "referrals.getReferralSummary",

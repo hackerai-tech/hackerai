@@ -7,6 +7,7 @@ import { api } from "@/convex/_generated/api";
 import {
   LogOut,
   Sparkle,
+  Zap,
   LifeBuoy,
   ChevronRight,
   ChevronDown,
@@ -72,29 +73,29 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
   };
 
   return (
-    <div className="relative">
+    <div className="mb-2">
       {!isCollapsed && (
-        <div className="relative rounded-t-2xl bg-premium-bg backdrop-blur-sm transition-all duration-200">
-          <div
-            role="button"
-            tabIndex={0}
+        <div className="relative">
+          <button
+            type="button"
             onClick={handleUpgrade}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleUpgrade();
-              }
-            }}
-            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-premium-hover transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
+            className="group/share-card pointer-events-auto relative flex min-h-16 w-full cursor-pointer items-center justify-between gap-3 overflow-hidden rounded-xl border border-sidebar-border bg-muted/40 p-3 text-left transition-all hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 md:h-14"
             aria-label="Upgrade your plan"
           >
-            <span className="flex items-center gap-2.5">
-              <Sparkle className="h-4 w-4 text-premium-text fill-current" />
-              <span className="text-xs font-medium text-premium-text">
-                Upgrade your plan
+            <span className="pointer-events-none absolute inset-0 rounded-xl bg-gradient-to-r from-premium-text/60 via-chart-5/50 to-chart-2/45 opacity-0 transition-opacity duration-200 group-hover/share-card:opacity-100" />
+            <span className="pointer-events-none absolute inset-px rounded-[11px] bg-sidebar transition-colors duration-200 group-hover/share-card:bg-muted/70" />
+            <span className="relative flex min-w-0 flex-col justify-between gap-1">
+              <span className="truncate text-base font-medium leading-none text-sidebar-foreground md:text-sm">
+                Upgrade to Pro
+              </span>
+              <span className="truncate text-sm text-muted-foreground md:text-xs">
+                Unlock more features
               </span>
             </span>
-          </div>
+            <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full bg-premium-bg text-premium-text">
+              <Zap className="h-4 w-4 fill-current" />
+            </span>
+          </button>
         </div>
       )}
     </div>
