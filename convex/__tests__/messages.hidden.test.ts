@@ -171,6 +171,36 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("rejects user messages that reference another user's file", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-victim" as Id<"files">,
+      user_id: "victim-user",
+      is_attached: false,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-unowned-file",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "file", fileId: "file-victim" }],
+        fileIds: ["file-victim" as Id<"files">],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        causeData: expect.objectContaining({ code: "FILE_UNAUTHORIZED" }),
+      }),
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+  });
+
   it("skips assistant inserts when the chat was deleted before save", async () => {
     setupExistingMessage(null);
     mockCtx.runQuery.mockRejectedValue(

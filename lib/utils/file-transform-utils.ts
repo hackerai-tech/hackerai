@@ -253,7 +253,10 @@ const collectFilesToProcess = (
   return { hasMedia, files };
 };
 
-const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
+const fetchFileUrls = async (
+  fileIds: string[],
+  userId: string,
+): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
 
   try {
@@ -261,6 +264,7 @@ const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
       api.s3Actions.getFileUrlsByFileIdsAction,
       {
         serviceKey,
+        userId,
         fileIds: fileIds as Id<"files">[],
       },
     );
@@ -277,13 +281,14 @@ const applyUrlsToFileParts = async (
   messages: UIMessage[],
   filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
+  userId: string,
 ) => {
   const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
     (file) => file.fileId && !file.url,
   );
   const fileIdsNeedingUrls = filesNeedingUrls.map((file) => file.fileId!);
 
-  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls);
+  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
   filesNeedingUrls.forEach((file, index) => {
     if (fetchedUrls[index]) {
@@ -436,6 +441,7 @@ export const processMessageFiles = async (
   mode: ChatMode = "ask",
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
+  userId?: string,
   allowLocalDesktopFiles: boolean = false,
 ): Promise<{
   messages: UIMessage[];
@@ -462,7 +468,10 @@ export const processMessageFiles = async (
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files, mode);
+    if (!userId) {
+      throw new Error("Cannot process file attachments without a user id");
+    }
+    await applyUrlsToFileParts(updatedMessages, files, mode, userId);
   }
 
   const maxFileTokens = subscription

@@ -1358,6 +1358,7 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [mockFile1Id, mockFile2Id],
       });
 
@@ -1424,6 +1425,7 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [mockFile1Id, mockFile2Id],
       });
 
@@ -1451,6 +1453,7 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [mockFile1Id, mockFile2Id],
       });
 
@@ -1472,6 +1475,7 @@ describe("s3Actions", () => {
       await expect(
         getFileUrlsByFileIdsAction.handler({} as any, {
           serviceKey: "invalid-key",
+          userId: "user123",
           fileIds: ["file1" as any],
         }),
       ).rejects.toThrow("Invalid service key");
@@ -1488,6 +1492,7 @@ describe("s3Actions", () => {
       await expect(
         getFileUrlsByFileIdsAction.handler(mockCtx, {
           serviceKey: "test-service-key",
+          userId: "user123",
           fileIds,
         }),
       ).rejects.toThrow("Batch size exceeds limit");
@@ -1563,6 +1568,7 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [mockFile1Id, mockFile2Id, mockFile3Id],
       });
 
@@ -1581,6 +1587,7 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [],
       });
 
@@ -1614,10 +1621,51 @@ describe("s3Actions", () => {
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
         serviceKey: "test-service-key",
+        userId: "user123",
         fileIds: [mockFile1Id],
       });
 
       expect(result).toEqual([null]);
+    });
+
+    it("should not generate URLs for files owned by another user", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+      const mockFile1 = {
+        _id: mockFile1Id,
+        s3_key: "users/victim/file1.pdf",
+        storage_id: undefined,
+        user_id: "victim",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile1),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: "user123",
+        fileIds: [mockFile1Id],
+      });
+
+      expect(result).toEqual([null]);
+      expect(mockGenerateS3DownloadUrl).not.toHaveBeenCalled();
     });
   });
 });

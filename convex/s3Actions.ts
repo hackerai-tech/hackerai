@@ -275,6 +275,7 @@ export const getFileUrlAction = action({
 export const getFileUrlsByFileIdsAction = action({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
@@ -302,6 +303,17 @@ export const getFileUrlsByFileIdsAction = action({
 
           // Return null if file not found
           if (!file) {
+            return null;
+          }
+
+          // Service-key callers still need tenant scoping. File IDs come from
+          // client-controlled message parts, so never mint URLs for another user.
+          if (file.user_id !== args.userId) {
+            convexLogger.warn("file_batch_url_access_denied", {
+              userId: args.userId,
+              fileId,
+              caller: "service",
+            });
             return null;
           }
 

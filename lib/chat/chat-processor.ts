@@ -622,6 +622,7 @@ const filterUIOnlyParts = <T extends { parts?: any[] }>(message: T): T => {
  */
 export async function processChatMessages({
   messages,
+  userId,
   mode,
   subscription,
   uploadBasePath,
@@ -629,6 +630,7 @@ export async function processChatMessages({
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
+  userId: string;
   mode: ChatMode;
   subscription: SubscriptionTier;
   uploadBasePath?: string;
@@ -652,6 +654,7 @@ export async function processChatMessages({
       mode,
       uploadBasePath,
       subscription,
+      userId,
       allowLocalDesktopFiles,
     );
 

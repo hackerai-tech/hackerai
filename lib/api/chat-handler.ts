@@ -267,6 +267,7 @@ export const createChatHandler = (
       let { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
           messages: truncatedMessages,
+          userId,
           mode,
           subscription,
           uploadBasePath,
