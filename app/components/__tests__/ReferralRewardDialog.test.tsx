@@ -135,6 +135,18 @@ describe("ReferralRewardEntry", () => {
     expect(screen.getByText("Activated")).toBeInTheDocument();
     expect(screen.getByText("Paid")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: /view terms/i }));
+
+    expect(screen.getByTestId("referral-terms")).toHaveTextContent(
+      "new HackerAI users",
+    );
+    expect(screen.getByTestId("referral-terms")).toHaveTextContent(
+      "high-risk email accounts",
+    );
+    expect(screen.getByTestId("referral-terms")).toHaveTextContent(
+      "deactivate a referral link",
+    );
+
     fireEvent.click(screen.getByLabelText("Copy referral link"));
 
     await waitFor(() => {

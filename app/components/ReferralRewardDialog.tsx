@@ -36,6 +36,16 @@ const BASE_URL =
   process.env.NEXT_PUBLIC_BASE_URL ||
   (typeof window !== "undefined" ? window.location.origin : "");
 
+const REFERRAL_TERMS = [
+  "This promotion is available to new HackerAI users who sign up through your invite link.",
+  "Rewards are granted only after the referred account is complete and meets the qualifying action: signup for starter credits, or a qualifying paid subscription for referrer credits.",
+  "Disposable or high-risk email accounts are not eligible. Referral emails may be checked with an email reputation or risk-scoring service.",
+  "Each new user can generate only one reward. No stacking, repeated claims, self-referrals, or loophole hunting.",
+  "Avoid spam or misuse of referral links. We monitor referral engagement and may review unusual activity.",
+  "If suspicious or non-compliant activity is detected, we may withhold rewards or deactivate a referral link.",
+  "We may update, pause, or discontinue the referral program at any time while the experiment is running.",
+];
+
 export function ReferralRewardEntry({
   isCollapsed,
   isFreeUser,
@@ -162,6 +172,7 @@ export function ReferralRewardDialog({
   const effectiveUserId = userId ?? user?.id;
   const [copied, setCopied] = React.useState(false);
   const [generatedCode, setGeneratedCode] = React.useState<string | null>(null);
+  const [termsOpen, setTermsOpen] = React.useState(false);
   const getOrCreateReferralCode = useMutation(
     api.referrals.getOrCreateReferralCode,
   );
@@ -205,8 +216,13 @@ export function ReferralRewardDialog({
     }
   };
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) setTermsOpen(false);
+    onOpenChange(nextOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton={false}
         className="max-h-[95vh] w-[calc(100vw-2rem)] max-w-lg gap-4 overflow-y-auto rounded-3xl border-0 p-6 shadow-2xl"
@@ -361,6 +377,43 @@ export function ReferralRewardDialog({
           One reward per referred account. No self-referrals. Referrer credits
           require a qualifying paid subscription.
         </p>
+
+        {termsOpen ? (
+          <div
+            className="rounded-xl border bg-muted/30 p-4 text-sm leading-5 text-muted-foreground"
+            data-testid="referral-terms"
+          >
+            <div className="mb-2 font-medium text-foreground">
+              Referral terms
+            </div>
+            <ul className="space-y-2">
+              {REFERRAL_TERMS.map((term) => (
+                <li key={term} className="flex gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="mt-2 size-1 rounded-full bg-muted-foreground"
+                  />
+                  <span>{term}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="h-6 px-2 text-xs text-foreground decoration-transparent hover:decoration-current"
+            aria-expanded={termsOpen}
+            onClick={() => setTermsOpen((isOpen) => !isOpen)}
+          >
+            {termsOpen
+              ? "Hide Terms and Conditions"
+              : "View Terms and Conditions"}
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );
