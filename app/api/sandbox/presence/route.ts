@@ -94,7 +94,9 @@ export async function GET(request: NextRequest) {
 
           sub.on("error", (ctx) => {
             cleanup();
-            reject(new Error(ctx.error?.message));
+            reject(
+              new Error(ctx.error?.message ?? "Centrifugo subscription error"),
+            );
           });
 
           sub.subscribe();
