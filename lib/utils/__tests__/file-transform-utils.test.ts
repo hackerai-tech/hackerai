@@ -79,6 +79,7 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/huge.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
     );
@@ -113,6 +114,7 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/unknown-size.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
     );
@@ -139,6 +141,7 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/small.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
     );
@@ -163,6 +166,7 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/inline.pdf",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
     );
@@ -190,6 +194,7 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/large.png",
       }),
       "agent",
+      "user123",
       "/home/user/upload",
       "pro",
     );

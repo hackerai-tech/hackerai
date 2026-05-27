@@ -253,7 +253,10 @@ const collectFilesToProcess = (
   return { hasMedia, files };
 };
 
-const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
+const fetchFileUrls = async (
+  fileIds: string[],
+  userId: string,
+): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
 
   try {
@@ -261,6 +264,7 @@ const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
       api.s3Actions.getFileUrlsByFileIdsAction,
       {
         serviceKey,
+        userId,
         fileIds: fileIds as Id<"files">[],
       },
     );
@@ -277,13 +281,14 @@ const applyUrlsToFileParts = async (
   messages: UIMessage[],
   filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
+  userId: string,
 ) => {
   const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
     (file) => file.fileId && !file.url,
   );
   const fileIdsNeedingUrls = filesNeedingUrls.map((file) => file.fileId!);
 
-  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls);
+  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
   filesNeedingUrls.forEach((file, index) => {
     if (fetchedUrls[index]) {
@@ -383,6 +388,7 @@ const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
 const applyModeSpecificTransforms = async (
   messages: UIMessage[],
   mode: ChatMode,
+  userId: string,
   sandboxFiles: SandboxFile[],
   uploadBasePath?: string,
   maxFileTokens?: number,
@@ -401,6 +407,7 @@ const applyModeSpecificTransforms = async (
       await addDocumentContentToMessages(
         messages,
         nonMediaFileIds,
+        userId,
         maxFileTokens,
       );
     }
@@ -428,12 +435,14 @@ const applyModeSpecificTransforms = async (
  *
  * @param messages - Messages to process
  * @param mode - Chat mode ("ask" or "agent")
+ * @param userId - Authenticated requester used to authorize stored file IDs
  * @param uploadBasePath - Override for agent mode (/home/user/upload or /tmp/hackerai-upload for local dangerous)
  * @returns Processed messages with file metadata and sandbox files for upload
  */
 export const processMessageFiles = async (
   messages: UIMessage[],
-  mode: ChatMode = "ask",
+  mode: ChatMode,
+  userId: string,
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
   allowLocalDesktopFiles: boolean = false,
@@ -462,7 +471,7 @@ export const processMessageFiles = async (
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files, mode);
+    await applyUrlsToFileParts(updatedMessages, files, mode, userId);
   }
 
   const maxFileTokens = subscription
@@ -472,6 +481,7 @@ export const processMessageFiles = async (
   await applyModeSpecificTransforms(
     updatedMessages,
     mode,
+    userId,
     sandboxFiles,
     uploadBasePath,
     maxFileTokens,
@@ -522,6 +532,7 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
+  userId: string,
   maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
@@ -529,7 +540,7 @@ const addDocumentContentToMessages = async (
   try {
     const fileContents = await getConvexClient().query(
       api.fileStorage.getFileContentByFileIds,
-      { serviceKey, fileIds },
+      { serviceKey, userId, fileIds },
     );
 
     const processableFiles = new Map<

@@ -34,6 +34,7 @@ export const extractFileIdsFromParts = (
  */
 export const getFileTokensByIds = async (
   fileIds: Id<"files">[],
+  userId: string,
 ): Promise<Record<Id<"files">, number>> => {
   if (!fileIds.length) return {};
 
@@ -42,6 +43,7 @@ export const getFileTokensByIds = async (
       api.fileStorage.getFileTokensByFileIds,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
         fileIds,
       },
     );
@@ -80,6 +82,7 @@ export const truncateMessagesWithFileTokens = async (
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
   mode?: import("@/types").ChatMode,
+  userId?: string,
 ): Promise<{
   messages: UIMessage[];
   fileTokens: Record<Id<"files">, number>;
@@ -87,7 +90,12 @@ export const truncateMessagesWithFileTokens = async (
   const maxTokens = getMaxTokensForSubscription(subscription, { mode });
   const fileTokens = skipFileTokens
     ? {}
-    : await getFileTokensByIds(extractAllFileIdsFromMessages(messages));
+    : userId
+      ? await getFileTokensByIds(
+          extractAllFileIdsFromMessages(messages),
+          userId,
+        )
+      : {};
 
   return {
     messages: truncateMessagesToTokenLimit(messages, fileTokens, maxTokens),
@@ -102,11 +110,17 @@ export const truncateMessagesWithPrecomputedTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   precomputedFileTokens?: Record<Id<"files">, number>,
+  userId?: string,
 ): Promise<UIMessage[]> => {
   const maxTokens = getMaxTokensForSubscription(subscription);
   const fileTokens =
     precomputedFileTokens ||
-    (await getFileTokensByIds(extractAllFileIdsFromMessages(messages)));
+    (userId
+      ? await getFileTokensByIds(
+          extractAllFileIdsFromMessages(messages),
+          userId,
+        )
+      : {});
 
   return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
 };

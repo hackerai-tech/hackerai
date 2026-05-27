@@ -664,7 +664,7 @@ export async function getMessagesByChatId({
               (id) => !(id in fileTokensFromLoop),
             );
             if (uncachedIds.length > 0) {
-              const newTokens = await getFileTokensByIds(uncachedIds);
+              const newTokens = await getFileTokensByIds(uncachedIds, userId);
               Object.assign(fileTokensFromLoop, newTokens);
             }
           }
@@ -836,6 +836,7 @@ export async function getMessagesByChatId({
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
     mode,
+    userId,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -844,7 +845,7 @@ export async function getMessagesByChatId({
     let emptyPromptMetadata: Record<string, unknown> | undefined;
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
-      const fileTokens = await getFileTokensByIds(fileIds as any);
+      const fileTokens = await getFileTokensByIds(fileIds as any, userId);
       const maxTokens = getMaxTokensForSubscription(subscription, {
         mode,
       });
