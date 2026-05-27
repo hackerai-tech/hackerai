@@ -12,6 +12,8 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
 
 /// Port for the local dev auth callback server (0 = not started)
 static DEV_AUTH_PORT: AtomicU16 = AtomicU16::new(0);
@@ -22,10 +24,51 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 /// Session token for authenticating command server requests
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+struct PendingDesktopAuthStates(std::sync::Mutex<HashMap<String, SystemTime>>);
+
+fn generate_desktop_auth_state() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn prune_expired_auth_states(states: &mut HashMap<String, SystemTime>, now: SystemTime) {
+    states.retain(|_, expires_at| *expires_at > now);
+    while states.len() >= MAX_PENDING_DESKTOP_AUTH_STATES {
+        if let Some(oldest_key) = states
+            .iter()
+            .min_by_key(|(_, expires_at)| *expires_at)
+            .map(|(state, _)| state.clone())
+        {
+            states.remove(&oldest_key);
+        } else {
+            break;
+        }
+    }
+}
+
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
 fn get_dev_auth_port() -> u16 {
     DEV_AUTH_PORT.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn prepare_desktop_auth_state(
+    pending_states: tauri::State<'_, PendingDesktopAuthStates>,
+) -> Result<String, String> {
+    let state = generate_desktop_auth_state();
+    let now = SystemTime::now();
+    let expires_at = now + DESKTOP_AUTH_STATE_TTL;
+    let mut states = pending_states
+        .0
+        .lock()
+        .map_err(|_| "desktop auth state lock poisoned".to_string())?;
+    prune_expired_auth_states(&mut states, now);
+    states.insert(state.clone(), expires_at);
+    Ok(state)
 }
 
 /// Get the command server port, session token, and OS info
@@ -996,17 +1039,28 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                 .query_pairs()
                 .find(|(k, _)| k == "origin")
                 .map(|(_, v)| v.to_string());
+            let desktop_state = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "desktop_state")
+                .map(|(_, v)| v.to_string());
 
-            match token {
-                Some(ref t) if is_valid_token_format(t) => {
+            match (token, desktop_state) {
+                (Some(ref t), Some(ref state))
+                    if is_valid_token_format(t)
+                        && consume_pending_desktop_auth_state(&handle, state) =>
+                {
                     let origin = origin
                         .filter(|o| validate_origin(o))
                         .unwrap_or_else(|| "http://localhost:3000".to_string());
 
                     let encoded_token: String =
                         url::form_urlencoded::byte_serialize(t.as_bytes()).collect();
-                    let callback_url =
-                        format!("{}/desktop-callback?token={}", origin, encoded_token);
+                    let encoded_state: String =
+                        url::form_urlencoded::byte_serialize(state.as_bytes()).collect();
+                    let callback_url = format!(
+                        "{}/desktop-callback?token={}&desktop_state={}",
+                        origin, encoded_token, encoded_state
+                    );
 
                     log::info!(
                         "Dev auth: navigating to callback (token: {}...)",
@@ -1030,7 +1084,7 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => {
-                    log::warn!("Dev auth: invalid or missing token");
+                    log::warn!("Dev auth: invalid or missing token/auth state");
                     let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
@@ -1108,6 +1162,32 @@ fn validate_origin(origin: &str) -> bool {
     }
 }
 
+fn consume_pending_desktop_auth_state(app: &tauri::AppHandle, desktop_state: &str) -> bool {
+    if !is_valid_token_format(desktop_state) {
+        return false;
+    }
+
+    let Some(pending_states) = app.try_state::<PendingDesktopAuthStates>() else {
+        log::error!("Desktop auth state store is unavailable");
+        return false;
+    };
+
+    let now = SystemTime::now();
+    let mut states = match pending_states.0.lock() {
+        Ok(states) => states,
+        Err(_) => {
+            log::error!("Desktop auth state lock poisoned");
+            return false;
+        }
+    };
+
+    prune_expired_auth_states(&mut states, now);
+    states
+        .remove(desktop_state)
+        .map(|expires_at| expires_at > now)
+        .unwrap_or(false)
+}
+
 fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     if url.scheme() != "hackerai" {
         return;
@@ -1125,6 +1205,18 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                     return;
                 }
 
+                let desktop_state = match url
+                    .query_pairs()
+                    .find(|(k, _)| k == "desktop_state")
+                    .map(|(_, v)| v.to_string())
+                {
+                    Some(state) if consume_pending_desktop_auth_state(app, &state) => state,
+                    _ => {
+                        log::error!("Auth deep link missing valid desktop auth state");
+                        return;
+                    }
+                };
+
                 if let Some(window) = app.get_webview_window("main") {
                     // Get and validate origin from deep link query params
                     let origin = url
@@ -1139,8 +1231,12 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
 
                     let encoded_token: String =
                         url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-                    let callback_url =
-                        format!("{}/desktop-callback?token={}", origin, encoded_token);
+                    let encoded_state: String =
+                        url::form_urlencoded::byte_serialize(desktop_state.as_bytes()).collect();
+                    let callback_url = format!(
+                        "{}/desktop-callback?token={}&desktop_state={}",
+                        origin, encoded_token, encoded_state
+                    );
                     log::info!(
                         "Navigating to desktop callback (token: {}...)",
                         &token[..8.min(token.len())]
@@ -1322,6 +1418,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_dev_auth_port,
+            prepare_desktop_auth_state,
             get_cmd_server_info,
             get_local_file_metadata,
             read_local_file,
@@ -1361,6 +1458,9 @@ pub fn run() {
             std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
                 as StreamCommandState,
         )
+        .manage(PendingDesktopAuthStates(std::sync::Mutex::new(
+            HashMap::new(),
+        )))
         .setup(|app| {
             #[cfg(desktop)]
             {

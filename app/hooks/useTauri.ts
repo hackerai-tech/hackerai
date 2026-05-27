@@ -77,6 +77,20 @@ export async function navigateToAuth(
       let loginUrl = `${window.location.origin}/desktop-login`;
       const fallbackUrl = new URL(resolvedPath, window.location.origin);
       const authSearchParams = new URLSearchParams(fallbackUrl.search);
+      const { invoke } = await import("@tauri-apps/api/core");
+
+      try {
+        const desktopAuthState = await invoke<string>(
+          "prepare_desktop_auth_state",
+        );
+        authSearchParams.set("desktop_state", desktopAuthState);
+      } catch (err) {
+        console.error("[Tauri] Failed to prepare desktop auth state:", err);
+        toast.error(
+          "Could not start secure desktop sign-in. Please try again.",
+        );
+        return;
+      }
 
       if (fallbackUrl.pathname === "/signup") {
         authSearchParams.set("screen_hint", "sign-up");
@@ -85,7 +99,6 @@ export async function navigateToAuth(
       // In dev mode, pass the local auth callback port so the server
       // redirects to localhost instead of the hackerai:// deep link
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const port = await invoke<number>("get_dev_auth_port");
         if (port > 0) {
           authSearchParams.set("dev_callback_port", String(port));

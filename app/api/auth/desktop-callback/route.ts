@@ -6,6 +6,8 @@ import {
 } from "@/lib/desktop-auth";
 import { workos } from "@/app/api/workos";
 
+const DESKTOP_AUTH_STATE_REGEX = /^[a-f0-9]{64}$/;
+
 type DesktopAuthSession = {
   accessToken: string;
   refreshToken: string;
@@ -62,6 +64,20 @@ export async function GET(request: NextRequest) {
     console.warn("[Desktop Auth] Invalid or expired OAuth state");
     return new Response(
       renderErrorPage("Authentication session expired. Please try again."),
+      {
+        status: 400,
+        headers: noStoreHeaders,
+      },
+    );
+  }
+
+  if (
+    !stateMetadata?.desktopAuthState ||
+    !DESKTOP_AUTH_STATE_REGEX.test(stateMetadata.desktopAuthState)
+  ) {
+    console.warn("[Desktop Auth] Missing desktop auth state metadata");
+    return new Response(
+      renderErrorPage("Invalid authentication request. Please try again."),
       {
         status: 400,
         headers: noStoreHeaders,
@@ -142,6 +158,7 @@ export async function GET(request: NextRequest) {
 
     const transferToken = await createDesktopTransferToken(sealedSession, {
       returnPath: stateMetadata?.returnPath,
+      desktopAuthState: stateMetadata.desktopAuthState,
     });
 
     if (!transferToken) {
@@ -158,14 +175,14 @@ export async function GET(request: NextRequest) {
 
     // In dev mode, redirect to local HTTP server instead of deep link
     if (stateMetadata?.devCallbackPort) {
-      const devCallbackUrl = `http://localhost:${stateMetadata.devCallbackPort}/auth-callback?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
+      const devCallbackUrl = `http://localhost:${stateMetadata.devCallbackPort}/auth-callback?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}&desktop_state=${encodeURIComponent(stateMetadata.desktopAuthState)}`;
       return new Response(renderSuccessPage(devCallbackUrl), {
         status: 200,
         headers: noStoreHeaders,
       });
     }
 
-    const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
+    const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}&desktop_state=${encodeURIComponent(stateMetadata.desktopAuthState)}`;
     return new Response(renderSuccessPage(deepLinkUrl), {
       status: 200,
       headers: noStoreHeaders,

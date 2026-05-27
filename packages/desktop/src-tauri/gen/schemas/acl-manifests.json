@@ -8,8 +8,10 @@
         "commands": {
           "allow": [
             "get_dev_auth_port",
+            "prepare_desktop_auth_state",
             "get_cmd_server_info",
             "get_local_file_metadata",
+            "read_local_file",
             "execute_command",
             "execute_stream_command",
             "cancel_stream_command",
@@ -1928,24 +1930,18 @@
     "default_permission": {
       "identifier": "default",
       "description": "This permission set configures the types of dialogs\navailable from the dialog plugin.\n\n#### Granted Permissions\n\nAll dialog types are enabled.\n\n\n",
-      "permissions": [
-        "allow-ask",
-        "allow-confirm",
-        "allow-message",
-        "allow-save",
-        "allow-open"
-      ]
+      "permissions": ["allow-message", "allow-save", "allow-open"]
     },
     "permissions": {
       "allow-ask": {
         "identifier": "allow-ask",
-        "description": "Enables the ask command without any pre-configured scope.",
-        "commands": { "allow": ["ask"], "deny": [] }
+        "description": "Enables the ask command without any pre-configured scope. (**DEPRECATED**: This is now an alias to `allow-message` and will be removed in v3)",
+        "commands": { "allow": ["message"], "deny": [] }
       },
       "allow-confirm": {
         "identifier": "allow-confirm",
-        "description": "Enables the confirm command without any pre-configured scope.",
-        "commands": { "allow": ["confirm"], "deny": [] }
+        "description": "Enables the confirm command without any pre-configured scope. (**DEPRECATED**: This is now an alias to `allow-message` and will be removed in v3)",
+        "commands": { "allow": ["message"], "deny": [] }
       },
       "allow-message": {
         "identifier": "allow-message",
@@ -1964,13 +1960,13 @@
       },
       "deny-ask": {
         "identifier": "deny-ask",
-        "description": "Denies the ask command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["ask"] }
+        "description": "Denies the ask command without any pre-configured scope. (**DEPRECATED**: This is now an alias to `deny-message` and will be removed in v3)",
+        "commands": { "allow": [], "deny": ["message"] }
       },
       "deny-confirm": {
         "identifier": "deny-confirm",
-        "description": "Denies the confirm command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["confirm"] }
+        "description": "Denies the confirm command without any pre-configured scope. (**DEPRECATED**: This is now an alias to `deny-message` and will be removed in v3)",
+        "commands": { "allow": [], "deny": ["message"] }
       },
       "deny-message": {
         "identifier": "deny-message",
