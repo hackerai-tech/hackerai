@@ -6,8 +6,11 @@ import {
 } from "./_generated/server";
 import { v, ConvexError, type Value } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc, Id } from "./_generated/dataModel";
-import { paginationOptsValidator } from "convex/server";
+import type { DataModel, Doc, Id } from "./_generated/dataModel";
+import {
+  paginationOptsValidator,
+  type GenericDatabaseReader,
+} from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
@@ -22,6 +25,62 @@ const extractTextFromParts = (parts: any[]): string => {
     .join(" ")
     .trim();
 };
+
+const extractFileIdsFromParts = (parts: any[]): Id<"files">[] =>
+  parts
+    .filter(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        part.type === "file" &&
+        typeof part.fileId === "string",
+    )
+    .map((part) => part.fileId as Id<"files">);
+
+const getOwnedFileIdSet = async (
+  ctx: { db: GenericDatabaseReader<DataModel> },
+  fileIds: Id<"files">[],
+  userId: string,
+): Promise<Set<string>> => {
+  const uniqueFileIds = Array.from(new Set(fileIds));
+  if (uniqueFileIds.length === 0) return new Set();
+
+  const files = await Promise.all(
+    uniqueFileIds.map((fileId) =>
+      ctx.db.get(fileId).catch((error) => {
+        console.warn(
+          "Failed to read file while checking ownership:",
+          fileId,
+          error,
+        );
+        return null;
+      }),
+    ),
+  );
+
+  return new Set(
+    files
+      .filter((file) => file && file.user_id === userId)
+      .map((file) => file!._id),
+  );
+};
+
+const stripUnownedFileParts = (
+  parts: any[],
+  ownedFileIds: Set<string>,
+): any[] =>
+  parts.filter((part) => {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      part.type !== "file" ||
+      typeof part.fileId !== "string"
+    ) {
+      return true;
+    }
+
+    return ownedFileIds.has(part.fileId);
+  });
 
 const getJsonSize = (value: unknown): number => {
   try {
@@ -315,6 +374,21 @@ export const saveMessage = mutation({
     let failureStage = "start";
 
     try {
+      const explicitFileIds = new Set(args.fileIds ?? []);
+      const partOnlyFileIds = Array.from(
+        new Set(
+          extractFileIdsFromParts(args.parts).filter(
+            (fileId) => !explicitFileIds.has(fileId),
+          ),
+        ),
+      );
+      if (partOnlyFileIds.length > 0) {
+        failureStage = "verify_file_part_ownership";
+        await requireOwnedFiles(ctx, partOnlyFileIds, args.userId);
+      }
+      const fileIdsForSave = args.fileIds;
+      const partsForSave = args.parts;
+
       failureStage = "find_existing_message";
       const existingMessage = await ctx.db
         .query("messages")
@@ -336,9 +410,9 @@ export const saveMessage = mutation({
         const patch: Record<string, unknown> = {};
 
         // Add new fileIds if provided
-        if (args.fileIds && args.fileIds.length > 0) {
+        if (fileIdsForSave && fileIdsForSave.length > 0) {
           const currentFileIds = existingMessage.file_ids || [];
-          const newFileIds = args.fileIds.filter(
+          const newFileIds = fileIdsForSave.filter(
             (id) => !currentFileIds.includes(id),
           );
 
@@ -425,11 +499,11 @@ export const saveMessage = mutation({
       }
 
       failureStage = "extract_content";
-      const content = extractTextFromParts(args.parts);
+      const content = extractTextFromParts(partsForSave);
 
       failureStage = "verify_new_message_file_ownership";
       const { fileIds: ownedFileIds, files: ownedFiles } =
-        await requireOwnedFiles(ctx, args.fileIds, args.userId);
+        await requireOwnedFiles(ctx, fileIdsForSave, args.userId);
 
       failureStage = "insert_message";
       await ctx.db.insert("messages", {
@@ -437,9 +511,9 @@ export const saveMessage = mutation({
         chat_id: args.chatId,
         user_id: args.userId,
         role: args.role,
-        parts: args.parts,
+        parts: partsForSave,
         content: content || undefined,
-        file_ids: args.fileIds ? ownedFileIds : undefined,
+        file_ids: fileIdsForSave ? ownedFileIds : undefined,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -636,7 +710,7 @@ export const getMessagesByChatId = query({
       // Only file metadata (fileId, name, mediaType, s3Key, storageId) is returned.
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
-        if (file) {
+        if (file && file.user_id === user.subject) {
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
@@ -1049,14 +1123,27 @@ export const getMessagesPageForBackend = query({
       .order("desc")
       .paginate(args.paginationOpts);
 
+    const visiblePage = result.page.filter(
+      (message) => message.is_hidden !== true,
+    );
+    const fileIds = new Set<Id<"files">>();
+    for (const message of visiblePage) {
+      extractFileIdsFromParts(message.parts).forEach((fileId) =>
+        fileIds.add(fileId),
+      );
+    }
+    const ownedFileIds = await getOwnedFileIdSet(
+      ctx,
+      Array.from(fileIds),
+      args.userId,
+    );
+
     return {
-      page: result.page
-        .filter((message) => message.is_hidden !== true)
-        .map((message) => ({
-          id: message.id,
-          role: message.role,
-          parts: message.parts,
-        })),
+      page: visiblePage.map((message) => ({
+        id: message.id,
+        role: message.role,
+        parts: stripUnownedFileParts(message.parts, ownedFileIds),
+      })),
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };
@@ -1830,7 +1917,7 @@ export const getPreviewMessages = query({
 
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
-        if (file) {
+        if (file && file.user_id === identity.subject) {
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,

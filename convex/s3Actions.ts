@@ -302,7 +302,7 @@ export const getFileUrlsByFileIdsAction = action({
           );
 
           // Return null if file not found
-          if (!file) {
+          if (!file || file.user_id !== args.userId) {
             return null;
           }
 

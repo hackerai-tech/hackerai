@@ -1620,6 +1620,86 @@ describe("s3Actions", () => {
       ]);
     });
 
+    it("should return null for files not owned by the user", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+      const mockFileId = "file1" as any;
+      const mockFile = {
+        _id: mockFileId,
+        s3_key: "users/victim/file1.pdf",
+        storage_id: undefined,
+        user_id: "victim-user",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: "attacker-user",
+        fileIds: [mockFileId],
+      });
+
+      expect(result).toEqual([null]);
+      expect(mockGenerateS3DownloadUrl).not.toHaveBeenCalled();
+      expect(mockCtx.storage.getUrl).not.toHaveBeenCalled();
+    });
+
+    it("should return null for unowned Convex storage files", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+      const mockFileId = "file1" as any;
+      const mockFile = {
+        _id: mockFileId,
+        s3_key: undefined,
+        storage_id: "storage-victim" as any,
+        user_id: "victim-user",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: "attacker-user",
+        fileIds: [mockFileId],
+      });
+
+      expect(result).toEqual([null]);
+      expect(mockGenerateS3DownloadUrl).not.toHaveBeenCalled();
+      expect(mockCtx.storage.getUrl).not.toHaveBeenCalled();
+    });
+
     it("should handle empty file IDs array", async () => {
       const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
 
