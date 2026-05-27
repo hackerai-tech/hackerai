@@ -188,13 +188,13 @@ interface CentrifugoCommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface CentrifugoCommandCancelMessage {
   type: "command_cancel";
   commandId: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface CentrifugoStdoutMessage {
@@ -232,14 +232,14 @@ interface PtyCreateMessage {
   rows?: number;
   cwd?: string;
   env?: Record<string, string>;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyInputMessage {
   type: "pty_input";
   sessionId: string;
   data: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyResizeMessage {
@@ -247,14 +247,14 @@ interface PtyResizeMessage {
   sessionId: string;
   cols: number;
   rows: number;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyKillMessage {
   type: "pty_kill";
   sessionId: string;
   signal?: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 type CentrifugoPtyIncomingMessage =
@@ -262,6 +262,32 @@ type CentrifugoPtyIncomingMessage =
   | PtyInputMessage
   | PtyResizeMessage
   | PtyKillMessage;
+
+type TargetedIncomingMessage =
+  | CentrifugoCommandMessage
+  | CentrifugoCommandCancelMessage
+  | CentrifugoPtyIncomingMessage;
+
+function isTargetedIncomingMessage(
+  message: unknown,
+): message is TargetedIncomingMessage {
+  if (typeof message !== "object" || message === null) {
+    return false;
+  }
+  const { type, targetConnectionId } = message as {
+    type?: unknown;
+    targetConnectionId?: unknown;
+  };
+  return (
+    typeof targetConnectionId === "string" &&
+    (type === "command" ||
+      type === "command_cancel" ||
+      type === "pty_create" ||
+      type === "pty_input" ||
+      type === "pty_resize" ||
+      type === "pty_kill")
+  );
+}
 
 // --- PTY outgoing message types ---
 
@@ -557,21 +583,19 @@ class LocalSandboxClient {
       },
     });
 
-    const channel = `sandbox:user#${this.userId}`;
+    const channel = `sandbox:connection:${this.connectionId}#${this.userId}`;
     this.subscription = this.centrifuge.newSubscription(channel);
 
     this.subscription.on("publication", (ctx: PublicationContext) => {
       if (this.isShuttingDown) return;
 
-      const message = ctx.data as
-        | CentrifugoCommandMessage
-        | CentrifugoCommandCancelMessage
-        | CentrifugoPtyIncomingMessage;
+      const message = ctx.data;
 
-      // Gate on targetConnectionId for all message types that carry it
-      const targetId = (message as { targetConnectionId?: string })
-        .targetConnectionId;
-      if (targetId && targetId !== this.connectionId) {
+      if (!isTargetedIncomingMessage(message)) {
+        return;
+      }
+
+      if (message.targetConnectionId !== this.connectionId) {
         return;
       }
 

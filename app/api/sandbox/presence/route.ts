@@ -1,19 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Centrifuge } from "centrifuge";
+import { Centrifuge, type Subscription } from "centrifuge";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
-
-interface CentrifugoPresenceClient {
-  client: string;
-  user: string;
-  connInfo: { connectionId?: string } | null;
-}
+import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 
 interface CentrifugoPresenceResult {
-  clients: Record<string, CentrifugoPresenceClient>;
+  clients?: Record<string, unknown>;
 }
 
 export async function GET(request: NextRequest) {
@@ -23,7 +18,6 @@ export async function GET(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const channel = `sandbox:user#${userId}`;
 
   const wsUrl = process.env.CENTRIFUGO_WS_URL;
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -36,61 +30,13 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const onlineConnectionIds = new Set<string>();
-  let presenceReliable = false;
-
-  let client: Centrifuge | null = null;
-  try {
-    const token = await generateCentrifugoToken(userId, 30);
-    client = new Centrifuge(wsUrl, { token });
-    const sub = client.newSubscription(channel);
-
-    const presenceData: CentrifugoPresenceResult = await new Promise(
-      (resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error("Centrifugo presence timeout"));
-        }, 5000);
-
-        sub.on("subscribed", async () => {
-          clearTimeout(timeout);
-          try {
-            const result = await sub.presence();
-            resolve(result as CentrifugoPresenceResult);
-          } catch (e) {
-            reject(e);
-          }
-        });
-
-        sub.on("error", (ctx) => {
-          clearTimeout(timeout);
-          reject(new Error(ctx.error?.message));
-        });
-
-        sub.subscribe();
-        client!.connect();
-      },
-    );
-
-    const clients = presenceData?.clients ?? {};
-    for (const entry of Object.values(clients)) {
-      if (entry.connInfo?.connectionId) {
-        onlineConnectionIds.add(entry.connInfo.connectionId);
-      }
-    }
-    presenceReliable = true;
-  } catch (err) {
-    console.error("Centrifugo presence request failed:", err);
-  } finally {
-    if (client) {
-      client.disconnect();
-    }
-  }
-
-  // Fetch connection metadata from Convex
+  // Fetch connection metadata from Convex before probing per-connection
+  // Centrifugo channels. The previous shared per-user presence channel exposed
+  // every connection id to any same-user subscriber.
   if (!convexUrl || !serviceKey) {
     return NextResponse.json({
       connections: [],
-      onlineCount: onlineConnectionIds.size,
+      onlineCount: 0,
     });
   }
 
@@ -99,6 +45,78 @@ export async function GET(request: NextRequest) {
     api.localSandbox.listConnectionsForBackend,
     { serviceKey, userId },
   );
+
+  const onlineConnectionIds = new Set<string>();
+  let presenceReliable = false;
+
+  let client: Centrifuge | null = null;
+  const subscriptions: Subscription[] = [];
+  try {
+    const token = await generateCentrifugoToken(userId, 30);
+    client = new Centrifuge(wsUrl, { token });
+
+    const probes = connections.map(
+      (connection) =>
+        new Promise<void>((resolve, reject) => {
+          const sub = client!.newSubscription(
+            sandboxConnectionChannel(userId, connection.connectionId),
+          );
+          subscriptions.push(sub);
+
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(
+              new Error(
+                `Centrifugo presence timeout for connection ${connection.connectionId}`,
+              ),
+            );
+          }, 5000);
+
+          const cleanup = () => {
+            clearTimeout(timeout);
+            sub.removeAllListeners();
+          };
+
+          sub.on("subscribed", async () => {
+            try {
+              const result = (await sub.presence()) as CentrifugoPresenceResult;
+              const clients = result.clients ?? {};
+              if (Object.keys(clients).length > 0) {
+                onlineConnectionIds.add(connection.connectionId);
+              }
+              cleanup();
+              resolve();
+            } catch (e) {
+              cleanup();
+              reject(e);
+            }
+          });
+
+          sub.on("error", (ctx) => {
+            cleanup();
+            reject(
+              new Error(ctx.error?.message ?? "Centrifugo subscription error"),
+            );
+          });
+
+          sub.subscribe();
+        }),
+    );
+
+    client.connect();
+    await Promise.all(probes);
+    presenceReliable = true;
+  } catch (err) {
+    console.error("Centrifugo presence request failed:", err);
+  } finally {
+    for (const sub of subscriptions) {
+      sub.removeAllListeners();
+      sub.unsubscribe();
+    }
+    if (client) {
+      client.disconnect();
+    }
+  }
 
   // Mark each connection with live presence status
   const enriched = connections.map((conn) => ({

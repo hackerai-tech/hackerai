@@ -1,5 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import { Centrifuge } from "centrifuge";
+import { Centrifuge, type Subscription } from "centrifuge";
 import type {
   SandboxBootInfo,
   SandboxManager,
@@ -14,7 +14,7 @@ import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
-import { sandboxChannel } from "@/lib/centrifugo/types";
+import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -45,12 +45,8 @@ const MAX_SANDBOX_HEALTH_FAILURES = 5;
 export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
 
-interface CentrifugoPresenceClient {
-  connInfo?: { connectionId?: string } | null;
-}
-
 interface CentrifugoPresenceResult {
-  clients?: Record<string, CentrifugoPresenceClient>;
+  clients?: Record<string, unknown>;
 }
 
 interface PresenceProbeResult {
@@ -112,7 +108,16 @@ export function filterConnectionsByPresence(
 
 async function queryLiveSandboxConnectionIds(
   userId: string,
+  connectionIds: string[],
 ): Promise<PresenceProbeResult> {
+  if (connectionIds.length === 0) {
+    return {
+      reliable: true,
+      onlineConnectionIds: new Set(),
+      durationMs: 0,
+    };
+  }
+
   const wsUrl = process.env.CENTRIFUGO_WS_URL;
   if (!wsUrl) {
     return {
@@ -125,54 +130,64 @@ async function queryLiveSandboxConnectionIds(
 
   const start = Date.now();
   let client: Centrifuge | null = null;
+  const subscriptions: Subscription[] = [];
 
   try {
     const token = await generateCentrifugoToken(userId, 30);
     client = new Centrifuge(wsUrl, { token });
-    const sub = client.newSubscription(sandboxChannel(userId));
+    const onlineConnectionIds = new Set<string>();
 
-    const presence = await new Promise<CentrifugoPresenceResult>(
-      (resolve, reject) => {
-        const timeout = setTimeout(() => {
-          cleanup();
-          reject(new Error("Centrifugo presence timeout"));
-        }, LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS);
-
-        const cleanup = () => {
-          clearTimeout(timeout);
-          sub.removeAllListeners();
-        };
-
-        sub.on("subscribed", async () => {
-          try {
-            const result = await sub.presence();
-            cleanup();
-            resolve(result as CentrifugoPresenceResult);
-          } catch (error) {
-            cleanup();
-            reject(error);
-          }
-        });
-
-        sub.on("error", (ctx) => {
-          cleanup();
-          reject(
-            new Error(ctx.error?.message ?? "Centrifugo subscription error"),
+    const probes = connectionIds.map(
+      (connectionId) =>
+        new Promise<void>((resolve, reject) => {
+          const sub = client!.newSubscription(
+            sandboxConnectionChannel(userId, connectionId),
           );
-        });
+          subscriptions.push(sub);
 
-        sub.subscribe();
-        client!.connect();
-      },
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(
+              new Error(
+                `Centrifugo presence timeout for connection ${connectionId}`,
+              ),
+            );
+          }, LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS);
+
+          const cleanup = () => {
+            clearTimeout(timeout);
+            sub.removeAllListeners();
+          };
+
+          sub.on("subscribed", async () => {
+            try {
+              const result = await sub.presence();
+              cleanup();
+              const clients =
+                (result as CentrifugoPresenceResult).clients ?? {};
+              if (Object.keys(clients).length > 0) {
+                onlineConnectionIds.add(connectionId);
+              }
+              resolve();
+            } catch (error) {
+              cleanup();
+              reject(error);
+            }
+          });
+
+          sub.on("error", (ctx) => {
+            cleanup();
+            reject(
+              new Error(ctx.error?.message ?? "Centrifugo subscription error"),
+            );
+          });
+
+          sub.subscribe();
+        }),
     );
 
-    const onlineConnectionIds = new Set<string>();
-    for (const entry of Object.values(presence.clients ?? {})) {
-      const connectionId = entry.connInfo?.connectionId;
-      if (connectionId) {
-        onlineConnectionIds.add(connectionId);
-      }
-    }
+    client.connect();
+    await Promise.all(probes);
 
     return {
       reliable: true,
@@ -188,6 +203,10 @@ async function queryLiveSandboxConnectionIds(
     };
   } finally {
     try {
+      for (const sub of subscriptions) {
+        sub.removeAllListeners();
+        sub.unsubscribe();
+      }
       client?.disconnect();
     } catch {
       // Ignore cleanup failures.
@@ -357,7 +376,10 @@ export class HybridSandboxManager implements SandboxManager {
         return connections;
       }
 
-      const presence = await queryLiveSandboxConnectionIds(this.userID);
+      const presence = await queryLiveSandboxConnectionIds(
+        this.userID,
+        connections.map((connection) => connection.connectionId),
+      );
       if (!presence.reliable) {
         logStructured("warn", "local_sandbox_presence_unavailable", {
           user_id: this.userID,
