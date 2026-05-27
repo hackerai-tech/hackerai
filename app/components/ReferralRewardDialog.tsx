@@ -155,7 +155,7 @@ export function ReferralRewardDialog({
   );
   const summary = useQuery(
     api.referrals.getReferralSummary,
-    effectiveUserId ? {} : "skip",
+    open && effectiveUserId ? {} : "skip",
   );
 
   const code = summary?.code ?? generatedCode;

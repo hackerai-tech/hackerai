@@ -5,6 +5,7 @@ import {
   generateId,
   UIMessage,
 } from "ai";
+import { createHash } from "crypto";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { AGENT_MAX_STREAM_DURATION_MS } from "@/lib/chat/stop-conditions";
@@ -127,18 +128,20 @@ export { getStreamContext };
 function getReferralCreditSpendRequestId({
   chatId,
   messages,
-  fallbackId,
   regenerate,
 }: {
   chatId: string;
   messages: UIMessage[];
-  fallbackId: string;
   regenerate?: boolean;
 }) {
   const lastMessage = messages[messages.length - 1];
+  const operation = regenerate ? "regenerate" : "send";
   return lastMessage?.id
-    ? `${chatId}:${lastMessage.id}:${regenerate ? "regenerate" : "send"}`
-    : fallbackId;
+    ? `${chatId}:${lastMessage.id}:${operation}`
+    : `${chatId}:fallback:${operation}:${createHash("sha256")
+        .update(JSON.stringify(messages))
+        .digest("hex")
+        .slice(0, 24)}`;
 }
 
 export const createChatHandler = (
@@ -264,7 +267,6 @@ export const createChatHandler = (
       const referralCreditSpendRequestId = getReferralCreditSpendRequestId({
         chatId,
         messages,
-        fallbackId: assistantMessageId,
         regenerate,
       });
 

@@ -76,6 +76,10 @@ describe("ReferralRewardEntry", () => {
     expect(
       screen.getByText("Earn credits per paid referral"),
     ).toBeInTheDocument();
+    expect(mockUseQuery).toHaveBeenCalledWith(
+      "referrals.getReferralSummary",
+      "skip",
+    );
   });
 
   it("does not render for paid users", () => {
@@ -119,6 +123,10 @@ describe("ReferralRewardEntry", () => {
     fireEvent.click(await screen.findByTestId("referral-button"));
 
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(mockUseQuery).toHaveBeenCalledWith(
+      "referrals.getReferralSummary",
+      {},
+    );
     expect(screen.getByTestId("referral-link")).toHaveTextContent(
       "/invite/ABCD1234",
     );
