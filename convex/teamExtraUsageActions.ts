@@ -273,8 +273,6 @@ export const deductWithAutoReloadForTeam = action({
     memberCapExceeded: v.boolean(),
     memberDisabled: v.boolean(),
     poolDisabled: v.boolean(),
-    trustCapExceeded: v.optional(v.boolean()),
-    trustCapDollars: v.optional(v.union(v.null(), v.number())),
     autoReloadTriggered: v.boolean(),
     autoReloadResult: v.optional(
       v.object({
@@ -329,8 +327,6 @@ export const deductWithAutoReloadForTeam = action({
       memberCapExceeded: boolean;
       memberDisabled: boolean;
       poolDisabled: boolean;
-      trustCapExceeded?: boolean;
-      trustCapDollars?: number | null;
     } = await ctx.runMutation(api.teamExtraUsage.deductTeamPoints, {
       serviceKey: args.serviceKey,
       organizationId: args.organizationId,
@@ -348,8 +344,7 @@ export const deductWithAutoReloadForTeam = action({
         deductResult.monthlyCapExceeded ||
         deductResult.memberCapExceeded ||
         deductResult.memberDisabled ||
-        deductResult.poolDisabled ||
-        deductResult.trustCapExceeded);
+        deductResult.poolDisabled);
 
     if (blockedForNonBalanceReason) {
       return {
@@ -360,8 +355,6 @@ export const deductWithAutoReloadForTeam = action({
         memberCapExceeded: deductResult.memberCapExceeded,
         memberDisabled: deductResult.memberDisabled,
         poolDisabled: deductResult.poolDisabled,
-        trustCapExceeded: deductResult.trustCapExceeded,
-        trustCapDollars: deductResult.trustCapDollars,
         autoReloadTriggered: false,
       };
     }
@@ -532,8 +525,6 @@ export const deductWithAutoReloadForTeam = action({
       memberCapExceeded: deductResult.memberCapExceeded,
       memberDisabled: deductResult.memberDisabled,
       poolDisabled: deductResult.poolDisabled,
-      trustCapExceeded: deductResult.trustCapExceeded,
-      trustCapDollars: deductResult.trustCapDollars,
       autoReloadTriggered,
       autoReloadResult,
     };

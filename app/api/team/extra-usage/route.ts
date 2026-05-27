@@ -57,8 +57,6 @@ export const GET = async (req: NextRequest) => {
         autoReloadAmountDollars: adminView.autoReloadAmountDollars,
         monthlyCapDollars: adminView.monthlyCapDollars,
         monthlySpentDollars: adminView.monthlySpentDollars,
-        trustCapDollars: adminView.trustCapDollars,
-        trustReason: adminView.trustReason,
         autoReloadDisabledReason: adminView.autoReloadDisabledReason,
       },
       members,
