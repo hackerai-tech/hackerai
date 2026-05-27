@@ -20,8 +20,6 @@ export interface DeductBalanceResult {
   newBalanceDollars: number;
   insufficientFunds: boolean;
   monthlyCapExceeded: boolean;
-  trustCapExceeded?: boolean;
-  trustCapDollars?: number | null;
   autoReloadTriggered?: boolean;
   autoReloadResult?: {
     success: boolean;
@@ -181,8 +179,6 @@ export async function deductFromBalance(
       newBalanceDollars: result.newBalanceDollars,
       insufficientFunds: result.insufficientFunds,
       monthlyCapExceeded: result.monthlyCapExceeded,
-      trustCapExceeded: result.trustCapExceeded,
-      trustCapDollars: result.trustCapDollars,
       autoReloadTriggered: result.autoReloadTriggered,
       autoReloadResult: result.autoReloadResult,
     };
@@ -247,8 +243,8 @@ export async function getTeamExtraUsageState(
 
 /**
  * Deduct from team balance for a specific member. Enforces per-member cap,
- * member-disabled flag, team-wide cap, trust cap. Triggers auto-reload on
- * the org's Stripe customer when applicable.
+ * member-disabled flag, and team-wide cap. Triggers auto-reload on the org's
+ * Stripe customer when applicable.
  */
 export async function deductFromTeamBalance(
   organizationId: string,
@@ -282,8 +278,6 @@ export async function deductFromTeamBalance(
       newBalanceDollars: result.newBalanceDollars,
       insufficientFunds: result.insufficientFunds,
       monthlyCapExceeded: result.monthlyCapExceeded,
-      trustCapExceeded: result.trustCapExceeded,
-      trustCapDollars: result.trustCapDollars,
       autoReloadTriggered: result.autoReloadTriggered,
       autoReloadResult: result.autoReloadResult,
       memberCapExceeded: result.memberCapExceeded,

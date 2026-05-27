@@ -130,6 +130,7 @@ export const deleteFile = mutation({
 export const getFileTokensByFileIds = query({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.number()),
@@ -142,8 +143,10 @@ export const getFileTokensByFileIds = query({
       args.fileIds.map((fileId) => ctx.db.get(fileId)),
     );
 
-    // Return token sizes, defaulting to 0 for missing files
-    return files.map((file) => file?.file_token_size ?? 0);
+    // Return token sizes only for files owned by the requester.
+    return files.map((file) =>
+      file && file.user_id === args.userId ? file.file_token_size : 0,
+    );
   },
 });
 
@@ -200,6 +203,7 @@ export const getFileMetadataByFileIds = query({
 export const getFileContentByFileIds = query({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(
@@ -222,7 +226,7 @@ export const getFileContentByFileIds = query({
 
     // Return file content and metadata
     return files.map((file, index) => {
-      if (!file) {
+      if (!file || file.user_id !== args.userId) {
         return {
           id: args.fileIds[index],
           name: "Unknown",

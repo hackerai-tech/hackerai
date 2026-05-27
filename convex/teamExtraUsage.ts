@@ -7,7 +7,6 @@ import {
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
-import { computeExtraUsageCap } from "./extraUsage";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -142,17 +141,12 @@ export const addTeamCredits = mutation({
     if (row) {
       await ctx.db.patch(row._id, {
         balance_points: newBalancePoints,
-        first_successful_charge_at: row.first_successful_charge_at ?? now,
-        cumulative_spend_dollars:
-          (row.cumulative_spend_dollars ?? 0) + args.amountDollars,
         updated_at: now,
       });
     } else {
       await ctx.db.insert("team_extra_usage", {
         organization_id: args.organizationId,
         balance_points: newBalancePoints,
-        first_successful_charge_at: now,
-        cumulative_spend_dollars: args.amountDollars,
         updated_at: now,
       });
     }
@@ -189,7 +183,7 @@ export const addTeamCredits = mutation({
  *   - team pool enabled
  *   - member not disabled
  *   - member's per-member cap
- *   - team's monthly cap (with trust cap as ceiling)
+ *   - team's monthly cap
  *   - sufficient team balance
  */
 export const deductTeamPoints = mutation({
@@ -208,8 +202,6 @@ export const deductTeamPoints = mutation({
     memberCapExceeded: v.boolean(),
     memberDisabled: v.boolean(),
     poolDisabled: v.boolean(),
-    trustCapExceeded: v.optional(v.boolean()),
-    trustCapDollars: v.optional(v.union(v.null(), v.number())),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -268,29 +260,11 @@ export const deductTeamPoints = mutation({
       memberMonthlySpent = 0;
     }
 
-    // Compute effective team cap (user-set vs trust)
-    const teamCap = team.monthly_cap_points;
-    const { capDollars: trustCapDollars } = computeExtraUsageCap(team);
-    const trustCapPoints =
-      trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
-
-    let effectiveTeamCap: number | undefined;
-    if (teamCap !== undefined && trustCapPoints !== undefined) {
-      effectiveTeamCap = Math.min(teamCap, trustCapPoints);
-    } else {
-      effectiveTeamCap = teamCap ?? trustCapPoints;
-    }
-
-    const isTrustCap =
-      effectiveTeamCap !== undefined &&
-      trustCapPoints !== undefined &&
-      effectiveTeamCap === trustCapPoints &&
-      (teamCap === undefined || trustCapPoints <= teamCap);
-
     // Team monthly cap check
-    if (effectiveTeamCap !== undefined) {
+    const teamCap = team.monthly_cap_points;
+    if (teamCap !== undefined) {
       const newTeamSpent = teamMonthlySpent + args.amountPoints;
-      if (newTeamSpent > effectiveTeamCap) {
+      if (newTeamSpent > teamCap) {
         return {
           success: false,
           newBalancePoints: currentBalancePoints,
@@ -300,8 +274,6 @@ export const deductTeamPoints = mutation({
           memberCapExceeded: false,
           memberDisabled: false,
           poolDisabled: false,
-          trustCapExceeded: isTrustCap,
-          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
         };
       }
     }
@@ -555,8 +527,6 @@ export const getTeamExtraUsageAdminView = query({
     autoReloadAmountDollars: v.optional(v.number()),
     monthlyCapDollars: v.optional(v.number()),
     monthlySpentDollars: v.number(),
-    trustCapDollars: v.union(v.null(), v.number()),
-    trustReason: v.string(),
     autoReloadDisabledReason: v.optional(v.string()),
     members: v.array(
       v.object({
@@ -582,7 +552,6 @@ export const getTeamExtraUsageAdminView = query({
 
     const currentMonth = currentMonthString();
 
-    const { capDollars, trustReason } = computeExtraUsageCap(team ?? {});
     const teamMonthlySpent =
       team?.monthly_reset_date === currentMonth
         ? (team?.monthly_spent_points ?? 0)
@@ -600,8 +569,6 @@ export const getTeamExtraUsageAdminView = query({
         ? pointsToDollars(team.monthly_cap_points)
         : undefined,
       monthlySpentDollars: pointsToDollars(teamMonthlySpent),
-      trustCapDollars: capDollars,
-      trustReason,
       autoReloadDisabledReason: team?.auto_reload_disabled_reason,
       members: members.map((m) => {
         const spent =

@@ -356,7 +356,7 @@ export const saveMessage = mutation({
             // invalidating the `by_is_attached` index for already-attached
             // files that just got referenced from another message.
             for (const file of files) {
-              if (file && !file.is_attached) {
+              if (!file.is_attached) {
                 failureStage = "patch_existing_message_file_attachment";
                 await ctx.db.patch(file._id, { is_attached: true });
               }
@@ -452,12 +452,10 @@ export const saveMessage = mutation({
 
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
-      if (args.fileIds && args.fileIds.length > 0) {
-        for (const file of ownedFiles) {
-          if (!file.is_attached) {
-            failureStage = "patch_new_message_file_attachment";
-            await ctx.db.patch(file._id, { is_attached: true });
-          }
+      for (const file of ownedFiles) {
+        if (!file.is_attached) {
+          failureStage = "patch_new_message_file_attachment";
+          await ctx.db.patch(file._id, { is_attached: true });
         }
       }
 

@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
 import type { Todo } from "@/types";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "../constants";
-import { MAX_TOKENS_PAID } from "@/lib/token-utils";
+import {
+  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  SUMMARY_TODO_BLOCK_MAX_TOKENS,
+  SUMMARY_TODO_MAX_ITEMS,
+} from "../constants";
+import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
@@ -23,7 +27,7 @@ jest.doMock("@/lib/ai/providers", () => ({
 
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
-const { isSummaryMessage, extractSummaryText } =
+const { isSummaryMessage, extractSummaryText, buildSummaryMessage } =
   require("../helpers") as typeof import("../helpers");
 
 const THRESHOLD = Math.floor(
@@ -376,6 +380,38 @@ describe("checkAndSummarizeIfNeeded", () => {
       type: "text",
       text: expect.stringContaining("[completed] Enumerate subdomains"),
     });
+  });
+
+  it("should bound todo content in summary messages", () => {
+    const todos: Todo[] = Array.from(
+      { length: SUMMARY_TODO_MAX_ITEMS + 25 },
+      (_, index) => ({
+        id: `todo-${index}`,
+        content: `todo-${index} ${"large todo content ".repeat(1000)}`,
+        status: "pending",
+      }),
+    );
+
+    const summaryMessage = buildSummaryMessage("Bounded summary", todos);
+    const summaryText = summaryMessage.parts[0];
+
+    expect(summaryText).toEqual({
+      type: "text",
+      text: expect.stringContaining("<current_todos>"),
+    });
+    expect(summaryText).toEqual({
+      type: "text",
+      text: expect.stringContaining("[... current_todos truncated ...]"),
+    });
+
+    if (summaryText.type !== "text") {
+      throw new Error("Expected summary message to contain text");
+    }
+
+    expect(summaryText.text).not.toContain("todo-124");
+    expect(safeCountTokens(summaryText.text)).toBeLessThanOrEqual(
+      SUMMARY_TODO_BLOCK_MAX_TOKENS + 32,
+    );
   });
 
   it("should abort summarization and not write completed when signal is aborted", async () => {

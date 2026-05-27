@@ -79,9 +79,9 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/huge.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
-      "user123",
     );
 
     expect(result.messages[0].parts).toEqual([
@@ -114,9 +114,9 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/unknown-size.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
-      "user123",
     );
 
     expect(result.messages[0].parts[1]).toEqual({
@@ -141,9 +141,9 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/small.png",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
-      "user123",
     );
 
     expect(result.messages[0].parts[1]).toMatchObject({
@@ -166,9 +166,9 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/inline.pdf",
       }),
       "ask",
+      "user123",
       undefined,
       "pro",
-      "user123",
     );
 
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -194,9 +194,9 @@ describe("processMessageFiles image size guards", () => {
         url: "https://example.com/large.png",
       }),
       "agent",
+      "user123",
       "/home/user/upload",
       "pro",
-      "user123",
     );
 
     expect(result.sandboxFiles).toEqual([

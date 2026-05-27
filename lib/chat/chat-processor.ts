@@ -652,9 +652,9 @@ export async function processChatMessages({
     await processMessageFiles(
       messagesWithLimitedFiles,
       mode,
+      userId,
       uploadBasePath,
       subscription,
-      userId,
       allowLocalDesktopFiles,
     );
 

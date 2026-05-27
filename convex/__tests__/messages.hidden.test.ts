@@ -292,6 +292,79 @@ describe("saveMessage — is_hidden handling", () => {
     );
     expect(console.error).not.toHaveBeenCalled();
   });
+
+  it("rejects unowned file IDs before inserting a new message", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-victim" as Id<"files">,
+      user_id: "victim-user",
+      is_attached: false,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-unowned-file",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [
+          { type: "text", text: "read this" },
+          { type: "file", fileId: "file-victim" as Id<"files"> },
+        ],
+        fileIds: ["file-victim" as Id<"files">],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_new_message_file_ownership",
+        causeData: expect.objectContaining({ code: "FILE_UNAUTHORIZED" }),
+      }),
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unowned file IDs before updating an existing message", async () => {
+    const existing = makeMessage({
+      _id: "existing-doc" as Id<"messages">,
+      file_ids: [],
+    });
+    setupExistingMessage(existing);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-victim" as Id<"files">,
+      user_id: "victim-user",
+      is_attached: false,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [
+          { type: "text", text: "read this" },
+          { type: "file", fileId: "file-victim" as Id<"files"> },
+        ],
+        fileIds: ["file-victim" as Id<"files">],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_existing_message_file_ownership",
+        causeData: expect.objectContaining({ code: "FILE_UNAUTHORIZED" }),
+      }),
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
 });
 
 describe("getMessagesByChatId — is_hidden filtering", () => {

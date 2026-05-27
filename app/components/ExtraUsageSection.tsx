@@ -176,32 +176,7 @@ const ExtraUsageSection = () => {
   const autoReloadDisabledReason = extraUsageSettings?.autoReloadDisabledReason;
   const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
-  // TEMPORARY TRUST-CAP BYPASS:
-  // Restore these fields if HackerAI's own trust-based protection cap should
-  // be shown and combined with the user-set monthly spending limit again.
-  /*
-  const trustCapDollars = extraUsageSettings?.trustCapDollars;
-  const trustReason = extraUsageSettings?.trustReason;
-  */
-
-  // Trust-based protection caps are temporarily ignored. The visible and
-  // enforced cap is only the user-configured monthly spending limit.
   const effectiveCapDollars = monthlyCapDollars;
-
-  // TEMPORARY TRUST-CAP BYPASS:
-  // Restore this calculation if the displayed limit should become the lower of
-  // the user-set cap and HackerAI's trust-based protection cap again.
-  /*
-  const effectiveCapDollars =
-    monthlyCapDollars != null && trustCapDollars != null
-      ? Math.min(monthlyCapDollars, trustCapDollars)
-      : (monthlyCapDollars ?? trustCapDollars);
-
-  const isTrustCapActive =
-    trustCapDollars != null &&
-    trustReason !== "trusted" &&
-    (monthlyCapDollars == null || trustCapDollars <= monthlyCapDollars);
-  */
 
   // Get color class based on usage percentage (matches UsageTab)
   const getUsageColorClass = (percentage: number): string => {
@@ -287,24 +262,6 @@ const ExtraUsageSection = () => {
                     </p>
                   </div>
                 </div>
-                {/*
-                TEMPORARY TRUST-CAP BYPASS:
-                Restore this message if HackerAI's own trust-based protection
-                cap should be visible to users again.
-                {isTrustCapActive && (
-                  <p className="text-xs text-muted-foreground">
-                    Your extra usage limit is ${trustCapDollars}/month while
-                    your account builds payment history.{" "}
-                    <a
-                      href="mailto:support@hackerai.co"
-                      className="underline underline-offset-[3px] hover:text-foreground"
-                    >
-                      Contact us
-                    </a>{" "}
-                    for a higher limit.
-                  </p>
-                )}
-                */}
               </div>
             )}
 

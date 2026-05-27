@@ -1369,6 +1369,46 @@ describe("s3Actions", () => {
       ]);
     });
 
+    it("should not generate URLs for files owned by another user", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFileId = "file1" as any;
+      const mockFile = {
+        _id: mockFileId,
+        s3_key: "users/victim/file1.pdf",
+        storage_id: undefined,
+        user_id: "victim",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: "attacker",
+        fileIds: [mockFileId],
+      });
+
+      expect(result).toEqual([null]);
+      expect(mockGenerateS3DownloadUrl).not.toHaveBeenCalled();
+    });
+
     it("should handle mixed S3 and Convex files", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
       const mockGenerateS3DownloadUrl =
