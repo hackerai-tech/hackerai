@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   getMaxTokensForSubscription,
   countMessagesTokens,
+  truncateContent,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
@@ -18,6 +19,9 @@ import type { Id } from "@/convex/_generated/dataModel";
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  SUMMARY_TODO_BLOCK_MAX_TOKENS,
+  SUMMARY_TODO_CONTENT_MAX_TOKENS,
+  SUMMARY_TODO_MAX_ITEMS,
 } from "./constants";
 import {
   AGENT_SUMMARIZATION_PROMPT,
@@ -185,10 +189,29 @@ export const buildSummaryMessage = (
   let text = `<context_summary>\n${summaryText}\n</context_summary>`;
 
   if (todos.length > 0) {
-    const todoLines = todos
-      .map((todo) => `- [${todo.status}] ${todo.content}`)
+    const visibleTodos = todos.slice(0, SUMMARY_TODO_MAX_ITEMS);
+    const omittedCount = todos.length - visibleTodos.length;
+    const todoLines = visibleTodos
+      .map((todo) => {
+        const content = truncateContent(
+          todo.content,
+          " [... truncated]",
+          SUMMARY_TODO_CONTENT_MAX_TOKENS,
+        );
+        return `- [${todo.status}] ${content}`;
+      })
+      .concat(
+        omittedCount > 0
+          ? [`- [... ${omittedCount} additional todos omitted ...]`]
+          : [],
+      )
       .join("\n");
-    text += `\n<current_todos>\n${todoLines}\n</current_todos>`;
+    const boundedTodoLines = truncateContent(
+      todoLines,
+      "\n[... current_todos truncated ...]",
+      SUMMARY_TODO_BLOCK_MAX_TOKENS,
+    );
+    text += `\n<current_todos>\n${boundedTodoLines}\n</current_todos>`;
   }
 
   return {
