@@ -154,10 +154,11 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
-    // Trust-based spending cap fields
-    first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
-    cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
-    override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
+    // Legacy trust-cap fields retained so old rows still pass validation.
+    // The trust-cap feature no longer reads or writes these values.
+    first_successful_charge_at: v.optional(v.number()),
+    cumulative_spend_dollars: v.optional(v.number()),
+    override_monthly_cap_dollars: v.optional(v.number()),
     // Auto-reload health tracking — disable after consecutive failures so a
     // broken saved card does not keep retrying.
     auto_reload_consecutive_failures: v.optional(v.number()),
@@ -178,6 +179,8 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
+    // Legacy trust-cap fields retained so old rows still pass validation.
+    // The trust-cap feature no longer reads or writes these values.
     first_successful_charge_at: v.optional(v.number()),
     cumulative_spend_dollars: v.optional(v.number()),
     override_monthly_cap_dollars: v.optional(v.number()),

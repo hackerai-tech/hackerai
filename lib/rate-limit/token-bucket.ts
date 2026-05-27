@@ -319,17 +319,6 @@ export const checkTokenBucketLimit = async (
             });
           }
 
-          if (deductResult.trustCapExceeded) {
-            const capAmount = deductResult.trustCapDollars ?? 100;
-            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              trustCapExceeded: true,
-              capReason: "trust_cap",
-            });
-          }
-
           if (deductResult.monthlyCapExceeded) {
             const msg = `You've hit your monthly extra usage spending limit.\n\nYour limit resets ${resetTime}. To keep going now, increase your spending limit in Settings.`;
             throw new ChatSDKError("rate_limit:chat", msg, {

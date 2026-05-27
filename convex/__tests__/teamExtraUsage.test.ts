@@ -87,9 +87,6 @@ type TeamRow = {
   monthly_cap_points?: number;
   monthly_spent_points?: number;
   monthly_reset_date?: string;
-  first_successful_charge_at?: number;
-  cumulative_spend_dollars?: number;
-  override_monthly_cap_dollars?: number;
   auto_reload_consecutive_failures?: number;
   auto_reload_disabled_reason?: string;
   updated_at: number;
@@ -731,7 +728,7 @@ describe("addTeamCredits idempotency", () => {
     ).rejects.toThrow();
   });
 
-  it("credits the team balance and tracks cumulative spend", async () => {
+  it("credits the team balance", async () => {
     const { ctx, team } = makeMockCtx();
     const result = await callAddCredits(ctx, {
       organizationId: ORG_ID,
@@ -741,8 +738,6 @@ describe("addTeamCredits idempotency", () => {
     expect(result.newBalance).toBe(25);
     expect(team).toHaveLength(1);
     expect(team[0].balance_points).toBe(25 * POINTS_PER_DOLLAR);
-    expect(team[0].cumulative_spend_dollars).toBe(25);
-    expect(team[0].first_successful_charge_at).toBeGreaterThan(0);
   });
 
   it("returns alreadyProcessed when the idempotency key was already seen", async () => {
