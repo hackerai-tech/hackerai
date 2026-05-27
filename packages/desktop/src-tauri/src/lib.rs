@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
@@ -22,19 +22,73 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 /// Session token for authenticating command server requests
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// Whether the user has explicitly approved native command bridge access.
+static DESKTOP_COMMAND_BRIDGE_AUTHORIZED: AtomicBool = AtomicBool::new(false);
+
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
 fn get_dev_auth_port() -> u16 {
     DEV_AUTH_PORT.load(Ordering::Relaxed)
 }
 
+fn ensure_desktop_command_bridge_authorized() -> Result<(), String> {
+    if DESKTOP_COMMAND_BRIDGE_AUTHORIZED.load(Ordering::SeqCst) {
+        Ok(())
+    } else {
+        Err("Desktop command bridge access has not been approved".to_string())
+    }
+}
+
+#[tauri::command]
+fn authorize_desktop_command_bridge(
+    app: tauri::AppHandle,
+    webview_window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if DESKTOP_COMMAND_BRIDGE_AUTHORIZED.load(Ordering::SeqCst) {
+        return Ok(true);
+    }
+
+    let origin = webview_window
+        .url()
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            Some(format!("{}://{}", url.scheme(), host))
+        })
+        .unwrap_or_else(|| "the current HackerAI window".to_string());
+
+    let approved = app
+        .dialog()
+        .message(format!(
+            "{} wants to connect the desktop agent.\n\nAllowing this lets HackerAI run terminal commands and access local files as your desktop user. Only approve if you are intentionally connecting local desktop execution.",
+            origin
+        ))
+        .title("Allow Desktop Agent?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Deny".into(),
+        ))
+        .blocking_show();
+
+    if approved {
+        DESKTOP_COMMAND_BRIDGE_AUTHORIZED.store(true, Ordering::SeqCst);
+    }
+
+    Ok(approved)
+}
+
 /// Get the command server port, session token, and OS info
 #[tauri::command]
-fn get_cmd_server_info() -> CmdServerInfo {
-    CmdServerInfo {
+fn get_cmd_server_info() -> Result<CmdServerInfo, String> {
+    ensure_desktop_command_bridge_authorized()?;
+
+    Ok(CmdServerInfo {
         port: CMD_SERVER_PORT.load(Ordering::Relaxed),
         token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
-    }
+    })
 }
 
 #[derive(Serialize)]
@@ -109,6 +163,8 @@ fn guess_media_type(path: &std::path::Path) -> String {
 
 #[tauri::command]
 fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let path_buf = PathBuf::from(&path);
     let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
     if !metadata.is_file() {
@@ -139,6 +195,8 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
 #[tauri::command]
 fn read_local_file(path: String) -> Result<LocalFileData, String> {
     use base64::Engine;
+
+    ensure_desktop_command_bridge_authorized()?;
 
     let metadata = get_local_file_metadata(path.clone())?;
     let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
@@ -445,6 +503,20 @@ async fn handle_cmd_request(
     // CORS preflight
     if method == "OPTIONS" {
         let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if let Err(e) = ensure_desktop_command_bridge_authorized() {
+        let body = json_error_body(&e);
+        let response = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
         stream
             .write_all(response.as_bytes())
             .await
@@ -776,6 +848,8 @@ async fn execute_command(
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
 ) -> Result<ExecResponse, String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
@@ -819,6 +893,8 @@ async fn execute_stream_command(
     timeout_ms: Option<u64>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     if let Some(pid) = child.id() {
@@ -896,6 +972,8 @@ async fn cancel_stream_command(
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
 ) -> Result<bool, String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let pid = state
         .lock()
         .map_err(|_| "stream command state lock poisoned".to_string())?
@@ -1283,6 +1361,8 @@ async fn execute_pty_create(
     env: Option<HashMap<String, String>>,
     on_data: tauri::ipc::Channel<String>,
 ) -> Result<pty::PtyCreateResult, String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.create(session_id, command, cols, rows, cwd, env, on_data)
 }
@@ -1293,6 +1373,8 @@ async fn execute_pty_input(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.send_input(&session_id, &data)
 }
@@ -1304,6 +1386,8 @@ async fn execute_pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.resize(&session_id, cols, rows)
 }
@@ -1313,6 +1397,8 @@ async fn execute_pty_kill(
     state: tauri::State<'_, PtyState>,
     session_id: String,
 ) -> Result<(), String> {
+    ensure_desktop_command_bridge_authorized()?;
+
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.kill(&session_id)
 }
@@ -1322,6 +1408,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_dev_auth_port,
+            authorize_desktop_command_bridge,
             get_cmd_server_info,
             get_local_file_metadata,
             read_local_file,

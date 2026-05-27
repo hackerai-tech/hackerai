@@ -82,6 +82,9 @@ beforeEach(() => {
   capturedChannel = null;
 
   mockInvokeHandler = async (cmd: string) => {
+    if (cmd === "authorize_desktop_command_bridge") {
+      return true;
+    }
     if (cmd === "execute_command") {
       return {
         stdout: "Darwin 24.0.0 arm64\ntest-host\n",
@@ -94,6 +97,23 @@ beforeEach(() => {
     }
     throw new Error(`Unknown command: ${cmd}`);
   };
+});
+
+it("does not connect when native desktop command bridge approval is denied", async () => {
+  mockInvokeHandler = async (cmd: string) => {
+    if (cmd === "authorize_desktop_command_bridge") {
+      return false;
+    }
+    throw new Error(`Unexpected command: ${cmd}`);
+  };
+
+  const config = buildConfig();
+  const bridge = new DesktopSandboxBridge(config);
+
+  await expect(bridge.start()).rejects.toThrow(
+    "Desktop command bridge access was denied",
+  );
+  expect(config.connectDesktop).not.toHaveBeenCalled();
 });
 
 // ── targetConnectionId filtering ──────────────────────────────────────

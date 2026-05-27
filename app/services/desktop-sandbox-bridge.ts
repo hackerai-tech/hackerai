@@ -105,6 +105,12 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const approved = await invoke<boolean>("authorize_desktop_command_bridge");
+    if (!approved) {
+      throw new Error("Desktop command bridge access was denied");
+    }
+
     const osInfo = await this.getOsInfo();
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
