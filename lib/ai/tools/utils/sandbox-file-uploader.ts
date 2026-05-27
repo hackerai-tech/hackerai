@@ -210,6 +210,7 @@ export async function uploadSandboxFileToConvex(args: {
     name,
     mediaType,
     userId,
+    fileSize,
   );
 
   await uploadGeneratedFileFromSandboxToUrl({

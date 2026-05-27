@@ -85,6 +85,7 @@ describe("s3Utils", () => {
         "test.pdf",
         "application/pdf",
         "user123",
+        1024,
       );
 
       expect(result).toHaveProperty("uploadUrl");
@@ -96,6 +97,25 @@ describe("s3Utils", () => {
       expect(mockGetSignedUrl).toHaveBeenCalled();
     });
 
+    it("should bind expected content length into the PutObject command", async () => {
+      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
+        typeof getSignedUrl
+      >;
+      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/signed-url");
+
+      const { generateS3UploadUrl } = await import("../s3Utils");
+
+      await generateS3UploadUrl("test.pdf", "application/pdf", "user123", 1024);
+
+      expect(PutObjectCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ContentLength: 1024,
+        }),
+      );
+    });
+
     it("should use correct expiration time", async () => {
       const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
       const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
@@ -105,7 +125,7 @@ describe("s3Utils", () => {
 
       const { generateS3UploadUrl } = await import("../s3Utils");
 
-      await generateS3UploadUrl("test.pdf", "application/pdf", "user123");
+      await generateS3UploadUrl("test.pdf", "application/pdf", "user123", 1024);
 
       const callArgs = mockGetSignedUrl.mock.calls[0];
       expect(callArgs[2]).toEqual(expect.objectContaining({ expiresIn: 3600 }));

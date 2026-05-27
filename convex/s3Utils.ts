@@ -63,6 +63,7 @@ export async function generateS3UploadUrl(
   fileName: string,
   contentType: string,
   userId: string,
+  contentLength?: number,
 ): Promise<{ uploadUrl: string; s3Key: string }> {
   try {
     const s3Client = getS3Client();
@@ -73,6 +74,7 @@ export async function generateS3UploadUrl(
       Bucket: bucketName,
       Key: s3Key,
       ContentType: contentType,
+      ContentLength: contentLength,
     });
 
     const uploadUrl = await getSignedUrl(s3Client, command, {

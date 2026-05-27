@@ -174,6 +174,7 @@ describe("uploadSandboxFileToConvex", () => {
       "report.txt",
       "application/octet-stream",
       "u1",
+      1234,
     );
     expect(mockConvexAction).toHaveBeenCalledWith(
       expect.anything(),
