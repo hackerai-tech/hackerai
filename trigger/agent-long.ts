@@ -632,7 +632,7 @@ export const agentLongTask = task({
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
-      endpoint: "/api/agent",
+      endpoint: "/api/agent-long",
     });
     chatLogger.setRequestDetails({
       mode,
@@ -1078,7 +1078,7 @@ export const agentLongTask = task({
                   subscription,
                   organizationId,
                   chatId,
-                  endpoint: "/api/agent",
+                  endpoint: "/api/agent-long",
                   mode,
                   usage: usageCostRecord,
                 });
@@ -1282,7 +1282,7 @@ export const agentLongTask = task({
                                     posthog,
                                     userId,
                                     chatId,
-                                    endpoint: "/api/agent",
+                                    endpoint: "/api/agent-long",
                                     mode,
                                     subscription,
                                     sandboxInfo,
@@ -1406,7 +1406,7 @@ export const agentLongTask = task({
                         posthog,
                         userId,
                         chatId,
-                        endpoint: "/api/agent",
+                        endpoint: "/api/agent-long",
                         mode,
                         subscription,
                         sandboxInfo,

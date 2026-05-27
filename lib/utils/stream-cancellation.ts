@@ -20,7 +20,7 @@ type PollOptions = {
   pollIntervalMs?: number;
 };
 
-type ApiEndpoint = "/api/chat" | "/api/agent" | "/api/chat/[id]/stream";
+type ApiEndpoint = "/api/chat" | "/api/chat/[id]/stream";
 
 type PreemptiveTimeoutOptions = {
   chatId: string;

@@ -123,10 +123,9 @@ function getStreamContext() {
 
 export { getStreamContext };
 
-export const createChatHandler = (
-  endpoint: "/api/chat" | "/api/agent" = "/api/chat",
-) => {
+export const createChatHandler = () => {
   return async (req: NextRequest) => {
+    const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
       | ReturnType<typeof createPreemptiveTimeout>
       | undefined;

@@ -33,7 +33,7 @@ import {
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent-long";
 }
 
 export interface RequestDetails {
@@ -584,7 +584,7 @@ type AgentCompletionAnalyticsArgs = {
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent-long";
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -634,7 +634,7 @@ export function captureFreeAgentValueReached({
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent-long";
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -707,7 +707,7 @@ export function captureUsageCost({
   subscription: string;
   organizationId?: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent-long";
   mode: ChatMode;
   usage: UsageCostRecord;
 }) {
