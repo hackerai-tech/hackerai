@@ -5,10 +5,18 @@
  * with fully mocked dependencies (Redis, Ratelimit, extra-usage).
  * No real external services are called.
  */
-import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
 
 describe("token-bucket async functions", () => {
   // Mock functions we can control
+  const mockCreateRedisClient = jest.fn();
   const mockLimitFn = jest.fn();
   const mockHincrbyFn = jest.fn();
   const mockHsetFn = jest.fn();
@@ -16,6 +24,7 @@ describe("token-bucket async functions", () => {
   const mockExpireFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
+  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
     jest.resetModules();
@@ -42,6 +51,20 @@ describe("token-bucket async functions", () => {
       success: true,
       newBalanceDollars: 10,
     });
+    mockCreateRedisClient.mockReturnValue({
+      hincrby: mockHincrbyFn,
+      hset: mockHsetFn,
+      del: mockDelFn,
+      expire: mockExpireFn,
+    });
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
   });
 
   const getIsolatedModule = () => {
@@ -69,12 +92,7 @@ describe("token-bucket async functions", () => {
       }));
 
       jest.doMock("../redis", () => ({
-        createRedisClient: jest.fn(() => ({
-          hincrby: mockHincrbyFn,
-          hset: mockHsetFn,
-          del: mockDelFn,
-          expire: mockExpireFn,
-        })),
+        createRedisClient: mockCreateRedisClient,
         formatTimeRemaining: jest.fn(() => "5 hours"),
       }));
 
@@ -112,6 +130,32 @@ describe("token-bucket async functions", () => {
       expect(result).toHaveProperty("limit");
       expect(result.pointsDeducted).toBeDefined();
       expect(mockLimitFn).toHaveBeenCalled();
+    });
+
+    it("should skip paid rate limiting outside production when Redis is unavailable", async () => {
+      mockCreateRedisClient.mockReturnValue(null);
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000);
+
+      expect(result.rateLimitSkipped).toBe(true);
+      expect(result.remaining).toBe(result.limit);
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("should fail closed for paid users in production when Redis is unavailable", async () => {
+      process.env.NODE_ENV = "production";
+      mockCreateRedisClient.mockReturnValue(null);
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      await expect(
+        checkTokenBucketLimit("user-123", "pro", 1000),
+      ).rejects.toMatchObject({
+        type: "rate_limit",
+        surface: "chat",
+        cause: "Rate limiting service is not configured",
+      });
+      expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should throw rate limit error when limits exceeded", async () => {
@@ -254,6 +298,31 @@ describe("token-bucket async functions", () => {
       await deductUsage("user-123", "pro", 1000, 1200, 500);
 
       expect(mockLimitFn).toHaveBeenCalled();
+    });
+
+    it("should skip usage deduction outside production when Redis is unavailable", async () => {
+      mockCreateRedisClient.mockReturnValue(null);
+      const { deductUsage } = getIsolatedModule();
+
+      await expect(
+        deductUsage("user-123", "pro", 1000, 1200, 500),
+      ).resolves.toBeUndefined();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("should fail closed for paid usage deduction in production when Redis is unavailable", async () => {
+      process.env.NODE_ENV = "production";
+      mockCreateRedisClient.mockReturnValue(null);
+      const { deductUsage } = getIsolatedModule();
+
+      await expect(
+        deductUsage("user-123", "pro", 1000, 1200, 500),
+      ).rejects.toMatchObject({
+        type: "rate_limit",
+        surface: "chat",
+        cause: "Rate limiting service is not configured",
+      });
+      expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should use extra usage when bucket depleted", async () => {
