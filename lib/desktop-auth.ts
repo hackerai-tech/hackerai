@@ -135,6 +135,11 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
+  if (data.desktopAuthState && !options?.desktopAuthState) {
+    console.warn("[Desktop Auth] Desktop auth state required but not provided");
+    return null;
+  }
+
   if (
     options?.desktopAuthState &&
     data.desktopAuthState !== options.desktopAuthState

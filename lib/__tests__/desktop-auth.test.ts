@@ -151,6 +151,16 @@ describe("exchangeDesktopTransferToken", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null when a state-bound token is exchanged without desktop auth state", async () => {
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      desktopAuthState: "a".repeat(64),
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!);
+    expect(result).toBeNull();
+  });
+
   it("returns null for invalid token format", async () => {
     const result = await exchangeDesktopTransferToken("not-hex");
     expect(result).toBeNull();
