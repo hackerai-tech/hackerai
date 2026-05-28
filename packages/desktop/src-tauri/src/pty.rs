@@ -2,6 +2,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use tauri::ipc::Channel;
@@ -15,6 +16,7 @@ struct PtySession {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
+    command_script: Option<PathBuf>,
 }
 
 pub struct PtyManager {
@@ -60,15 +62,7 @@ impl PtyManager {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let shell_config = platform::get_shell_config();
-
-        let mut cmd = if command.is_empty() {
-            CommandBuilder::new(&shell_config.shell)
-        } else {
-            let mut c = CommandBuilder::new(&shell_config.shell);
-            c.arg(shell_config.flag);
-            c.arg(&command);
-            c
-        };
+        let (mut cmd, command_script) = build_pty_command(&shell_config, &command)?;
 
         if let Some(ref dir) = cwd {
             cmd.cwd(dir);
@@ -80,39 +74,51 @@ impl PtyManager {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn command: {}", e))?;
+        let child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(e) => {
+                cleanup_command_script(command_script.as_deref());
+                return Err(format!("Failed to spawn command: {}", e));
+            }
+        };
 
         let pid = child.process_id();
 
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
+        let reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(e) => {
+                cleanup_command_script(command_script.as_deref());
+                return Err(format!("Failed to clone PTY reader: {}", e));
+            }
+        };
 
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_clone = shutdown_flag.clone();
+        let command_script_cleanup = command_script.clone();
 
         let session_id_clone = session_id.clone();
         thread::spawn(move || {
             pty_reader_thread(reader, on_data, shutdown_clone, session_id_clone);
+            cleanup_command_script(command_script_cleanup.as_deref());
         });
 
         // Take the writer ONCE at creation time and cache it. Calling
         // take_writer() on every send_input duplicates the fd each time,
         // which was causing sendInput failures and eventual resource issues.
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
+        let writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(e) => {
+                cleanup_command_script(command_script.as_deref());
+                return Err(format!("Failed to get PTY writer: {}", e));
+            }
+        };
 
         let session = PtySession {
             master: pair.master,
             child,
             writer,
             reader_shutdown: shutdown_flag,
+            command_script,
         };
 
         let result = PtyCreateResult {
@@ -173,12 +179,13 @@ impl PtyManager {
             .reader_shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
-        session
-            .child
-            .kill()
-            .map_err(|e| format!("Failed to kill PTY child: {}", e))?;
+        if let Err(e) = session.child.kill() {
+            cleanup_command_script(session.command_script.as_deref());
+            return Err(format!("Failed to kill PTY child: {}", e));
+        }
 
         let _ = session.child.wait();
+        cleanup_command_script(session.command_script.as_deref());
 
         Ok(())
     }
@@ -190,6 +197,74 @@ impl PtyManager {
                 log::warn!("Failed to kill PTY session '{}': {}", id, e);
             }
         }
+    }
+}
+
+fn build_pty_command(
+    shell_config: &platform::ShellConfig,
+    command: &str,
+) -> Result<(CommandBuilder, Option<PathBuf>), String> {
+    if command.is_empty() {
+        return Ok((CommandBuilder::new(&shell_config.shell), None));
+    }
+
+    #[cfg(windows)]
+    if shell_config.is_cmd {
+        // portable-pty does not expose raw_arg, so keep the command body out of
+        // its MSVCRT-style argument quoting path when falling back to cmd.exe.
+        let script = write_cmd_script(command)?;
+        let mut cmd = CommandBuilder::new(&shell_config.shell);
+        cmd.arg(shell_config.flag);
+        cmd.arg("call");
+        cmd.arg(script.as_os_str());
+        return Ok((cmd, Some(script)));
+    }
+
+    let mut cmd = CommandBuilder::new(&shell_config.shell);
+    cmd.arg(shell_config.flag);
+    cmd.arg(command);
+    Ok((cmd, None))
+}
+
+#[cfg(windows)]
+fn write_cmd_script(command: &str) -> Result<PathBuf, String> {
+    use std::fs::OpenOptions;
+    use uuid::Uuid;
+
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!("hackerai-pty-{}.cmd", Uuid::new_v4()));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(format!(
+                    "Failed to create temporary cmd script '{}': {}",
+                    path.display(),
+                    err
+                ));
+            }
+        };
+
+        file.write_all(b"@echo off\r\n")
+            .and_then(|_| file.write_all(command.as_bytes()))
+            .and_then(|_| file.write_all(b"\r\n"))
+            .map_err(|err| {
+                format!(
+                    "Failed to write temporary cmd script '{}': {}",
+                    path.display(),
+                    err
+                )
+            })?;
+
+        return Ok(path);
+    }
+
+    Err("Failed to create a unique temporary cmd script".to_string())
+}
+
+fn cleanup_command_script(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = std::fs::remove_file(path);
     }
 }
 
