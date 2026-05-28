@@ -402,9 +402,6 @@ export const POST = async (req: NextRequest) => {
       stripe_customer_id: customer.id,
       stripe_checkout_session_id: session.id,
       stripe_price_id: selectedPrice.id,
-      referral_code: checkoutReferral?.referralCode,
-      referral_referrer_user_id: checkoutReferral?.referrerUserId,
-      referral_attribution_id: checkoutReferral?.attributionId,
       client_distinct_id: posthogDistinctId ?? undefined,
       $session_id: posthogSessionId ?? undefined,
       $set: {

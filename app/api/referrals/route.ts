@@ -1,4 +1,4 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "crypto";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
@@ -7,7 +7,6 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
-import { phLogger } from "@/lib/posthog/server";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -81,13 +80,6 @@ export async function GET(req: NextRequest) {
 
   const referralUrl = new URL(baseUrl);
   referralUrl.searchParams.set("ref", result.code);
-
-  phLogger.event("paid_user_referral_entry_impression", {
-    userId,
-    subscription_tier: subscription,
-    referral_code: result.code,
-  });
-  after(() => phLogger.flush());
 
   return NextResponse.json({
     code: result.code,
