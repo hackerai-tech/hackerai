@@ -15,6 +15,8 @@ import {
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
 
+const COPY_GRANTED_LOCAL_FILE_COMMAND = "__hackerai_copy_granted_local_file__";
+
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
   | {
@@ -45,6 +47,11 @@ interface StreamChunk {
   exitCode?: number;
   message?: string;
 }
+
+type CopyGrantedLocalFilePayload = {
+  sourcePath: string;
+  destPath: string;
+};
 
 // "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
 // identity is missing/expired, not a connection lifecycle event), so the
@@ -259,6 +266,39 @@ export class DesktopSandboxBridge {
     return payload.sub;
   }
 
+  private parseCopyGrantedLocalFileCommand(
+    command: string,
+  ): CopyGrantedLocalFilePayload | null {
+    if (!command.startsWith(`${COPY_GRANTED_LOCAL_FILE_COMMAND} `)) {
+      return null;
+    }
+
+    const encodedPayload = command
+      .slice(COPY_GRANTED_LOCAL_FILE_COMMAND.length)
+      .trim();
+    if (!encodedPayload) {
+      throw new Error("Missing local file copy payload");
+    }
+
+    const binary = atob(encodedPayload);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const payload = JSON.parse(
+      new TextDecoder().decode(bytes),
+    ) as Partial<CopyGrantedLocalFilePayload>;
+
+    if (
+      typeof payload.sourcePath !== "string" ||
+      typeof payload.destPath !== "string"
+    ) {
+      throw new Error("Invalid local file copy payload");
+    }
+
+    return {
+      sourcePath: payload.sourcePath,
+      destPath: payload.destPath,
+    };
+  }
+
   private async getOsInfo(): Promise<
     | { platform: string; arch: string; release: string; hostname: string }
     | undefined
@@ -333,6 +373,14 @@ export class DesktopSandboxBridge {
     this.activeCommands.add(commandId);
 
     try {
+      const copyLocalPayload = this.parseCopyGrantedLocalFileCommand(
+        command.command,
+      );
+      if (copyLocalPayload) {
+        await this.handleCopyGrantedLocalFile(commandId, copyLocalPayload);
+        return;
+      }
+
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<StreamChunk>();
@@ -367,6 +415,22 @@ export class DesktopSandboxBridge {
     } finally {
       this.activeCommands.delete(commandId);
     }
+  }
+
+  private async handleCopyGrantedLocalFile(
+    commandId: string,
+    payload: CopyGrantedLocalFilePayload,
+  ): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("copy_granted_local_file", {
+      sourcePath: payload.sourcePath,
+      destPath: payload.destPath,
+    });
+    await this.publishResult({
+      type: "exit",
+      commandId,
+      exitCode: 0,
+    });
   }
 
   private async handleCommandCancel(

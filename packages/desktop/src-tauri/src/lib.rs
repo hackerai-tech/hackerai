@@ -2,16 +2,19 @@ mod platform;
 mod pty;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+const MAX_LOCAL_FILE_READ_BYTES: u64 = 20 * 1024 * 1024;
+const DESKTOP_UPLOAD_DIR: &str = "/tmp/hackerai-upload";
 
 /// Port for the local dev auth callback server (0 = not started)
 static DEV_AUTH_PORT: AtomicU16 = AtomicU16::new(0);
@@ -21,6 +24,8 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// Session token for authenticating command server requests
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+type LocalFileGrantState = Arc<Mutex<HashSet<PathBuf>>>;
 
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
@@ -107,15 +112,18 @@ fn guess_media_type(path: &std::path::Path) -> String {
     .to_string()
 }
 
-#[tauri::command]
-fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
-    let path_buf = PathBuf::from(&path);
-    let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
+fn local_file_access_error() -> String {
+    "Local file access has not been granted for this path".to_string()
+}
+
+fn inspect_local_file(path: &Path) -> Result<(PathBuf, LocalFileMetadata), String> {
+    let canonical_path = fs::canonicalize(path).map_err(|e| format!("Metadata error: {}", e))?;
+    let metadata = fs::metadata(&canonical_path).map_err(|e| format!("Metadata error: {}", e))?;
     if !metadata.is_file() {
         return Err("Selected path is not a file".to_string());
     }
 
-    let name = path_buf
+    let name = canonical_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file")
@@ -127,21 +135,133 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
 
-    Ok(LocalFileMetadata {
-        path,
+    let local_metadata = LocalFileMetadata {
+        path: canonical_path.to_string_lossy().to_string(),
         name,
-        media_type: guess_media_type(&path_buf),
+        media_type: guess_media_type(&canonical_path),
         size: metadata.len(),
         last_modified,
-    })
+    };
+
+    Ok((canonical_path, local_metadata))
+}
+
+fn granted_local_file_path(path: &str, grants: &LocalFileGrantState) -> Result<PathBuf, String> {
+    let canonical_path =
+        fs::canonicalize(PathBuf::from(path)).map_err(|_| local_file_access_error())?;
+    let guard = grants
+        .lock()
+        .map_err(|_| "Local file grant state is unavailable".to_string())?;
+
+    if guard.contains(&canonical_path) {
+        Ok(canonical_path)
+    } else {
+        Err(local_file_access_error())
+    }
+}
+
+fn desktop_upload_destination_path(path: &str) -> Result<PathBuf, String> {
+    let normalized = path.replace('\\', "/");
+    let upload_prefix = format!("{}/", DESKTOP_UPLOAD_DIR);
+    let Some(relative_path) = normalized.strip_prefix(&upload_prefix) else {
+        return Err("Destination path is outside the desktop upload directory".to_string());
+    };
+
+    let mut safe_relative_path = PathBuf::new();
+    for segment in relative_path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err("Destination path contains an unsafe segment".to_string());
+        }
+        safe_relative_path.push(segment);
+    }
+
+    if safe_relative_path.as_os_str().is_empty() {
+        return Err("Destination path must include a file name".to_string());
+    }
+
+    #[cfg(windows)]
+    let upload_root = PathBuf::from(r"C:\temp\hackerai-upload");
+    #[cfg(not(windows))]
+    let upload_root = PathBuf::from(DESKTOP_UPLOAD_DIR);
+
+    Ok(upload_root.join(safe_relative_path))
 }
 
 #[tauri::command]
-fn read_local_file(path: String) -> Result<LocalFileData, String> {
+fn pick_local_files(
+    app: tauri::AppHandle,
+    grants: tauri::State<'_, LocalFileGrantState>,
+) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let Some(selected) = app.dialog().file().blocking_pick_files() else {
+        return Ok(Vec::new());
+    };
+
+    let mut picked_paths = Vec::new();
+    let mut granted_paths = Vec::new();
+
+    for selected_path in selected {
+        let path = selected_path
+            .into_path()
+            .map_err(|_| "Selected file path is not readable".to_string())?;
+        let (canonical_path, metadata) = inspect_local_file(&path)?;
+        picked_paths.push(metadata.path);
+        granted_paths.push(canonical_path);
+    }
+
+    let mut guard = grants
+        .lock()
+        .map_err(|_| "Local file grant state is unavailable".to_string())?;
+    guard.extend(granted_paths);
+
+    Ok(picked_paths)
+}
+
+#[tauri::command]
+fn copy_granted_local_file(
+    source_path: String,
+    dest_path: String,
+    grants: tauri::State<'_, LocalFileGrantState>,
+) -> Result<(), String> {
+    let granted_path = granted_local_file_path(&source_path, &grants)?;
+    let dest_path = desktop_upload_destination_path(&dest_path)?;
+
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create directory error: {}", e))?;
+    }
+
+    fs::copy(&granted_path, &dest_path).map_err(|e| format!("Copy error: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_local_file_metadata(
+    path: String,
+    grants: tauri::State<'_, LocalFileGrantState>,
+) -> Result<LocalFileMetadata, String> {
+    let granted_path = granted_local_file_path(&path, &grants)?;
+    let (_, metadata) = inspect_local_file(&granted_path)?;
+    Ok(metadata)
+}
+
+#[tauri::command]
+fn read_local_file(
+    path: String,
+    grants: tauri::State<'_, LocalFileGrantState>,
+) -> Result<LocalFileData, String> {
     use base64::Engine;
 
-    let metadata = get_local_file_metadata(path.clone())?;
-    let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
+    let granted_path = granted_local_file_path(&path, &grants)?;
+    let (_, metadata) = inspect_local_file(&granted_path)?;
+    if metadata.size > MAX_LOCAL_FILE_READ_BYTES {
+        return Err(format!(
+            "Selected file is too large to read inline (max {} MB)",
+            MAX_LOCAL_FILE_READ_BYTES / 1024 / 1024
+        ));
+    }
+
+    let bytes = fs::read(&granted_path).map_err(|e| format!("Read error: {}", e))?;
 
     Ok(LocalFileData {
         path: metadata.path,
@@ -1323,6 +1443,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_dev_auth_port,
             get_cmd_server_info,
+            pick_local_files,
+            copy_granted_local_file,
             get_local_file_metadata,
             read_local_file,
             execute_command,
@@ -1357,6 +1479,7 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
+        .manage(Arc::new(Mutex::new(HashSet::<PathBuf>::new())) as LocalFileGrantState)
         .manage(
             std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
                 as StreamCommandState,

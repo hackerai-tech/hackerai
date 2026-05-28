@@ -9,7 +9,10 @@
           "allow": [
             "get_dev_auth_port",
             "get_cmd_server_info",
+            "pick_local_files",
+            "copy_granted_local_file",
             "get_local_file_metadata",
+            "read_local_file",
             "execute_command",
             "execute_stream_command",
             "cancel_stream_command",

@@ -151,13 +151,8 @@ export async function pickLocalFiles(): Promise<string[]> {
   if (!detectTauri()) return [];
 
   try {
-    const dialog = await import("@tauri-apps/plugin-dialog");
-    const selected = await dialog.open({
-      multiple: true,
-      directory: false,
-    });
-    if (!selected) return [];
-    return Array.isArray(selected) ? selected : [selected];
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string[]>("pick_local_files");
   } catch (err) {
     console.error("[Tauri] Failed to pick local files:", err);
     toast.error("Failed to open file picker");

@@ -197,6 +197,55 @@ describe("targetConnectionId filtering", () => {
       expect.objectContaining({ command: "echo broadcast" }),
     );
   });
+
+  it("routes desktop-local attachment copies through the native grant check", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+    (invoke as jest.Mock).mockClear();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "copy_granted_local_file") {
+        return undefined;
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+
+    const payload = btoa(
+      JSON.stringify({
+        sourcePath: "/Users/alice/report.pdf",
+        destPath: "/tmp/hackerai-upload/report.pdf",
+      }),
+    );
+
+    handler({
+      data: {
+        type: "command",
+        commandId: "cmd-copy",
+        command: `__hackerai_copy_granted_local_file__ ${payload}`,
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(invoke).toHaveBeenCalledWith("copy_granted_local_file", {
+      sourcePath: "/Users/alice/report.pdf",
+      destPath: "/tmp/hackerai-upload/report.pdf",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.anything(),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "exit",
+      commandId: "cmd-copy",
+      exitCode: 0,
+    });
+  });
 });
 
 // ── extractUserIdFromToken ────────────────────────────────────────────
