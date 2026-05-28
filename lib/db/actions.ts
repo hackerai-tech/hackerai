@@ -26,6 +26,7 @@ import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachm
 import type { ChatMode } from "@/types/chat";
 import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
 import { sanitizeForConvexValue } from "./convex-value-sanitizer";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -62,13 +63,7 @@ const sensitiveErrorDataKeys = new Set([
 export { setConvexUrl };
 
 const stringifyError = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
+  return stringifyRedactedError(error);
 };
 
 const getErrorData = (error: unknown): unknown => {
@@ -94,7 +89,9 @@ const isSensitiveErrorDataKey = (key: string): boolean => {
   const normalized = key.replace(/[-_\s]/g, "").toLowerCase();
   return (
     sensitiveErrorDataKeys.has(normalized) ||
-    /apikey|authorization|bearer|cookie|password|secret/.test(normalized)
+    /apikey|authorization|bearer|cookie|password|secret|servicekey/.test(
+      normalized,
+    )
   );
 };
 
