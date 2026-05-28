@@ -59,14 +59,13 @@ impl PtyManager {
             })
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-        let shell = get_default_shell();
+        let shell_config = platform::get_shell_config();
 
         let mut cmd = if command.is_empty() {
-            CommandBuilder::new(&shell)
+            CommandBuilder::new(&shell_config.shell)
         } else {
-            let mut c = CommandBuilder::new(&shell);
-            let shell_flag = get_shell_exec_flag(&shell);
-            c.arg(shell_flag);
+            let mut c = CommandBuilder::new(&shell_config.shell);
+            c.arg(shell_config.flag);
             c.arg(&command);
             c
         };
@@ -267,19 +266,4 @@ fn send_exit(on_data: &Channel<String>, exit_code: i32, session_id: &str) {
     })
     .to_string();
     let _ = on_data.send(msg);
-}
-
-/// Get the default shell for the current platform.
-fn get_default_shell() -> String {
-    let config = platform::get_shell_config();
-    config.shell
-}
-
-/// Get the flag used to execute a command string in the given shell.
-fn get_shell_exec_flag(shell: &str) -> &'static str {
-    if shell.contains("cmd") {
-        "/C"
-    } else {
-        "-c"
-    }
 }
