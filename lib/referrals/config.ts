@@ -29,7 +29,7 @@ export function getReferralRewardConfig(): ReferralRewardConfig {
     ),
     referredSignupRewardDollars: parsePositiveNumber(
       process.env.REFERRAL_REFERRED_SIGNUP_REWARD_DOLLARS,
-      10,
+      2,
     ),
     attributionMaxUserAgeDays: parsePositiveNumber(
       process.env.REFERRAL_ATTRIBUTION_MAX_USER_AGE_DAYS,

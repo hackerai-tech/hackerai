@@ -109,7 +109,6 @@ export function ReferralRewardDialog({
   };
 
   const referrerReward = program?.referrerRewardDollars ?? 0;
-  const referredReward = program?.referredSignupRewardDollars ?? 0;
   const rewardLabel =
     referrerReward > 0 ? `Earn $${referrerReward} in credits` : "Earn credits";
 
@@ -187,8 +186,7 @@ export function ReferralRewardDialog({
                     <UserPlus className="size-5" />
                   </span>
                   <span className="text-foreground text-base font-normal">
-                    They sign up and get{" "}
-                    <b>extra ${referredReward} in credits</b>
+                    They sign up and get <b>starter credits</b> to try HackerAI
                   </span>
                 </li>
                 <li className="flex items-center gap-3">
