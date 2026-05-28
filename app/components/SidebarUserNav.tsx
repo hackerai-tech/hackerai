@@ -16,6 +16,7 @@ import {
   Download,
   ExternalLink,
   RefreshCw,
+  Gift,
 } from "lucide-react";
 import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -40,6 +41,7 @@ import {
 } from "@/components/ui/tooltip";
 import { clientLogout } from "@/lib/utils/logout";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -104,6 +106,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
   const [rateLimitsExpanded, setRateLimitsExpanded] = useState(false);
+  const [referralDialogOpen, setReferralDialogOpen] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<{
     monthly: {
       remaining: number;
@@ -235,6 +238,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
+      <ReferralRewardDialog
+        open={referralDialogOpen}
+        onOpenChange={setReferralDialogOpen}
+      />
+
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />
 
@@ -359,6 +367,15 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           {isPaidUser && (
             <div>
+              <DropdownMenuItem
+                data-testid="referral-menu-item"
+                onSelect={() => setReferralDialogOpen(true)}
+                className="py-1.5"
+              >
+                <Gift className="mr-2 h-4 w-4 text-foreground" />
+                <span>Refer a friend</span>
+              </DropdownMenuItem>
+
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();

@@ -14,6 +14,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import type { SubscriptionTier } from "@/types";
+import { getReferralRewardConfig } from "@/lib/referrals/config";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -67,6 +68,14 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
 
 const resolveUserIdsFromCustomer = (customerId: string) =>
   resolveStripeCustomerUsers(customerId, "Subscription Webhook");
+
+const metadataString = (
+  metadata: Stripe.Metadata | null | undefined,
+  key: string,
+): string | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
 
 /** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
 function tierFromProductName(name: string): SubscriptionTier | null {
@@ -125,6 +134,98 @@ async function resolveSubscription(subscriptionId: string): Promise<{
       error,
     );
     return null;
+  }
+}
+
+async function awardReferralConversion(args: {
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+  customerId: string;
+  plan?: string;
+  invoiceId?: string;
+  checkoutSessionId?: string;
+}) {
+  const config = getReferralRewardConfig();
+  if (!config.enabled || config.referrerRewardDollars <= 0) {
+    return;
+  }
+  if (args.tier === "free") {
+    return;
+  }
+
+  const metadata = args.subscription.metadata;
+  const referredUserId = metadataString(metadata, "referral_referred_user_id");
+  const referralCode = metadataString(metadata, "referral_code");
+
+  try {
+    const result = await convex.mutation(api.referrals.awardConversionReward, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      referrerRewardDollars: config.referrerRewardDollars,
+      referredUserId,
+      stripeCheckoutSessionId: args.checkoutSessionId,
+      stripeCustomerId: args.customerId,
+      stripeSubscriptionId: args.subscription.id,
+      stripeInvoiceId: args.invoiceId,
+      plan: args.plan,
+      tier: args.tier,
+    });
+
+    if (result.status === "awarded" || result.status === "already_awarded") {
+      if (result.referredUserId ?? referredUserId) {
+        phLogger.event("referred_user_paid_conversion", {
+          userId: result.referredUserId ?? referredUserId,
+          referrer_user_id: result.referrerUserId,
+          referral_code: referralCode,
+          reward_status: result.status,
+          plan: args.plan,
+          tier: args.tier,
+          stripe_customer_id: args.customerId,
+          stripe_subscription_id: args.subscription.id,
+          stripe_invoice_id: args.invoiceId,
+          stripe_checkout_session_id: args.checkoutSessionId,
+        });
+      }
+
+      if (result.status === "awarded" && result.referrerUserId) {
+        phLogger.event("referrer_credits_awarded", {
+          userId: result.referrerUserId,
+          referred_user_id: result.referredUserId ?? referredUserId,
+          referral_code: referralCode,
+          reward_dollars: config.referrerRewardDollars,
+          plan: args.plan,
+          tier: args.tier,
+          stripe_customer_id: args.customerId,
+          stripe_subscription_id: args.subscription.id,
+          stripe_invoice_id: args.invoiceId,
+          stripe_checkout_session_id: args.checkoutSessionId,
+        });
+      }
+    } else if (result.status === "withheld") {
+      phLogger.event("referral_reward_withheld", {
+        userId: result.referredUserId ?? referredUserId,
+        referrer_user_id: result.referrerUserId,
+        referral_code: referralCode,
+        reward_type: "referrer_conversion",
+        reason: result.reason,
+        plan: args.plan,
+        tier: args.tier,
+        stripe_customer_id: args.customerId,
+        stripe_subscription_id: args.subscription.id,
+        stripe_invoice_id: args.invoiceId,
+        stripe_checkout_session_id: args.checkoutSessionId,
+      });
+    }
+  } catch (error) {
+    phLogger.error("referral_conversion_reward_failed", {
+      userId: referredUserId,
+      referral_code: referralCode,
+      stripe_customer_id: args.customerId,
+      stripe_subscription_id: args.subscription.id,
+      stripe_invoice_id: args.invoiceId,
+      stripe_checkout_session_id: args.checkoutSessionId,
+      error,
+    });
+    throw error;
   }
 }
 
@@ -287,12 +388,79 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         },
       });
     }
+
+    await awardReferralConversion({
+      tier,
+      subscription,
+      customerId,
+      plan: price?.lookup_key ?? undefined,
+      invoiceId: invoice.id,
+    });
   }
 
   // Clear team seat rotation debt on renewal (fresh cycle)
   if (tier === "team" && orgId) {
     await clearOrgRemovedUsage(orgId);
   }
+}
+
+/** Handle checkout.session.completed — attach Checkout Session IDs to referral attribution. */
+async function handleCheckoutSessionCompleted(
+  session: Stripe.Checkout.Session,
+): Promise<void> {
+  if (session.mode !== "subscription") return;
+
+  const customerId =
+    typeof session.customer === "string"
+      ? session.customer
+      : session.customer?.id;
+  const subscriptionId =
+    typeof session.subscription === "string"
+      ? session.subscription
+      : session.subscription?.id;
+
+  if (!customerId) return;
+
+  const referredUserId = metadataString(
+    session.metadata,
+    "referral_referred_user_id",
+  );
+
+  if (referredUserId) {
+    try {
+      await convex.mutation(api.referrals.recordReferralCheckoutSession, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        referredUserId,
+        stripeCustomerId: customerId,
+        stripeCheckoutSessionId: session.id,
+        stripeSubscriptionId: subscriptionId,
+        requestedPlan:
+          metadataString(session.metadata, "requestedPlan") ?? "unknown",
+      });
+    } catch (error) {
+      phLogger.warn("referral_checkout_session_record_failed", {
+        userId: referredUserId,
+        stripe_customer_id: customerId,
+        stripe_checkout_session_id: session.id,
+        stripe_subscription_id: subscriptionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (!subscriptionId || session.payment_status !== "paid") return;
+
+  const resolved = await resolveSubscription(subscriptionId);
+  if (!resolved) return;
+
+  const price = resolved.subscription.items?.data[0]?.price;
+  await awardReferralConversion({
+    tier: resolved.tier,
+    subscription: resolved.subscription,
+    customerId,
+    plan: price?.lookup_key ?? undefined,
+    checkoutSessionId: session.id,
+  });
 }
 
 /** Handle customer.subscription.updated — reset old tier's buckets on plan change. */
@@ -425,7 +593,8 @@ async function handleSubscriptionDeleted(
  *
  * Configure in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
- * - Events: invoice.paid, customer.subscription.updated, customer.subscription.deleted
+ * - Events: checkout.session.completed, invoice.paid,
+ *   customer.subscription.updated, customer.subscription.deleted
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -487,6 +656,12 @@ export async function POST(req: NextRequest) {
 
   // Handle events
   switch (event.type) {
+    case "checkout.session.completed": {
+      await handleCheckoutSessionCompleted(
+        event.data.object as Stripe.Checkout.Session,
+      );
+      break;
+    }
     case "invoice.paid": {
       await handleInvoicePaid(event.data.object as Stripe.Invoice);
       break;

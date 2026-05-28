@@ -5,6 +5,15 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+import {
+  REFERRAL_COOKIE_NAME,
+  getReferralRewardConfig,
+  isValidReferralCode,
+} from "@/lib/referrals/config";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 function planLookupKeyToTier(
   lookupKey: string,
@@ -24,6 +33,12 @@ function canManageOrganizationBilling(
   return membership.role?.slug === "admin" || membership.role?.slug === "owner";
 }
 
+function parseCreatedAtMs(raw: unknown): number | undefined {
+  if (typeof raw !== "string") return undefined;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
@@ -37,6 +52,46 @@ export const POST = async (req: NextRequest) => {
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
     const orgName = buildWorkOSOrganizationName(user);
+    const referralConfig = getReferralRewardConfig();
+    const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
+
+    if (
+      referralConfig.enabled &&
+      referralCode &&
+      isValidReferralCode(referralCode)
+    ) {
+      try {
+        const attribution = await convex.mutation(
+          api.referrals.attributeReferredSignup,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            referralCode,
+            starterRewardDollars: referralConfig.referredSignupRewardDollars,
+            userCreatedAtMs: parseCreatedAtMs(user.createdAt),
+            maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
+            source: "subscribe_route_referral_cookie",
+          },
+        );
+
+        if (attribution.status === "attributed") {
+          phLogger.event("referred_signup_attributed", {
+            userId,
+            referrer_user_id: attribution.referrerUserId,
+            referral_code: referralCode,
+            starter_reward_awarded: attribution.starterRewardAwarded,
+            starter_reward_dollars: referralConfig.referredSignupRewardDollars,
+            source: "subscribe_route",
+          });
+        }
+      } catch (error) {
+        phLogger.warn("referral_attribution_failed_before_checkout", {
+          userId,
+          referral_code: referralCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const allowedPlans = new Set([
       "pro-monthly-plan",
       "pro-plus-monthly-plan",
@@ -223,6 +278,44 @@ export const POST = async (req: NextRequest) => {
 
     const cancelUrl = new URL(baseUrl);
 
+    let checkoutReferral: {
+      referralCode: string;
+      referrerUserId: string;
+      referredUserId: string;
+      attributionId: string;
+    } | null = null;
+
+    if (referralConfig.enabled) {
+      try {
+        checkoutReferral = await convex.mutation(
+          api.referrals.prepareCheckoutReferral,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            stripeCustomerId: customer.id,
+            requestedPlan: subscriptionLevel,
+          },
+        );
+      } catch (error) {
+        phLogger.warn("referral_checkout_prepare_failed", {
+          userId,
+          stripe_customer_id: customer.id,
+          requested_plan: subscriptionLevel,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const referralMetadata: Record<string, string> = checkoutReferral
+      ? {
+          referral_program: "paid_user_credits",
+          referral_code: checkoutReferral.referralCode,
+          referral_referrer_user_id: checkoutReferral.referrerUserId,
+          referral_referred_user_id: checkoutReferral.referredUserId,
+          referral_attribution_id: checkoutReferral.attributionId,
+        }
+      : {};
+
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
       billing_address_collection: "auto",
@@ -233,18 +326,23 @@ export const POST = async (req: NextRequest) => {
         },
       ],
       mode: "subscription",
+      client_reference_id: checkoutReferral
+        ? `referral:${checkoutReferral.referralCode}:${userId}`
+        : undefined,
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
       metadata: {
         userId,
         workOSOrganizationId: organization.id,
         requestedPlan: subscriptionLevel,
+        ...referralMetadata,
       },
       subscription_data: {
         metadata: {
           userId,
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
+          ...referralMetadata,
         },
       },
       custom_text: {
@@ -254,6 +352,37 @@ export const POST = async (req: NextRequest) => {
         },
       },
     });
+
+    if (checkoutReferral) {
+      try {
+        await convex.mutation(api.referrals.recordReferralCheckoutSession, {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          referredUserId: userId,
+          stripeCustomerId: customer.id,
+          stripeCheckoutSessionId: session.id,
+          requestedPlan: subscriptionLevel,
+        });
+
+        phLogger.event("referral_stripe_checkout_session_created", {
+          userId,
+          referrer_user_id: checkoutReferral.referrerUserId,
+          referral_code: checkoutReferral.referralCode,
+          stripe_customer_id: customer.id,
+          stripe_checkout_session_id: session.id,
+          requested_plan: subscriptionLevel,
+        });
+      } catch (error) {
+        phLogger.warn("referral_checkout_session_record_failed", {
+          userId,
+          referrer_user_id: checkoutReferral.referrerUserId,
+          referral_code: checkoutReferral.referralCode,
+          stripe_customer_id: customer.id,
+          stripe_checkout_session_id: session.id,
+          requested_plan: subscriptionLevel,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const selectedPrice = price.data[0];
     phLogger.event("checkout_started", {
@@ -273,6 +402,9 @@ export const POST = async (req: NextRequest) => {
       stripe_customer_id: customer.id,
       stripe_checkout_session_id: session.id,
       stripe_price_id: selectedPrice.id,
+      referral_code: checkoutReferral?.referralCode,
+      referral_referrer_user_id: checkoutReferral?.referrerUserId,
+      referral_attribution_id: checkoutReferral?.attributionId,
       client_distinct_id: posthogDistinctId ?? undefined,
       $session_id: posthogSessionId ?? undefined,
       $set: {

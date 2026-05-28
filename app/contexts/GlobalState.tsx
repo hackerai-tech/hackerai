@@ -196,6 +196,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+
+    fetch("/api/referrals/attribution", {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {
+      // Referral attribution is best-effort and must never block app startup.
+    });
+  }, [user]);
+
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile ?? false),

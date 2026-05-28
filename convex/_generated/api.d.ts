@@ -24,6 +24,7 @@ import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as notes from "../notes.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
+import type * as referrals from "../referrals.js";
 import type * as redisPubsub from "../redisPubsub.js";
 import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   messages: typeof messages;
   notes: typeof notes;
   rateLimitStatus: typeof rateLimitStatus;
+  referrals: typeof referrals;
   redisPubsub: typeof redisPubsub;
   s3Actions: typeof s3Actions;
   s3Cleanup: typeof s3Cleanup;

@@ -204,6 +204,100 @@ export default defineSchema({
     .index("by_org", ["organization_id"])
     .index("by_org_user", ["organization_id", "user_id"]),
 
+  referral_codes: defineTable({
+    user_id: v.string(),
+    code: v.string(),
+    status: v.union(v.literal("active"), v.literal("deactivated")),
+    referrer_subscription_tier: v.optional(
+      v.union(
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    referrer_organization_id: v.optional(v.string()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    deactivated_at: v.optional(v.number()),
+    deactivated_reason: v.optional(v.string()),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_code", ["code"]),
+
+  referral_attributions: defineTable({
+    referred_user_id: v.string(),
+    referrer_user_id: v.string(),
+    referral_code: v.string(),
+    referrer_subscription_tier: v.optional(
+      v.union(
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    referrer_organization_id: v.optional(v.string()),
+    status: v.union(v.literal("attributed"), v.literal("converted")),
+    sign_up_reward_status: v.union(
+      v.literal("none"),
+      v.literal("awarded"),
+      v.literal("withheld"),
+    ),
+    conversion_reward_status: v.union(
+      v.literal("pending"),
+      v.literal("awarded"),
+      v.literal("withheld"),
+    ),
+    source: v.optional(v.string()),
+    stripe_checkout_session_id: v.optional(v.string()),
+    stripe_customer_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    requested_plan: v.optional(v.string()),
+    converted_tier: v.optional(
+      v.union(
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    created_at: v.number(),
+    updated_at: v.number(),
+    converted_at: v.optional(v.number()),
+    withheld_reason: v.optional(v.string()),
+  })
+    .index("by_referred_user", ["referred_user_id"])
+    .index("by_referrer", ["referrer_user_id"])
+    .index("by_referral_code", ["referral_code"])
+    .index("by_stripe_checkout_session", ["stripe_checkout_session_id"])
+    .index("by_stripe_customer", ["stripe_customer_id"])
+    .index("by_stripe_subscription", ["stripe_subscription_id"]),
+
+  referral_rewards: defineTable({
+    idempotency_key: v.string(),
+    reward_type: v.union(
+      v.literal("referred_signup"),
+      v.literal("referrer_conversion"),
+    ),
+    status: v.union(v.literal("awarded"), v.literal("withheld")),
+    user_id: v.optional(v.string()),
+    referrer_user_id: v.optional(v.string()),
+    referred_user_id: v.optional(v.string()),
+    referral_code: v.optional(v.string()),
+    amount_dollars: v.number(),
+    reason: v.optional(v.string()),
+    stripe_checkout_session_id: v.optional(v.string()),
+    stripe_customer_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_referrer", ["referrer_user_id"])
+    .index("by_referred", ["referred_user_id"]),
+
   user_suspensions: defineTable({
     user_id: v.string(),
     status: v.union(v.literal("active"), v.literal("resolved")),
