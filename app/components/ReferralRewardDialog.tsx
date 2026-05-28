@@ -121,8 +121,7 @@ export function ReferralRewardDialog({
         <DialogHeader className="sr-only">
           <DialogTitle>Refer and earn</DialogTitle>
           <DialogDescription>
-            Earn ${referrerReward}+ for every friend who upgrades to a paid
-            HackerAI plan.
+            Earn ${referrerReward}+ when a friend upgrades.
           </DialogDescription>
         </DialogHeader>
 
@@ -148,10 +147,10 @@ export function ReferralRewardDialog({
             </div>
             <div className="mt-auto">
               <div className="text-[26px] leading-[1.08] font-semibold sm:text-3xl sm:leading-tight">
-                Share HackerAI
+                Share and earn
               </div>
               <div className="mt-1 text-xs text-white/65 sm:text-sm">
-                Give credits. Get credits.
+                Give credits. Earn credits.
               </div>
             </div>
           </div>
@@ -186,7 +185,7 @@ export function ReferralRewardDialog({
                     <UserPlus className="size-5" />
                   </span>
                   <span className="text-foreground text-base font-normal">
-                    They sign up and get <b>starter credits</b> to try HackerAI
+                    They get <b>starter credits</b>
                   </span>
                 </li>
                 <li className="flex items-center gap-3">
@@ -194,8 +193,8 @@ export function ReferralRewardDialog({
                     <Coins className="size-5" />
                   </span>
                   <span className="text-foreground text-base font-normal">
-                    You get <b>${referrerReward} in credits</b> once they
-                    subscribe to a paid HackerAI plan
+                    You get <b>${referrerReward} in credits</b> when they
+                    upgrade
                   </span>
                 </li>
               </ul>
