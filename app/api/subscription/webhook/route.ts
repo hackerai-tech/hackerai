@@ -154,8 +154,9 @@ async function awardReferralConversion(args: {
   }
 
   const metadata = args.subscription.metadata;
-  const referredUserId = metadataString(metadata, "referral_referred_user_id");
-  const referralCode = metadataString(metadata, "referral_code");
+  const referredUserId =
+    metadataString(metadata, "userId") ??
+    metadataString(metadata, "referral_referred_user_id");
 
   try {
     const result = await convex.mutation(api.referrals.awardConversionReward, {
@@ -175,7 +176,7 @@ async function awardReferralConversion(args: {
         phLogger.event("referred_user_paid_conversion", {
           userId: result.referredUserId ?? referredUserId,
           referrer_user_id: result.referrerUserId,
-          referral_code: referralCode,
+          referral_code: result.referralCode,
           reward_status: result.status,
           plan: args.plan,
           tier: args.tier,
@@ -190,7 +191,7 @@ async function awardReferralConversion(args: {
         phLogger.event("referrer_credits_awarded", {
           userId: result.referrerUserId,
           referred_user_id: result.referredUserId ?? referredUserId,
-          referral_code: referralCode,
+          referral_code: result.referralCode,
           reward_dollars: config.referrerRewardDollars,
           plan: args.plan,
           tier: args.tier,
@@ -204,7 +205,7 @@ async function awardReferralConversion(args: {
       phLogger.event("referral_reward_withheld", {
         userId: result.referredUserId ?? referredUserId,
         referrer_user_id: result.referrerUserId,
-        referral_code: referralCode,
+        referral_code: result.referralCode,
         reward_type: "referrer_conversion",
         reason: result.reason,
         plan: args.plan,
@@ -218,7 +219,6 @@ async function awardReferralConversion(args: {
   } catch (error) {
     phLogger.error("referral_conversion_reward_failed", {
       userId: referredUserId,
-      referral_code: referralCode,
       stripe_customer_id: args.customerId,
       stripe_subscription_id: args.subscription.id,
       stripe_invoice_id: args.invoiceId,
@@ -404,7 +404,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 }
 
-/** Handle checkout.session.completed — attach Checkout Session IDs to referral attribution. */
+/** Handle checkout.session.completed — attach Checkout Session IDs to saved referral attribution. */
 async function handleCheckoutSessionCompleted(
   session: Stripe.Checkout.Session,
 ): Promise<void> {
@@ -421,10 +421,9 @@ async function handleCheckoutSessionCompleted(
 
   if (!customerId) return;
 
-  const referredUserId = metadataString(
-    session.metadata,
-    "referral_referred_user_id",
-  );
+  const referredUserId =
+    metadataString(session.metadata, "userId") ??
+    metadataString(session.metadata, "referral_referred_user_id");
 
   if (referredUserId) {
     try {

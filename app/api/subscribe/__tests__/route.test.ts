@@ -230,7 +230,7 @@ describe("POST /api/subscribe", () => {
     );
   });
 
-  it("copies referral attribution into Stripe checkout and subscription metadata", async () => {
+  it("records referral checkout linkage without copying referral data into Stripe metadata", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [],
     } as never);
@@ -248,12 +248,10 @@ describe("POST /api/subscribe", () => {
         starterRewardAwarded: true,
       } as never)
       .mockResolvedValueOnce({
-        referralCode: "REF123",
+        recorded: true,
         referrerUserId: "user_referrer",
-        referredUserId: "user_123",
-        attributionId: "attr_123",
-      } as never)
-      .mockResolvedValueOnce({ recorded: true } as never);
+        referralCode: "REF123",
+      } as never);
 
     const { POST } = await import("../route");
 
@@ -266,24 +264,31 @@ describe("POST /api/subscribe", () => {
     expect(body).toEqual({ url: "https://stripe.example/checkout" });
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        client_reference_id: "referral:REF123:user_123",
         metadata: expect.objectContaining({
-          referral_program: "paid_user_credits",
-          referral_code: "REF123",
-          referral_referrer_user_id: "user_referrer",
-          referral_referred_user_id: "user_123",
-          referral_attribution_id: "attr_123",
+          userId: "user_123",
+          workOSOrganizationId: "org_new",
+          requestedPlan: "pro-monthly-plan",
         }),
         subscription_data: expect.objectContaining({
           metadata: expect.objectContaining({
-            referral_program: "paid_user_credits",
-            referral_code: "REF123",
-            referral_referrer_user_id: "user_referrer",
-            referral_referred_user_id: "user_123",
-            referral_attribution_id: "attr_123",
+            userId: "user_123",
+            workOSOrganizationId: "org_new",
+            requestedPlan: "pro-monthly-plan",
           }),
         }),
       }),
+    );
+    const checkoutArgs = mockCreateCheckoutSession.mock.calls[0]?.[0] as any;
+    expect(checkoutArgs.client_reference_id).toBeUndefined();
+    expect(checkoutArgs.metadata).not.toHaveProperty("referral_code");
+    expect(checkoutArgs.metadata).not.toHaveProperty(
+      "referral_referred_user_id",
+    );
+    expect(checkoutArgs.subscription_data.metadata).not.toHaveProperty(
+      "referral_code",
+    );
+    expect(checkoutArgs.subscription_data.metadata).not.toHaveProperty(
+      "referral_referred_user_id",
     );
   });
 });

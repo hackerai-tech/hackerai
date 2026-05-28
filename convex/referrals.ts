@@ -473,51 +473,6 @@ export const attributeReferredSignup = mutation({
   },
 });
 
-export const prepareCheckoutReferral = mutation({
-  args: {
-    serviceKey: v.string(),
-    referredUserId: v.string(),
-    stripeCustomerId: v.string(),
-    requestedPlan: v.string(),
-  },
-  returns: v.union(
-    v.null(),
-    v.object({
-      referralCode: v.string(),
-      referrerUserId: v.string(),
-      referredUserId: v.string(),
-      attributionId: v.string(),
-    }),
-  ),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    const attribution = await ctx.db
-      .query("referral_attributions")
-      .withIndex("by_referred_user", (q) =>
-        q.eq("referred_user_id", args.referredUserId),
-      )
-      .first();
-
-    if (!attribution || attribution.conversion_reward_status !== "pending") {
-      return null;
-    }
-
-    await ctx.db.patch(attribution._id, {
-      stripe_customer_id: args.stripeCustomerId,
-      requested_plan: args.requestedPlan,
-      updated_at: Date.now(),
-    });
-
-    return {
-      referralCode: attribution.referral_code,
-      referrerUserId: attribution.referrer_user_id,
-      referredUserId: attribution.referred_user_id,
-      attributionId: String(attribution._id),
-    };
-  },
-});
-
 export const recordReferralCheckoutSession = mutation({
   args: {
     serviceKey: v.string(),
@@ -527,7 +482,11 @@ export const recordReferralCheckoutSession = mutation({
     stripeSubscriptionId: v.optional(v.string()),
     requestedPlan: v.string(),
   },
-  returns: v.object({ recorded: v.boolean() }),
+  returns: v.object({
+    recorded: v.boolean(),
+    referralCode: v.optional(v.string()),
+    referrerUserId: v.optional(v.string()),
+  }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
@@ -549,7 +508,11 @@ export const recordReferralCheckoutSession = mutation({
       updated_at: Date.now(),
     });
 
-    return { recorded: true };
+    return {
+      recorded: true,
+      referralCode: attribution.referral_code,
+      referrerUserId: attribution.referrer_user_id,
+    };
   },
 });
 
@@ -575,6 +538,7 @@ export const awardConversionReward = mutation({
     reason: v.optional(v.string()),
     referrerUserId: v.optional(v.string()),
     referredUserId: v.optional(v.string()),
+    referralCode: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -641,6 +605,7 @@ export const awardConversionReward = mutation({
         status: "already_awarded" as const,
         referrerUserId: attribution.referrer_user_id,
         referredUserId: attribution.referred_user_id,
+        referralCode: attribution.referral_code,
       };
     }
 
@@ -669,6 +634,7 @@ export const awardConversionReward = mutation({
         reason: "non_qualifying_plan",
         referrerUserId: attribution.referrer_user_id,
         referredUserId: attribution.referred_user_id,
+        referralCode: attribution.referral_code,
       };
     }
 
@@ -701,6 +667,7 @@ export const awardConversionReward = mutation({
         : ("awarded" as const),
       referrerUserId: attribution.referrer_user_id,
       referredUserId: attribution.referred_user_id,
+      referralCode: attribution.referral_code,
     };
   },
 });

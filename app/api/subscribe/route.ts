@@ -278,44 +278,6 @@ export const POST = async (req: NextRequest) => {
 
     const cancelUrl = new URL(baseUrl);
 
-    let checkoutReferral: {
-      referralCode: string;
-      referrerUserId: string;
-      referredUserId: string;
-      attributionId: string;
-    } | null = null;
-
-    if (referralConfig.enabled) {
-      try {
-        checkoutReferral = await convex.mutation(
-          api.referrals.prepareCheckoutReferral,
-          {
-            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-            referredUserId: userId,
-            stripeCustomerId: customer.id,
-            requestedPlan: subscriptionLevel,
-          },
-        );
-      } catch (error) {
-        phLogger.warn("referral_checkout_prepare_failed", {
-          userId,
-          stripe_customer_id: customer.id,
-          requested_plan: subscriptionLevel,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    const referralMetadata: Record<string, string> = checkoutReferral
-      ? {
-          referral_program: "paid_user_credits",
-          referral_code: checkoutReferral.referralCode,
-          referral_referrer_user_id: checkoutReferral.referrerUserId,
-          referral_referred_user_id: checkoutReferral.referredUserId,
-          referral_attribution_id: checkoutReferral.attributionId,
-        }
-      : {};
-
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
       billing_address_collection: "auto",
@@ -326,23 +288,18 @@ export const POST = async (req: NextRequest) => {
         },
       ],
       mode: "subscription",
-      client_reference_id: checkoutReferral
-        ? `referral:${checkoutReferral.referralCode}:${userId}`
-        : undefined,
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
       metadata: {
         userId,
         workOSOrganizationId: organization.id,
         requestedPlan: subscriptionLevel,
-        ...referralMetadata,
       },
       subscription_data: {
         metadata: {
           userId,
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
-          ...referralMetadata,
         },
       },
       custom_text: {
@@ -353,29 +310,32 @@ export const POST = async (req: NextRequest) => {
       },
     });
 
-    if (checkoutReferral) {
+    if (referralConfig.enabled) {
       try {
-        await convex.mutation(api.referrals.recordReferralCheckoutSession, {
-          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-          referredUserId: userId,
-          stripeCustomerId: customer.id,
-          stripeCheckoutSessionId: session.id,
-          requestedPlan: subscriptionLevel,
-        });
+        const referralSession = await convex.mutation(
+          api.referrals.recordReferralCheckoutSession,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            stripeCustomerId: customer.id,
+            stripeCheckoutSessionId: session.id,
+            requestedPlan: subscriptionLevel,
+          },
+        );
 
-        phLogger.event("referral_stripe_checkout_session_created", {
-          userId,
-          referrer_user_id: checkoutReferral.referrerUserId,
-          referral_code: checkoutReferral.referralCode,
-          stripe_customer_id: customer.id,
-          stripe_checkout_session_id: session.id,
-          requested_plan: subscriptionLevel,
-        });
+        if (referralSession?.recorded) {
+          phLogger.event("referral_stripe_checkout_session_created", {
+            userId,
+            referrer_user_id: referralSession.referrerUserId,
+            referral_code: referralSession.referralCode,
+            stripe_customer_id: customer.id,
+            stripe_checkout_session_id: session.id,
+            requested_plan: subscriptionLevel,
+          });
+        }
       } catch (error) {
         phLogger.warn("referral_checkout_session_record_failed", {
           userId,
-          referrer_user_id: checkoutReferral.referrerUserId,
-          referral_code: checkoutReferral.referralCode,
           stripe_customer_id: customer.id,
           stripe_checkout_session_id: session.id,
           requested_plan: subscriptionLevel,
