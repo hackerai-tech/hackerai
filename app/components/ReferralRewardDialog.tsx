@@ -109,8 +109,6 @@ export function ReferralRewardDialog({
   };
 
   const referrerReward = program?.referrerRewardDollars ?? 0;
-  const rewardLabel =
-    referrerReward > 0 ? `Earn $${referrerReward} in credits` : "Earn credits";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -143,14 +141,14 @@ export function ReferralRewardDialog({
           </DialogClose>
           <div className="relative z-10 flex h-full max-w-[60%] flex-col p-4 text-white sm:max-w-[64%] sm:p-5">
             <div className="w-fit max-w-full rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur sm:px-3 sm:py-1.5 sm:text-[13px]">
-              {rewardLabel}
+              Earn ${referrerReward} in credits
             </div>
             <div className="mt-auto">
               <div className="text-[26px] leading-[1.08] font-semibold sm:text-3xl sm:leading-tight">
-                Share and earn
+                Spread the word
               </div>
               <div className="mt-1 text-xs text-white/65 sm:text-sm">
-                Give credits. Earn credits.
+                and earn rewards
               </div>
             </div>
           </div>
@@ -185,7 +183,7 @@ export function ReferralRewardDialog({
                     <UserPlus className="size-5" />
                   </span>
                   <span className="text-foreground text-base font-normal">
-                    They get <b>starter credits</b>
+                    They sign up and get <b>extra usage credits</b>
                   </span>
                 </li>
                 <li className="flex items-center gap-3">
@@ -193,8 +191,8 @@ export function ReferralRewardDialog({
                     <Coins className="size-5" />
                   </span>
                   <span className="text-foreground text-base font-normal">
-                    You get <b>${referrerReward} in credits</b> when they
-                    upgrade
+                    You get <b>${referrerReward} in credits</b> once they
+                    subscribe to any paid plan
                   </span>
                 </li>
               </ul>
