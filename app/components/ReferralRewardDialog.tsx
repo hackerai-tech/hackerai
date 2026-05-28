@@ -133,15 +133,15 @@ export function ReferralRewardDialog({
             className="object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-black/45 via-black/15 to-transparent" />
-          <div className="relative z-10 flex h-full max-w-[64%] flex-col p-5 text-white">
-            <div className="w-fit max-w-full rounded-full bg-black/55 px-3 py-1.5 text-[13px] font-medium shadow-sm backdrop-blur">
+          <div className="relative z-10 flex h-full max-w-[60%] flex-col p-4 text-white sm:max-w-[64%] sm:p-5">
+            <div className="w-fit max-w-full rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur sm:px-3 sm:py-1.5 sm:text-[13px]">
               {rewardLabel}
             </div>
             <div className="mt-auto">
-              <div className="text-3xl font-semibold leading-tight">
+              <div className="text-[26px] leading-[1.08] font-semibold sm:text-3xl sm:leading-tight">
                 Share HackerAI
               </div>
-              <div className="mt-1 text-sm text-white/65">
+              <div className="mt-1 text-xs text-white/65 sm:text-sm">
                 Give credits. Get credits.
               </div>
             </div>
