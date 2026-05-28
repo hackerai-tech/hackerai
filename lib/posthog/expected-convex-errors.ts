@@ -5,8 +5,14 @@ const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "FILE_UPLOAD_RATE_LIMIT",
   "exceeds the maximum token limit",
   "cloud file upload limit",
+  "INVALID_FILE_SIZE",
+  "Batch size exceeds limit",
   "PAID_PLAN_REQUIRED",
   "Paid plan required for file uploads",
+  "CHAT_UNAUTHORIZED",
+  "Unauthorized: Chat does not belong to user",
+  "OptimisticConcurrencyControlFailure",
+  'Documents read from or written to the "btreeNode" table changed',
 ];
 
 type PostHogEventLike = {
