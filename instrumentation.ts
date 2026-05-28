@@ -1,5 +1,12 @@
 import { phLogger } from "@/lib/posthog/server";
+import { registerPostHogLogProvider } from "@/lib/posthog/logs";
 import type { Instrumentation } from "next";
+
+export function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    registerPostHogLogProvider();
+  }
+}
 
 export const onRequestError: Instrumentation.onRequestError = (
   error,
