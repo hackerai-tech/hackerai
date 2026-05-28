@@ -229,6 +229,29 @@ async function awardReferralConversion(args: {
   }
 }
 
+async function setReferralCodesPaidEligibility(args: {
+  userIds: string[];
+  active: boolean;
+  tier?: SubscriptionTier | null;
+  organizationId?: string;
+}) {
+  const config = getReferralRewardConfig();
+  if (!config.enabled || args.userIds.length === 0) {
+    return;
+  }
+
+  const subscriptionTier =
+    args.active && args.tier && args.tier !== "free" ? args.tier : undefined;
+
+  await convex.mutation(api.referrals.setReferralCodesPaidEligibility, {
+    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    userIds: args.userIds,
+    active: args.active,
+    ...(subscriptionTier && { subscriptionTier }),
+    ...(args.organizationId && { organizationId: args.organizationId }),
+  });
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -282,6 +305,13 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const { tier, subscription } = resolved;
+
+  await setReferralCodesPaidEligibility({
+    userIds,
+    active: true,
+    tier,
+    organizationId: orgId ?? undefined,
+  });
 
   // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
   // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
@@ -580,6 +610,11 @@ async function handleSubscriptionDeleted(
       $set: { subscription_tier: "free" },
     });
   }
+
+  await setReferralCodesPaidEligibility({
+    userIds,
+    active: false,
+  });
 }
 
 // =============================================================================
