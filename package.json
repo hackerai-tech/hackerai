@@ -115,6 +115,7 @@
     "pdfjs-serverless": "^1.2.3",
     "posthog-js": "1.373.5",
     "posthog-node": "5.34.2",
+    "qrcode.react": "^4.2.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.6",
     "react-day-picker": "^10.0.1",

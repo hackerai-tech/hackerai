@@ -1,7 +1,17 @@
 "use client";
 
 import React from "react";
-import { Check, Copy, Gift, RefreshCw } from "lucide-react";
+import Image from "next/image";
+import {
+  Check,
+  Coins,
+  Copy,
+  Link as LinkIcon,
+  Sparkles,
+  UserPlus,
+  Zap,
+} from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -97,86 +107,181 @@ export function ReferralRewardDialog({
     }
   };
 
+  const referrerReward = program?.referrerRewardDollars ?? 0;
+  const referredReward = program?.referredSignupRewardDollars ?? 0;
+  const rewardLabel =
+    referrerReward > 0 ? `Earn $${referrerReward} in credits` : "Earn credits";
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md rounded-2xl">
-        <DialogHeader>
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Gift className="h-5 w-5" />
-          </div>
-          <DialogTitle>Refer a friend</DialogTitle>
+      <DialogContent className="flex max-h-[95vh] max-w-lg flex-col gap-4 overflow-y-auto rounded-3xl p-6">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Refer and earn</DialogTitle>
           <DialogDescription>
-            Give credits to a friend. Get credits after they upgrade.
+            Earn ${referrerReward}+ for every friend who upgrades to a paid
+            HackerAI plan.
           </DialogDescription>
         </DialogHeader>
 
+        <div className="relative h-44 overflow-hidden rounded-2xl bg-[#101111]">
+          <Image
+            src="/images/referral-popup-hackerai.avif"
+            alt=""
+            fill
+            priority
+            sizes="(max-width: 640px) 100vw, 512px"
+            className="object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-r from-black/45 via-black/15 to-transparent" />
+          <div className="relative z-10 flex h-full max-w-[64%] flex-col p-5 text-white">
+            <div className="w-fit max-w-full rounded-full bg-black/55 px-3 py-1.5 text-[13px] font-medium shadow-sm backdrop-blur">
+              {rewardLabel}
+            </div>
+            <div className="mt-auto">
+              <div className="text-3xl font-semibold leading-tight">
+                Share HackerAI
+              </div>
+              <div className="mt-1 text-sm text-white/65">
+                Give credits. Get credits.
+              </div>
+            </div>
+          </div>
+        </div>
+
         {isLoading ? (
-          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            <span>Loading referral link...</span>
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+            <Sparkles className="h-4 w-4 animate-pulse" />
+            <span>Loading your referral link…</span>
           </div>
         ) : error ? (
-          <div className="rounded-md border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">
+          <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">
             {error}
           </div>
         ) : program ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="mb-2 text-sm font-medium">
-                ${program.referredSignupRewardDollars} for them, $
-                {program.referrerRewardDollars} for you
+          <>
+            <div className="md:py-2">
+              <div className="text-muted-foreground mb-3 text-base font-normal">
+                How it works:
               </div>
-              <p className="text-xs leading-5 text-muted-foreground">
-                Your reward is granted when the referred account starts a paid
-                HackerAI plan. Referral rewards may be withheld for ineligible
-                or suspicious activity.
-              </p>
+              <ul className="flex flex-col gap-4">
+                <li className="flex items-center gap-3">
+                  <span className="bg-muted text-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
+                    <Zap className="size-5" />
+                  </span>
+                  <span className="text-foreground text-base font-normal">
+                    Share your invite link
+                  </span>
+                </li>
+                <li className="flex items-center gap-3">
+                  <span className="bg-muted text-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
+                    <UserPlus className="size-5" />
+                  </span>
+                  <span className="text-foreground text-base font-normal">
+                    They sign up and get{" "}
+                    <b>extra ${referredReward} in credits</b>
+                  </span>
+                </li>
+                <li className="flex items-center gap-3">
+                  <span className="bg-muted text-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
+                    <Coins className="size-5" />
+                  </span>
+                  <span className="text-foreground text-base font-normal">
+                    You get <b>${referrerReward} in credits</b> once they
+                    subscribe to a paid HackerAI plan
+                  </span>
+                </li>
+              </ul>
             </div>
 
-            <div className="flex gap-2">
-              <Input
-                readOnly
-                value={program.active ? program.referralUrl : "Link inactive"}
-                className="min-w-0 flex-1 text-sm"
-                aria-label="Referral link"
-              />
+            <div className="flex flex-col">
+              <span className="text-muted-foreground mb-3 flex items-center gap-4 pr-2 text-base font-normal">
+                <span>
+                  <b className="tabular-nums">
+                    {program.stats.attributedSignups}
+                  </b>{" "}
+                  signed up,{" "}
+                  <b className="tabular-nums">
+                    {program.stats.paidConversions}
+                  </b>{" "}
+                  converted
+                  {program.stats.awardedDollars > 0 ? (
+                    <>
+                      ,{" "}
+                      <b className="tabular-nums">
+                        ${program.stats.awardedDollars}
+                      </b>{" "}
+                      earned
+                    </>
+                  ) : null}
+                </span>
+              </span>
+
+              <div className="bg-muted flex flex-wrap items-center justify-center gap-3 rounded-xl p-2">
+                {program.active ? (
+                  <div className="flex size-24 shrink-0 items-center justify-center rounded-lg border bg-white p-2 md:size-28">
+                    <QRCodeSVG
+                      value={program.referralUrl}
+                      bgColor="#ffffff"
+                      fgColor="#000000"
+                      level="M"
+                      marginSize={0}
+                      className="size-full"
+                      role="img"
+                      aria-label="Referral invite QR code"
+                    />
+                  </div>
+                ) : null}
+
+                <div className="flex min-w-32 flex-1 flex-col gap-2">
+                  <div className="bg-background hidden h-10 w-full items-center rounded-lg px-2 md:flex">
+                    <LinkIcon className="text-muted-foreground mr-2 size-5 shrink-0" />
+                    <Input
+                      readOnly
+                      tabIndex={-1}
+                      value={
+                        program.active ? program.referralUrl : "Link inactive"
+                      }
+                      aria-label="Referral link"
+                      className="h-auto min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={copyLink}
+                    disabled={!program.active}
+                    className="h-10 w-full rounded-[10px]"
+                    aria-label="Copy referral link"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="size-5" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="size-5" />
+                        Copy link
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-center">
               <Button
                 type="button"
-                size="icon"
-                onClick={copyLink}
-                disabled={!program.active}
-                aria-label="Copy referral link"
-                title="Copy referral link"
+                variant="link"
+                size="xs"
+                className="text-foreground"
+                asChild
               >
-                {copied ? (
-                  <Check className="h-4 w-4" />
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
+                <a href="/terms-of-service" target="_blank" rel="noreferrer">
+                  View Terms and Conditions
+                </a>
               </Button>
             </div>
-
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-md border p-2">
-                <div className="text-base font-semibold tabular-nums">
-                  {program.stats.attributedSignups}
-                </div>
-                <div className="text-[11px] text-muted-foreground">Signups</div>
-              </div>
-              <div className="rounded-md border p-2">
-                <div className="text-base font-semibold tabular-nums">
-                  {program.stats.paidConversions}
-                </div>
-                <div className="text-[11px] text-muted-foreground">Paid</div>
-              </div>
-              <div className="rounded-md border p-2">
-                <div className="text-base font-semibold tabular-nums">
-                  ${program.stats.awardedDollars}
-                </div>
-                <div className="text-[11px] text-muted-foreground">Awarded</div>
-              </div>
-            </div>
-          </div>
+          </>
         ) : null}
       </DialogContent>
     </Dialog>
