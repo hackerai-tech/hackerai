@@ -17,6 +17,7 @@ import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
@@ -290,9 +291,17 @@ const collectFilesToProcess = (
 
 const fetchFileUrls = async (
   fileIds: string[],
-  userId: string,
+  userId: string | undefined,
 ): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
+  if (!userId) {
+    logger.warn("file_url_fetch_skipped_missing_user_id", {
+      event: "file_url_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return [];
+  }
 
   try {
     return await getConvexClient().action(
@@ -304,9 +313,11 @@ const fetchFileUrls = async (
       },
     );
   } catch (error) {
-    console.error("Failed to fetch file URLs:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileCount: fileIds.length,
+    logger.warn("file_url_fetch_failed", {
+      event: "file_url_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
     return [];
   }
@@ -571,10 +582,18 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
-  userId: string,
+  userId: string | undefined,
   maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
+  if (!userId) {
+    logger.warn("document_content_fetch_skipped_missing_user_id", {
+      event: "document_content_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return;
+  }
 
   try {
     const fileContents = await getConvexClient().query(
@@ -644,9 +663,11 @@ const addDocumentContentToMessages = async (
       }
     });
   } catch (error) {
-    console.error("Failed to fetch and add document content:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileIds,
+    logger.warn("document_content_fetch_failed", {
+      event: "document_content_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
   }
 };
