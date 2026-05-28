@@ -255,8 +255,8 @@ export function ReferralRewardDialog({
                         <Coins className="size-5" />
                       </span>
                       <span className="text-foreground text-base font-normal">
-                        You get <b>${referrerReward} in credits</b> once they
-                        subscribe to any paid plan
+                        You get <b>${referrerReward} in extra usage credits</b>{" "}
+                        once they subscribe to any paid plan
                       </span>
                     </li>
                   </ul>
