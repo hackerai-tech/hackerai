@@ -9,19 +9,20 @@ import {
   Link as LinkIcon,
   Sparkles,
   UserPlus,
+  X,
   Zap,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 type ReferralProgram = {
@@ -114,7 +115,10 @@ export function ReferralRewardDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[95vh] max-w-lg flex-col gap-4 overflow-y-auto rounded-3xl p-6">
+      <DialogContent
+        showCloseButton={false}
+        className="flex max-h-[95vh] max-w-lg flex-col gap-4 overflow-y-auto rounded-3xl p-6"
+      >
         <DialogHeader className="sr-only">
           <DialogTitle>Refer and earn</DialogTitle>
           <DialogDescription>
@@ -133,6 +137,12 @@ export function ReferralRewardDialog({
             className="object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-black/45 via-black/15 to-transparent" />
+          <DialogClose
+            aria-label="Close"
+            className="absolute top-3 right-3 z-20 flex size-8 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur transition-colors hover:bg-black/65 focus:ring-2 focus:ring-white/40 focus:outline-none"
+          >
+            <X className="size-5" />
+          </DialogClose>
           <div className="relative z-10 flex h-full max-w-[60%] flex-col p-4 text-white sm:max-w-[64%] sm:p-5">
             <div className="w-fit max-w-full rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur sm:px-3 sm:py-1.5 sm:text-[13px]">
               {rewardLabel}
@@ -233,17 +243,14 @@ export function ReferralRewardDialog({
                 ) : null}
 
                 <div className="flex min-w-32 flex-1 flex-col gap-2">
-                  <div className="bg-background hidden h-10 w-full items-center rounded-lg px-2 md:flex">
-                    <LinkIcon className="text-muted-foreground mr-2 size-5 shrink-0" />
-                    <Input
-                      readOnly
-                      tabIndex={-1}
-                      value={
-                        program.active ? program.referralUrl : "Link inactive"
-                      }
+                  <div className="bg-background text-foreground hidden h-10 w-full items-center rounded-lg px-3 md:flex">
+                    <LinkIcon className="text-muted-foreground mr-2 size-4 shrink-0" />
+                    <span
+                      className="text-foreground min-w-0 flex-1 truncate text-sm"
                       aria-label="Referral link"
-                      className="h-auto min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
-                    />
+                    >
+                      {program.active ? program.referralUrl : "Link inactive"}
+                    </span>
                   </div>
                   <Button
                     type="button"
