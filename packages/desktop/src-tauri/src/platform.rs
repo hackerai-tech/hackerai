@@ -76,14 +76,13 @@ pub fn get_shell_config() -> ShellConfig {
 /// Locate `bash.exe` from Git for Windows. Tries:
 ///   1. `HACKERAI_BASH_PATH` env override
 ///   2. Common install locations
-///   3. `where git` → `<gitDir>/../../bin/bash.exe`
+///   3. PATH/PATHEXT lookup for `git` without invoking a searched helper
 #[cfg(windows)]
 fn find_git_bash() -> Option<String> {
     use std::path::PathBuf;
-    use std::process::Command as StdCommand;
 
     if let Ok(p) = std::env::var("HACKERAI_BASH_PATH") {
-        if PathBuf::from(&p).exists() {
+        if PathBuf::from(&p).is_file() {
             return Some(p);
         }
     }
@@ -93,31 +92,74 @@ fn find_git_bash() -> Option<String> {
         "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
     ];
     for c in &candidates {
-        if PathBuf::from(c).exists() {
+        if PathBuf::from(c).is_file() {
             return Some((*c).to_string());
         }
     }
 
-    if let Ok(out) = StdCommand::new("where").arg("git").output() {
-        if out.status.success() {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.to_lowercase().ends_with("git.exe") {
-                    // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
-                    let p = PathBuf::from(line);
-                    if let Some(git_dir) = p.parent().and_then(|d| d.parent()) {
-                        let bash = git_dir.join("bin").join("bash.exe");
-                        if bash.exists() {
-                            return bash.to_str().map(|s| s.to_string());
-                        }
-                    }
-                }
-            }
-        }
+    if let Some(git) = find_windows_executable_on_path("git") {
+        return resolve_git_bash_from_git(&git);
     }
 
     None
+}
+
+#[cfg(windows)]
+fn resolve_git_bash_from_git(git: &std::path::Path) -> Option<String> {
+    // <gitDir>\cmd\git.exe -> <gitDir>\bin\bash.exe
+    let git_dir = git.parent().and_then(|d| d.parent())?;
+    let bash = git_dir.join("bin").join("bash.exe");
+    if bash.is_file() {
+        bash.to_str().map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn find_windows_executable_on_path(command: &str) -> Option<std::path::PathBuf> {
+    let extensions = get_windows_path_extensions(command);
+    for dir in get_windows_path_entries() {
+        for extension in &extensions {
+            let candidate = dir.join(format!("{command}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn get_windows_path_entries() -> Vec<std::path::PathBuf> {
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|entry| entry.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn get_windows_path_extensions(command: &str) -> Vec<String> {
+    if std::path::Path::new(command).extension().is_some() {
+        return vec![String::new()];
+    }
+
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| {
+            if extension.starts_with('.') {
+                extension.to_string()
+            } else {
+                format!(".{extension}")
+            }
+        })
+        .collect()
 }
 
 /// Build a `tokio::process::Command` from an exec request.

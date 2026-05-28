@@ -3,9 +3,8 @@
  * Extracted for testability.
  */
 
-import { existsSync } from "fs";
-import { execSync } from "child_process";
-import { join, dirname } from "path";
+import { statSync } from "fs";
+import { win32 as pathWin32 } from "path";
 
 // Align with LLM context limits (~4096 tokens ≈ 12288 chars)
 export const MAX_OUTPUT_SIZE = 12288;
@@ -66,37 +65,91 @@ export function getDefaultShell(platform: string): ShellConfig {
  * Locate `bash.exe` from Git for Windows. Tries, in order:
  *   1. `HACKERAI_BASH_PATH` environment override
  *   2. Common install locations
- *   3. `where git` → resolve `<gitDir>/../../bin/bash.exe`
+ *   3. PATH/PATHEXT lookup for `git` without invoking a searched helper
  * Returns null if not found.
  */
 export function findGitBash(): string | null {
   const override = process.env.HACKERAI_BASH_PATH;
-  if (override && existsSync(override)) return override;
+  if (override && isFile(override)) return override;
 
   const candidates = [
     "C:\\Program Files\\Git\\bin\\bash.exe",
     "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
   ];
   for (const c of candidates) {
-    if (existsSync(c)) return c;
+    if (isFile(c)) return c;
   }
 
-  try {
-    const out = execSync("where git", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const gitExe = out.split(/\r?\n/).find((l) => l.trim().endsWith("git.exe"));
-    if (gitExe) {
-      // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
-      const bash = join(dirname(dirname(gitExe.trim())), "bin", "bash.exe");
-      if (existsSync(bash)) return bash;
-    }
-  } catch {
-    // `where` not found or no git installed — fall through
+  const git = findWindowsExecutableOnPath("git");
+  if (git) {
+    const bash = resolveGitBashFromGit(git);
+    if (bash) return bash;
   }
 
   return null;
+}
+
+function resolveGitBashFromGit(git: string): string | null {
+  // <gitDir>\cmd\git.exe -> <gitDir>\bin\bash.exe
+  const bash = pathWin32.join(
+    pathWin32.dirname(pathWin32.dirname(git)),
+    "bin",
+    "bash.exe",
+  );
+  return isFile(bash) ? bash : null;
+}
+
+function findWindowsExecutableOnPath(command: string): string | null {
+  const extensions = getWindowsPathExtensions(command);
+  for (const dir of getWindowsPathEntries()) {
+    for (const extension of extensions) {
+      const candidate = pathWin32.join(dir, `${command}${extension}`);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function getWindowsPathEntries(): string[] {
+  const pathKey = Object.keys(process.env).find(
+    (key) => key.toLowerCase() === "path",
+  );
+  const pathValue = pathKey ? process.env[pathKey] : undefined;
+  if (!pathValue) return [];
+
+  return pathValue
+    .split(";")
+    .map((entry) => entry.trim().replace(/^"|"$/g, ""))
+    .filter(
+      (entry) => entry !== "" && entry !== "." && pathWin32.isAbsolute(entry),
+    );
+}
+
+function getWindowsPathExtensions(command: string): string[] {
+  if (pathWin32.extname(command)) return [""];
+
+  const pathExtKey = Object.keys(process.env).find(
+    (key) => key.toLowerCase() === "pathext",
+  );
+  const pathExtValue = pathExtKey ? process.env[pathExtKey] : undefined;
+  const extensions = pathExtValue
+    ? pathExtValue.split(";")
+    : [".COM", ".EXE", ".BAT", ".CMD"];
+
+  return extensions
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) =>
+      extension.startsWith(".") ? extension : `.${extension}`,
+    );
+}
+
+function isFile(file: string): boolean {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
