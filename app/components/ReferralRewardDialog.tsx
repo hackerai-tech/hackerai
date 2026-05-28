@@ -8,7 +8,6 @@ import {
   Copy,
   Gift,
   Link as LinkIcon,
-  Sparkles,
   UserPlus,
   Zap,
 } from "lucide-react";
@@ -22,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 type ReferralProgram = {
@@ -219,10 +219,42 @@ export function ReferralRewardDialog({
             </DialogHeader>
 
             {isLoading ? (
-              <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
-                <Sparkles className="h-4 w-4 animate-pulse" />
-                <span>Loading your referral link…</span>
-              </div>
+              <>
+                <div className="md:py-2">
+                  <div className="text-muted-foreground mb-3 text-base font-normal">
+                    How it works:
+                  </div>
+                  <ul className="flex flex-col gap-4" aria-hidden="true">
+                    {[0, 1, 2].map((i) => (
+                      <li key={i} className="flex items-center gap-3">
+                        <Skeleton className="size-9 shrink-0 rounded-lg" />
+                        <Skeleton className="h-4 w-56 max-w-full" />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="flex flex-col">
+                  <Skeleton className="mb-3 h-4 w-44" aria-hidden="true" />
+                  <div
+                    className="bg-muted flex flex-wrap items-center justify-center gap-3 rounded-xl p-2"
+                    aria-hidden="true"
+                  >
+                    <Skeleton className="size-24 shrink-0 rounded-lg md:size-28" />
+                    <div className="flex min-w-32 flex-1 flex-col gap-2">
+                      <Skeleton className="hidden h-10 w-full rounded-lg md:block" />
+                      <Skeleton className="h-10 w-full rounded-[10px]" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-center" aria-hidden="true">
+                  <Skeleton className="h-5 w-40" />
+                </div>
+                <span className="sr-only" role="status">
+                  Loading your referral link…
+                </span>
+              </>
             ) : error ? (
               <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-sm text-destructive">
                 {error}

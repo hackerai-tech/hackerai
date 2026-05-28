@@ -115,7 +115,9 @@ const MainSidebar: FC<{
           </div>
 
           {/* Footer */}
-          <SidebarUserNav isCollapsed={false} />
+          <div className="p-2">
+            <SidebarUserNav isCollapsed={false} />
+          </div>
         </div>
       </>
     );
