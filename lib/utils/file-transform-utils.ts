@@ -16,6 +16,8 @@ import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
+import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
@@ -30,6 +32,36 @@ type FileToProcess = {
 type SizeProbeResult = {
   bytes: number;
   source: "content_length" | "content_range" | "download_probe";
+};
+
+const redactUrlForLog = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0];
+  }
+};
+
+const validateResolvedFileUrl = (
+  url: string | null | undefined,
+  fileId: string,
+): string | null => {
+  if (!url) return null;
+
+  try {
+    validateDownloadUrl(url);
+    return url;
+  } catch (error) {
+    logger.warn("resolved_file_url_rejected", {
+      event: "resolved_file_url_rejected",
+      service: "chat-handler",
+      file_id: fileId,
+      url: redactUrlForLog(url),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 };
 
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
@@ -222,6 +254,14 @@ const collectFilesToProcess = (
     (msg.parts as any[]).forEach((part, partIndex) => {
       if (!isFilePart(part)) return;
 
+      const fileId = typeof part.fileId === "string" ? part.fileId : undefined;
+      if (fileId) {
+        // File IDs are storage references, not proof that a request-supplied URL
+        // is safe. Clear any client URL so every server-side fetch/download uses
+        // an owner-checked URL resolved from storage below.
+        delete (part as any).url;
+      }
+
       if (isMediaFile(part.mediaType)) hasMedia = true;
 
       const shouldProcess =
@@ -230,17 +270,13 @@ const collectFilesToProcess = (
         isMediaFile(part.mediaType);
 
       if (shouldProcess) {
-        const fileId =
-          typeof part.fileId === "string" ? part.fileId : undefined;
-        const url =
-          typeof (part as any).url === "string" ? (part as any).url : undefined;
         if (!fileId) return;
+
         const key = `file:${fileId}`;
 
         if (!files.has(key)) {
           files.set(key, {
             fileId,
-            url,
             mediaType: part.mediaType,
             positions: [],
           });
@@ -255,9 +291,17 @@ const collectFilesToProcess = (
 
 const fetchFileUrls = async (
   fileIds: string[],
-  userId: string,
+  userId: string | undefined,
 ): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
+  if (!userId) {
+    logger.warn("file_url_fetch_skipped_missing_user_id", {
+      event: "file_url_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return [];
+  }
 
   try {
     return await getConvexClient().action(
@@ -269,9 +313,11 @@ const fetchFileUrls = async (
       },
     );
   } catch (error) {
-    console.error("Failed to fetch file URLs:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileCount: fileIds.length,
+    logger.warn("file_url_fetch_failed", {
+      event: "file_url_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
     return [];
   }
@@ -291,8 +337,12 @@ const applyUrlsToFileParts = async (
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
   filesNeedingUrls.forEach((file, index) => {
-    if (fetchedUrls[index]) {
-      file.url = fetchedUrls[index];
+    const resolvedUrl = validateResolvedFileUrl(
+      fetchedUrls[index],
+      file.fileId!,
+    );
+    if (resolvedUrl) {
+      file.url = resolvedUrl;
     }
   });
 
@@ -532,10 +582,18 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
-  userId: string,
+  userId: string | undefined,
   maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
+  if (!userId) {
+    logger.warn("document_content_fetch_skipped_missing_user_id", {
+      event: "document_content_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return;
+  }
 
   try {
     const fileContents = await getConvexClient().query(
@@ -605,9 +663,11 @@ const addDocumentContentToMessages = async (
       }
     });
   } catch (error) {
-    console.error("Failed to fetch and add document content:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileIds,
+    logger.warn("document_content_fetch_failed", {
+      event: "document_content_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
   }
 };

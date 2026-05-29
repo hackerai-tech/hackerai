@@ -42,11 +42,12 @@ const TERMINAL_RUN_STATUSES = new Set([
   "EXPIRED",
 ]);
 
-// Maximum time to wait for the first stream event. If the task fails before
-// registering the "ui" stream, withStreams() can hang indefinitely waiting
-// for a stream that never comes. This timeout guarantees the SSE connection
-// always closes and useChat exits streaming state.
-const STREAM_TIMEOUT_MS = 30_000;
+// Maximum time to wait for the first UI stream chunk. Once the task is
+// executing, the task-side heartbeat keeps the stream below this idle window.
+// If setup or Trigger queueing stalls before the "ui" stream produces data,
+// this guarantees useChat eventually exits streaming state.
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+const STREAM_IDLE_TIMEOUT_SECONDS = STREAM_TIMEOUT_MS / 1000;
 
 const buildSSEResponseFromRun = (
   { runId, publicAccessToken }: RunHandle,
@@ -55,9 +56,16 @@ const buildSSEResponseFromRun = (
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let closed = false;
+      let readAbortController: AbortController | undefined;
+      let statusSubscription: { unsubscribe?: () => void } | undefined;
+      let userAborted = false;
+
       // Always close with an abort rather than controller.error() so useChat
       // reliably exits streaming state even when subscription throws.
       const sendAbortAndClose = () => {
+        if (closed) return;
+        closed = true;
         try {
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
@@ -72,9 +80,22 @@ const buildSSEResponseFromRun = (
         }
       };
 
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // already closed by sendAbortAndClose
+        }
+      };
+
       // Timeout guard: if the subscription hangs (e.g. task failed before
       // registering the stream), force-close after STREAM_TIMEOUT_MS.
-      const timeoutId = setTimeout(sendAbortAndClose, STREAM_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => {
+        readAbortController?.abort();
+        sendAbortAndClose();
+      }, STREAM_TIMEOUT_MS);
 
       // Short-circuit if the consumer already aborted before we got here.
       if (signal?.aborted) {
@@ -83,13 +104,51 @@ const buildSSEResponseFromRun = (
         return;
       }
 
+      const onAbort = () => {
+        userAborted = true;
+        readAbortController?.abort();
+        sendAbortAndClose();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
       try {
-        const { runs, auth } = await import("@trigger.dev/sdk");
+        const { streams, runs, auth } = await import("@trigger.dev/sdk");
 
         await auth.withAuth({ accessToken: publicAccessToken }, async () => {
-          const subscription = runs
-            .subscribeToRun(runId)
-            .withStreams<{ ui: unknown }>();
+          readAbortController = new AbortController();
+          if (signal?.aborted) {
+            userAborted = true;
+            readAbortController.abort();
+            return;
+          }
+
+          // Monitor run failure separately from the UI stream. Reading the
+          // stream directly avoids a race where the mixed run+stream
+          // subscription can discover the stream late and replay chunks only
+          // at completion.
+          statusSubscription = runs.subscribeToRun(runId, {
+            skipColumns: ["payload", "output"],
+          });
+          const statusMonitor = (async () => {
+            for await (const run of statusSubscription as AsyncIterable<{
+              status?: string;
+            }>) {
+              const status = run.status;
+              if (status && TERMINAL_RUN_STATUSES.has(status)) {
+                readAbortController?.abort();
+                break;
+              }
+            }
+          })().catch(() => undefined);
+
+          const uiStream = await streams.read<unknown>(
+            runId,
+            AGENT_UI_STREAM_ID,
+            {
+              signal: readAbortController.signal,
+              timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
+            },
+          );
 
           // text-delta and reasoning-delta chunks are emitted per-token and
           // can number in the thousands for long tasks. Forwarding each one
@@ -129,20 +188,20 @@ const buildSSEResponseFromRun = (
             batchedDeltaCount = 0;
           };
 
-          // Race subscription.next() against the consumer's abort signal so
-          // Stop closes the local stream in one tick, even when the LLM is
-          // mid-step and no chunks are flowing.
-          const iter = subscription[Symbol.asyncIterator]();
+          // Race stream.next() against the consumer's abort signal so Stop
+          // closes the local stream in one tick, even when the LLM is mid-step
+          // and no chunks are flowing.
           const abortSentinel = Symbol("aborted");
           const abortPromise = new Promise<typeof abortSentinel>((resolve) => {
             if (!signal) return; // never resolves — Promise.race ignores it
-            const onAbort = () => resolve(abortSentinel);
-            signal.addEventListener("abort", onAbort, { once: true });
+            signal.addEventListener("abort", () => resolve(abortSentinel), {
+              once: true,
+            });
           });
 
           let sawTerminalChunk = false;
-          let userAborted = false;
           let firstEventReceived = false;
+          const iter = uiStream[Symbol.asyncIterator]();
           while (true) {
             const next = await Promise.race([iter.next(), abortPromise]);
             if (next === abortSentinel) {
@@ -150,94 +209,78 @@ const buildSSEResponseFromRun = (
               break;
             }
             if (next.done) break;
-            const part = next.value;
+            const chunk = next.value;
 
-            // Disarm the "no first event" timeout once the subscription is
+            // Disarm the "no first event" timeout once the UI stream is
             // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
             // would have its stream force-closed mid-execution.
             if (!firstEventReceived) {
               firstEventReceived = true;
               clearTimeout(timeoutId);
             }
-            // Detect terminal run status (FAILED, CRASHED, etc.) and
-            // immediately synthesize an abort so useChat exits streaming
-            // state without waiting for the subscription to fully close.
+
             if (
-              typeof part === "object" &&
-              part !== null &&
-              "status" in part &&
-              typeof (part as { status?: unknown }).status === "string" &&
-              TERMINAL_RUN_STATUSES.has((part as { status: string }).status)
+              typeof chunk !== "object" ||
+              chunk === null ||
+              !("type" in chunk)
             ) {
-              break; // fall through to !sawTerminalChunk → sendAbortAndClose
+              continue;
             }
 
+            const chunkType = (chunk as { type?: string }).type;
+            const chunkId = (chunk as { id?: string }).id;
+            const chunkDelta = (chunk as { delta?: string }).delta;
+
             if (
-              typeof part === "object" &&
-              part !== null &&
-              "type" in part &&
-              (part as { type: string }).type === AGENT_UI_STREAM_ID
+              (chunkType === "text-delta" || chunkType === "reasoning-delta") &&
+              typeof chunkId === "string" &&
+              typeof chunkDelta === "string"
             ) {
-              const chunk = (part as { chunk?: unknown }).chunk;
-              if (chunk === undefined) continue;
-
-              const chunkType = (chunk as { type?: string }).type;
-              const chunkId = (chunk as { id?: string }).id;
-              const chunkDelta = (chunk as { delta?: string }).delta;
-
-              if (
-                (chunkType === "text-delta" ||
-                  chunkType === "reasoning-delta") &&
-                typeof chunkId === "string" &&
-                typeof chunkDelta === "string"
-              ) {
-                const key = `${chunkType}:${chunkId}`;
-                const existing = deltaBuffers.get(key);
-                if (existing) {
-                  existing.delta += chunkDelta;
-                } else {
-                  deltaBuffers.set(key, {
-                    type: chunkType as "text-delta" | "reasoning-delta",
-                    id: chunkId,
-                    delta: chunkDelta,
-                  });
-                }
-                batchedDeltaCount++;
-                if (batchedDeltaCount >= DELTA_FLUSH_COUNT) {
-                  flushDeltaBuffers();
-                } else if (deltaFlushTimer === null) {
-                  deltaFlushTimer = setTimeout(
-                    flushDeltaBuffers,
-                    DELTA_FLUSH_MS,
-                  );
-                }
-                continue;
+              const key = `${chunkType}:${chunkId}`;
+              const existing = deltaBuffers.get(key);
+              if (existing) {
+                existing.delta += chunkDelta;
+              } else {
+                deltaBuffers.set(key, {
+                  type: chunkType as "text-delta" | "reasoning-delta",
+                  id: chunkId,
+                  delta: chunkDelta,
+                });
               }
-
-              // Non-delta chunk: flush any buffered deltas first so ordering
-              // is preserved (e.g. text-delta before tool-input-start).
-              flushDeltaBuffers();
-
-              if (
-                toolInputDedup.shouldDrop(
-                  chunk as { type?: string; toolCallId?: string },
-                )
-              ) {
-                continue;
+              batchedDeltaCount++;
+              if (batchedDeltaCount >= DELTA_FLUSH_COUNT) {
+                flushDeltaBuffers();
+              } else if (deltaFlushTimer === null) {
+                deltaFlushTimer = setTimeout(flushDeltaBuffers, DELTA_FLUSH_MS);
               }
+              continue;
+            }
 
+            // Non-delta chunk: flush any buffered deltas first so ordering
+            // is preserved (e.g. text-delta before tool-input-start).
+            flushDeltaBuffers();
+
+            if (
+              toolInputDedup.shouldDrop(
+                chunk as { type?: string; toolCallId?: string },
+              )
+            ) {
+              continue;
+            }
+
+            if (!closed) {
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
               );
-              // finish / abort / error are the last chunks useChat needs.
-              if (
-                chunkType === "finish" ||
-                chunkType === "abort" ||
-                chunkType === "error"
-              ) {
-                sawTerminalChunk = true;
-                break;
-              }
+            }
+            // finish / abort / error are the last chunks useChat needs.
+            if (
+              chunkType === "finish" ||
+              chunkType === "abort" ||
+              chunkType === "error"
+            ) {
+              sawTerminalChunk = true;
+              break;
             }
           }
 
@@ -255,19 +298,21 @@ const buildSSEResponseFromRun = (
             // was canceled, or failed before registering the stream.
             sendAbortAndClose();
           }
+
+          statusSubscription?.unsubscribe?.();
+          void statusMonitor;
         });
 
         // Normal close path (sawTerminalChunk = true exits loop above).
         clearTimeout(timeoutId);
-        try {
-          controller.close();
-        } catch {
-          // already closed by sendAbortAndClose
-        }
+        close();
       } catch {
         clearTimeout(timeoutId);
         // Always send an abort on error so useChat cleans up.
         sendAbortAndClose();
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        statusSubscription?.unsubscribe?.();
       }
     },
   });

@@ -2,8 +2,9 @@
  * Structural contract tests for the three non-obvious agent-long reliability
  * invariants that are easy to break in a well-meaning refactor:
  *
- *   1. Transport STREAM_TIMEOUT_MS guard — prevents SSE hanging forever when
- *      a Trigger.dev task fails before registering its stream.
+ *   1. Transport reads the Trigger.dev "ui" stream directly and keeps a
+ *      first-chunk timeout guard — prevents late stream discovery from turning
+ *      live output into completion-time replay.
  *   2. Cancel compare-and-clear (expectedRunId) — TOCTOU guard preventing
  *      concurrent cancels from stomping each other's stored run ID.
  *   3. Resume 204 on terminal + self-heal on 404 — prevents infinite
@@ -46,18 +47,40 @@ const dbActionsSrc = fs.readFileSync(
   "utf8",
 );
 
-describe("agent-long-transport — STREAM_TIMEOUT_MS guard", () => {
-  test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
-    expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
+describe("agent-long-transport — direct UI stream reader", () => {
+  test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
+    expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
+    expect(transportSrc).toMatch(/AGENT_UI_STREAM_ID/);
+    expect(transportSrc).not.toMatch(/\.withStreams\(/);
   });
 
-  test("setTimeout uses sendAbortAndClose with STREAM_TIMEOUT_MS", () => {
+  test("STREAM_TIMEOUT_MS leaves room for Trigger queueing and setup", () => {
     expect(transportSrc).toMatch(
-      /setTimeout\(\s*sendAbortAndClose\s*,\s*STREAM_TIMEOUT_MS\s*\)/,
+      /STREAM_TIMEOUT_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/,
     );
+    expect(transportSrc).toMatch(/STREAM_IDLE_TIMEOUT_SECONDS/);
   });
 
-  test("clearTimeout is called after normal subscription end", () => {
+  test("failed run statuses abort the direct stream reader", () => {
+    expect(transportSrc).toMatch(/runs\.subscribeToRun\(runId/);
+    expect(transportSrc).toMatch(/TERMINAL_RUN_STATUSES\.has\(status\)/);
+    expect(transportSrc).toMatch(/readAbortController\?\.abort\(\)/);
+  });
+
+  test("setTimeout aborts the stream reader and closes the SSE", () => {
+    const timeoutIdx = transportSrc.indexOf("setTimeout(() =>");
+    const abortIdx = transportSrc.indexOf(
+      "readAbortController?.abort()",
+      timeoutIdx,
+    );
+    const closeIdx = transportSrc.indexOf("sendAbortAndClose()", timeoutIdx);
+
+    expect(timeoutIdx).toBeGreaterThan(-1);
+    expect(abortIdx).toBeGreaterThan(timeoutIdx);
+    expect(closeIdx).toBeGreaterThan(abortIdx);
+  });
+
+  test("clearTimeout is called after normal stream end", () => {
     expect(transportSrc).toMatch(/clearTimeout\(\s*timeoutId\s*\)/);
   });
 });

@@ -229,9 +229,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     api.userCustomization.getUserCustomization,
   );
   const extraUsageEnabled = userCustomization?.extra_usage_enabled ?? false;
+  const extraUsageBalanceDollars = extraUsageSettings?.balanceDollars ?? 0;
   const extraUsageMonthlySpentDollars =
     extraUsageSettings?.monthlySpentDollars ?? 0;
   const extraUsageMonthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
+  const extraUsageMonthlyLimitLabel =
+    extraUsageMonthlyCapDollars != null
+      ? `$${extraUsageMonthlyCapDollars.toFixed(2)} limit`
+      : "No limit";
 
   const fetchTokenUsage = useCallback(async () => {
     if (!isPaidUser) return;
@@ -524,21 +529,31 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                         </div>
                       </div>
                       {extraUsageEnabled && (
-                        <div className="flex items-center justify-between py-1.5 text-sm">
-                          <span className="text-muted-foreground">
-                            Extra usage
-                          </span>
-                          <div className="flex items-center gap-3 tabular-nums text-muted-foreground">
-                            <span>
-                              ${extraUsageMonthlySpentDollars.toFixed(2)}
+                        <>
+                          <div className="flex items-center justify-between py-1.5 text-sm">
+                            <span className="text-muted-foreground">
+                              Extra balance
                             </span>
-                            <span>
-                              {extraUsageMonthlyCapDollars
-                                ? `/ $${extraUsageMonthlyCapDollars.toFixed(2)}`
-                                : "No limit"}
+                            <span className="min-w-0 text-right tabular-nums text-muted-foreground">
+                              ${extraUsageBalanceDollars.toFixed(2)} available
                             </span>
                           </div>
-                        </div>
+                          <div className="flex items-center justify-between py-1.5 text-sm">
+                            <span className="text-muted-foreground">
+                              This month
+                            </span>
+                            <div className="ml-3 flex min-w-0 flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-right tabular-nums text-muted-foreground">
+                              <span>
+                                ${extraUsageMonthlySpentDollars.toFixed(2)}{" "}
+                                spent
+                              </span>
+                              <span className="text-muted-foreground/60">
+                                /
+                              </span>
+                              <span>{extraUsageMonthlyLimitLabel}</span>
+                            </div>
+                          </div>
+                        </>
                       )}
                     </>
                   ) : (

@@ -28,6 +28,7 @@ describe("utils", () => {
         {
           id: "msg1",
           role: "user",
+          created_at: 1_700_000_000_000,
           parts: [{ type: "text", text: "Hello" }],
         },
         {
@@ -44,6 +45,7 @@ describe("utils", () => {
       expect(result).toHaveLength(2);
       expect(result[0].id).toBe("msg1");
       expect(result[0].role).toBe("user");
+      expect(result[0].createdAt).toBe(1_700_000_000_000);
       expect(result[0].parts[0]).toEqual({ type: "text", text: "Hello" });
       expect(result[1].sourceMessageId).toBe("msg1");
       expect(result[1].metadata?.feedbackType).toBe("positive");

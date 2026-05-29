@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { exchangeDesktopTransferToken } from "@/lib/desktop-auth";
 
+const DESKTOP_AUTH_STATE_REGEX = /^[a-f0-9]{64}$/;
+
 function getCookieMaxAge(): number {
   const envMaxAge = process.env.WORKOS_COOKIE_MAX_AGE;
   if (envMaxAge) {
@@ -110,6 +112,7 @@ function renderErrorPage(
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
+  const desktopAuthState = url.searchParams.get("desktop_state");
   const error = url.searchParams.get("error");
   const retryUrl = `${url.origin}/desktop-login`;
 
@@ -141,7 +144,24 @@ export async function GET(request: Request) {
     );
   }
 
-  const sessionData = await exchangeDesktopTransferToken(token);
+  if (
+    typeof desktopAuthState !== "string" ||
+    !DESKTOP_AUTH_STATE_REGEX.test(desktopAuthState)
+  ) {
+    console.warn("[Desktop Callback] Missing or invalid desktop auth state");
+    return new Response(
+      renderErrorPage(
+        "Authentication Error",
+        "This sign-in request was not started from this desktop app. Please try signing in again.",
+        retryUrl,
+      ),
+      { status: 400, headers: noStoreHeaders },
+    );
+  }
+
+  const sessionData = await exchangeDesktopTransferToken(token, {
+    desktopAuthState,
+  });
 
   if (!sessionData) {
     console.warn("[Desktop Callback] Token exchange failed");

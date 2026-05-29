@@ -1028,6 +1028,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           {
             text: nextMessage.text,
             files: nextMessage.files as any,
+            metadata: { createdAt: nextMessage.timestamp },
           },
           {
             body: {
@@ -1215,6 +1216,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
                   isTemporaryChat={isTempChat}
+                  isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}
                   uploadStatus={uploadStatus}

@@ -182,6 +182,33 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("blocks internal URL downloads before invoking the sandbox", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const downloadFromUrl = jest.fn();
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "http://169.254.169.254/latest/meta-data",
+            localPath: "/home/user/upload/meta-data",
+          },
+        ],
+        async () => ({
+          files: { downloadFromUrl },
+        }),
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(downloadFromUrl).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("rewrites attachment tags after upload path fallback", () => {
     const messages = [
       {

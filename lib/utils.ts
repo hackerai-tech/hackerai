@@ -9,6 +9,7 @@ export interface MessageRecord {
   id: string;
   role: "user" | "assistant" | "system";
   parts: UIMessagePart<any, any>[];
+  created_at?: number;
   source_message_id?: string;
   feedback?: {
     feedbackType: "positive" | "negative";
@@ -53,6 +54,9 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
   return messages.map((message) => ({
     id: message.id,
     role: message.role,
+    ...(typeof message.created_at === "number"
+      ? { createdAt: message.created_at }
+      : {}),
     // Sanitize parts: remove any old URLs that may be stored in database
     // URLs expire, so we always fetch fresh ones via fileId
     parts: message.parts.map((part: any) => {

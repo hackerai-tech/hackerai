@@ -3,6 +3,9 @@
 import { toast } from "sonner";
 import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 
+export const DESKTOP_UPDATE_URL =
+  "https://github.com/hackerai-tech/hackerai/releases/latest";
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -36,6 +39,18 @@ export async function openInBrowser(url: string): Promise<boolean> {
   } catch (err) {
     console.error("[Tauri] Failed to open URL in browser:", url, err);
     return false;
+  }
+}
+
+async function promptDesktopUpdate(): Promise<void> {
+  toast.error("Update HackerAI Desktop to sign in", {
+    description:
+      "This version is missing the secure sign-in bridge. Opening the latest desktop download in your browser.",
+  });
+
+  const opened = await openInBrowser(DESKTOP_UPDATE_URL);
+  if (!opened) {
+    window.location.href = DESKTOP_UPDATE_URL;
   }
 }
 
@@ -77,6 +92,29 @@ export async function navigateToAuth(
       let loginUrl = `${window.location.origin}/desktop-login`;
       const fallbackUrl = new URL(resolvedPath, window.location.origin);
       const authSearchParams = new URLSearchParams(fallbackUrl.search);
+      let invoke: <T>(
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => Promise<T>;
+
+      try {
+        ({ invoke } = await import("@tauri-apps/api/core"));
+      } catch (err) {
+        console.error("[Tauri] Failed to load Tauri invoke API:", err);
+        await promptDesktopUpdate();
+        return;
+      }
+
+      try {
+        const desktopAuthState = await invoke<string>(
+          "prepare_desktop_auth_state",
+        );
+        authSearchParams.set("desktop_state", desktopAuthState);
+      } catch (err) {
+        console.error("[Tauri] Failed to prepare desktop auth state:", err);
+        await promptDesktopUpdate();
+        return;
+      }
 
       if (fallbackUrl.pathname === "/signup") {
         authSearchParams.set("screen_hint", "sign-up");
@@ -85,7 +123,6 @@ export async function navigateToAuth(
       // In dev mode, pass the local auth callback port so the server
       // redirects to localhost instead of the hackerai:// deep link
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const port = await invoke<number>("get_dev_auth_port");
         if (port > 0) {
           authSearchParams.set("dev_callback_port", String(port));

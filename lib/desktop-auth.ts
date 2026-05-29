@@ -10,6 +10,7 @@ type TransferTokenData = {
   sealedSession: string;
   createdAt: number;
   returnPath?: string;
+  desktopAuthState?: string;
 };
 
 function getRedis(): Redis | null {
@@ -36,7 +37,7 @@ function generateTransferToken(): string {
 
 export async function createDesktopTransferToken(
   sealedSession: string,
-  options?: { returnPath?: string },
+  options?: { returnPath?: string; desktopAuthState?: string },
 ): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
@@ -56,6 +57,9 @@ export async function createDesktopTransferToken(
   if (options?.returnPath) {
     data.returnPath = options.returnPath;
   }
+  if (options?.desktopAuthState) {
+    data.desktopAuthState = options.desktopAuthState;
+  }
 
   try {
     await redis.set(key, data, { ex: TRANSFER_TOKEN_TTL_SECONDS });
@@ -72,6 +76,7 @@ export async function createDesktopTransferToken(
 
 export async function exchangeDesktopTransferToken(
   transferToken: string,
+  options?: { desktopAuthState?: string },
 ): Promise<{
   sealedSession: string;
   returnPath?: string;
@@ -130,6 +135,19 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
+  if (data.desktopAuthState && !options?.desktopAuthState) {
+    console.warn("[Desktop Auth] Desktop auth state required but not provided");
+    return null;
+  }
+
+  if (
+    options?.desktopAuthState &&
+    data.desktopAuthState !== options.desktopAuthState
+  ) {
+    console.warn("[Desktop Auth] Desktop auth state mismatch");
+    return null;
+  }
+
   const result: { sealedSession: string; returnPath?: string } = {
     sealedSession: data.sealedSession,
   };
@@ -142,6 +160,7 @@ export async function exchangeDesktopTransferToken(
 export type OAuthStateMetadata = {
   devCallbackPort?: number;
   returnPath?: string;
+  desktopAuthState?: string;
 };
 
 export async function createOAuthState(

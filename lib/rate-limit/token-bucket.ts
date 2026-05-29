@@ -49,6 +49,12 @@ export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+const RATE_LIMIT_SERVICE_NOT_CONFIGURED =
+  "Rate limiting service is not configured";
+
+const throwRateLimitServiceNotConfigured = (): never => {
+  throw new ChatSDKError("rate_limit:chat", RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+};
 
 // =============================================================================
 // Cost Calculation
@@ -151,7 +157,11 @@ export const checkTokenBucketLimit = async (
   const redis = createRedisClient();
 
   if (!redis) {
-    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    if (process.env.NODE_ENV === "production") {
+      throwRateLimitServiceNotConfigured();
+    }
+
+    // Skip rate limiting if Redis is not configured in local dev/test.
     const { monthly } = getBudgetLimits(subscription);
     return {
       remaining: monthly,
@@ -430,7 +440,10 @@ export const deductUsage = async (
   organizationId?: string,
 ): Promise<void> => {
   const redis = createRedisClient();
-  if (!redis) return;
+  if (!redis) {
+    if (process.env.NODE_ENV !== "production") return;
+    throwRateLimitServiceNotConfigured();
+  }
 
   try {
     const { monthly, monthlyLimit } = createRateLimiter(
