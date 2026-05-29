@@ -13,7 +13,7 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { ChevronDown, FileSearch, WandSparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -209,6 +209,10 @@ export const MessageItem = memo(function MessageItem({
     setIsUserMessageExpanded(true);
   }, []);
 
+  const handleShowLessUserMessage = useCallback(() => {
+    setIsUserMessageExpanded(false);
+  }, []);
+
   const isStreamingThisMessage =
     message.role === "assistant" &&
     isLastAssistantMessage &&
@@ -392,18 +396,31 @@ export const MessageItem = memo(function MessageItem({
                         </button>
                       </>
                     ) : (
-                      nonFileParts.map((part, partIndex) => (
-                        <MessagePartHandler
-                          key={`${message.id}-${partIndex}`}
-                          message={message}
-                          part={part}
-                          partIndex={partIndex}
-                          status={effectiveStatus}
-                          terminalOutputByToolCallId={
-                            terminalOutputByToolCallId
-                          }
-                        />
-                      ))
+                      <>
+                        {nonFileParts.map((part, partIndex) => (
+                          <MessagePartHandler
+                            key={`${message.id}-${partIndex}`}
+                            message={message}
+                            part={part}
+                            partIndex={partIndex}
+                            status={effectiveStatus}
+                            terminalOutputByToolCallId={
+                              terminalOutputByToolCallId
+                            }
+                          />
+                        ))}
+                        {shouldCollapseUserMessage && isUserMessageExpanded && (
+                          <button
+                            type="button"
+                            onClick={handleShowLessUserMessage}
+                            aria-expanded={true}
+                            className="mt-2 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <span>Show less</span>
+                            <ChevronUp className="size-4 shrink-0" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 ) : !shouldUseWorkedFor ? (

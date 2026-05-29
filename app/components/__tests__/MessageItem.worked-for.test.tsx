@@ -265,7 +265,7 @@ describe("MessageItem user message collapse", () => {
     expect(screen.queryByText(/line 18/)).not.toBeInTheDocument();
   });
 
-  it("shows the full user message after the button is clicked", () => {
+  it("shows the full user message and allows collapsing it again", () => {
     const longMessage = Array.from(
       { length: 18 },
       (_, index) => `line ${index + 1}`,
@@ -284,6 +284,16 @@ describe("MessageItem user message collapse", () => {
       screen.queryByRole("button", { name: /show fulll message/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByText(/line 18/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /show less/i }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /show less/i }));
+
+    expect(screen.queryByText(/line 18/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /show fulll message/i }),
+    ).toBeInTheDocument();
   });
 
   it("leaves short user messages expanded", () => {
