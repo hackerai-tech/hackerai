@@ -1,4 +1,4 @@
-import { memo, useMemo, useCallback, Fragment } from "react";
+import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -13,7 +13,7 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { FileSearch, WandSparkles } from "lucide-react";
+import { ChevronDown, FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -22,6 +22,23 @@ import {
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
+
+const USER_MESSAGE_PREVIEW_LINE_LIMIT = 12;
+const USER_MESSAGE_PREVIEW_CHAR_LIMIT = 1_200;
+
+const splitMessageLines = (text: string) => text.split(/\r\n|\r|\n/);
+
+const isLongUserMessageText = (text: string) =>
+  text.length > USER_MESSAGE_PREVIEW_CHAR_LIMIT ||
+  splitMessageLines(text).length > USER_MESSAGE_PREVIEW_LINE_LIMIT;
+
+const getUserMessagePreview = (text: string) => {
+  const linePreview = splitMessageLines(text)
+    .slice(0, USER_MESSAGE_PREVIEW_LINE_LIMIT)
+    .join("\n");
+
+  return linePreview.slice(0, USER_MESSAGE_PREVIEW_CHAR_LIMIT).trimEnd();
+};
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -144,6 +161,7 @@ export const MessageItem = memo(function MessageItem({
   showingLoadingIndicator,
   summarizationStatus,
 }: MessageItemProps) {
+  const [isUserMessageExpanded, setIsUserMessageExpanded] = useState(false);
   const isUser = message.role === "user";
   const isLastAssistantMessage =
     message.role === "assistant" &&
@@ -175,6 +193,21 @@ export const MessageItem = memo(function MessageItem({
     () => splitWorkedForParts(message.parts),
     [message.parts],
   );
+
+  const shouldCollapseUserMessage =
+    isUser &&
+    nonFileParts.length > 0 &&
+    nonFileParts.every((part) => part.type === "text") &&
+    isLongUserMessageText(messageText);
+
+  const collapsedUserMessageText = useMemo(
+    () => (shouldCollapseUserMessage ? getUserMessagePreview(messageText) : ""),
+    [messageText, shouldCollapseUserMessage],
+  );
+
+  const handleShowFullUserMessage = useCallback(() => {
+    setIsUserMessageExpanded(true);
+  }, []);
 
   const isStreamingThisMessage =
     message.role === "assistant" &&
@@ -344,16 +377,34 @@ export const MessageItem = memo(function MessageItem({
               >
                 {isUser ? (
                   <div className="whitespace-pre-wrap break-words">
-                    {nonFileParts.map((part, partIndex) => (
-                      <MessagePartHandler
-                        key={`${message.id}-${partIndex}`}
-                        message={message}
-                        part={part}
-                        partIndex={partIndex}
-                        status={effectiveStatus}
-                        terminalOutputByToolCallId={terminalOutputByToolCallId}
-                      />
-                    ))}
+                    {shouldCollapseUserMessage && !isUserMessageExpanded ? (
+                      <>
+                        <div>{collapsedUserMessageText}</div>
+                        <div aria-hidden="true">...</div>
+                        <button
+                          type="button"
+                          onClick={handleShowFullUserMessage}
+                          aria-expanded={false}
+                          className="mt-2 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <span>Show fulll message</span>
+                          <ChevronDown className="size-4 shrink-0" />
+                        </button>
+                      </>
+                    ) : (
+                      nonFileParts.map((part, partIndex) => (
+                        <MessagePartHandler
+                          key={`${message.id}-${partIndex}`}
+                          message={message}
+                          part={part}
+                          partIndex={partIndex}
+                          status={effectiveStatus}
+                          terminalOutputByToolCallId={
+                            terminalOutputByToolCallId
+                          }
+                        />
+                      ))
+                    )}
                   </div>
                 ) : !shouldUseWorkedFor ? (
                   nonFileParts.map((part, partIndex) => (

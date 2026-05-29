@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageItem } from "../MessageItem";
 import type { ChatMessage, ChatMode, ChatStatus } from "@/types";
 
@@ -53,6 +53,18 @@ const assistantMessage = {
     generationTimeMs: 1_500,
   },
 } as unknown as ChatMessage;
+
+const createUserMessage = (text: string) =>
+  ({
+    id: "user-1",
+    role: "user",
+    parts: [
+      {
+        type: "text",
+        text,
+      },
+    ],
+  }) as unknown as ChatMessage;
 
 const renderMessageItem = ({
   mode,
@@ -230,5 +242,59 @@ describe("MessageItem WorkedFor rendering", () => {
 
     expect(screen.queryByText(/worked for/i)).not.toBeInTheDocument();
     expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+});
+
+describe("MessageItem user message collapse", () => {
+  it("collapses long user messages behind a full-message button", () => {
+    const longMessage = Array.from(
+      { length: 18 },
+      (_, index) => `line ${index + 1}`,
+    ).join("\n");
+
+    renderMessageItem({
+      mode: "ask",
+      message: createUserMessage(longMessage),
+    });
+
+    expect(
+      screen.getByRole("button", { name: /show fulll message/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("...")).toBeInTheDocument();
+    expect(screen.getByText(/line 12/)).toBeInTheDocument();
+    expect(screen.queryByText(/line 18/)).not.toBeInTheDocument();
+  });
+
+  it("shows the full user message after the button is clicked", () => {
+    const longMessage = Array.from(
+      { length: 18 },
+      (_, index) => `line ${index + 1}`,
+    ).join("\n");
+
+    renderMessageItem({
+      mode: "ask",
+      message: createUserMessage(longMessage),
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /show fulll message/i }),
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /show fulll message/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/line 18/)).toBeInTheDocument();
+  });
+
+  it("leaves short user messages expanded", () => {
+    renderMessageItem({
+      mode: "ask",
+      message: createUserMessage("short message"),
+    });
+
+    expect(screen.getByText("short message")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /show fulll message/i }),
+    ).not.toBeInTheDocument();
   });
 });
