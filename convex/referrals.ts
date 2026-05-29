@@ -462,6 +462,16 @@ export const attributeReferredSignup = mutation({
         0,
         Math.trunc(existing.signup_bonus_units ?? args.starterBonusUnits),
       );
+      if (
+        existing.signup_bonus_units == null &&
+        existing.sign_up_reward_status === "none" &&
+        existingStarterBonusUnits > 0
+      ) {
+        await ctx.db.patch(existing._id, {
+          signup_bonus_units: existingStarterBonusUnits,
+          updated_at: now,
+        });
+      }
       return {
         status: "already_attributed" as const,
         referrerUserId: existing.referrer_user_id,
