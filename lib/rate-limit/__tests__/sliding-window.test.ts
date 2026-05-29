@@ -7,6 +7,8 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 describe("sliding-window", () => {
   const mockEvalFn = jest.fn();
+  const mockIncrByFn = jest.fn();
+  const mockExpireFn = jest.fn();
   const mockCreateRedisClient = jest.fn();
 
   beforeEach(() => {
@@ -15,6 +17,8 @@ describe("sliding-window", () => {
 
     // Default mock responses
     mockEvalFn.mockResolvedValue([1, 5]);
+    mockIncrByFn.mockResolvedValue(5);
+    mockExpireFn.mockResolvedValue(1);
   });
 
   const getIsolatedModule = () => {
@@ -53,7 +57,10 @@ describe("sliding-window", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 1, expect.any(Number)],
       );
       expect(result.remaining).toBe(5);
@@ -113,7 +120,10 @@ describe("sliding-window", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 2, expect.any(Number)],
       );
       expect(result.remaining).toBe(5);
@@ -133,6 +143,30 @@ describe("sliding-window", () => {
         expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
       }
+    });
+  });
+
+  describe("grantFreeReferralBonusUnits", () => {
+    it("should grant referral bonus request units", async () => {
+      const { grantFreeReferralBonusUnits } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({
+        eval: mockEvalFn,
+        incrby: mockIncrByFn,
+        expire: mockExpireFn,
+      });
+
+      const result = await grantFreeReferralBonusUnits("user-123", 5);
+
+      expect(result).toEqual({ granted: true, units: 5 });
+      expect(mockIncrByFn).toHaveBeenCalledWith(
+        "free_referral_bonus:user-123",
+        5,
+      );
+      expect(mockExpireFn).toHaveBeenCalledWith(
+        "free_referral_bonus:user-123",
+        30 * 24 * 60 * 60,
+      );
     });
   });
 });

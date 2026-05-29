@@ -245,7 +245,7 @@ describe("POST /api/subscribe", () => {
       .mockResolvedValueOnce({
         status: "attributed",
         referrerUserId: "user_referrer",
-        starterRewardAwarded: true,
+        starterBonusAwarded: false,
       } as never)
       .mockResolvedValueOnce({
         recorded: true,

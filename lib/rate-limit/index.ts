@@ -48,6 +48,7 @@ export {
 export {
   checkFreeUserRateLimit,
   checkFreeAgentRateLimit,
+  grantFreeReferralBonusUnits,
 } from "./sliding-window";
 
 // Re-export utilities

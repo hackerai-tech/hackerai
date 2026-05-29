@@ -21,6 +21,7 @@ describe("GET /api/referrals", () => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.co";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+    delete process.env.REFERRAL_REFERRED_SIGNUP_BONUS_UNITS;
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
@@ -45,6 +46,7 @@ describe("GET /api/referrals", () => {
 
     expect(response.status).toBe(200);
     expect(body.referralUrl).toBe("https://hackerai.co/invite/UVVQDMV");
+    expect(body.referredSignupBonusUnits).toBe(10);
     expect(mockConvexMutation).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

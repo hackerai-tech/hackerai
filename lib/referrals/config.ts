@@ -6,7 +6,7 @@ export const REFERRAL_CODE_PATTERN = /^[a-zA-Z0-9_-]{6,64}$/;
 export type ReferralRewardConfig = {
   enabled: boolean;
   referrerRewardDollars: number;
-  referredSignupRewardDollars: number;
+  referredSignupBonusUnits: number;
   attributionMaxUserAgeDays: number;
   cookieMaxAgeSeconds: number;
 };
@@ -27,9 +27,9 @@ export function getReferralRewardConfig(): ReferralRewardConfig {
       process.env.REFERRAL_REFERRER_REWARD_DOLLARS,
       10,
     ),
-    referredSignupRewardDollars: parsePositiveNumber(
-      process.env.REFERRAL_REFERRED_SIGNUP_REWARD_DOLLARS,
-      2,
+    referredSignupBonusUnits: parsePositiveNumber(
+      process.env.REFERRAL_REFERRED_SIGNUP_BONUS_UNITS,
+      10,
     ),
     attributionMaxUserAgeDays: parsePositiveNumber(
       process.env.REFERRAL_ATTRIBUTION_MAX_USER_AGE_DAYS,

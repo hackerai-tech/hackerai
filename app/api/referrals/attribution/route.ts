@@ -9,6 +9,7 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
+import { grantFreeReferralBonusUnits } from "@/lib/rate-limit/sliding-window";
 import { phLogger } from "@/lib/posthog/server";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
@@ -58,19 +59,54 @@ export async function POST(req: NextRequest) {
     serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     referredUserId: userId,
     referralCode,
-    starterRewardDollars: config.referredSignupRewardDollars,
+    starterBonusUnits: config.referredSignupBonusUnits,
     userCreatedAtMs: parseCreatedAtMs(user.createdAt),
     maxUserAgeDays: config.attributionMaxUserAgeDays,
     source: "referral_cookie",
   });
+
+  let starterBonusUnitsAwarded = false;
+  let starterBonusUnits = 0;
+
+  if (
+    result.status === "attributed" &&
+    result.starterBonusAwarded &&
+    config.referredSignupBonusUnits > 0
+  ) {
+    try {
+      const grant = await grantFreeReferralBonusUnits(
+        userId,
+        config.referredSignupBonusUnits,
+      );
+      starterBonusUnitsAwarded = grant.granted;
+      starterBonusUnits = grant.units;
+
+      if (!grant.granted) {
+        phLogger.warn("referral_signup_bonus_grant_failed", {
+          userId,
+          referrer_user_id: result.referrerUserId,
+          referral_code: referralCode,
+          starter_bonus_units: config.referredSignupBonusUnits,
+        });
+      }
+    } catch (error) {
+      phLogger.warn("referral_signup_bonus_grant_failed", {
+        userId,
+        referrer_user_id: result.referrerUserId,
+        referral_code: referralCode,
+        starter_bonus_units: config.referredSignupBonusUnits,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   if (result.status === "attributed") {
     phLogger.event("referred_signup_attributed", {
       userId,
       referrer_user_id: result.referrerUserId,
       referral_code: referralCode,
-      starter_reward_awarded: result.starterRewardAwarded,
-      starter_reward_dollars: config.referredSignupRewardDollars,
+      starter_bonus_awarded: starterBonusUnitsAwarded,
+      starter_bonus_units: starterBonusUnits,
     });
   } else if (result.status === "blocked" || result.status === "not_found") {
     phLogger.event("referral_reward_withheld", {
@@ -88,7 +124,9 @@ export async function POST(req: NextRequest) {
       result.status === "attributed" || result.status === "already_attributed",
     status: result.status,
     reason: result.reason,
-    starterRewardAwarded: result.starterRewardAwarded,
+    starterBonusAwarded: result.starterBonusAwarded,
+    starterBonusUnitsAwarded,
+    starterBonusUnits,
   });
   clearReferralCookies(response);
   return response;

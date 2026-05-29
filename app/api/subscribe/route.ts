@@ -67,7 +67,7 @@ export const POST = async (req: NextRequest) => {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             referredUserId: userId,
             referralCode,
-            starterRewardDollars: referralConfig.referredSignupRewardDollars,
+            starterBonusUnits: 0,
             userCreatedAtMs: parseCreatedAtMs(user.createdAt),
             maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
             source: "subscribe_route_referral_cookie",
@@ -79,8 +79,8 @@ export const POST = async (req: NextRequest) => {
             userId,
             referrer_user_id: attribution.referrerUserId,
             referral_code: referralCode,
-            starter_reward_awarded: attribution.starterRewardAwarded,
-            starter_reward_dollars: referralConfig.referredSignupRewardDollars,
+            starter_bonus_awarded: attribution.starterBonusAwarded,
+            starter_bonus_units: 0,
             source: "subscribe_route",
           });
         }

@@ -5,7 +5,10 @@ import { ArrowRight, Gift } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
-import { isValidReferralCode } from "@/lib/referrals/config";
+import {
+  getReferralRewardConfig,
+  isValidReferralCode,
+} from "@/lib/referrals/config";
 import { workos } from "@/app/api/workos";
 
 export const runtime = "nodejs";
@@ -86,10 +89,15 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
     ...params,
     referral_code: referralCode,
   });
+  const bonusUnits = getReferralRewardConfig().referredSignupBonusUnits;
+  const bonusHeading =
+    bonusUnits > 0
+      ? `Sign up and get ${bonusUnits} extra free request${bonusUnits === 1 ? "" : "s"}`
+      : "Sign up through a referral link";
   const referrerName = await getReferralDisplayName(referralCode);
   const referralLine = referrerName
-    ? `You're signing up through ${referrerName}'s referral link. Create your account to redeem your starter credits.`
-    : "You're signing up through a custom referral link. Create your account to redeem your starter credits.";
+    ? `You're signing up through ${referrerName}'s referral link. Create your account to redeem your starter requests.`
+    : "You're signing up through a custom referral link. Create your account to redeem your starter requests.";
 
   return (
     <main className="bg-background text-foreground flex min-h-dvh items-center justify-center px-5 py-10">
@@ -108,9 +116,7 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
               <Gift className="size-5" />
             </div>
             <div className="space-y-2">
-              <p className="text-xl font-semibold">
-                Sign up and get free extra usage
-              </p>
+              <p className="text-xl font-semibold">{bonusHeading}</p>
               <p className="text-muted-foreground text-lg leading-relaxed">
                 {referralLine}
               </p>

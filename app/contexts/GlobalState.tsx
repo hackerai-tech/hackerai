@@ -202,9 +202,32 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     fetch("/api/referrals/attribution", {
       method: "POST",
       credentials: "include",
-    }).catch(() => {
-      // Referral attribution is best-effort and must never block app startup.
-    });
+    })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = (await response.json().catch(() => null)) as {
+          status?: string;
+          starterBonusUnitsAwarded?: boolean;
+          starterBonusUnits?: number;
+        } | null;
+        const bonusUnits =
+          typeof body?.starterBonusUnits === "number"
+            ? body.starterBonusUnits
+            : 0;
+
+        if (
+          body?.status === "attributed" &&
+          body.starterBonusUnitsAwarded &&
+          bonusUnits > 0
+        ) {
+          toast.success("Referral bonus added", {
+            description: `You got ${bonusUnits} extra free request${bonusUnits === 1 ? "" : "s"}.`,
+          });
+        }
+      })
+      .catch(() => {
+        // Referral attribution is best-effort and must never block app startup.
+      });
   }, [user]);
 
   // Initialize chat sidebar state

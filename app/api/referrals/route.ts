@@ -94,7 +94,7 @@ export async function GET(req: NextRequest) {
     active: result.active,
     referralUrl: referralUrl.toString(),
     referrerRewardDollars: config.referrerRewardDollars,
-    referredSignupRewardDollars: config.referredSignupRewardDollars,
+    referredSignupBonusUnits: config.referredSignupBonusUnits,
     stats: {
       attributedSignups: result.attributedSignups,
       paidConversions: result.paidConversions,

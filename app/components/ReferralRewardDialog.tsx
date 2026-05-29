@@ -29,7 +29,7 @@ type ReferralProgram = {
   active: boolean;
   referralUrl: string;
   referrerRewardDollars: number;
-  referredSignupRewardDollars: number;
+  referredSignupBonusUnits: number;
   stats: {
     attributedSignups: number;
     paidConversions: number;
@@ -77,7 +77,7 @@ export function ReferralRewardDialog({
         captureAuthenticatedEvent("referral_modal_opened", {
           referral_code: body.code,
           referrer_reward_dollars: body.referrerRewardDollars,
-          referred_signup_reward_dollars: body.referredSignupRewardDollars,
+          referred_signup_bonus_units: body.referredSignupBonusUnits,
         });
       })
       .catch((err) => {
@@ -112,6 +112,11 @@ export function ReferralRewardDialog({
   };
 
   const referrerReward = program?.referrerRewardDollars ?? 0;
+  const referredSignupBonusUnits = program?.referredSignupBonusUnits ?? 0;
+  const referredSignupBonusCopy =
+    referredSignupBonusUnits > 0
+      ? `${referredSignupBonusUnits} extra free request${referredSignupBonusUnits === 1 ? "" : "s"}`
+      : "extra free requests";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -214,7 +219,7 @@ export function ReferralRewardDialog({
                 Earn ${referrerReward} in credits
               </DialogTitle>
               <DialogDescription className="text-muted-foreground max-w-xs text-sm">
-                Invite friends to HackerAI. When they upgrade, you both win.
+                Invite friends. When they upgrade, you both win.
               </DialogDescription>
             </DialogHeader>
 
@@ -279,7 +284,7 @@ export function ReferralRewardDialog({
                         <UserPlus className="size-5" />
                       </span>
                       <span className="text-foreground text-base font-normal">
-                        They sign up and get <b>extra usage credits</b>
+                        They sign up and get <b>{referredSignupBonusCopy}</b>
                       </span>
                     </li>
                     <li className="flex items-center gap-3">

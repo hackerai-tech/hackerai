@@ -287,6 +287,7 @@ export default defineSchema({
     referred_user_id: v.optional(v.string()),
     referral_code: v.optional(v.string()),
     amount_dollars: v.number(),
+    amount_units: v.optional(v.number()),
     reason: v.optional(v.string()),
     stripe_checkout_session_id: v.optional(v.string()),
     stripe_customer_id: v.optional(v.string()),
