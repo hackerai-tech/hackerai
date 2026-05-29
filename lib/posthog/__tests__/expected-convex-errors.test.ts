@@ -47,6 +47,52 @@ describe("shouldDropExpectedConvexException", () => {
     ).toBe(true);
   });
 
+  it("drops expected upload validation errors", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"INVALID_FILE_SIZE","message":"A positive file size is required before generating an upload URL"}',
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            "Uncaught Error: Batch size exceeds limit: Maximum 50 files allowed per request",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("drops expected chat authorization errors", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"CHAT_UNAUTHORIZED","message":"You don\\u0027t have permission to access this chat"}',
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("drops Convex optimistic concurrency retries from file upload metadata", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Documents read from or written to the "btreeNode" table changed while this mutation was being run and on every subsequent retry.',
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("keeps non-exception events with matching text", () => {
     expect(
       shouldDropExpectedConvexException({

@@ -12,6 +12,8 @@ import Image from "next/image";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { formatMessageActionTimestamp } from "@/lib/utils/message-time";
 import { SourcesDialog } from "./SourcesDialog";
 
 interface MessageActionsProps {
@@ -24,6 +26,8 @@ interface MessageActionsProps {
   onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
+  isMobile?: boolean;
+  messageCreatedAt?: number;
   status: ChatStatus;
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
@@ -38,6 +42,74 @@ interface MessageActionsProps {
   }>;
 }
 
+interface MessageActionVisibility {
+  shouldRenderActions: boolean;
+  actionsAreVisible: boolean;
+  shouldReserveTimestamp: boolean;
+  timestampIsVisible: boolean;
+}
+
+const timestampClassName =
+  "flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground tabular-nums whitespace-nowrap transition-opacity duration-200 ease-in-out";
+
+export function getMessageActionVisibility({
+  isUser,
+  isLastAssistantMessage,
+  isMobile,
+  isHovered,
+  isEditing,
+  isLastAssistantLoading,
+  hasTimestamp,
+}: {
+  isUser: boolean;
+  isLastAssistantMessage: boolean;
+  isMobile: boolean;
+  isHovered: boolean;
+  isEditing: boolean;
+  isLastAssistantLoading: boolean;
+  hasTimestamp: boolean;
+}): MessageActionVisibility {
+  const shouldRenderActions = !isLastAssistantLoading && !isEditing;
+  const isHistoricalAssistant = !isUser && !isLastAssistantMessage;
+  const requiresDesktopHover = isUser || isHistoricalAssistant;
+  const actionsAreVisible =
+    shouldRenderActions && (!requiresDesktopHover || isMobile || isHovered);
+  const shouldReserveTimestamp =
+    shouldRenderActions && !isMobile && hasTimestamp;
+  const timestampIsVisible = shouldReserveTimestamp && isHovered;
+
+  return {
+    shouldRenderActions,
+    actionsAreVisible,
+    shouldReserveTimestamp,
+    timestampIsVisible,
+  };
+}
+
+function MessageTimestamp({
+  dateTime,
+  display,
+  isVisible,
+}: {
+  dateTime: string;
+  display: string;
+  isVisible: boolean;
+}) {
+  return (
+    <time
+      dateTime={dateTime}
+      className={cn(
+        timestampClassName,
+        isVisible
+          ? "opacity-70"
+          : "opacity-0 group-focus-within/message-actions:opacity-70",
+      )}
+    >
+      {display}
+    </time>
+  );
+}
+
 export const MessageActions = ({
   messageText,
   isUser,
@@ -48,6 +120,8 @@ export const MessageActions = ({
   onBranch,
   isHovered,
   isEditing,
+  isMobile = false,
+  messageCreatedAt,
   status,
   onFeedback,
   existingFeedback,
@@ -99,8 +173,25 @@ export const MessageActions = ({
   const isLastAssistantLoading =
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
-  const shouldShowActions =
-    !isLastAssistantLoading && !isEditing && (isUser ? isHovered : true); // Always show for assistant, only on hover for user
+  const formattedCreatedAt = formatMessageActionTimestamp(messageCreatedAt);
+  const timestampDateTime =
+    formattedCreatedAt !== null && typeof messageCreatedAt === "number"
+      ? new Date(messageCreatedAt).toISOString()
+      : null;
+  const {
+    shouldRenderActions,
+    actionsAreVisible,
+    shouldReserveTimestamp,
+    timestampIsVisible,
+  } = getMessageActionVisibility({
+    isUser,
+    isLastAssistantMessage,
+    isMobile,
+    isHovered,
+    isEditing,
+    isLastAssistantLoading,
+    hasTimestamp: formattedCreatedAt !== null && timestampDateTime !== null,
+  });
 
   // Reset isRegenerating when status changes back to idle
   const isLoading = status === "submitted" || status === "streaming";
@@ -110,27 +201,39 @@ export const MessageActions = ({
 
   return (
     <div
-      className={`mt-1 flex flex-wrap items-center gap-2 transition-opacity duration-200 ease-in-out ${isUser ? "justify-end" : "justify-start"} ${shouldShowActions ? "opacity-100" : "opacity-0"}`}
+      className={cn(
+        "group/message-actions mt-1 flex flex-wrap items-center gap-2 transition-opacity duration-200 ease-in-out",
+        isUser ? "justify-end" : "justify-start",
+        actionsAreVisible
+          ? "opacity-100"
+          : "pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100",
+      )}
     >
-      {shouldShowActions ? (
+      {shouldRenderActions ? (
         <>
+          {isUser && shouldReserveTimestamp && (
+            <MessageTimestamp
+              dateTime={timestampDateTime!}
+              display={formattedCreatedAt!}
+              isVisible={timestampIsVisible}
+            />
+          )}
+
           <div className="flex items-center space-x-2">
-            {(isUser || isLastAssistantMessage) && (
-              <WithTooltip
-                display={copied ? "Copied!" : "Copy message"}
-                trigger={
-                  <button
-                    onClick={handleCopy}
-                    className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                    aria-label={copied ? "Copied!" : "Copy message"}
-                  >
-                    {copied ? <Check size={16} /> : <Copy size={16} />}
-                  </button>
-                }
-                side="bottom"
-                delayDuration={300}
-              />
-            )}
+            <WithTooltip
+              display={copied ? "Copied!" : "Copy message"}
+              trigger={
+                <button
+                  onClick={handleCopy}
+                  className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                  aria-label={copied ? "Copied!" : "Copy message"}
+                >
+                  {copied ? <Check size={16} /> : <Copy size={16} />}
+                </button>
+              }
+              side="bottom"
+              delayDuration={300}
+            />
 
             {/* Show edit only for user messages */}
             {isUser && (
@@ -151,59 +254,27 @@ export const MessageActions = ({
             )}
 
             {/* Show feedback buttons only for assistant messages and not in temporary chats */}
-            {!isUser &&
-              isLastAssistantMessage &&
-              onFeedback &&
-              !isTemporaryChat && (
-                <>
-                  {/* Hide positive feedback button when awaiting negative feedback details */}
-                  {!isAwaitingFeedbackDetails && (
-                    <WithTooltip
-                      display={"Good response"}
-                      trigger={
-                        <button
-                          type="button"
-                          onClick={() => handleFeedback("positive")}
-                          className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
-                            existingFeedback === "positive"
-                              ? "opacity-100 text-primary-foreground"
-                              : "opacity-70 hover:opacity-100 text-muted-foreground"
-                          }`}
-                          aria-label="Good response"
-                        >
-                          <ThumbsUp
-                            size={16}
-                            fill={
-                              existingFeedback === "positive"
-                                ? "currentColor"
-                                : "none"
-                            }
-                          />
-                        </button>
-                      }
-                      side="bottom"
-                      delayDuration={300}
-                    />
-                  )}
+            {!isUser && onFeedback && !isTemporaryChat && (
+              <>
+                {/* Hide positive feedback button when awaiting negative feedback details */}
+                {!isAwaitingFeedbackDetails && (
                   <WithTooltip
-                    display={"Poor response"}
+                    display={"Good response"}
                     trigger={
                       <button
                         type="button"
-                        onClick={() => handleFeedback("negative")}
+                        onClick={() => handleFeedback("positive")}
                         className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
-                          existingFeedback === "negative" ||
-                          isAwaitingFeedbackDetails
+                          existingFeedback === "positive"
                             ? "opacity-100 text-primary-foreground"
                             : "opacity-70 hover:opacity-100 text-muted-foreground"
                         }`}
-                        aria-label="Poor response"
+                        aria-label="Good response"
                       >
-                        <ThumbsDown
+                        <ThumbsUp
                           size={16}
                           fill={
-                            existingFeedback === "negative" ||
-                            isAwaitingFeedbackDetails
+                            existingFeedback === "positive"
                               ? "currentColor"
                               : "none"
                           }
@@ -213,8 +284,37 @@ export const MessageActions = ({
                     side="bottom"
                     delayDuration={300}
                   />
-                </>
-              )}
+                )}
+                <WithTooltip
+                  display={"Poor response"}
+                  trigger={
+                    <button
+                      type="button"
+                      onClick={() => handleFeedback("negative")}
+                      className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
+                        existingFeedback === "negative" ||
+                        isAwaitingFeedbackDetails
+                          ? "opacity-100 text-primary-foreground"
+                          : "opacity-70 hover:opacity-100 text-muted-foreground"
+                      }`}
+                      aria-label="Poor response"
+                    >
+                      <ThumbsDown
+                        size={16}
+                        fill={
+                          existingFeedback === "negative" ||
+                          isAwaitingFeedbackDetails
+                            ? "currentColor"
+                            : "none"
+                        }
+                      />
+                    </button>
+                  }
+                  side="bottom"
+                  delayDuration={300}
+                />
+              </>
+            )}
 
             {/* Show regenerate only for the last assistant message */}
             {!isUser && isLastAssistantMessage && (
@@ -237,26 +337,23 @@ export const MessageActions = ({
             )}
 
             {/* Show branch only for assistant messages and not in temporary chats */}
-            {!isUser &&
-              isLastAssistantMessage &&
-              onBranch &&
-              !isTemporaryChat && (
-                <WithTooltip
-                  display={"Branch in new chat"}
-                  trigger={
-                    <button
-                      type="button"
-                      onClick={onBranch}
-                      className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                      aria-label="Branch in new chat"
-                    >
-                      <Split size={16} />
-                    </button>
-                  }
-                  side="bottom"
-                  delayDuration={300}
-                />
-              )}
+            {!isUser && onBranch && !isTemporaryChat && (
+              <WithTooltip
+                display={"Branch in new chat"}
+                trigger={
+                  <button
+                    type="button"
+                    onClick={onBranch}
+                    className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                    aria-label="Branch in new chat"
+                  >
+                    <Split size={16} />
+                  </button>
+                }
+                side="bottom"
+                delayDuration={300}
+              />
+            )}
           </div>
 
           {/* Sources (only for assistant messages with web results) - positioned at the end */}
@@ -294,6 +391,14 @@ export const MessageActions = ({
                 Sources
               </div>
             </Button>
+          )}
+
+          {!isUser && shouldReserveTimestamp && (
+            <MessageTimestamp
+              dateTime={timestampDateTime!}
+              display={formattedCreatedAt!}
+              isVisible={timestampIsVisible}
+            />
           )}
         </>
       ) : (

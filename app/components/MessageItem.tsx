@@ -1,4 +1,4 @@
-import { memo, useMemo, useCallback, Fragment } from "react";
+import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -13,7 +13,7 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { FileSearch, WandSparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -23,6 +23,25 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
 
+const USER_MESSAGE_PREVIEW_LINE_LIMIT = 20;
+const USER_MESSAGE_PREVIEW_CHAR_LIMIT = 1_200;
+
+const splitMessageLines = (text: string) => text.split(/\r\n|\r|\n/);
+
+const isLongUserMessageText = (text: string) =>
+  text.length > USER_MESSAGE_PREVIEW_CHAR_LIMIT ||
+  splitMessageLines(text).length > USER_MESSAGE_PREVIEW_LINE_LIMIT;
+
+const getUserMessagePreview = (text: string) => {
+  const lines = splitMessageLines(text);
+
+  if (lines.length > USER_MESSAGE_PREVIEW_LINE_LIMIT) {
+    return lines.slice(0, USER_MESSAGE_PREVIEW_LINE_LIMIT).join("\n");
+  }
+
+  return text.slice(0, USER_MESSAGE_PREVIEW_CHAR_LIMIT).trimEnd();
+};
+
 interface MessageItemProps {
   message: ChatMessage;
   index: number;
@@ -31,6 +50,7 @@ interface MessageItemProps {
   status: ChatStatus;
   isHovered: boolean;
   isEditing: boolean;
+  isMobile?: boolean;
   feedbackInputMessageId: string | null;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
@@ -70,6 +90,7 @@ function areMessageItemPropsEqual(
   if (prev.status !== next.status) return false;
   if (prev.isHovered !== next.isHovered) return false;
   if (prev.isEditing !== next.isEditing) return false;
+  if (prev.isMobile !== next.isMobile) return false;
   if (prev.feedbackInputMessageId !== next.feedbackInputMessageId) return false;
   if (prev.index !== next.index) return false;
   if (prev.messagesLength !== next.messagesLength) return false;
@@ -107,6 +128,9 @@ function areMessageItemPropsEqual(
       next.message.metadata?.generationTimeMs
     )
       return false;
+    if (prev.message.createdAt !== next.message.createdAt) return false;
+    if (prev.message.metadata?.createdAt !== next.message.metadata?.createdAt)
+      return false;
   }
 
   return true;
@@ -120,6 +144,7 @@ export const MessageItem = memo(function MessageItem({
   status,
   isHovered,
   isEditing,
+  isMobile,
   feedbackInputMessageId,
   tempChatFileDetails,
   finishReason,
@@ -144,6 +169,7 @@ export const MessageItem = memo(function MessageItem({
   showingLoadingIndicator,
   summarizationStatus,
 }: MessageItemProps) {
+  const [isUserMessageExpanded, setIsUserMessageExpanded] = useState(false);
   const isUser = message.role === "user";
   const isLastAssistantMessage =
     message.role === "assistant" &&
@@ -175,6 +201,25 @@ export const MessageItem = memo(function MessageItem({
     () => splitWorkedForParts(message.parts),
     [message.parts],
   );
+
+  const shouldCollapseUserMessage =
+    isUser &&
+    nonFileParts.length > 0 &&
+    nonFileParts.every((part) => part.type === "text") &&
+    isLongUserMessageText(messageText);
+
+  const collapsedUserMessageText = useMemo(
+    () => (shouldCollapseUserMessage ? getUserMessagePreview(messageText) : ""),
+    [messageText, shouldCollapseUserMessage],
+  );
+
+  const handleShowFullUserMessage = useCallback(() => {
+    setIsUserMessageExpanded(true);
+  }, []);
+
+  const handleShowLessUserMessage = useCallback(() => {
+    setIsUserMessageExpanded(false);
+  }, []);
 
   const isStreamingThisMessage =
     message.role === "assistant" &&
@@ -344,16 +389,47 @@ export const MessageItem = memo(function MessageItem({
               >
                 {isUser ? (
                   <div className="whitespace-pre-wrap break-words">
-                    {nonFileParts.map((part, partIndex) => (
-                      <MessagePartHandler
-                        key={`${message.id}-${partIndex}`}
-                        message={message}
-                        part={part}
-                        partIndex={partIndex}
-                        status={effectiveStatus}
-                        terminalOutputByToolCallId={terminalOutputByToolCallId}
-                      />
-                    ))}
+                    {shouldCollapseUserMessage && !isUserMessageExpanded ? (
+                      <>
+                        <div>{collapsedUserMessageText}</div>
+                        <div aria-hidden="true">...</div>
+                        <button
+                          type="button"
+                          onClick={handleShowFullUserMessage}
+                          aria-expanded={false}
+                          className="mt-2 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <span>Show fulll message</span>
+                          <ChevronDown className="size-4 shrink-0" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {nonFileParts.map((part, partIndex) => (
+                          <MessagePartHandler
+                            key={`${message.id}-${partIndex}`}
+                            message={message}
+                            part={part}
+                            partIndex={partIndex}
+                            status={effectiveStatus}
+                            terminalOutputByToolCallId={
+                              terminalOutputByToolCallId
+                            }
+                          />
+                        ))}
+                        {shouldCollapseUserMessage && isUserMessageExpanded && (
+                          <button
+                            type="button"
+                            onClick={handleShowLessUserMessage}
+                            aria-expanded={true}
+                            className="mt-2 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <span>Show less</span>
+                            <ChevronUp className="size-4 shrink-0" />
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
                 ) : !shouldUseWorkedFor ? (
                   nonFileParts.map((part, partIndex) => (
@@ -563,6 +639,8 @@ export const MessageItem = memo(function MessageItem({
           onBranch={!isUser && onBranchMessage ? handleBranch : undefined}
           isHovered={isHovered}
           isEditing={isEditing}
+          isMobile={isMobile}
+          messageCreatedAt={message.createdAt ?? message.metadata?.createdAt}
           status={status}
           onFeedback={handleFeedbackClick}
           existingFeedback={message.metadata?.feedbackType || null}
