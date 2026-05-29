@@ -443,6 +443,7 @@ export const attributeReferredSignup = mutation({
     referrerUserId: v.optional(v.string()),
     starterBonusAwarded: v.boolean(),
     starterBonusEligible: v.boolean(),
+    starterBonusUnits: v.number(),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -457,12 +458,18 @@ export const attributeReferredSignup = mutation({
       .first();
 
     if (existing) {
+      const existingStarterBonusUnits = Math.max(
+        0,
+        Math.trunc(existing.signup_bonus_units ?? args.starterBonusUnits),
+      );
       return {
         status: "already_attributed" as const,
         referrerUserId: existing.referrer_user_id,
         starterBonusAwarded: existing.sign_up_reward_status === "awarded",
         starterBonusEligible:
-          existing.sign_up_reward_status === "none" && starterBonusUnits > 0,
+          existing.sign_up_reward_status === "none" &&
+          existingStarterBonusUnits > 0,
+        starterBonusUnits: existingStarterBonusUnits,
       };
     }
 
@@ -486,6 +493,7 @@ export const attributeReferredSignup = mutation({
         reason: "invalid_or_inactive_referral_code",
         starterBonusAwarded: false,
         starterBonusEligible: false,
+        starterBonusUnits: 0,
       };
     }
 
@@ -506,6 +514,7 @@ export const attributeReferredSignup = mutation({
         referrerUserId: referralCode.user_id,
         starterBonusAwarded: false,
         starterBonusEligible: false,
+        starterBonusUnits: 0,
       };
     }
 
@@ -532,6 +541,7 @@ export const attributeReferredSignup = mutation({
           referrerUserId: referralCode.user_id,
           starterBonusAwarded: false,
           starterBonusEligible: false,
+          starterBonusUnits: 0,
         };
       }
     }
@@ -543,6 +553,7 @@ export const attributeReferredSignup = mutation({
       referrer_subscription_tier: referralCode.referrer_subscription_tier,
       referrer_organization_id: referralCode.referrer_organization_id,
       status: "attributed",
+      signup_bonus_units: starterBonusUnits,
       sign_up_reward_status: "none",
       conversion_reward_status: "pending",
       source: args.source,
@@ -562,6 +573,7 @@ export const attributeReferredSignup = mutation({
       referrerUserId: referralCode.user_id,
       starterBonusAwarded: false,
       starterBonusEligible: starterBonusUnits > 0,
+      starterBonusUnits,
     };
   },
 });
@@ -570,8 +582,6 @@ export const markReferredSignupBonusGranted = mutation({
   args: {
     serviceKey: v.string(),
     referredUserId: v.string(),
-    referralCode: v.string(),
-    amountUnits: v.number(),
   },
   returns: v.object({
     awarded: v.boolean(),
@@ -581,11 +591,6 @@ export const markReferredSignupBonusGranted = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const amountUnits = Math.max(0, Math.trunc(args.amountUnits));
-    if (amountUnits <= 0) {
-      return { awarded: false, alreadyAwarded: false, reason: "no_bonus" };
-    }
-
     const attribution = await ctx.db
       .query("referral_attributions")
       .withIndex("by_referred_user_id", (q) =>
@@ -593,7 +598,7 @@ export const markReferredSignupBonusGranted = mutation({
       )
       .first();
 
-    if (!attribution || attribution.referral_code !== args.referralCode) {
+    if (!attribution) {
       return {
         awarded: false,
         alreadyAwarded: false,
@@ -611,6 +616,14 @@ export const markReferredSignupBonusGranted = mutation({
         alreadyAwarded: false,
         reason: attribution.withheld_reason ?? "withheld",
       };
+    }
+
+    const amountUnits = Math.max(
+      0,
+      Math.trunc(attribution.signup_bonus_units ?? 0),
+    );
+    if (amountUnits <= 0) {
+      return { awarded: false, alreadyAwarded: false, reason: "no_bonus" };
     }
 
     const reward = await insertRewardLog(ctx, {

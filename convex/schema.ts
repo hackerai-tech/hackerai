@@ -239,6 +239,7 @@ export default defineSchema({
     ),
     referrer_organization_id: v.optional(v.string()),
     status: v.union(v.literal("attributed"), v.literal("converted")),
+    signup_bonus_units: v.optional(v.number()),
     sign_up_reward_status: v.union(
       v.literal("none"),
       v.literal("awarded"),

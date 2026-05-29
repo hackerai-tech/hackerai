@@ -73,12 +73,12 @@ export async function POST(req: NextRequest) {
     (result.status === "attributed" ||
       result.status === "already_attributed") &&
     result.starterBonusEligible &&
-    config.referredSignupBonusUnits > 0
+    result.starterBonusUnits > 0
   ) {
     try {
       const grant = await grantFreeReferralBonusUnits(
         userId,
-        config.referredSignupBonusUnits,
+        result.starterBonusUnits,
         `referral_signup:${userId}`,
       );
 
@@ -88,15 +88,13 @@ export async function POST(req: NextRequest) {
           {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             referredUserId: userId,
-            referralCode,
-            amountUnits: config.referredSignupBonusUnits,
           },
         );
 
         starterBonusMarkedAwarded = marked.awarded;
         starterBonusUnitsAwarded = grant.granted && marked.awarded;
         starterBonusUnits = starterBonusUnitsAwarded
-          ? config.referredSignupBonusUnits
+          ? result.starterBonusUnits
           : 0;
       }
 
@@ -105,7 +103,7 @@ export async function POST(req: NextRequest) {
           userId,
           referrer_user_id: result.referrerUserId,
           referral_code: referralCode,
-          starter_bonus_units: config.referredSignupBonusUnits,
+          starter_bonus_units: result.starterBonusUnits,
         });
       }
     } catch (error) {
@@ -113,7 +111,7 @@ export async function POST(req: NextRequest) {
         userId,
         referrer_user_id: result.referrerUserId,
         referral_code: referralCode,
-        starter_bonus_units: config.referredSignupBonusUnits,
+        starter_bonus_units: result.starterBonusUnits,
         error: error instanceof Error ? error.message : String(error),
       });
     }
