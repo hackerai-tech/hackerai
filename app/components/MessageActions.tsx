@@ -138,7 +138,7 @@ export const MessageActions = ({
           {isUser && shouldRenderTimestamp && (
             <time
               dateTime={new Date(messageCreatedAt!).toISOString()}
-              className="flex h-7 items-center px-1.5 text-[16px] leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
+              className="flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
             >
               {formattedCreatedAt}
             </time>
@@ -328,7 +328,7 @@ export const MessageActions = ({
           {!isUser && shouldRenderTimestamp && (
             <time
               dateTime={new Date(messageCreatedAt!).toISOString()}
-              className="flex h-7 items-center px-1.5 text-[16px] leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
+              className="flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
             >
               {formattedCreatedAt}
             </time>
