@@ -23,7 +23,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
 
-const USER_MESSAGE_PREVIEW_LINE_LIMIT = 12;
+const USER_MESSAGE_PREVIEW_LINE_LIMIT = 20;
 const USER_MESSAGE_PREVIEW_CHAR_LIMIT = 1_200;
 
 const splitMessageLines = (text: string) => text.split(/\r\n|\r|\n/);

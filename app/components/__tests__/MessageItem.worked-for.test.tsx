@@ -248,7 +248,7 @@ describe("MessageItem WorkedFor rendering", () => {
 describe("MessageItem user message collapse", () => {
   it("collapses long user messages behind a full-message button", () => {
     const longMessage = Array.from(
-      { length: 18 },
+      { length: 24 },
       (_, index) => `line ${index + 1}`,
     ).join("\n");
 
@@ -260,14 +260,17 @@ describe("MessageItem user message collapse", () => {
     expect(
       screen.getByRole("button", { name: /show fulll message/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText("...")).toBeInTheDocument();
-    expect(screen.getByText(/line 12/)).toBeInTheDocument();
-    expect(screen.queryByText(/line 18/)).not.toBeInTheDocument();
+    const ellipsis = screen.getByText("...");
+    expect(ellipsis).toBeInTheDocument();
+    expect(ellipsis.tagName).toBe("DIV");
+    expect(ellipsis).toHaveTextContent(/^\.{3}$/);
+    expect(screen.getByText(/line 20/)).toBeInTheDocument();
+    expect(screen.queryByText(/line 24/)).not.toBeInTheDocument();
   });
 
   it("shows the full user message and allows collapsing it again", () => {
     const longMessage = Array.from(
-      { length: 18 },
+      { length: 24 },
       (_, index) => `line ${index + 1}`,
     ).join("\n");
 
@@ -283,14 +286,14 @@ describe("MessageItem user message collapse", () => {
     expect(
       screen.queryByRole("button", { name: /show fulll message/i }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText(/line 18/)).toBeInTheDocument();
+    expect(screen.getByText(/line 24/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /show less/i }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /show less/i }));
 
-    expect(screen.queryByText(/line 18/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/line 24/)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /show fulll message/i }),
     ).toBeInTheDocument();
