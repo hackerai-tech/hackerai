@@ -161,10 +161,9 @@ export function ReferralRewardDialog({
                 </li>
                 <li>
                   <span className="text-muted-foreground text-sm">
-                    We do not grant credits to users with disposable or
-                    high-risk email accounts. Referral emails are checked by a
-                    third-party email reputation service to ensure high-quality
-                    participation and prevent referral fraud.
+                    We may review referral activity and account quality to
+                    prevent abuse, spam, disposable accounts, or other
+                    low-quality participation.
                   </span>
                 </li>
                 <li>

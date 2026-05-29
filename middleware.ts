@@ -70,7 +70,6 @@ function withReferralCookie(
     request.nextUrl.searchParams.get("referral_code") ??
     request.nextUrl.searchParams.get("ref");
   if (!referralCode || !isValidReferralCode(referralCode)) return response;
-  if (request.cookies.has(REFERRAL_COOKIE_NAME)) return response;
 
   const config = getReferralRewardConfig();
   if (!config.enabled) return response;

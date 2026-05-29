@@ -225,7 +225,6 @@ async function awardReferralConversion(args: {
       stripe_checkout_session_id: args.checkoutSessionId,
       error,
     });
-    throw error;
   }
 }
 
@@ -243,13 +242,24 @@ async function setReferralCodesPaidEligibility(args: {
   const subscriptionTier =
     args.active && args.tier && args.tier !== "free" ? args.tier : undefined;
 
-  await convex.mutation(api.referrals.setReferralCodesPaidEligibility, {
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    userIds: args.userIds,
-    active: args.active,
-    ...(subscriptionTier && { subscriptionTier }),
-    ...(args.organizationId && { organizationId: args.organizationId }),
-  });
+  try {
+    await convex.mutation(api.referrals.setReferralCodesPaidEligibility, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userIds: args.userIds,
+      active: args.active,
+      ...(subscriptionTier && { subscriptionTier }),
+      ...(args.organizationId && { organizationId: args.organizationId }),
+    });
+  } catch (error) {
+    phLogger.warn("referral_paid_eligibility_update_failed", {
+      userId: args.userIds[0],
+      user_ids: args.userIds,
+      active: args.active,
+      tier: args.tier,
+      organization_id: args.organizationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 // =============================================================================

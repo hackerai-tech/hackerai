@@ -48,7 +48,6 @@ const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
 
 const REFERRAL_CARD_DISMISSED_COOKIE = "referral_sidebar_dismissed";
-const REFERRAL_CARD_REWARD_DOLLARS = 10;
 
 const readCookie = (name: string): string | null => {
   if (typeof document === "undefined") return null;
@@ -116,7 +115,7 @@ const ReferralSidebarCard = ({
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Refer a friend — earn $${REFERRAL_CARD_REWARD_DOLLARS} in credits per paid referral`}
+        aria-label="Refer a friend and earn credits per paid referral"
         className="bg-muted/50 hover:bg-muted/80 border-sidebar-border flex w-full cursor-pointer items-center gap-3 rounded-xl border p-3 pr-9 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
         <div className="bg-background/70 border-sidebar-border flex size-8 shrink-0 items-center justify-center rounded-full border">
@@ -127,7 +126,7 @@ const ReferralSidebarCard = ({
             Refer a friend
           </p>
           <p className="text-muted-foreground truncate text-xs">
-            ${REFERRAL_CARD_REWARD_DOLLARS} in credits per paid referral
+            Earn credits per paid referral
           </p>
         </div>
       </button>

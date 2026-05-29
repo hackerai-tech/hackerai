@@ -573,6 +573,7 @@ export const resetRateLimitBuckets = async (
  *   - upgrade:carryover:<userId>     — upgrade proration stash
  *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
  *   - free_referral_bonus:<userId>   — one-time free request units from referral signup
+ *   - free_referral_bonus_grant:*:<userId> — referral bonus grant idempotency marker
  *   - free_agent_limit:<userId>:*    — legacy free-tier agent sliding window
  *   - free_monthly_cost:<userId>:*   — free-tier monthly provider/tool cost cap
  *   - free_run_lock:<userId>         — free-tier active-run concurrency lock
@@ -592,6 +593,7 @@ export const deleteUserRateLimitKeys = async (
     `upgrade:carryover:${userId}`,
     `free_limit:${userId}:*`,
     `free_referral_bonus:${userId}`,
+    `free_referral_bonus_grant:*:${userId}`,
     `free_agent_limit:${userId}:*`,
     `free_monthly_cost:${userId}:*`,
     `free_run_lock:${userId}`,

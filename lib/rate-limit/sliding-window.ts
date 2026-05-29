@@ -20,6 +20,9 @@ const REFERRAL_BONUS_TTL_SECONDS = 30 * 24 * 60 * 60;
 const getFreeReferralBonusKey = (userId: string) =>
   `free_referral_bonus:${userId}`;
 
+const getFreeReferralBonusGrantKey = (idempotencyKey: string) =>
+  `free_referral_bonus_grant:${idempotencyKey}`;
+
 // Upstash fixedWindow supports `{ rate: 2 }`, but failed multi-unit calls are
 // counted before failure is returned. This checks capacity before incrementing
 // so a blocked agent request cannot consume the last ask unit.
@@ -74,6 +77,23 @@ end
 return {1, nextBaseRemaining + nextBonusRemaining}
 `;
 
+const GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT = `
+local bonusKey = KEYS[1]
+local grantKey = KEYS[2]
+local bonusUnits = tonumber(ARGV[1])
+local ttlSeconds = tonumber(ARGV[2])
+
+local didSet = redis.call("SET", grantKey, "1", "NX", "EX", ttlSeconds)
+if not didSet then
+  return {0, 0}
+end
+
+local newBonus = redis.call("INCRBY", bonusKey, bonusUnits)
+redis.call("EXPIRE", bonusKey, ttlSeconds)
+
+return {1, newBonus}
+`;
+
 const getCurrentUtcDayWindow = () => {
   const now = Date.now();
   const bucket = Math.floor(now / ONE_DAY_MS);
@@ -117,7 +137,13 @@ const consumeFreeRequestUnits = async ({
 export const grantFreeReferralBonusUnits = async (
   userId: string,
   units: number,
-): Promise<{ granted: boolean; units: number; rateLimitSkipped?: boolean }> => {
+  idempotencyKey: string,
+): Promise<{
+  granted: boolean;
+  units: number;
+  alreadyGranted?: boolean;
+  rateLimitSkipped?: boolean;
+}> => {
   const bonusUnits = Math.max(0, Math.trunc(units));
   if (bonusUnits <= 0) {
     return { granted: false, units: 0 };
@@ -132,8 +158,16 @@ export const grantFreeReferralBonusUnits = async (
   }
 
   const bonusKey = getFreeReferralBonusKey(userId);
-  await redis.incrby(bonusKey, bonusUnits);
-  await redis.expire(bonusKey, REFERRAL_BONUS_TTL_SECONDS);
+  const grantKey = getFreeReferralBonusGrantKey(idempotencyKey);
+  const result = (await redis.eval(
+    GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT,
+    [bonusKey, grantKey],
+    [bonusUnits, REFERRAL_BONUS_TTL_SECONDS],
+  )) as [number | string, number | string];
+
+  if (Number(result[0]) !== 1) {
+    return { granted: false, units: 0, alreadyGranted: true };
+  }
 
   return { granted: true, units: bonusUnits };
 };

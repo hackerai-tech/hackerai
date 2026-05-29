@@ -22,11 +22,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
   const response = NextResponse.redirect(redirectUrl);
 
   const config = getReferralRewardConfig();
-  if (
-    !config.enabled ||
-    !isValidReferralCode(referralCode) ||
-    request.cookies.has(REFERRAL_COOKIE_NAME)
-  ) {
+  if (!config.enabled || !isValidReferralCode(referralCode)) {
     return response;
   }
 

@@ -67,21 +67,40 @@ export async function POST(req: NextRequest) {
 
   let starterBonusUnitsAwarded = false;
   let starterBonusUnits = 0;
+  let starterBonusMarkedAwarded = result.starterBonusAwarded;
 
   if (
-    result.status === "attributed" &&
-    result.starterBonusAwarded &&
+    (result.status === "attributed" ||
+      result.status === "already_attributed") &&
+    result.starterBonusEligible &&
     config.referredSignupBonusUnits > 0
   ) {
     try {
       const grant = await grantFreeReferralBonusUnits(
         userId,
         config.referredSignupBonusUnits,
+        `referral_signup:${userId}`,
       );
-      starterBonusUnitsAwarded = grant.granted;
-      starterBonusUnits = grant.units;
 
-      if (!grant.granted) {
+      if (grant.granted || grant.alreadyGranted) {
+        const marked = await convex.mutation(
+          api.referrals.markReferredSignupBonusGranted,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            referralCode,
+            amountUnits: config.referredSignupBonusUnits,
+          },
+        );
+
+        starterBonusMarkedAwarded = marked.awarded;
+        starterBonusUnitsAwarded = grant.granted && marked.awarded;
+        starterBonusUnits = starterBonusUnitsAwarded
+          ? config.referredSignupBonusUnits
+          : 0;
+      }
+
+      if (!grant.granted && !grant.alreadyGranted) {
         phLogger.warn("referral_signup_bonus_grant_failed", {
           userId,
           referrer_user_id: result.referrerUserId,
@@ -124,10 +143,14 @@ export async function POST(req: NextRequest) {
       result.status === "attributed" || result.status === "already_attributed",
     status: result.status,
     reason: result.reason,
-    starterBonusAwarded: result.starterBonusAwarded,
+    starterBonusAwarded: starterBonusMarkedAwarded,
     starterBonusUnitsAwarded,
     starterBonusUnits,
   });
-  clearReferralCookies(response);
+  const shouldRetryStarterBonus =
+    result.starterBonusEligible && !starterBonusMarkedAwarded;
+  if (!shouldRetryStarterBonus) {
+    clearReferralCookies(response);
+  }
   return response;
 }
