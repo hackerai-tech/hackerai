@@ -33,11 +33,13 @@ const isLongUserMessageText = (text: string) =>
   splitMessageLines(text).length > USER_MESSAGE_PREVIEW_LINE_LIMIT;
 
 const getUserMessagePreview = (text: string) => {
-  const linePreview = splitMessageLines(text)
-    .slice(0, USER_MESSAGE_PREVIEW_LINE_LIMIT)
-    .join("\n");
+  const lines = splitMessageLines(text);
 
-  return linePreview.slice(0, USER_MESSAGE_PREVIEW_CHAR_LIMIT).trimEnd();
+  if (lines.length > USER_MESSAGE_PREVIEW_LINE_LIMIT) {
+    return lines.slice(0, USER_MESSAGE_PREVIEW_LINE_LIMIT).join("\n");
+  }
+
+  return text.slice(0, USER_MESSAGE_PREVIEW_CHAR_LIMIT).trimEnd();
 };
 
 interface MessageItemProps {

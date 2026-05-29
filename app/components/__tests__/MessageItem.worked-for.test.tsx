@@ -247,9 +247,10 @@ describe("MessageItem WorkedFor rendering", () => {
 
 describe("MessageItem user message collapse", () => {
   it("collapses long user messages behind a full-message button", () => {
-    const longMessage = Array.from(
-      { length: 24 },
-      (_, index) => `line ${index + 1}`,
+    const longMessage = Array.from({ length: 24 }, (_, index) =>
+      index === 19
+        ? `line 20 ${"x".repeat(1_300)} exact-line-20-tail`
+        : `line ${index + 1}`,
     ).join("\n");
 
     renderMessageItem({
@@ -265,7 +266,28 @@ describe("MessageItem user message collapse", () => {
     expect(ellipsis.tagName).toBe("DIV");
     expect(ellipsis).toHaveTextContent(/^\.{3}$/);
     expect(screen.getByText(/line 20/)).toBeInTheDocument();
+    expect(screen.getByText(/exact-line-20-tail/)).toBeInTheDocument();
     expect(screen.queryByText(/line 24/)).not.toBeInTheDocument();
+  });
+
+  it("collapses very long single-line user messages by character count", () => {
+    const longMessage = `start-${"x".repeat(1_194)}hidden-tail`;
+
+    renderMessageItem({
+      mode: "ask",
+      message: createUserMessage(longMessage),
+    });
+
+    expect(
+      screen.getByRole("button", { name: /show fulll message/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/hidden-tail/)).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /show fulll message/i }),
+    );
+
+    expect(screen.getByText(/hidden-tail/)).toBeInTheDocument();
   });
 
   it("shows the full user message and allows collapsing it again", () => {
