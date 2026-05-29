@@ -116,7 +116,6 @@ export const MessageActions = ({
     !isMobile &&
     formattedCreatedAt !== null &&
     (isHovered || requiresDesktopHover);
-  const hiddenActionTabIndex = actionsAreVisible ? undefined : -1;
 
   // Reset isRegenerating when status changes back to idle
   const isLoading = status === "submitted" || status === "streaming";
@@ -129,9 +128,10 @@ export const MessageActions = ({
       className={cn(
         "mt-1 flex flex-wrap items-center gap-2 transition-opacity duration-200 ease-in-out",
         isUser ? "justify-end" : "justify-start",
-        actionsAreVisible ? "opacity-100" : "pointer-events-none opacity-0",
+        actionsAreVisible
+          ? "opacity-100"
+          : "pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100",
       )}
-      aria-hidden={!actionsAreVisible}
     >
       {shouldRenderActions ? (
         <>
@@ -150,7 +150,6 @@ export const MessageActions = ({
               trigger={
                 <button
                   onClick={handleCopy}
-                  tabIndex={hiddenActionTabIndex}
                   className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                   aria-label={copied ? "Copied!" : "Copy message"}
                 >
@@ -168,7 +167,6 @@ export const MessageActions = ({
                 trigger={
                   <button
                     onClick={onEdit}
-                    tabIndex={hiddenActionTabIndex}
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Edit message"
                   >
@@ -191,7 +189,6 @@ export const MessageActions = ({
                       <button
                         type="button"
                         onClick={() => handleFeedback("positive")}
-                        tabIndex={hiddenActionTabIndex}
                         className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
                           existingFeedback === "positive"
                             ? "opacity-100 text-primary-foreground"
@@ -219,7 +216,6 @@ export const MessageActions = ({
                     <button
                       type="button"
                       onClick={() => handleFeedback("negative")}
-                      tabIndex={hiddenActionTabIndex}
                       className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
                         existingFeedback === "negative" ||
                         isAwaitingFeedbackDetails
@@ -254,7 +250,6 @@ export const MessageActions = ({
                     type="button"
                     onClick={handleRegenerate}
                     disabled={!canRegenerate || isRegenerating}
-                    tabIndex={hiddenActionTabIndex}
                     className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Regenerate response"
                   >
@@ -274,7 +269,6 @@ export const MessageActions = ({
                   <button
                     type="button"
                     onClick={onBranch}
-                    tabIndex={hiddenActionTabIndex}
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Branch in new chat"
                   >
@@ -293,7 +287,6 @@ export const MessageActions = ({
               variant="ghost"
               size="sm"
               onClick={() => setIsSourcesOpen(true)}
-              tabIndex={hiddenActionTabIndex}
               className="group/footnote bg-background hover:bg-muted flex w-fit items-center gap-1.5 rounded-3xl px-3 py-1.5 h-auto"
               aria-label="View sources"
             >
