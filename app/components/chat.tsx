@@ -1216,6 +1216,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
                   isTemporaryChat={isTempChat}
+                  isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}
                   uploadStatus={uploadStatus}

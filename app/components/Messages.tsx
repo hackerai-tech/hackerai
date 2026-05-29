@@ -48,6 +48,7 @@ interface MessagesProps {
     | "Exhausted";
   loadMore?: (numItems: number) => void;
   isTemporaryChat?: boolean;
+  isMobile?: boolean;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   uploadStatus?: { message: string; isUploading: boolean } | null;
@@ -77,6 +78,7 @@ export const Messages = ({
   paginationStatus,
   loadMore,
   isTemporaryChat,
+  isMobile,
   tempChatFileDetails,
   finishReason,
   uploadStatus,
@@ -307,6 +309,7 @@ export const Messages = ({
               status={status}
               isHovered={hoveredMessageId === message.id}
               isEditing={editingMessageId === message.id}
+              isMobile={isMobile}
               feedbackInputMessageId={feedbackInputMessageId}
               tempChatFileDetails={tempChatFileDetails}
               finishReason={finishReason}
