@@ -31,6 +31,7 @@ interface MessageItemProps {
   status: ChatStatus;
   isHovered: boolean;
   isEditing: boolean;
+  isMobile?: boolean;
   feedbackInputMessageId: string | null;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
@@ -70,6 +71,7 @@ function areMessageItemPropsEqual(
   if (prev.status !== next.status) return false;
   if (prev.isHovered !== next.isHovered) return false;
   if (prev.isEditing !== next.isEditing) return false;
+  if (prev.isMobile !== next.isMobile) return false;
   if (prev.feedbackInputMessageId !== next.feedbackInputMessageId) return false;
   if (prev.index !== next.index) return false;
   if (prev.messagesLength !== next.messagesLength) return false;
@@ -107,6 +109,9 @@ function areMessageItemPropsEqual(
       next.message.metadata?.generationTimeMs
     )
       return false;
+    if (prev.message.createdAt !== next.message.createdAt) return false;
+    if (prev.message.metadata?.createdAt !== next.message.metadata?.createdAt)
+      return false;
   }
 
   return true;
@@ -120,6 +125,7 @@ export const MessageItem = memo(function MessageItem({
   status,
   isHovered,
   isEditing,
+  isMobile,
   feedbackInputMessageId,
   tempChatFileDetails,
   finishReason,
@@ -563,6 +569,8 @@ export const MessageItem = memo(function MessageItem({
           onBranch={!isUser && onBranchMessage ? handleBranch : undefined}
           isHovered={isHovered}
           isEditing={isEditing}
+          isMobile={isMobile}
+          messageCreatedAt={message.createdAt ?? message.metadata?.createdAt}
           status={status}
           onFeedback={handleFeedbackClick}
           existingFeedback={message.metadata?.feedbackType || null}
