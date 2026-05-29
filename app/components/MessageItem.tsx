@@ -107,6 +107,9 @@ function areMessageItemPropsEqual(
       next.message.metadata?.generationTimeMs
     )
       return false;
+    if (prev.message.createdAt !== next.message.createdAt) return false;
+    if (prev.message.metadata?.createdAt !== next.message.metadata?.createdAt)
+      return false;
   }
 
   return true;
@@ -563,6 +566,7 @@ export const MessageItem = memo(function MessageItem({
           onBranch={!isUser && onBranchMessage ? handleBranch : undefined}
           isHovered={isHovered}
           isEditing={isEditing}
+          messageCreatedAt={message.createdAt ?? message.metadata?.createdAt}
           status={status}
           onFeedback={handleFeedbackClick}
           existingFeedback={message.metadata?.feedbackType || null}

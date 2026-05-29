@@ -1028,6 +1028,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           {
             text: nextMessage.text,
             files: nextMessage.files as any,
+            metadata: { createdAt: nextMessage.timestamp },
           },
           {
             body: {

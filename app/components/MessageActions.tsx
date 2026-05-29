@@ -12,6 +12,7 @@ import Image from "next/image";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
+import { formatMessageActionTimestamp } from "@/lib/utils/message-time";
 import { SourcesDialog } from "./SourcesDialog";
 
 interface MessageActionsProps {
@@ -24,6 +25,7 @@ interface MessageActionsProps {
   onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
+  messageCreatedAt?: number;
   status: ChatStatus;
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
@@ -48,6 +50,7 @@ export const MessageActions = ({
   onBranch,
   isHovered,
   isEditing,
+  messageCreatedAt,
   status,
   onFeedback,
   existingFeedback,
@@ -101,6 +104,9 @@ export const MessageActions = ({
     (status === "submitted" || status === "streaming");
   const shouldShowActions =
     !isLastAssistantLoading && !isEditing && (isUser ? isHovered : true); // Always show for assistant, only on hover for user
+  const formattedCreatedAt = formatMessageActionTimestamp(messageCreatedAt);
+  const shouldShowTimestamp =
+    shouldShowActions && isHovered && formattedCreatedAt !== null;
 
   // Reset isRegenerating when status changes back to idle
   const isLoading = status === "submitted" || status === "streaming";
@@ -294,6 +300,15 @@ export const MessageActions = ({
                 Sources
               </div>
             </Button>
+          )}
+
+          {shouldShowTimestamp && (
+            <time
+              dateTime={new Date(messageCreatedAt!).toISOString()}
+              className="text-xs text-muted-foreground/80 tabular-nums whitespace-nowrap"
+            >
+              {formattedCreatedAt}
+            </time>
           )}
         </>
       ) : (
