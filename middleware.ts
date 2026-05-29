@@ -12,6 +12,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/",
   "/login",
   "/signup",
+  "/signup/auth",
   "/logout",
   "/api/clear-auth-cookies",
   "/api/auth/desktop-callback",
@@ -48,6 +49,9 @@ function isUnauthenticatedPath(pathname: string): boolean {
   if (pathname.startsWith("/share/")) {
     return true;
   }
+  if (pathname.startsWith("/invite/")) {
+    return true;
+  }
   return false;
 }
 
@@ -62,7 +66,9 @@ function withReferralCookie(
   request: NextRequest,
   response: NextResponse,
 ): NextResponse {
-  const referralCode = request.nextUrl.searchParams.get("ref");
+  const referralCode =
+    request.nextUrl.searchParams.get("referral_code") ??
+    request.nextUrl.searchParams.get("ref");
   if (!referralCode || !isValidReferralCode(referralCode)) return response;
   if (request.cookies.has(REFERRAL_COOKIE_NAME)) return response;
 

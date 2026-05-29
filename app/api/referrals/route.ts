@@ -12,7 +12,13 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const runtime = "nodejs";
 
-const generateReferralCode = () => randomBytes(9).toString("base64url");
+const REFERRAL_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const REFERRAL_CODE_LENGTH = 7;
+
+const generateReferralCode = () =>
+  Array.from(randomBytes(REFERRAL_CODE_LENGTH), (byte) =>
+    REFERRAL_CODE_ALPHABET.charAt(byte % REFERRAL_CODE_ALPHABET.length),
+  ).join("");
 
 export async function GET(req: NextRequest) {
   const config = getReferralRewardConfig();
@@ -78,8 +84,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const referralUrl = new URL(baseUrl);
-  referralUrl.searchParams.set("ref", result.code);
+  const referralUrl = new URL(
+    `/invite/${encodeURIComponent(result.code)}`,
+    baseUrl,
+  );
 
   return NextResponse.json({
     code: result.code,

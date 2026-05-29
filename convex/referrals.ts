@@ -1,4 +1,9 @@
-import { mutation, type MutationCtx, type QueryCtx } from "./_generated/server";
+import {
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
@@ -318,6 +323,37 @@ export const getOrCreateReferralCode = mutation({
       code: args.codeCandidate,
       active: true,
       ...(await getReferralStats(ctx, args.userId)),
+    };
+  },
+});
+
+export const getReferralInvite = query({
+  args: {
+    serviceKey: v.string(),
+    referralCode: v.string(),
+  },
+  returns: v.union(
+    v.null(),
+    v.object({
+      code: v.string(),
+      active: v.boolean(),
+      referrerUserId: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const referralCode = await ctx.db
+      .query("referral_codes")
+      .withIndex("by_code", (q) => q.eq("code", args.referralCode))
+      .first();
+
+    if (!referralCode) return null;
+
+    return {
+      code: referralCode.code,
+      active: referralCode.status === "active",
+      referrerUserId: referralCode.user_id,
     };
   },
 });
