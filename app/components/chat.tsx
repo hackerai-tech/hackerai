@@ -216,7 +216,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
-    dequeueNext,
+    removeQueuedMessage,
     clearQueue,
     queueBehavior,
     todos,
@@ -262,6 +262,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  // Use ref for model selection to avoid stale closures in auto-send
+  const selectedModelRef = useLatestRef(selectedModel);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -1021,35 +1023,49 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       queueBehavior === "queue"
     ) {
       setIsProcessingQueue(true);
-      const nextMessage = dequeueNext();
+      const nextMessage = messageQueue[0];
 
       if (nextMessage) {
-        sendMessage(
-          {
-            text: nextMessage.text,
-            files: nextMessage.files as any,
-            metadata: { createdAt: nextMessage.timestamp },
-          },
-          {
-            body: {
-              mode: chatModeRef.current,
-              todos: todosRef.current,
-              temporary: temporaryChatsEnabledRef.current,
-              sandboxPreference: sandboxPreferenceRef.current,
+        try {
+          const sendPromise = sendMessage(
+            {
+              text: nextMessage.text,
+              files: nextMessage.files as any,
+              metadata: { createdAt: nextMessage.timestamp },
             },
-          },
-        );
+            {
+              body: {
+                mode: chatModeRef.current,
+                todos: todosRef.current,
+                temporary: temporaryChatsEnabledRef.current,
+                sandboxPreference: sandboxPreferenceRef.current,
+                selectedModel: selectedModelRef.current,
+              },
+            },
+          );
+          removeQueuedMessage(nextMessage.id);
+          sendPromise.catch((error) => {
+            console.error("Failed to send queued message:", error);
+          });
+        } catch (error) {
+          console.error("Failed to send queued message:", error);
+        }
       }
 
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
   }, [
     status,
-    messageQueue.length,
+    messageQueue,
     isProcessingQueue,
-    dequeueNext,
+    removeQueuedMessage,
     sendMessage,
     queueBehavior,
+    chatModeRef,
+    todosRef,
+    temporaryChatsEnabledRef,
+    sandboxPreferenceRef,
+    selectedModelRef,
   ]);
 
   // Chat handlers
