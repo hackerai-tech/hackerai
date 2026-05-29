@@ -42,6 +42,74 @@ interface MessageActionsProps {
   }>;
 }
 
+interface MessageActionVisibility {
+  shouldRenderActions: boolean;
+  actionsAreVisible: boolean;
+  shouldReserveTimestamp: boolean;
+  timestampIsVisible: boolean;
+}
+
+const timestampClassName =
+  "flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground tabular-nums whitespace-nowrap transition-opacity duration-200 ease-in-out";
+
+export function getMessageActionVisibility({
+  isUser,
+  isLastAssistantMessage,
+  isMobile,
+  isHovered,
+  isEditing,
+  isLastAssistantLoading,
+  hasTimestamp,
+}: {
+  isUser: boolean;
+  isLastAssistantMessage: boolean;
+  isMobile: boolean;
+  isHovered: boolean;
+  isEditing: boolean;
+  isLastAssistantLoading: boolean;
+  hasTimestamp: boolean;
+}): MessageActionVisibility {
+  const shouldRenderActions = !isLastAssistantLoading && !isEditing;
+  const isHistoricalAssistant = !isUser && !isLastAssistantMessage;
+  const requiresDesktopHover = isUser || isHistoricalAssistant;
+  const actionsAreVisible =
+    shouldRenderActions && (!requiresDesktopHover || isMobile || isHovered);
+  const shouldReserveTimestamp =
+    shouldRenderActions && !isMobile && hasTimestamp;
+  const timestampIsVisible = shouldReserveTimestamp && isHovered;
+
+  return {
+    shouldRenderActions,
+    actionsAreVisible,
+    shouldReserveTimestamp,
+    timestampIsVisible,
+  };
+}
+
+function MessageTimestamp({
+  dateTime,
+  display,
+  isVisible,
+}: {
+  dateTime: string;
+  display: string;
+  isVisible: boolean;
+}) {
+  return (
+    <time
+      dateTime={dateTime}
+      className={cn(
+        timestampClassName,
+        isVisible
+          ? "opacity-70"
+          : "opacity-0 group-focus-within/message-actions:opacity-70",
+      )}
+    >
+      {display}
+    </time>
+  );
+}
+
 export const MessageActions = ({
   messageText,
   isUser,
@@ -105,17 +173,25 @@ export const MessageActions = ({
   const isLastAssistantLoading =
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
-  const shouldRenderActions = !isLastAssistantLoading && !isEditing;
-  const isHistoricalAssistant = !isUser && !isLastAssistantMessage;
-  const requiresDesktopHover = isUser || isHistoricalAssistant;
-  const actionsAreVisible =
-    shouldRenderActions && (!requiresDesktopHover || isMobile || isHovered);
   const formattedCreatedAt = formatMessageActionTimestamp(messageCreatedAt);
-  const shouldRenderTimestamp =
-    shouldRenderActions &&
-    !isMobile &&
-    formattedCreatedAt !== null &&
-    (isHovered || requiresDesktopHover);
+  const timestampDateTime =
+    formattedCreatedAt !== null && typeof messageCreatedAt === "number"
+      ? new Date(messageCreatedAt).toISOString()
+      : null;
+  const {
+    shouldRenderActions,
+    actionsAreVisible,
+    shouldReserveTimestamp,
+    timestampIsVisible,
+  } = getMessageActionVisibility({
+    isUser,
+    isLastAssistantMessage,
+    isMobile,
+    isHovered,
+    isEditing,
+    isLastAssistantLoading,
+    hasTimestamp: formattedCreatedAt !== null && timestampDateTime !== null,
+  });
 
   // Reset isRegenerating when status changes back to idle
   const isLoading = status === "submitted" || status === "streaming";
@@ -126,7 +202,7 @@ export const MessageActions = ({
   return (
     <div
       className={cn(
-        "mt-1 flex flex-wrap items-center gap-2 transition-opacity duration-200 ease-in-out",
+        "group/message-actions mt-1 flex flex-wrap items-center gap-2 transition-opacity duration-200 ease-in-out",
         isUser ? "justify-end" : "justify-start",
         actionsAreVisible
           ? "opacity-100"
@@ -135,13 +211,12 @@ export const MessageActions = ({
     >
       {shouldRenderActions ? (
         <>
-          {isUser && shouldRenderTimestamp && (
-            <time
-              dateTime={new Date(messageCreatedAt!).toISOString()}
-              className="flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
-            >
-              {formattedCreatedAt}
-            </time>
+          {isUser && shouldReserveTimestamp && (
+            <MessageTimestamp
+              dateTime={timestampDateTime!}
+              display={formattedCreatedAt!}
+              isVisible={timestampIsVisible}
+            />
           )}
 
           <div className="flex items-center space-x-2">
@@ -318,13 +393,12 @@ export const MessageActions = ({
             </Button>
           )}
 
-          {!isUser && shouldRenderTimestamp && (
-            <time
-              dateTime={new Date(messageCreatedAt!).toISOString()}
-              className="flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground opacity-70 tabular-nums whitespace-nowrap"
-            >
-              {formattedCreatedAt}
-            </time>
+          {!isUser && shouldReserveTimestamp && (
+            <MessageTimestamp
+              dateTime={timestampDateTime!}
+              display={formattedCreatedAt!}
+              isVisible={timestampIsVisible}
+            />
           )}
         </>
       ) : (
