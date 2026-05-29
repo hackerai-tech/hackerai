@@ -222,7 +222,7 @@ export default defineSchema({
     deactivated_at: v.optional(v.number()),
     deactivated_reason: v.optional(v.string()),
   })
-    .index("by_user", ["user_id"])
+    .index("by_user_id", ["user_id"])
     .index("by_code", ["code"]),
 
   referral_attributions: defineTable({
@@ -268,12 +268,12 @@ export default defineSchema({
     converted_at: v.optional(v.number()),
     withheld_reason: v.optional(v.string()),
   })
-    .index("by_referred_user", ["referred_user_id"])
-    .index("by_referrer", ["referrer_user_id"])
+    .index("by_referred_user_id", ["referred_user_id"])
+    .index("by_referrer_user_id", ["referrer_user_id"])
     .index("by_referral_code", ["referral_code"])
-    .index("by_stripe_checkout_session", ["stripe_checkout_session_id"])
-    .index("by_stripe_customer", ["stripe_customer_id"])
-    .index("by_stripe_subscription", ["stripe_subscription_id"]),
+    .index("by_stripe_checkout_session_id", ["stripe_checkout_session_id"])
+    .index("by_stripe_customer_id", ["stripe_customer_id"])
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"]),
 
   referral_rewards: defineTable({
     idempotency_key: v.string(),
@@ -296,8 +296,8 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_idempotency_key", ["idempotency_key"])
-    .index("by_referrer", ["referrer_user_id"])
-    .index("by_referred", ["referred_user_id"]),
+    .index("by_referrer_user_id", ["referrer_user_id"])
+    .index("by_referred_user_id", ["referred_user_id"]),
 
   user_suspensions: defineTable({
     user_id: v.string(),

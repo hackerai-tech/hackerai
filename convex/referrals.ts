@@ -37,12 +37,12 @@ const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
 async function getReferralStats(ctx: QueryCtx | MutationCtx, userId: string) {
   const attributions = await ctx.db
     .query("referral_attributions")
-    .withIndex("by_referrer", (q) => q.eq("referrer_user_id", userId))
+    .withIndex("by_referrer_user_id", (q) => q.eq("referrer_user_id", userId))
     .take(5000);
 
   const rewards = await ctx.db
     .query("referral_rewards")
-    .withIndex("by_referrer", (q) => q.eq("referrer_user_id", userId))
+    .withIndex("by_referrer_user_id", (q) => q.eq("referrer_user_id", userId))
     .take(5000);
 
   return {
@@ -284,7 +284,7 @@ export const getOrCreateReferralCode = mutation({
     const now = Date.now();
     const existingForUser = await ctx.db
       .query("referral_codes")
-      .withIndex("by_user", (q) => q.eq("user_id", args.userId))
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
       .first();
 
     if (existingForUser) {
@@ -383,7 +383,7 @@ export const setReferralCodesPaidEligibility = mutation({
     for (const userId of new Set(args.userIds)) {
       const referralCode = await ctx.db
         .query("referral_codes")
-        .withIndex("by_user", (q) => q.eq("user_id", userId))
+        .withIndex("by_user_id", (q) => q.eq("user_id", userId))
         .first();
 
       if (!referralCode) continue;
@@ -451,7 +451,7 @@ export const attributeReferredSignup = mutation({
     const starterBonusUnits = Math.max(0, Math.trunc(args.starterBonusUnits));
     const existing = await ctx.db
       .query("referral_attributions")
-      .withIndex("by_referred_user", (q) =>
+      .withIndex("by_referred_user_id", (q) =>
         q.eq("referred_user_id", args.referredUserId),
       )
       .first();
@@ -588,7 +588,7 @@ export const markReferredSignupBonusGranted = mutation({
 
     const attribution = await ctx.db
       .query("referral_attributions")
-      .withIndex("by_referred_user", (q) =>
+      .withIndex("by_referred_user_id", (q) =>
         q.eq("referred_user_id", args.referredUserId),
       )
       .first();
@@ -660,7 +660,7 @@ export const recordReferralCheckoutSession = mutation({
 
     const attribution = await ctx.db
       .query("referral_attributions")
-      .withIndex("by_referred_user", (q) =>
+      .withIndex("by_referred_user_id", (q) =>
         q.eq("referred_user_id", args.referredUserId),
       )
       .first();
@@ -714,7 +714,7 @@ export const awardConversionReward = mutation({
     let attribution = args.referredUserId
       ? await ctx.db
           .query("referral_attributions")
-          .withIndex("by_referred_user", (q) =>
+          .withIndex("by_referred_user_id", (q) =>
             q.eq("referred_user_id", args.referredUserId!),
           )
           .first()
@@ -723,7 +723,7 @@ export const awardConversionReward = mutation({
     if (!attribution && args.stripeSubscriptionId) {
       attribution = await ctx.db
         .query("referral_attributions")
-        .withIndex("by_stripe_subscription", (q) =>
+        .withIndex("by_stripe_subscription_id", (q) =>
           q.eq("stripe_subscription_id", args.stripeSubscriptionId),
         )
         .order("desc")
@@ -733,7 +733,7 @@ export const awardConversionReward = mutation({
     if (!attribution && args.stripeCheckoutSessionId) {
       attribution = await ctx.db
         .query("referral_attributions")
-        .withIndex("by_stripe_checkout_session", (q) =>
+        .withIndex("by_stripe_checkout_session_id", (q) =>
           q.eq("stripe_checkout_session_id", args.stripeCheckoutSessionId),
         )
         .order("desc")
@@ -743,7 +743,7 @@ export const awardConversionReward = mutation({
     if (!attribution && args.stripeCustomerId) {
       attribution = await ctx.db
         .query("referral_attributions")
-        .withIndex("by_stripe_customer", (q) =>
+        .withIndex("by_stripe_customer_id", (q) =>
           q.eq("stripe_customer_id", args.stripeCustomerId),
         )
         .order("desc")
