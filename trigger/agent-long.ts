@@ -1063,15 +1063,20 @@ export const agentLongTask = task({
                     usageTracker.nonModelCost,
                     organizationId,
                   );
-                  usageTracker.log({
-                    userId,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    rateLimitInfo,
-                  });
                 }
+                usageTracker.log({
+                  userId,
+                  organizationId,
+                  chatId,
+                  endpoint: "/api/agent-long",
+                  mode,
+                  subscription,
+                  selectedModel,
+                  selectedModelOverride,
+                  responseModel: state.responseModel,
+                  configuredModelId,
+                  rateLimitInfo,
+                });
                 captureUsageCost({
                   posthog,
                   userId,

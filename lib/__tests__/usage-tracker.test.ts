@@ -341,6 +341,11 @@ describe("UsageTracker", () => {
 
       expect(localMockLog).toHaveBeenCalledWith({
         userId: "user-123",
+        organizationId: undefined,
+        chatId: undefined,
+        endpoint: undefined,
+        mode: undefined,
+        subscription: undefined,
         model: "auto",
         type: "included",
         inputTokens: 1000,
@@ -349,6 +354,9 @@ describe("UsageTracker", () => {
         cacheReadTokens: undefined,
         cacheWriteTokens: undefined,
         costDollars: 0.01,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: 0,
+        costSource: "provider",
       });
     });
   });

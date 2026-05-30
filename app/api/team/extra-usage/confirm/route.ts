@@ -55,6 +55,16 @@ export async function GET(req: NextRequest) {
       organizationId,
       amountDollars,
       idempotencyKey: `cs_${session.id}`,
+      revenueSource: "team_extra_usage_purchase",
+      stripeCustomerId:
+        typeof session.customer === "string"
+          ? session.customer
+          : session.customer?.id,
+      stripeCheckoutSessionId: session.id,
+      stripePaymentIntentId:
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : session.payment_intent?.id,
     });
 
     return NextResponse.redirect(redirectUrl, { status: 303 });

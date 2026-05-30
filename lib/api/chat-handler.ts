@@ -676,15 +676,20 @@ export const createChatHandler = () => {
                     usageTracker.nonModelCost,
                     organizationId,
                   );
-                  usageTracker.log({
-                    userId,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    rateLimitInfo,
-                  });
                 }
+                usageTracker.log({
+                  userId,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  subscription,
+                  selectedModel,
+                  selectedModelOverride,
+                  responseModel: state.responseModel,
+                  configuredModelId,
+                  rateLimitInfo,
+                });
                 captureUsageCost({
                   posthog,
                   userId,

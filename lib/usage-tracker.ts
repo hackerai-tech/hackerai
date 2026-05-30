@@ -1,6 +1,6 @@
 import { logUsageRecord } from "@/lib/db/actions";
 import { calculateTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
-import type { RateLimitInfo } from "@/types";
+import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 
 interface StepUsage {
   inputTokens?: number;
@@ -189,6 +189,11 @@ export class UsageTracker {
 
   log(args: {
     userId: string;
+    organizationId?: string;
+    chatId?: string;
+    endpoint?: "/api/chat" | "/api/agent-long";
+    mode?: ChatMode;
+    subscription?: SubscriptionTier;
     selectedModel: string;
     selectedModelOverride?: string | null;
     responseModel?: string;
@@ -198,6 +203,11 @@ export class UsageTracker {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
       userId: args.userId,
+      organizationId: args.organizationId,
+      chatId: args.chatId,
+      endpoint: args.endpoint,
+      mode: args.mode,
+      subscription: args.subscription,
       model: usage.model,
       type: usage.type,
       inputTokens: usage.inputTokens,
@@ -206,6 +216,9 @@ export class UsageTracker {
       cacheReadTokens: usage.cacheReadTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
       costDollars: usage.costDollars,
+      modelCostDollars: usage.modelCostDollars,
+      nonModelCostDollars: usage.nonModelCostDollars,
+      costSource: usage.costSource,
     });
   }
 }
