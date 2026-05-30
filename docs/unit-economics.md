@@ -1,13 +1,14 @@
 # Unit Economics Tracking
 
-Convex is the durable source of truth for per-user and per-organization unit
-economics. PostHog should consume compact warehouse tables from Convex rather
-than raw request events.
+Convex is the durable source of truth for paid per-user and per-organization
+unit economics. PostHog should consume compact warehouse tables from Convex
+rather than raw request events.
 
 ## Data Model
 
-- `usage_logs`: one row per cost-bearing AI request. Stores token counts, model
-  cost, non-model cost, subscription tier, chat, endpoint, and org context.
+- `usage_logs`: one row per paid cost-bearing AI request. Stores token counts,
+  model cost, non-model cost, subscription tier, chat, endpoint, and org
+  context.
 - `revenue_events`: append-only Stripe revenue ledger. Stores subscription,
   personal extra usage, and team extra usage revenue with idempotency keys.
 - `unit_economics_daily`: materialized daily rollups for cheap dashboards and
@@ -21,6 +22,10 @@ net_revenue_dollars - total_cost_dollars = gross_profit_dollars
 
 Use `entity_type = "organization"` for team subscription and team extra usage
 pool reporting.
+
+Free-plan requests are intentionally excluded from durable Convex usage logging
+for now to keep write volume low. They still use the existing free monthly cost
+guard, but they do not update `usage_logs` or `unit_economics_daily`.
 
 ## PostHog
 
@@ -52,8 +57,8 @@ Important columns:
 
 ## Backfill
 
-New requests and revenue update `unit_economics_daily` automatically. For older
-`usage_logs`, run the service-key guarded Convex mutation:
+New paid requests and revenue update `unit_economics_daily` automatically. For
+older `usage_logs`, run the service-key guarded Convex mutation:
 
 ```text
 unitEconomics.rebuildEntityDailyRollups({
