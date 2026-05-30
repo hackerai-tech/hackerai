@@ -98,7 +98,7 @@ jobs:
         id: pnpm-cache
 
       - name: Setup pnpm cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('packages/desktop/pnpm-lock.yaml') }}
