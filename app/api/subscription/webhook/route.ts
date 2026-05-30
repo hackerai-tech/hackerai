@@ -265,15 +265,27 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
   const { tier, subscription } = resolved;
 
-  await recordSubscriptionRevenue({
-    invoice,
-    customerId,
-    userIds,
-    orgId: orgId ?? undefined,
-    tier,
-    subscription,
-    reason: resetMode.reason,
-  });
+  try {
+    await recordSubscriptionRevenue({
+      invoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      tier,
+      subscription,
+      reason: resetMode.reason,
+    });
+  } catch (error) {
+    console.error("[Subscription Webhook] Failed to record revenue:", {
+      error,
+      invoiceId: invoice.id,
+      customerId,
+      userCount: userIds.length,
+      orgId,
+      tier,
+      resetReason: resetMode.reason,
+    });
+  }
 
   if (resetMode.mode === "skip") {
     console.log(

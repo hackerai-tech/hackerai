@@ -212,10 +212,19 @@ export const rebuildEntityDailyRollups = mutation({
           .gte("day", startDay)
           .lte("day", endDay),
       )
-      .collect();
+      .take(maxRows);
 
     for (const row of existingRollups) {
       await ctx.db.delete(row._id);
+    }
+
+    if (existingRollups.length === maxRows) {
+      return {
+        deletedRollups: existingRollups.length,
+        usageRowsApplied: 0,
+        revenueRowsApplied: 0,
+        truncated: true,
+      };
     }
 
     const usageRows =
