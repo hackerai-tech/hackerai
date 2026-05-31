@@ -1260,6 +1260,11 @@ export async function getNotes({
 
 export async function logUsageRecord({
   userId,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  subscription,
   model,
   type,
   inputTokens,
@@ -1268,8 +1273,16 @@ export async function logUsageRecord({
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
+  modelCostDollars,
+  nonModelCostDollars,
+  costSource,
 }: {
   userId: string;
+  organizationId?: string;
+  chatId?: string;
+  endpoint?: "/api/chat" | "/api/agent-long";
+  mode?: ChatMode;
+  subscription?: SubscriptionTier;
   model: string;
   type: "included" | "extra";
   inputTokens: number;
@@ -1278,11 +1291,19 @@ export async function logUsageRecord({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
+  modelCostDollars?: number;
+  nonModelCostDollars?: number;
+  costSource?: "provider" | "token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       user_id: userId,
+      organization_id: organizationId,
+      chat_id: chatId,
+      endpoint,
+      mode,
+      subscription,
       model,
       type,
       input_tokens: inputTokens,
@@ -1291,14 +1312,25 @@ export async function logUsageRecord({
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
       cost_dollars: costDollars,
+      model_cost_dollars: modelCostDollars,
+      non_model_cost_dollars: nonModelCostDollars,
+      cost_source: costSource,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
       userId,
+      organizationId,
+      chatId,
+      endpoint,
+      mode,
+      subscription,
       model,
       type,
       costDollars,
+      modelCostDollars,
+      nonModelCostDollars,
+      costSource,
       inputTokens,
       outputTokens,
     });

@@ -678,6 +678,11 @@ export const createChatHandler = () => {
                   );
                   usageTracker.log({
                     userId,
+                    organizationId,
+                    chatId,
+                    endpoint,
+                    mode,
+                    subscription,
                     selectedModel,
                     selectedModelOverride,
                     responseModel: state.responseModel,

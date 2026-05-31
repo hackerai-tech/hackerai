@@ -434,6 +434,10 @@ export const deductWithAutoReloadForTeam = action({
                     serviceKey: args.serviceKey,
                     organizationId: args.organizationId,
                     amountDollars: amountToCharge,
+                    idempotencyKey: paymentResult.paymentIntentId,
+                    revenueSource: "team_extra_usage_auto_reload",
+                    stripeCustomerId,
+                    stripePaymentIntentId: paymentResult.paymentIntentId,
                   });
                   if (deductResult.success) {
                     deductResult = {

@@ -2,6 +2,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import { recordRevenueEventInternal } from "./unitEconomicsLib";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -226,6 +227,15 @@ export const addCredits = mutation({
     amountDollars: v.number(),
     idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
     legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
+    revenueSource: v.optional(
+      v.union(
+        v.literal("extra_usage_purchase"),
+        v.literal("extra_usage_auto_reload"),
+      ),
+    ),
+    stripeCustomerId: v.optional(v.string()),
+    stripeCheckoutSessionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -303,6 +313,29 @@ export const addCredits = mutation({
         processed_at: Date.now(),
       });
     }
+
+    await recordRevenueEventInternal(ctx, {
+      entityType: "user",
+      entityId: args.userId,
+      userId: args.userId,
+      source: "extra_usage",
+      sourceEventId:
+        args.stripeCheckoutSessionId ??
+        args.stripePaymentIntentId ??
+        args.idempotencyKey ??
+        `extra_usage:${args.userId}:${Date.now()}`,
+      idempotencyKey:
+        args.idempotencyKey ??
+        args.stripePaymentIntentId ??
+        args.stripeCheckoutSessionId,
+      grossRevenueDollars: args.amountDollars,
+      currency: "usd",
+      attributionStrategy: "direct",
+      stripeCustomerId: args.stripeCustomerId,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      description: args.revenueSource ?? "extra_usage_purchase",
+    });
 
     convexLogger.info("credits_added", {
       user_id: args.userId,

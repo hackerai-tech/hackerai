@@ -32,6 +32,8 @@ import type * as sharedChats from "../sharedChats.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
 import type * as tempStreams from "../tempStreams.js";
+import type * as unitEconomics from "../unitEconomics.js";
+import type * as unitEconomicsLib from "../unitEconomicsLib.js";
 import type * as usageLogs from "../usageLogs.js";
 import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
@@ -68,6 +70,8 @@ declare const fullApi: ApiFromModules<{
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;
   tempStreams: typeof tempStreams;
+  unitEconomics: typeof unitEconomics;
+  unitEconomicsLib: typeof unitEconomicsLib;
   usageLogs: typeof usageLogs;
   userCustomization: typeof userCustomization;
   userDeletion: typeof userDeletion;
