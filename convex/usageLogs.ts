@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
+import { applyUnitEconomicsDelta, utcDay } from "./unitEconomicsLib";
 
 const typeValidator = v.union(v.literal("included"), v.literal("extra"));
 
@@ -20,6 +21,13 @@ export const logUsage = mutation({
   args: {
     serviceKey: v.string(),
     user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    chat_id: v.optional(v.string()),
+    endpoint: v.optional(
+      v.union(v.literal("/api/chat"), v.literal("/api/agent-long")),
+    ),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    subscription: v.optional(v.string()),
     model: v.string(),
     type: typeValidator,
     input_tokens: v.number(),
@@ -28,13 +36,31 @@ export const logUsage = mutation({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
+    model_cost_dollars: v.optional(v.number()),
+    non_model_cost_dollars: v.optional(v.number()),
+    cost_source: v.optional(
+      v.union(v.literal("provider"), v.literal("token_estimate")),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    const modelCostDollars = Number.isFinite(args.model_cost_dollars)
+      ? args.model_cost_dollars!
+      : args.cost_dollars;
+    const nonModelCostDollars = Number.isFinite(args.non_model_cost_dollars)
+      ? args.non_model_cost_dollars!
+      : 0;
+    const now = Date.now();
+
     await ctx.db.insert("usage_logs", {
       user_id: args.user_id,
+      organization_id: args.organization_id,
+      chat_id: args.chat_id,
+      endpoint: args.endpoint,
+      mode: args.mode,
+      subscription: args.subscription,
       model: args.model,
       type: args.type,
       input_tokens: args.input_tokens,
@@ -43,7 +69,42 @@ export const logUsage = mutation({
       cache_write_tokens: args.cache_write_tokens,
       total_tokens: args.total_tokens,
       cost_dollars: args.cost_dollars,
+      model_cost_dollars: modelCostDollars,
+      non_model_cost_dollars: nonModelCostDollars,
+      cost_source: args.cost_source,
     });
+
+    const commonDelta = {
+      day: utcDay(now),
+      modelCostDollars,
+      nonModelCostDollars,
+      includedUsageCostDollars:
+        args.type === "included" ? args.cost_dollars : 0,
+      extraUsageCostDollars: args.type === "extra" ? args.cost_dollars : 0,
+      usageRequestCount: 1,
+      inputTokens: args.input_tokens,
+      outputTokens: args.output_tokens,
+      cacheReadTokens: args.cache_read_tokens ?? 0,
+      cacheWriteTokens: args.cache_write_tokens ?? 0,
+      totalTokens: args.total_tokens,
+    };
+
+    await applyUnitEconomicsDelta(ctx, {
+      ...commonDelta,
+      entityType: "user",
+      entityId: args.user_id,
+      userId: args.user_id,
+      organizationId: args.organization_id,
+    });
+
+    if (args.organization_id) {
+      await applyUnitEconomicsDelta(ctx, {
+        ...commonDelta,
+        entityType: "organization",
+        entityId: args.organization_id,
+        organizationId: args.organization_id,
+      });
+    }
 
     return null;
   },
@@ -133,6 +194,9 @@ export const getUserUsageLogs = query({
         cache_write_tokens: log.cache_write_tokens,
         total_tokens: log.total_tokens,
         cost_dollars: log.cost_dollars,
+        model_cost_dollars: log.model_cost_dollars,
+        non_model_cost_dollars: log.non_model_cost_dollars,
+        cost_source: log.cost_source,
       })),
     };
   },

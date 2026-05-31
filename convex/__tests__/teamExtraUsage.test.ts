@@ -110,6 +110,21 @@ type WebhookRow = {
   status?: "pending" | "completed";
 };
 
+type RevenueRow = {
+  _id: string;
+  idempotency_key: string;
+  entity_type: "user" | "organization";
+  entity_id: string;
+  source_event_id: string;
+};
+
+type UnitEconomicsDailyRow = {
+  _id: string;
+  entity_type: "user" | "organization";
+  entity_id: string;
+  day: string;
+};
+
 /**
  * Mock ctx that simulates the three tables touched by team extra usage:
  * team_extra_usage, team_member_usage, processed_webhooks. Index lookups
@@ -120,10 +135,14 @@ function makeMockCtx(opts?: {
   team?: TeamRow[];
   members?: MemberRow[];
   webhooks?: WebhookRow[];
+  revenue?: RevenueRow[];
+  rollups?: UnitEconomicsDailyRow[];
 }) {
   const team: TeamRow[] = [...(opts?.team ?? [])];
   const members: MemberRow[] = [...(opts?.members ?? [])];
   const webhooks: WebhookRow[] = [...(opts?.webhooks ?? [])];
+  const revenue: RevenueRow[] = [...(opts?.revenue ?? [])];
+  const rollups: UnitEconomicsDailyRow[] = [...(opts?.rollups ?? [])];
 
   let nextId = 1;
   const mintId = () => `id-${nextId++}`;
@@ -159,6 +178,19 @@ function makeMockCtx(opts?: {
           if (table === "processed_webhooks") {
             return webhooks.filter((r) => r.event_id === captured.event_id);
           }
+          if (table === "revenue_events") {
+            return revenue.filter(
+              (r) => r.idempotency_key === captured.idempotency_key,
+            );
+          }
+          if (table === "unit_economics_daily") {
+            return rollups.filter(
+              (r) =>
+                r.entity_type === captured.entity_type &&
+                r.entity_id === captured.entity_id &&
+                r.day === captured.day,
+            );
+          }
           return [];
         })();
         void depth;
@@ -189,23 +221,25 @@ function makeMockCtx(opts?: {
         if (table === "team_extra_usage") team.push(row);
         else if (table === "team_member_usage") members.push(row);
         else if (table === "processed_webhooks") webhooks.push(row);
+        else if (table === "revenue_events") revenue.push(row);
+        else if (table === "unit_economics_daily") rollups.push(row);
         else throw new Error(`unexpected table: ${table}`);
         return id;
       }),
       patch: jest.fn(async (id: string, patch: any) => {
-        const all: any[] = [...team, ...members, ...webhooks];
+        const all: any[] = [...team, ...members, ...webhooks, ...rollups];
         const row = all.find((r) => r._id === id);
         if (!row) throw new Error(`row ${id} not found`);
         Object.assign(row, patch);
       }),
       get: jest.fn(async (id: string) => {
-        const all: any[] = [...team, ...members, ...webhooks];
+        const all: any[] = [...team, ...members, ...webhooks, ...rollups];
         return all.find((r) => r._id === id) ?? null;
       }),
     },
   };
 
-  return { ctx, team, members, webhooks };
+  return { ctx, team, members, webhooks, revenue, rollups };
 }
 
 async function callDeduct(

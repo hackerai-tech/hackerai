@@ -47,6 +47,14 @@ function priceBillingInterval(
   return price?.recurring?.interval ?? undefined;
 }
 
+function invoicePaidAtMs(invoice: Stripe.Invoice): number {
+  const paidAt = invoice.status_transitions?.paid_at;
+  if (paidAt) return paidAt * 1000;
+  return (
+    ((invoice as { created?: number }).created ?? Date.now() / 1000) * 1000
+  );
+}
+
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 // =============================================================================
@@ -262,6 +270,88 @@ async function setReferralCodesPaidEligibility(args: {
   }
 }
 
+async function recordSubscriptionRevenue({
+  invoice,
+  customerId,
+  userIds,
+  orgId,
+  tier,
+  subscription,
+  reason,
+}: {
+  invoice: Stripe.Invoice;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+  reason: string;
+}) {
+  const grossRevenueDollars = centsToDollars(
+    (invoice as { amount_paid?: number }).amount_paid,
+  );
+
+  if (grossRevenueDollars <= 0 || userIds.length === 0) return;
+
+  const item = subscription.items?.data[0];
+  const price = item?.price;
+  const occurredAt = invoicePaidAtMs(invoice);
+  const attributedRevenueDollars = grossRevenueDollars / userIds.length;
+  const attributionStrategy = userIds.length > 1 ? "split_evenly" : "direct";
+
+  await Promise.all([
+    ...userIds.map((uid) =>
+      convex.mutation(api.unitEconomics.recordRevenueEvent, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        entityType: "user",
+        entityId: uid,
+        userId: uid,
+        organizationId: orgId,
+        source: "subscription",
+        sourceEventId: invoice.id,
+        idempotencyKey: `subscription:${invoice.id}:user:${uid}`,
+        grossRevenueDollars: attributedRevenueDollars,
+        currency: invoice.currency ?? "usd",
+        occurredAt,
+        attributionStrategy,
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscription.id,
+        stripeInvoiceId: invoice.id,
+        stripePriceId: price?.id,
+        plan: price?.lookup_key ?? tier,
+        quantity: item?.quantity,
+        userCount: userIds.length,
+        description: reason,
+      }),
+    ),
+    ...(orgId
+      ? [
+          convex.mutation(api.unitEconomics.recordRevenueEvent, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            entityType: "organization",
+            entityId: orgId,
+            organizationId: orgId,
+            source: "subscription",
+            sourceEventId: invoice.id,
+            idempotencyKey: `subscription:${invoice.id}:organization:${orgId}`,
+            grossRevenueDollars,
+            currency: invoice.currency ?? "usd",
+            occurredAt,
+            attributionStrategy: "organization_pool",
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscription.id,
+            stripeInvoiceId: invoice.id,
+            stripePriceId: price?.id,
+            plan: price?.lookup_key ?? tier,
+            quantity: item?.quantity,
+            userCount: userIds.length,
+            description: reason,
+          }),
+        ]
+      : []),
+  ]);
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -293,13 +383,6 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const resetMode = getInvoicePaidBucketResetMode(invoice);
-  if (resetMode.mode === "skip") {
-    console.log(
-      `[Subscription Webhook] invoice.paid (${resetMode.reason}): skipping bucket reset for invoice ${invoice.id}`,
-    );
-    return;
-  }
-
   const [customerResult, resolved] = await Promise.all([
     resolveUserIdsFromCustomer(customerId),
     resolveSubscription(subscriptionId),
@@ -322,6 +405,35 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     tier,
     organizationId: orgId ?? undefined,
   });
+
+  try {
+    await recordSubscriptionRevenue({
+      invoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      tier,
+      subscription,
+      reason: resetMode.reason,
+    });
+  } catch (error) {
+    console.error("[Subscription Webhook] Failed to record revenue:", {
+      error,
+      invoiceId: invoice.id,
+      customerId,
+      userCount: userIds.length,
+      orgId,
+      tier,
+      resetReason: resetMode.reason,
+    });
+  }
+
+  if (resetMode.mode === "skip") {
+    console.log(
+      `[Subscription Webhook] invoice.paid (${resetMode.reason}): skipping bucket reset for invoice ${invoice.id}`,
+    );
+    return;
+  }
 
   // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
   // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms

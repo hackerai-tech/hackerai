@@ -1065,6 +1065,11 @@ export const agentLongTask = task({
                   );
                   usageTracker.log({
                     userId,
+                    organizationId,
+                    chatId,
+                    endpoint: "/api/agent-long",
+                    mode,
+                    subscription,
                     selectedModel,
                     selectedModelOverride,
                     responseModel: state.responseModel,

@@ -615,6 +615,10 @@ export const deductWithAutoReload = action({
                     serviceKey: args.serviceKey,
                     userId: args.userId,
                     amountDollars: amountToCharge,
+                    idempotencyKey: paymentResult.paymentIntentId,
+                    revenueSource: "extra_usage_auto_reload",
+                    stripeCustomerId,
+                    stripePaymentIntentId: paymentResult.paymentIntentId,
                   });
                   autoReloadResult = {
                     success: true,

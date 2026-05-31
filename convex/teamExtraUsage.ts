@@ -7,6 +7,7 @@ import {
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import { recordRevenueEventInternal } from "./unitEconomicsLib";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -90,6 +91,15 @@ export const addTeamCredits = mutation({
     amountDollars: v.number(),
     idempotencyKey: v.optional(v.string()),
     legacyIdempotencyKey: v.optional(v.string()),
+    revenueSource: v.optional(
+      v.union(
+        v.literal("team_extra_usage_purchase"),
+        v.literal("team_extra_usage_auto_reload"),
+      ),
+    ),
+    stripeCustomerId: v.optional(v.string()),
+    stripeCheckoutSessionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(),
@@ -161,6 +171,29 @@ export const addTeamCredits = mutation({
         processed_at: Date.now(),
       });
     }
+
+    await recordRevenueEventInternal(ctx, {
+      entityType: "organization",
+      entityId: args.organizationId,
+      organizationId: args.organizationId,
+      source: "team_extra_usage",
+      sourceEventId:
+        args.stripeCheckoutSessionId ??
+        args.stripePaymentIntentId ??
+        args.idempotencyKey ??
+        `team_extra_usage:${args.organizationId}:${Date.now()}`,
+      idempotencyKey:
+        args.idempotencyKey ??
+        args.stripePaymentIntentId ??
+        args.stripeCheckoutSessionId,
+      grossRevenueDollars: args.amountDollars,
+      currency: "usd",
+      attributionStrategy: "organization_pool",
+      stripeCustomerId: args.stripeCustomerId,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      description: args.revenueSource ?? "team_extra_usage_purchase",
+    });
 
     convexLogger.info("team_credits_added", {
       organization_id: args.organizationId,
