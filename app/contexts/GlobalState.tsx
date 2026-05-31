@@ -106,7 +106,6 @@ interface GlobalStateType {
   queueMessage: (text: string, files?: FileMessagePart[]) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
-  dequeueNext: () => QueuedMessage | null;
 
   // Queue behavior preference
   queueBehavior: QueueBehavior;
@@ -640,16 +639,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setMessageQueue([]);
   }, []);
 
-  const dequeueNext = useCallback((): QueuedMessage | null => {
-    let nextMessage: QueuedMessage | null = null;
-    setMessageQueue((prev) => {
-      if (prev.length === 0) return prev;
-      nextMessage = prev[0];
-      return prev.slice(1);
-    });
-    return nextMessage;
-  }, []);
-
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
@@ -802,7 +791,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     queueMessage,
     removeQueuedMessage,
     clearQueue,
-    dequeueNext,
 
     queueBehavior,
     setQueueBehavior: setQueueBehaviorState,
