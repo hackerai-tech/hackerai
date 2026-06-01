@@ -6,10 +6,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
-
-interface CentrifugoPresenceResult {
-  clients?: Record<string, unknown>;
-}
+import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 
 export async function GET(request: NextRequest) {
   let userId: string;
@@ -79,9 +76,8 @@ export async function GET(request: NextRequest) {
 
           sub.on("subscribed", async () => {
             try {
-              const result = (await sub.presence()) as CentrifugoPresenceResult;
-              const clients = result.clients ?? {};
-              if (Object.keys(clients).length > 0) {
+              const result = await sub.presence();
+              if (presenceHasConnectionId(result, connection.connectionId)) {
                 onlineConnectionIds.add(connection.connectionId);
               }
               cleanup();

@@ -15,6 +15,7 @@ import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
+import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -44,10 +45,6 @@ export interface SandboxFallbackInfo {
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
 export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
-
-interface CentrifugoPresenceResult {
-  clients?: Record<string, unknown>;
-}
 
 interface PresenceProbeResult {
   reliable: boolean;
@@ -163,9 +160,7 @@ async function queryLiveSandboxConnectionIds(
             try {
               const result = await sub.presence();
               cleanup();
-              const clients =
-                (result as CentrifugoPresenceResult).clients ?? {};
-              if (Object.keys(clients).length > 0) {
+              if (presenceHasConnectionId(result, connectionId)) {
                 onlineConnectionIds.add(connectionId);
               }
               resolve();

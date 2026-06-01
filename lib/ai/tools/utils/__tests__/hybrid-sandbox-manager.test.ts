@@ -6,6 +6,10 @@ import {
   filterConnectionsByPresence,
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
+import {
+  getConnectionIdFromPresenceClient,
+  presenceHasConnectionId,
+} from "@/lib/centrifugo/presence";
 import type { ConnectionInfo } from "../sandbox-types";
 
 const baseConnection: ConnectionInfo = {
@@ -73,5 +77,52 @@ describe("filterConnectionsByPresence", () => {
 
     expect(result.availableConnections).toEqual([live]);
     expect(result.staleConnections).toEqual([stale]);
+  });
+});
+
+describe("presenceHasConnectionId", () => {
+  it("ignores the backend probe subscriber when it has no connection info", () => {
+    expect(
+      presenceHasConnectionId(
+        {
+          clients: {
+            "probe-client": {
+              client: "probe-client",
+              user: "user-1",
+            },
+          },
+        },
+        "conn-stale",
+      ),
+    ).toBe(false);
+  });
+
+  it("matches the local sandbox connection from Centrifugo connInfo", () => {
+    expect(
+      presenceHasConnectionId(
+        {
+          clients: {
+            "probe-client": {
+              client: "probe-client",
+              user: "user-1",
+            },
+            "sandbox-client": {
+              client: "sandbox-client",
+              user: "user-1",
+              connInfo: { connectionId: "conn-live" },
+            },
+          },
+        },
+        "conn-live",
+      ),
+    ).toBe(true);
+  });
+
+  it("supports legacy presence info field names", () => {
+    expect(
+      getConnectionIdFromPresenceClient({
+        info: { connectionId: "conn-legacy" },
+      }),
+    ).toBe("conn-legacy");
   });
 });
