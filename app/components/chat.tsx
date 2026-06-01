@@ -32,7 +32,11 @@ import {
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
-import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
+import {
+  LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
+  isLegacyDesktopAgentClient,
+  shouldUseAgentLongForAgent,
+} from "@/lib/chat/agent-routing";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
@@ -212,7 +216,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
     messageQueue,
-    dequeueNext,
+    removeQueuedMessage,
     clearQueue,
     queueBehavior,
     todos,
@@ -258,6 +262,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  // Use ref for model selection to avoid stale closures in auto-send
+  const selectedModelRef = useLatestRef(selectedModel);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -344,10 +350,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
+        const isTauri = isTauriEnvironment();
+        if (isLegacyDesktopAgentClient({ mode, isTauri })) {
+          throw new ChatSDKError(
+            "forbidden:chat",
+            LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
+          );
+        }
         const useTriggerAgent = shouldUseAgentLongForAgent({
           mode,
           subscription: subscriptionRef.current,
-          isTauri: isTauriEnvironment(),
+          isTauri,
         });
         if (useTriggerAgent) {
           // useChat reuses this fetch for both POST sendMessages and GET
@@ -375,9 +388,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             init,
           );
         }
-        const url =
-          input === "/api/chat" && mode === "agent" ? "/api/agent" : input;
-        return fetchWithErrorHandlers(url, init);
+        return fetchWithErrorHandlers(input, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the agent-long resume endpoint when there is a stored trigger run
@@ -609,10 +620,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      if (error instanceof ChatSDKError && error.type !== "rate_limit") {
-        toast.error(
-          typeof error.cause === "string" ? error.cause : error.message,
-        );
+      if (error instanceof ChatSDKError) {
+        const errorMessage =
+          typeof error.cause === "string" ? error.cause : error.message;
+        if (error.type !== "rate_limit" || isMobile) {
+          toast.error(errorMessage);
+        }
+      } else if (isMobile && error.name !== "AbortError") {
+        toast.error(error.message || "An error occurred.");
       }
     },
   });
@@ -1008,42 +1023,49 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       queueBehavior === "queue"
     ) {
       setIsProcessingQueue(true);
-      const nextMessage = dequeueNext();
+      const nextMessage = messageQueue[0];
 
       if (nextMessage) {
-        sendMessage(
-          {
-            text: nextMessage.text,
-            files: nextMessage.files
-              ? nextMessage.files.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
-          },
-          {
-            body: {
-              mode: chatModeRef.current,
-              todos: todosRef.current,
-              temporary: temporaryChatsEnabledRef.current,
-              sandboxPreference: sandboxPreferenceRef.current,
+        try {
+          const sendPromise = sendMessage(
+            {
+              text: nextMessage.text,
+              files: nextMessage.files as any,
+              metadata: { createdAt: nextMessage.timestamp },
             },
-          },
-        );
+            {
+              body: {
+                mode: chatModeRef.current,
+                todos: todosRef.current,
+                temporary: temporaryChatsEnabledRef.current,
+                sandboxPreference: sandboxPreferenceRef.current,
+                selectedModel: selectedModelRef.current,
+              },
+            },
+          );
+          removeQueuedMessage(nextMessage.id);
+          sendPromise.catch((error) => {
+            console.error("Failed to send queued message:", error);
+          });
+        } catch (error) {
+          console.error("Failed to send queued message:", error);
+        }
       }
 
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
   }, [
     status,
-    messageQueue.length,
+    messageQueue,
     isProcessingQueue,
-    dequeueNext,
+    removeQueuedMessage,
     sendMessage,
     queueBehavior,
+    chatModeRef,
+    todosRef,
+    temporaryChatsEnabledRef,
+    sandboxPreferenceRef,
+    selectedModelRef,
   ]);
 
   // Chat handlers
@@ -1210,6 +1232,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
                   isTemporaryChat={isTempChat}
+                  isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}
                   uploadStatus={uploadStatus}

@@ -67,7 +67,6 @@ export const MessageErrorState = ({
     subscription === "free" ||
     subscription === "pro" ||
     subscription === "pro-plus";
-  const isTrustCapExceeded = metadata?.trustCapExceeded === true;
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
 
   return (
@@ -78,18 +77,9 @@ export const MessageErrorState = ({
         ) : (
           <p>{errorMessage}</p>
         )}
-        {isRateLimitError && timeRemaining > 0 && !isTrustCapExceeded && (
+        {isRateLimitError && timeRemaining > 0 && (
           <p className="text-xs text-muted-foreground mt-1">
             Resets in {formatCountdown(timeRemaining)}
-          </p>
-        )}
-        {isRateLimitError && resetTimestamp && isTrustCapExceeded && (
-          <p className="text-xs text-muted-foreground mt-1">
-            Your limit resets on{" "}
-            {new Date(resetTimestamp).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-            })}
           </p>
         )}
       </div>
@@ -113,22 +103,7 @@ export const MessageErrorState = ({
             >
               View Usage
             </Button>
-            {isTrustCapExceeded && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() =>
-                  window.open(
-                    "https://help.hackerai.co/",
-                    "_blank",
-                    "noopener,noreferrer",
-                  )
-                }
-              >
-                Contact Support
-              </Button>
-            )}
-            {isPaidUser && !isTrustCapExceeded && (
+            {isPaidUser && (
               <Button
                 variant="outline"
                 size="sm"
@@ -137,7 +112,7 @@ export const MessageErrorState = ({
                 Add Credits
               </Button>
             )}
-            {canUpgrade && !isTrustCapExceeded && (
+            {canUpgrade && (
               <Button variant="default" size="sm" onClick={redirectToPricing}>
                 Upgrade Plan
               </Button>

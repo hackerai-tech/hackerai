@@ -31,7 +31,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
 
   const handleAgentModeClick = () => {
     if (!user) {
-      navigateToAuth("/login");
+      navigateToAuth("/signup", { preferSignInForReturningUser: true });
       return;
     }
     if (temporaryChatsEnabled) {

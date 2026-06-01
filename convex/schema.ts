@@ -55,11 +55,13 @@ export default defineSchema({
     chat_id: v.string(),
     summary_text: v.string(),
     summary_up_to_message_id: v.string(),
+    summary_up_to_message_creation_time: v.optional(v.number()),
     previous_summaries: v.optional(
       v.array(
         v.object({
           summary_text: v.string(),
           summary_up_to_message_id: v.string(),
+          summary_up_to_message_creation_time: v.optional(v.number()),
         }),
       ),
     ),
@@ -152,10 +154,11 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
-    // Trust-based spending cap fields
-    first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
-    cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
-    override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
+    // Legacy trust-cap fields retained so old rows still pass validation.
+    // The trust-cap feature no longer reads or writes these values.
+    first_successful_charge_at: v.optional(v.number()),
+    cumulative_spend_dollars: v.optional(v.number()),
+    override_monthly_cap_dollars: v.optional(v.number()),
     // Auto-reload health tracking — disable after consecutive failures so a
     // broken saved card does not keep retrying.
     auto_reload_consecutive_failures: v.optional(v.number()),
@@ -176,6 +179,8 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
+    // Legacy trust-cap fields retained so old rows still pass validation.
+    // The trust-cap feature no longer reads or writes these values.
     first_successful_charge_at: v.optional(v.number()),
     cumulative_spend_dollars: v.optional(v.number()),
     override_monthly_cap_dollars: v.optional(v.number()),
@@ -292,6 +297,12 @@ export default defineSchema({
         hostname: v.string(),
       }),
     ),
+    capabilities: v.optional(
+      v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+      }),
+    ),
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
@@ -317,6 +328,13 @@ export default defineSchema({
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
     user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    chat_id: v.optional(v.string()),
+    endpoint: v.optional(
+      v.union(v.literal("/api/chat"), v.literal("/api/agent-long")),
+    ),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    subscription: v.optional(v.string()),
     model: v.string(),
     type: v.union(v.literal("included"), v.literal("extra")),
     input_tokens: v.number(),
@@ -325,6 +343,11 @@ export default defineSchema({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
+    model_cost_dollars: v.optional(v.number()),
+    non_model_cost_dollars: v.optional(v.number()),
+    cost_source: v.optional(
+      v.union(v.literal("provider"), v.literal("token_estimate")),
+    ),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema
     // so old rows still pass validation.
@@ -335,7 +358,82 @@ export default defineSchema({
     byok: v.optional(v.boolean()),
   })
     .index("by_user", ["user_id"])
-    .index("by_user_and_model", ["user_id", "model"]),
+    .index("by_user_and_model", ["user_id", "model"])
+    .index("by_org", ["organization_id"]),
+
+  // Durable revenue ledger for unit economics reporting. Revenue is stored as
+  // gross/net dollars because usage costs are sub-cent dollar values already.
+  revenue_events: defineTable({
+    entity_type: v.union(v.literal("user"), v.literal("organization")),
+    entity_id: v.string(),
+    user_id: v.optional(v.string()),
+    organization_id: v.optional(v.string()),
+    source: v.union(
+      v.literal("subscription"),
+      v.literal("extra_usage"),
+      v.literal("team_extra_usage"),
+      v.literal("manual_adjustment"),
+    ),
+    source_event_id: v.string(),
+    idempotency_key: v.string(),
+    gross_revenue_dollars: v.number(),
+    net_revenue_dollars: v.number(),
+    currency: v.string(),
+    occurred_at: v.number(),
+    attribution_strategy: v.union(
+      v.literal("direct"),
+      v.literal("split_evenly"),
+      v.literal("organization_pool"),
+    ),
+    stripe_customer_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    stripe_checkout_session_id: v.optional(v.string()),
+    stripe_payment_intent_id: v.optional(v.string()),
+    stripe_price_id: v.optional(v.string()),
+    plan: v.optional(v.string()),
+    quantity: v.optional(v.number()),
+    user_count: v.optional(v.number()),
+    description: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_entity_occurred", ["entity_type", "entity_id", "occurred_at"])
+    .index("by_user_occurred", ["user_id", "occurred_at"])
+    .index("by_org_occurred", ["organization_id", "occurred_at"])
+    .index("by_source_event", ["source", "source_event_id"]),
+
+  // Compact daily rows intended for dashboarding and PostHog warehouse sync.
+  // Query either entity_type=user for per-user profitability or
+  // entity_type=organization for team pool/subscription reporting.
+  unit_economics_daily: defineTable({
+    entity_type: v.union(v.literal("user"), v.literal("organization")),
+    entity_id: v.string(),
+    user_id: v.optional(v.string()),
+    organization_id: v.optional(v.string()),
+    day: v.string(),
+    gross_revenue_dollars: v.number(),
+    net_revenue_dollars: v.number(),
+    model_cost_dollars: v.number(),
+    non_model_cost_dollars: v.number(),
+    total_cost_dollars: v.number(),
+    gross_profit_dollars: v.number(),
+    included_usage_cost_dollars: v.number(),
+    extra_usage_cost_dollars: v.number(),
+    usage_request_count: v.number(),
+    revenue_event_count: v.number(),
+    input_tokens: v.number(),
+    output_tokens: v.number(),
+    cache_read_tokens: v.number(),
+    cache_write_tokens: v.number(),
+    total_tokens: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_entity_day", ["entity_type", "entity_id", "day"])
+    .index("by_day", ["day"])
+    .index("by_type_day", ["entity_type", "day"])
+    .index("by_user_day", ["user_id", "day"])
+    .index("by_org_day", ["organization_id", "day"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
@@ -348,4 +446,12 @@ export default defineSchema({
     status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
     claimed_at: v.optional(v.number()),
   }).index("by_event_id", ["event_id"]),
+
+  // Durable idempotency records for user-visible checkout session confirms.
+  // Unlike webhook retry deduplication, these keys must not be time-purged
+  // because a paid Checkout Session ID can be replayed by the purchaser.
+  processed_checkout_sessions: defineTable({
+    session_key: v.string(),
+    processed_at: v.number(),
+  }).index("by_session_key", ["session_key"]),
 });

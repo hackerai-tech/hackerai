@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { X, File, Loader2 } from "lucide-react";
+import { X, File as FileIcon, Loader2 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Image from "next/image";
 import {
@@ -12,7 +12,11 @@ import {
   UploadedFileState,
   FileUploadPreviewProps,
   FilePreview,
+  LocalDesktopFile,
 } from "@/types/file";
+
+const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
+  typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
 
 export const FileUploadPreview = ({
   uploadedFiles,
@@ -45,7 +49,10 @@ export const FileUploadPreview = ({
         };
 
         // Generate base64 preview for images - this will show immediately while uploading
-        if (isImageFile(uploadedFile.file)) {
+        if (
+          isImageFile(uploadedFile.file) &&
+          isBrowserFile(uploadedFile.file)
+        ) {
           const fileKey = generateFileKey(uploadedFile.file);
           const cachedPreview = previewCache.current.get(fileKey);
 
@@ -191,7 +198,7 @@ export const FileUploadPreview = ({
                             ) : filePreview.error ? (
                               <X className="h-6 w-6 text-white" />
                             ) : (
-                              <File className="h-6 w-6 text-white" />
+                              <FileIcon className="h-6 w-6 text-white" />
                             )}
                           </div>
                           <div className="overflow-hidden flex-1">
@@ -207,7 +214,7 @@ export const FileUploadPreview = ({
                             >
                               {filePreview.error
                                 ? "Upload failed"
-                                : `Document • ${formatFileSize(filePreview.file.size)}`}
+                                : `${uploadedFiles[index]?.storage === "local-desktop" ? "Local file" : "Document"} • ${formatFileSize(filePreview.file.size)}`}
                             </div>
                           </div>
                         </div>

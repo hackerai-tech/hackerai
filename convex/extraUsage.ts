@@ -2,6 +2,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import { recordRevenueEventInternal } from "./unitEconomicsLib";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -19,74 +20,6 @@ const dollarsToPoints = (dollars: number): number =>
 
 /** Convert points to dollars (for API response) */
 const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
-
-// =============================================================================
-// Trust-Based Spending Cap
-// =============================================================================
-
-/**
- * Trust tier thresholds (modeled after Anthropic API tiers).
- * Both cumulative spend AND account age (since first charge) must be met to advance.
- *
- * Tier 1: cumulative_spend < $5  OR account < 7 days   → $100/month cap
- * Tier 2: cumulative_spend >= $5  AND account >= 7 days  → $500/month cap
- * Tier 3: cumulative_spend >= $40 AND account >= 30 days → $1,000/month cap
- * Tier 4: cumulative_spend >= $200 AND account >= 60 days → uncapped
- */
-const TRUST_TIERS = [
-  { minSpend: 200, minAgeDays: 60, capDollars: null }, // Tier 4: uncapped
-  { minSpend: 40, minAgeDays: 30, capDollars: 1000 }, // Tier 3
-  { minSpend: 5, minAgeDays: 7, capDollars: 500 }, // Tier 2
-] as const;
-
-const DEFAULT_TRUST_CAP_DOLLARS = 100; // Tier 1 default
-
-const DAYS_MS = 24 * 60 * 60 * 1000;
-
-export type TrustReason =
-  | "trusted" // Tier 4: fully uncapped
-  | "building-history" // Tier 1-3: need more spend/time
-  | "override"; // Manual override by support
-
-/**
- * Compute the effective monthly extra usage spending cap based on trust signals.
- * Returns null if uncapped (trusted user or manual override with no limit).
- */
-export function computeExtraUsageCap(settings: {
-  first_successful_charge_at?: number;
-  cumulative_spend_dollars?: number;
-  override_monthly_cap_dollars?: number;
-}): { capDollars: number | null; trustReason: TrustReason } {
-  // Manual override takes precedence
-  if (settings.override_monthly_cap_dollars !== undefined) {
-    return {
-      capDollars: settings.override_monthly_cap_dollars,
-      trustReason: "override",
-    };
-  }
-
-  const cumulativeSpend = settings.cumulative_spend_dollars ?? 0;
-  const firstChargeAt = settings.first_successful_charge_at;
-  const accountAgeDays = firstChargeAt
-    ? (Date.now() - firstChargeAt) / DAYS_MS
-    : 0;
-
-  // Check tiers from highest to lowest
-  for (const tier of TRUST_TIERS) {
-    if (cumulativeSpend >= tier.minSpend && accountAgeDays >= tier.minAgeDays) {
-      return {
-        capDollars: tier.capDollars,
-        trustReason: tier.capDollars === null ? "trusted" : "building-history",
-      };
-    }
-  }
-
-  // Default: Tier 1
-  return {
-    capDollars: DEFAULT_TRUST_CAP_DOLLARS,
-    trustReason: "building-history",
-  };
-}
 
 // =============================================================================
 // Webhook Idempotency
@@ -294,6 +227,15 @@ export const addCredits = mutation({
     amountDollars: v.number(),
     idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
     legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
+    revenueSource: v.optional(
+      v.union(
+        v.literal("extra_usage_purchase"),
+        v.literal("extra_usage_auto_reload"),
+      ),
+    ),
+    stripeCustomerId: v.optional(v.string()),
+    stripeCheckoutSessionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -304,6 +246,17 @@ export const addCredits = mutation({
 
     // Idempotency: skip if already processed (prevents double-credit on webhook retries
     // and across both the post-checkout confirm path and the async webhook path)
+    const sessionKey = args.idempotencyKey;
+    if (sessionKey) {
+      const durableExisting = await ctx.db
+        .query("processed_checkout_sessions")
+        .withIndex("by_session_key", (q) => q.eq("session_key", sessionKey))
+        .unique();
+      if (durableExisting) {
+        return { newBalance: 0, alreadyProcessed: true };
+      }
+    }
+
     const dedupKeys = [args.idempotencyKey, args.legacyIdempotencyKey].filter(
       (k): k is string => typeof k === "string" && k.length > 0,
     );
@@ -334,34 +287,55 @@ export const addCredits = mutation({
     const currentBalancePoints = settings?.balance_points ?? 0;
     const newBalancePoints = currentBalancePoints + amountPoints;
 
-    // Update or create settings (also track trust fields)
+    // Update or create settings
     const now = Date.now();
     if (settings) {
       await ctx.db.patch(settings._id, {
         balance_points: newBalancePoints,
-        // Track cumulative spend for trust-based caps
-        first_successful_charge_at: settings.first_successful_charge_at ?? now,
-        cumulative_spend_dollars:
-          (settings.cumulative_spend_dollars ?? 0) + args.amountDollars,
         updated_at: now,
       });
     } else {
       await ctx.db.insert("extra_usage", {
         user_id: args.userId,
         balance_points: newBalancePoints,
-        first_successful_charge_at: now,
-        cumulative_spend_dollars: args.amountDollars,
         updated_at: now,
       });
     }
 
     // Mark processed after success (so retries work if above fails)
     if (args.idempotencyKey) {
+      await ctx.db.insert("processed_checkout_sessions", {
+        session_key: args.idempotencyKey,
+        processed_at: Date.now(),
+      });
       await ctx.db.insert("processed_webhooks", {
         event_id: args.idempotencyKey,
         processed_at: Date.now(),
       });
     }
+
+    await recordRevenueEventInternal(ctx, {
+      entityType: "user",
+      entityId: args.userId,
+      userId: args.userId,
+      source: "extra_usage",
+      sourceEventId:
+        args.stripeCheckoutSessionId ??
+        args.stripePaymentIntentId ??
+        args.idempotencyKey ??
+        `extra_usage:${args.userId}:${Date.now()}`,
+      idempotencyKey:
+        args.idempotencyKey ??
+        args.stripePaymentIntentId ??
+        args.stripeCheckoutSessionId,
+      grossRevenueDollars: args.amountDollars,
+      currency: "usd",
+      attributionStrategy: "direct",
+      stripeCustomerId: args.stripeCustomerId,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      description: args.revenueSource ?? "extra_usage_purchase",
+    });
 
     convexLogger.info("credits_added", {
       user_id: args.userId,
@@ -396,8 +370,6 @@ export const deductPoints = mutation({
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
     monthlyCapExceeded: v.boolean(),
-    trustCapExceeded: v.optional(v.boolean()),
-    trustCapDollars: v.optional(v.union(v.null(), v.number())),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -455,39 +427,17 @@ export const deductPoints = mutation({
       monthlySpentPoints = 0;
     }
 
-    // Compute effective monthly cap: lower of user-set cap and trust-based cap
-    const userCapPoints = settings.monthly_cap_points;
-    const { capDollars: trustCapDollars } = computeExtraUsageCap(settings);
-    const trustCapPoints =
-      trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
-
-    // Use the most restrictive cap (lowest non-undefined value)
-    let effectiveCapPoints: number | undefined;
-    if (userCapPoints !== undefined && trustCapPoints !== undefined) {
-      effectiveCapPoints = Math.min(userCapPoints, trustCapPoints);
-    } else {
-      effectiveCapPoints = userCapPoints ?? trustCapPoints;
-    }
-
-    // Determine which cap triggered (for frontend error messaging)
-    const isTrustCap =
-      effectiveCapPoints !== undefined &&
-      trustCapPoints !== undefined &&
-      effectiveCapPoints === trustCapPoints &&
-      (userCapPoints === undefined || trustCapPoints <= userCapPoints);
-
     // Check monthly spending cap before deducting
-    if (effectiveCapPoints !== undefined) {
+    const monthlyCapPoints = settings.monthly_cap_points;
+    if (monthlyCapPoints !== undefined) {
       const newMonthlySpent = monthlySpentPoints + args.amountPoints;
-      if (newMonthlySpent > effectiveCapPoints) {
+      if (newMonthlySpent > monthlyCapPoints) {
         convexLogger.warn("deduct_points_failed", {
           user_id: args.userId,
           amount_points: args.amountPoints,
           monthly_spent_points: monthlySpentPoints,
-          effective_cap_points: effectiveCapPoints,
-          trust_cap_dollars: trustCapDollars,
-          is_trust_cap: isTrustCap,
-          reason: isTrustCap ? "trust_cap_exceeded" : "monthly_cap_exceeded",
+          monthly_cap_points: monthlyCapPoints,
+          reason: "monthly_cap_exceeded",
           monthly_cap_exceeded: true,
         });
         return {
@@ -496,8 +446,6 @@ export const deductPoints = mutation({
           newBalanceDollars: pointsToDollars(currentBalancePoints),
           insufficientFunds: true,
           monthlyCapExceeded: true,
-          trustCapExceeded: isTrustCap,
-          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
         };
       }
     }
@@ -520,7 +468,7 @@ export const deductPoints = mutation({
       previous_balance_points: currentBalancePoints,
       new_balance_points: newBalancePoints,
       monthly_spent_points: monthlySpentPoints,
-      monthly_cap_points: effectiveCapPoints,
+      monthly_cap_points: monthlyCapPoints,
     });
 
     return {
@@ -684,9 +632,6 @@ export const getExtraUsageSettings = query({
       autoReloadAmountDollars: v.optional(v.number()),
       monthlyCapDollars: v.optional(v.number()),
       monthlySpentDollars: v.number(),
-      // Trust-based spending cap
-      trustCapDollars: v.union(v.null(), v.number()), // null = uncapped
-      trustReason: v.string(),
       // If auto-reload was auto-disabled because the saved card kept failing,
       // surface a human-readable reason so the UI can prompt the user to fix it.
       autoReloadDisabledReason: v.optional(v.string()),
@@ -707,8 +652,6 @@ export const getExtraUsageSettings = query({
       return null;
     }
 
-    const { capDollars, trustReason } = computeExtraUsageCap(settings);
-
     return {
       balanceDollars: pointsToDollars(settings.balance_points),
       autoReloadEnabled: settings.auto_reload_enabled ?? false,
@@ -720,8 +663,6 @@ export const getExtraUsageSettings = query({
         ? pointsToDollars(settings.monthly_cap_points)
         : undefined,
       monthlySpentDollars: pointsToDollars(settings.monthly_spent_points ?? 0),
-      trustCapDollars: capDollars,
-      trustReason,
       autoReloadDisabledReason: settings.auto_reload_disabled_reason,
     };
   },

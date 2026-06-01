@@ -1,6 +1,6 @@
 import { logUsageRecord } from "@/lib/db/actions";
 import { calculateTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
-import type { RateLimitInfo } from "@/types";
+import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 
 interface StepUsage {
   inputTokens?: number;
@@ -11,6 +11,20 @@ interface StepUsage {
     cacheWriteTokens?: number;
   };
   raw?: { cost?: number };
+}
+
+export interface UsageCostRecord {
+  model: string;
+  type: "included" | "extra";
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costDollars: number;
+  modelCostDollars: number;
+  nonModelCostDollars: number;
+  costSource: "provider" | "token_estimate";
 }
 
 /**
@@ -138,36 +152,73 @@ export class UsageTracker {
     return responseModel || configuredModelId || selectedModel;
   }
 
-  log({
-    userId,
+  createUsageCostRecord({
     selectedModel,
     selectedModelOverride,
     responseModel,
     configuredModelId,
     rateLimitInfo,
   }: {
-    userId: string;
     selectedModel: string;
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
-  }) {
-    logUsageRecord({
-      userId,
-      model: this.resolveModelName({
-        selectedModelOverride,
-        responseModel,
-        configuredModelId,
-        selectedModel,
-      }),
+  }): UsageCostRecord {
+    const model = this.resolveModelName({
+      selectedModelOverride,
+      responseModel,
+      configuredModelId,
+      selectedModel,
+    });
+    const modelCostDollars = this.computeModelCostDollars(selectedModel);
+    return {
+      model,
       type: this.resolveUsageType(rateLimitInfo),
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       totalTokens: this.totalTokens || this.inputTokens + this.outputTokens,
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
-      costDollars: this.computeCostDollars(selectedModel),
+      costDollars: modelCostDollars + this.nonModelCost,
+      modelCostDollars,
+      nonModelCostDollars: this.nonModelCost,
+      costSource: this.modelProviderCost > 0 ? "provider" : "token_estimate",
+    };
+  }
+
+  log(args: {
+    userId: string;
+    organizationId?: string;
+    chatId?: string;
+    endpoint?: "/api/chat" | "/api/agent-long";
+    mode?: ChatMode;
+    subscription?: SubscriptionTier;
+    selectedModel: string;
+    selectedModelOverride?: string | null;
+    responseModel?: string;
+    configuredModelId: string;
+    rateLimitInfo: RateLimitInfo;
+  }) {
+    const usage = this.createUsageCostRecord(args);
+    logUsageRecord({
+      userId: args.userId,
+      organizationId: args.organizationId,
+      chatId: args.chatId,
+      endpoint: args.endpoint,
+      mode: args.mode,
+      subscription: args.subscription,
+      model: usage.model,
+      type: usage.type,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
+      costDollars: usage.costDollars,
+      modelCostDollars: usage.modelCostDollars,
+      nonModelCostDollars: usage.nonModelCostDollars,
+      costSource: usage.costSource,
     });
   }
 }

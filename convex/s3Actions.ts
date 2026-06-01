@@ -8,6 +8,8 @@ import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
+import { validateUploadPolicy } from "../lib/utils/upload-policy";
+import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
 type StorageUsage = {
   usedBytes: number;
@@ -17,6 +19,24 @@ type StorageUsage = {
 
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = Doc<"files"> | null;
+
+const getIdentityEntitlements = (identity: unknown) => {
+  if (
+    !identity ||
+    typeof identity !== "object" ||
+    !("entitlements" in identity)
+  ) {
+    return [];
+  }
+
+  const entitlements = identity.entitlements;
+  return Array.isArray(entitlements)
+    ? entitlements.filter(
+        (entitlement: unknown): entitlement is string =>
+          typeof entitlement === "string",
+      )
+    : [];
+};
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -31,6 +51,8 @@ export const generateS3UploadUrlAction = action({
   args: {
     fileName: v.string(),
     contentType: v.string(),
+    size: v.optional(v.number()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -61,8 +83,41 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
-    // Get user ID from identity
+    if (
+      args.size === undefined ||
+      !Number.isFinite(args.size) ||
+      args.size <= 0
+    ) {
+      throw new ConvexError({
+        code: "INVALID_FILE_SIZE",
+        message:
+          "A positive file size is required before generating an upload URL",
+      });
+    }
+
+    const validation = validateUploadPolicy({
+      mode: args.mode ?? "ask",
+      size: args.size,
+      mediaType: args.contentType,
+      surface: "client",
+    });
+
+    if (!validation.valid) {
+      throw new ConvexError({
+        code: validation.code,
+        message: validation.message,
+      });
+    }
+
     const userId = identity.subject;
+    const entitlements = getIdentityEntitlements(identity);
+
+    if (!hasPaidEntitlement(entitlements)) {
+      throw new ConvexError({
+        code: "PAID_PLAN_REQUIRED",
+        message: "Paid plan required for file uploads",
+      });
+    }
 
     // Check storage limit before allowing upload
     const storageUsage: StorageUsage = await ctx.runQuery(
@@ -76,10 +131,20 @@ export const generateS3UploadUrlAction = action({
         message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB. Please delete some files to upload new ones.`,
       });
     }
+    if (args.size !== undefined && storageUsage.availableBytes < args.size) {
+      const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+      const requestedMB = (args.size / (1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB and this file requires ${requestedMB} MB. Please delete some files to upload new ones.`,
+      });
+    }
 
     // Check rate limit and consume a token
     // This prevents abuse by spamming URL generation
-    const rateLimitResult = await checkFileUploadRateLimit(userId, true);
+    const rateLimitResult = await checkFileUploadRateLimit(userId, true, {
+      entitlements,
+    });
 
     try {
       // Generate presigned upload URL with user-scoped S3 key
@@ -87,7 +152,16 @@ export const generateS3UploadUrlAction = action({
         args.fileName,
         args.contentType,
         userId,
+        args.size,
       );
+
+      await ctx.runMutation(internal.fileStorage.createPendingS3File, {
+        s3Key,
+        userId,
+        name: args.fileName,
+        mediaType: args.contentType,
+        size: args.size,
+      });
 
       return {
         uploadUrl,
@@ -101,6 +175,9 @@ export const generateS3UploadUrlAction = action({
           : undefined,
       };
     } catch (error) {
+      if (error instanceof ConvexError) {
+        throw error;
+      }
       convexLogger.error("file_upload_url_generation_failed", {
         userId,
         fileName: args.fileName,
@@ -220,6 +297,7 @@ export const getFileUrlAction = action({
 export const getFileUrlsByFileIdsAction = action({
   args: {
     serviceKey: v.string(),
+    userId: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
@@ -246,7 +324,16 @@ export const getFileUrlsByFileIdsAction = action({
           );
 
           // Return null if file not found
-          if (!file) {
+          if (!file || file.user_id !== args.userId) {
+            return null;
+          }
+
+          if (file.user_id !== args.userId) {
+            convexLogger.warn("file_batch_url_access_denied", {
+              fileId,
+              caller: "service",
+              userId: args.userId,
+            });
             return null;
           }
 

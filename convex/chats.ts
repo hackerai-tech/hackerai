@@ -1,4 +1,5 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
@@ -6,6 +7,110 @@ import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 import { coerceSelectedModel } from "../types/chat";
+import { convexLogger } from "./lib/logger";
+
+const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
+const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+
+async function getMessageCreationTimeById(
+  ctx: MutationCtx,
+  messageId: string,
+): Promise<number | null> {
+  const message = await ctx.db
+    .query("messages")
+    .withIndex("by_message_id", (q) => q.eq("id", messageId))
+    .first();
+
+  return message?._creationTime ?? null;
+}
+
+async function scheduleDeleteAllChatsBatch(ctx: MutationCtx, userId: string) {
+  await ctx.scheduler.runAfter(0, internal.chats.deleteAllChatsBatch, {
+    userId,
+  });
+}
+
+async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_user_and_updated", (q) => q.eq("user_id", userId))
+    .first();
+
+  if (!chat) {
+    return false;
+  }
+
+  const messages = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+    .take(DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE);
+
+  if (messages.length > 0) {
+    for (const message of messages) {
+      if (!message.source_message_id && message.file_ids?.length) {
+        for (const storageId of message.file_ids) {
+          try {
+            const file = await ctx.db.get(storageId);
+            if (file) {
+              if (file.s3_key) {
+                await ctx.scheduler.runAfter(
+                  0,
+                  internal.s3Cleanup.deleteS3ObjectAction,
+                  { s3Key: file.s3_key },
+                );
+              }
+              if (file.storage_id) {
+                await ctx.storage.delete(file.storage_id);
+              }
+              await fileCountAggregate.deleteIfExists(ctx, file);
+              await ctx.db.delete(file._id);
+            }
+          } catch (error) {
+            console.error(`Failed to delete file ${storageId}:`, error);
+          }
+        }
+      }
+
+      if (message.feedback_id) {
+        try {
+          await ctx.db.delete(message.feedback_id);
+        } catch (error) {
+          console.error(
+            `Failed to delete feedback ${message.feedback_id}:`,
+            error,
+          );
+        }
+      }
+
+      await ctx.db.delete(message._id);
+    }
+
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
+
+  const summaries = await ctx.db
+    .query("chat_summaries")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+    .take(DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE);
+
+  if (summaries.length > 0) {
+    for (const summary of summaries) {
+      try {
+        await ctx.db.delete(summary._id);
+      } catch (error) {
+        console.error(`Failed to delete summary ${summary._id}:`, error);
+      }
+    }
+
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
+
+  await ctx.db.delete(chat._id);
+  await scheduleDeleteAllChatsBatch(ctx, userId);
+  return true;
+}
 
 /**
  * Get a chat by its ID
@@ -398,6 +503,8 @@ export const getUserChats = query({
     }
 
     try {
+      const MAX_PINNED_CHATS = 100;
+
       // Step 1: Fetch pinned chats only, ordered by pinned_at asc (first pinned = first in list)
       const pinnedChats = await ctx.db
         .query("chats")
@@ -405,9 +512,18 @@ export const getUserChats = query({
           q.eq("user_id", identity.subject).gt("pinned_at", 0),
         )
         .order("asc")
-        .collect();
+        .take(MAX_PINNED_CHATS);
 
-      const pinnedIds = pinnedChats.map((c) => c.id);
+      if (pinnedChats.length === MAX_PINNED_CHATS) {
+        convexLogger.warn("chat_sidebar_pinned_cap_reached", {
+          user_id: identity.subject,
+          pinned_cap: MAX_PINNED_CHATS,
+          requested_page_size: args.paginationOpts.numItems,
+          has_cursor: Boolean(args.paginationOpts.cursor),
+        });
+      }
+
+      const pinnedIds = new Set(pinnedChats.map((c) => c.id));
 
       // Step 2: Fetch one page (no over-fetch: slicing would lose items permanently
       // because the cursor advances past all fetched items)
@@ -419,7 +535,7 @@ export const getUserChats = query({
         .order("desc")
         .paginate(args.paginationOpts);
 
-      const unpinnedPage = result.page.filter((c) => !pinnedIds.includes(c.id));
+      const unpinnedPage = result.page.filter((c) => !pinnedIds.has(c.id));
       const isFirstPage =
         args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
       const combinedPage = isFirstPage
@@ -472,7 +588,15 @@ export const getUserChats = query({
         page: enhancedChats,
       };
     } catch (error) {
-      console.error("Failed to get user chats:", error);
+      convexLogger.error("chat_sidebar_query_failed", {
+        user_id: identity.subject,
+        requested_page_size: args.paginationOpts.numItems,
+        has_cursor: Boolean(args.paginationOpts.cursor),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
       return {
         page: [],
         isDone: true,
@@ -778,7 +902,7 @@ export const renameChat = mutation({
 export const deleteAllChats = mutation({
   args: {},
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
@@ -789,103 +913,27 @@ export const deleteAllChats = mutation({
     }
 
     try {
-      // Get all chats for the user
-      const userChats = await ctx.db
-        .query("chats")
-        .withIndex("by_user_and_updated", (q) => q.eq("user_id", user.subject))
-        .collect();
-
-      // Delete each chat and its associated data
-      for (const chat of userChats) {
-        // Delete all messages and their associated files for this chat
-        const messages = await ctx.db
-          .query("messages")
-          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-          .collect();
-
-        for (const message of messages) {
-          // Skip deleting files for copied messages (they reference original chat files)
-          if (!message.source_message_id) {
-            // Clean up files associated with this message
-            if (message.file_ids && message.file_ids.length > 0) {
-              for (const storageId of message.file_ids) {
-                try {
-                  const file = await ctx.db.get(storageId);
-                  if (file) {
-                    // Delete from appropriate storage
-                    if (file.s3_key) {
-                      await ctx.scheduler.runAfter(
-                        0,
-                        internal.s3Cleanup.deleteS3ObjectAction,
-                        { s3Key: file.s3_key },
-                      );
-                    }
-                    if (file.storage_id) {
-                      await ctx.storage.delete(file.storage_id);
-                    }
-                    // Delete from aggregate
-                    await fileCountAggregate.deleteIfExists(ctx, file);
-                    await ctx.db.delete(file._id);
-                  }
-                } catch (error) {
-                  console.error(`Failed to delete file ${storageId}:`, error);
-                  // Continue with deletion even if file cleanup fails
-                }
-              }
-            }
-          }
-
-          // Clean up feedback associated with this message
-          if (message.feedback_id) {
-            try {
-              await ctx.db.delete(message.feedback_id);
-            } catch (error) {
-              console.error(
-                `Failed to delete feedback ${message.feedback_id}:`,
-                error,
-              );
-              // Continue with deletion even if feedback cleanup fails
-            }
-          }
-
-          await ctx.db.delete(message._id);
-        }
-
-        // Delete chat summaries
-        if (chat.latest_summary_id) {
-          try {
-            await ctx.db.delete(chat.latest_summary_id);
-          } catch (error) {
-            console.error(
-              `Failed to delete summary ${chat.latest_summary_id}:`,
-              error,
-            );
-            // Continue with deletion even if summary cleanup fails
-          }
-        }
-
-        // Delete all historical summaries for this chat
-        const summaries = await ctx.db
-          .query("chat_summaries")
-          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-          .collect();
-
-        for (const summary of summaries) {
-          try {
-            await ctx.db.delete(summary._id);
-          } catch (error) {
-            console.error(`Failed to delete summary ${summary._id}:`, error);
-            // Continue with deletion even if summary cleanup fails
-          }
-        }
-
-        // Delete the chat itself
-        await ctx.db.delete(chat._id);
-      }
+      await deleteNextUserChatBatch(ctx, user.subject);
 
       return null;
     } catch (error) {
       console.error("Failed to delete all chats:", error);
+      throw error;
+    }
+  },
+});
+
+export const deleteAllChatsBatch = internalMutation({
+  args: {
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    try {
+      await deleteNextUserChatBatch(ctx, args.userId);
+      return null;
+    } catch (error) {
+      console.error("Failed to delete all chats batch:", error);
       throw error;
     }
   },
@@ -1059,39 +1107,100 @@ export const saveLatestSummary = mutation({
         return null;
       }
 
+      const incomingCutoffCreationTime = await getMessageCreationTimeById(
+        ctx,
+        args.summaryUpToMessageId,
+      );
+
+      if (incomingCutoffCreationTime === null) {
+        convexLogger.warn("chat_summary_cutoff_missing", {
+          service: "convex",
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+          chat_id: args.chatId,
+          summary_up_to_message_id: args.summaryUpToMessageId,
+        });
+        return null;
+      }
+
       // Log sizes to help diagnose document limit issues
       const summaryTextSizeKB = Math.round(
         new TextEncoder().encode(args.summaryText).length / 1024,
       );
-      console.log("[saveLatestSummary] Saving summary", {
-        chatId: args.chatId,
-        summaryTextSizeKB,
-        hasPreviousSummary: !!chat.latest_summary_id,
+      convexLogger.info("chat_summary_save_started", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        chat_id: args.chatId,
+        summary_up_to_message_id: args.summaryUpToMessageId,
+        summary_up_to_message_creation_time: incomingCutoffCreationTime,
+        summary_text_size_kb: summaryTextSizeKB,
+        has_previous_summary: !!chat.latest_summary_id,
+        previous_summary_id: chat.latest_summary_id,
       });
 
       let previousSummaries: {
         summary_text: string;
         summary_up_to_message_id: string;
+        summary_up_to_message_creation_time?: number;
       }[] = [];
 
       if (chat.latest_summary_id) {
-        try {
-          const oldSummary = await ctx.db.get(chat.latest_summary_id);
-          if (oldSummary) {
-            previousSummaries = [
-              {
-                summary_text: oldSummary.summary_text,
-                summary_up_to_message_id: oldSummary.summary_up_to_message_id,
-              },
-              ...(oldSummary.previous_summaries ?? []),
-            ].slice(0, MAX_PREVIOUS_SUMMARIES);
+        const oldSummary = await ctx.db.get(chat.latest_summary_id);
+        if (oldSummary) {
+          const oldSummaryWithCreationTime = oldSummary as typeof oldSummary & {
+            summary_up_to_message_creation_time?: number;
+          };
+          const previousSummaryCutoffCreationTime =
+            oldSummaryWithCreationTime.summary_up_to_message_creation_time ??
+            (await getMessageCreationTimeById(
+              ctx,
+              oldSummary.summary_up_to_message_id,
+            ));
+
+          const isStaleSummary =
+            previousSummaryCutoffCreationTime !== null &&
+            (incomingCutoffCreationTime < previousSummaryCutoffCreationTime ||
+              (incomingCutoffCreationTime ===
+                previousSummaryCutoffCreationTime &&
+                args.summaryUpToMessageId ===
+                  oldSummary.summary_up_to_message_id));
+
+          if (isStaleSummary) {
+            convexLogger.info("chat_summary_stale_save_skipped", {
+              service: "convex",
+              environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+              chat_id: args.chatId,
+              incoming_summary_up_to_message_id: args.summaryUpToMessageId,
+              incoming_summary_up_to_message_creation_time:
+                incomingCutoffCreationTime,
+              current_summary_id: chat.latest_summary_id,
+              current_summary_up_to_message_id:
+                oldSummary.summary_up_to_message_id,
+              current_summary_up_to_message_creation_time:
+                previousSummaryCutoffCreationTime,
+            });
+            return null;
           }
-          await ctx.db.patch(chat._id, {
-            latest_summary_id: undefined,
+
+          previousSummaries = [
+            {
+              summary_text: oldSummary.summary_text,
+              summary_up_to_message_id: oldSummary.summary_up_to_message_id,
+              ...(previousSummaryCutoffCreationTime !== null
+                ? {
+                    summary_up_to_message_creation_time:
+                      previousSummaryCutoffCreationTime,
+                  }
+                : undefined),
+            },
+            ...(oldSummary.previous_summaries ?? []),
+          ].slice(0, MAX_PREVIOUS_SUMMARIES);
+        } else {
+          convexLogger.warn("chat_summary_latest_missing", {
+            service: "convex",
+            environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+            chat_id: args.chatId,
+            latest_summary_id: chat.latest_summary_id,
           });
-          await ctx.db.delete(chat.latest_summary_id);
-        } catch (error) {
-          // Continue anyway - old summary cleanup is not critical
         }
       }
 
@@ -1102,18 +1211,23 @@ export const saveLatestSummary = mutation({
           0,
         ) / 1024,
       );
-      console.log("[saveLatestSummary] Document sizes", {
-        chatId: args.chatId,
-        summaryTextSizeKB,
-        previousSummariesCount: previousSummaries.length,
-        previousSummariesTotalSizeKB,
-        estimatedTotalSizeKB: summaryTextSizeKB + previousSummariesTotalSizeKB,
+      convexLogger.info("chat_summary_document_sized", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        chat_id: args.chatId,
+        summary_up_to_message_id: args.summaryUpToMessageId,
+        summary_text_size_kb: summaryTextSizeKB,
+        previous_summaries_count: previousSummaries.length,
+        previous_summaries_total_size_kb: previousSummariesTotalSizeKB,
+        estimated_total_size_kb:
+          summaryTextSizeKB + previousSummariesTotalSizeKB,
       });
 
       const summaryId = await ctx.db.insert("chat_summaries", {
         chat_id: args.chatId,
         summary_text: args.summaryText,
         summary_up_to_message_id: args.summaryUpToMessageId,
+        summary_up_to_message_creation_time: incomingCutoffCreationTime,
         previous_summaries: previousSummaries,
       });
 
@@ -1123,11 +1237,25 @@ export const saveLatestSummary = mutation({
         latest_summary_id: summaryId,
       });
 
+      convexLogger.info("chat_summary_saved", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        chat_id: args.chatId,
+        summary_id: summaryId,
+        summary_up_to_message_id: args.summaryUpToMessageId,
+        summary_up_to_message_creation_time: incomingCutoffCreationTime,
+        previous_summary_id: chat.latest_summary_id,
+        previous_summaries_count: previousSummaries.length,
+      });
+
       return null;
     } catch (error) {
-      console.error("[saveLatestSummary] Failed to save chat summary:", {
-        chatId: args.chatId,
-        summaryTextLength: args.summaryText.length,
+      convexLogger.error("chat_summary_save_failed", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        chat_id: args.chatId,
+        summary_up_to_message_id: args.summaryUpToMessageId,
+        summary_text_length: args.summaryText.length,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

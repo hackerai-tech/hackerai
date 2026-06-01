@@ -19,6 +19,10 @@ export const getErrorMessage = (err: unknown): string => {
   }
 };
 
+const truncate = (str: string, max: number): string => {
+  return str.length > max ? str.slice(0, max) + "…" : str;
+};
+
 const SENSITIVE_KEYS = new Set([
   "requestBodyValues",
   "prompt",
@@ -26,6 +30,83 @@ const SENSITIVE_KEYS = new Set([
   "content",
   "text",
 ]);
+
+const OPENROUTER_DETAIL_MAX_LENGTH = 500;
+
+const parseJsonObject = (
+  value: string,
+): Record<string, unknown> | undefined => {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getOpenRouterPayload = (
+  source: unknown,
+): Record<string, unknown> | null => {
+  if (!source || typeof source !== "object") return null;
+  const anySource = source as Record<string, unknown>;
+
+  if (anySource.data && typeof anySource.data === "object") {
+    return anySource.data as Record<string, unknown>;
+  }
+
+  if (typeof anySource.responseBody === "string") {
+    return parseJsonObject(anySource.responseBody) ?? null;
+  }
+
+  return null;
+};
+
+const getOpenRouterProviderInfo = (
+  source: unknown,
+): Record<string, unknown> => {
+  const payload = getOpenRouterPayload(source);
+  if (!payload) return {};
+
+  const details: Record<string, unknown> = {};
+  const id = pickBodyId(payload);
+  if (id) details.openrouterGenerationId = id;
+
+  const nested =
+    payload.error && typeof payload.error === "object"
+      ? (payload.error as Record<string, unknown>)
+      : undefined;
+  if (!nested) return details;
+
+  if (typeof nested.code === "number" || typeof nested.code === "string") {
+    details.providerErrorCode = nested.code;
+  }
+  if (typeof nested.message === "string" && nested.message.length > 0) {
+    details.providerErrorMessage = truncate(
+      nested.message,
+      OPENROUTER_DETAIL_MAX_LENGTH,
+    );
+  }
+
+  const metadata =
+    nested.metadata && typeof nested.metadata === "object"
+      ? (nested.metadata as Record<string, unknown>)
+      : undefined;
+  if (!metadata) return details;
+
+  if (typeof metadata.provider_name === "string") {
+    details.providerName = metadata.provider_name;
+  }
+  if (typeof metadata.raw === "string" && metadata.raw.length > 0) {
+    details.providerRawError = truncate(
+      metadata.raw,
+      OPENROUTER_DETAIL_MAX_LENGTH,
+    );
+  }
+
+  return details;
+};
 
 /**
  * Removes sensitive user data from provider error objects.
@@ -110,14 +191,77 @@ export const extractErrorDetails = (
     details.errorCode = anyError.code;
   }
 
+  Object.assign(details, getOpenRouterProviderInfo(error));
+
   return details;
 };
+
+export type ProviderErrorCategory =
+  | "rate_limited"
+  | "provider_5xx"
+  | "provider_4xx"
+  | "stream_terminated"
+  | "timeout"
+  | "unknown";
+
+export const getProviderStatusCode = (
+  details: Record<string, unknown>,
+): number | undefined => {
+  const statusCode =
+    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  if (statusCode != null) return statusCode;
+
+  const rawProviderErrorCode = details.providerErrorCode;
+  const providerErrorCode =
+    typeof rawProviderErrorCode === "number"
+      ? rawProviderErrorCode
+      : typeof rawProviderErrorCode === "string"
+        ? Number(rawProviderErrorCode)
+        : undefined;
+  return providerErrorCode != null &&
+    Number.isInteger(providerErrorCode) &&
+    providerErrorCode >= 400 &&
+    providerErrorCode <= 599
+    ? providerErrorCode
+    : undefined;
+};
+
+export const getProviderErrorCategory = (
+  details: Record<string, unknown>,
+): ProviderErrorCategory => {
+  const statusCode = getProviderStatusCode(details);
+  if (statusCode === 429) return "rate_limited";
+  if (statusCode != null && statusCode >= 500) return "provider_5xx";
+  if (statusCode != null && statusCode >= 400) return "provider_4xx";
+
+  const message = [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.cause,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  if (
+    /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i.test(
+      message,
+    )
+  ) {
+    return "stream_terminated";
+  }
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  return "unknown";
+};
+
+export const isProviderStreamTerminatedError = (error: unknown): boolean =>
+  getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
 
 export interface ProviderAttempt {
   status_code?: number;
   message: string;
   error_name?: string;
   request_id?: string;
+  provider_name?: string;
 }
 
 const REQUEST_ID_HEADERS = [
@@ -179,6 +323,7 @@ const extractRequestId = (error: unknown): string | undefined => {
 
 const toAttempt = (error: unknown): ProviderAttempt => {
   const anyError = (error ?? {}) as Record<string, unknown>;
+  const providerInfo = getOpenRouterProviderInfo(error);
   const statusCode =
     typeof anyError.statusCode === "number"
       ? anyError.statusCode
@@ -196,6 +341,10 @@ const toAttempt = (error: unknown): ProviderAttempt => {
     message: getErrorMessage(error),
     error_name: errorName,
     request_id: extractRequestId(error),
+    provider_name:
+      typeof providerInfo.providerName === "string"
+        ? providerInfo.providerName
+        : undefined,
   };
 };
 
@@ -361,8 +510,4 @@ function extractMessageFromResponseBody(body: string): string | undefined {
     }
   }
   return undefined;
-}
-
-function truncate(str: string, max: number): string {
-  return str.length > max ? str.slice(0, max) + "…" : str;
 }

@@ -3,7 +3,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
-  sandboxChannel,
+  sandboxConnectionChannel,
   type CommandResponseMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
@@ -20,13 +20,30 @@ const VALID_MESSAGE_TYPES = new Set([
   "error",
 ]);
 
-function parseSandboxMessage(data: unknown): CommandResponseMessage | null {
+const IGNORED_MESSAGE_TYPES = new Set([
+  "pty_create",
+  "pty_input",
+  "pty_resize",
+  "pty_kill",
+  "pty_ready",
+  "pty_data",
+  "pty_exit",
+  "pty_error",
+]);
+
+export function parseSandboxMessage(
+  data: unknown,
+): CommandResponseMessage | null {
   if (typeof data !== "object" || data === null) {
     console.warn("Invalid sandbox message: not an object", data);
     return null;
   }
 
   const msg = data as Record<string, unknown>;
+
+  if (typeof msg.type === "string" && IGNORED_MESSAGE_TYPES.has(msg.type)) {
+    return null;
+  }
 
   if (typeof msg.type !== "string" || !VALID_MESSAGE_TYPES.has(msg.type)) {
     console.warn("Invalid sandbox message: unknown type", msg.type);
@@ -107,6 +124,10 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  supportsPty(): boolean {
+    return this.connectionInfo.capabilities?.pty !== false;
+  }
+
   getUserId(): string {
     return this.userId;
   }
@@ -127,7 +148,7 @@ export class CentrifugoSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
-    const { osInfo } = this.connectionInfo;
+    const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
       const { platform, arch, release, hostname } = osInfo;
@@ -142,7 +163,7 @@ ${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
-- Process management (can affect host system)`;
+- Process management (can affect host system)${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;
@@ -176,7 +197,10 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     }> => {
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
-      const channel = sandboxChannel(this.userId);
+      const channel = sandboxConnectionChannel(
+        this.userId,
+        this.connectionInfo.connectionId,
+      );
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
@@ -303,11 +327,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
         subscription.on("publication", (ctx) => {
           if (settled) return;
-          if (!tFirstMessage) tFirstMessage = Date.now();
 
           const message = parseSandboxMessage(ctx.data);
           if (!message) return;
           if (message.commandId !== commandId) return;
+          if (message.type === "command" || message.type === "command_cancel") {
+            return;
+          }
+          if (!tFirstMessage) tFirstMessage = Date.now();
 
           switch (message.type) {
             case "stdout":
@@ -789,6 +816,34 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         throw new Error(`Failed to read file: ${result.stderr}`);
       }
       return result.stdout;
+    },
+
+    copyLocal: async (
+      sourceRawPath: string,
+      destRawPath: string,
+    ): Promise<void> => {
+      const sourceCtx = await this.shellContext(sourceRawPath);
+      const destCtx = await this.shellContext(destRawPath);
+      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
+      const dir = CentrifugoSandbox.parentDir(destCtx.path);
+
+      const mkdirPart = !dir
+        ? ""
+        : destCtx.useBash
+          ? `mkdir -p ${destCtx.escapePath(dir)} &&`
+          : `if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)} &&`;
+      const copyPart = destCtx.useBash
+        ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
+        : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
+
+      const result = await this.commands.run(`${mkdirPart} ${copyPart}`, {
+        displayName: `Preparing: ${fileName}`,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Failed to prepare local file: ${result.stderr || result.stdout}`,
+        );
+      }
     },
 
     remove: async (rawPath: string): Promise<void> => {

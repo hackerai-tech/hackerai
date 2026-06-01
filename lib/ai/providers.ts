@@ -49,9 +49,10 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
-    "fallback-agent-model": or("x-ai/grok-4.3"),
-    "fallback-ask-model": or("x-ai/grok-4.3"),
-    "title-generator-model": or("deepseek/deepseek-v4-flash"),
+    "fallback-agent-model": or("google/gemini-3-flash-preview"),
+    "fallback-ask-model": or("google/gemini-3-flash-preview"),
+    "fallback-grok-4.3": or("x-ai/grok-4.3"),
+    "title-generator-model": or("google/gemini-2.5-flash-lite"),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -69,9 +70,10 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-flash": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-kimi-k2.6": "April 2024",
-  "fallback-agent-model": "December 2025",
-  "fallback-ask-model": "December 2025",
-  "title-generator-model": "May 2025",
+  "fallback-agent-model": "January 2025",
+  "fallback-ask-model": "January 2025",
+  "fallback-grok-4.3": "December 2025",
+  "title-generator-model": "January 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -87,8 +89,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model":
-    "Auto, an intelligent model router built by HackerAI",
+  "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
+  "title-generator-model": "Google Gemini 2.5 Flash Lite",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -118,7 +120,6 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 
   return (
     normalized === "ask-model" ||
-    normalized === "model-gemini-3-flash" ||
     normalized.includes("gemini") ||
     normalized.includes("google/") ||
     isAnthropicModel(normalized) ||
@@ -130,6 +131,10 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized.includes("o3") ||
     normalized.includes("o4")
   );
+}
+
+export function isGeminiModel(modelName: string): boolean {
+  return modelName === "ask-model" || modelName === "model-gemini-3-flash";
 }
 
 /**

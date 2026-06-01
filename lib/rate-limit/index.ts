@@ -10,9 +10,10 @@
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
  * 2. Fixed Window (Free users):
- *    - Simple request counting within a daily fixed window (resets at midnight UTC)
- *    - Ask mode: 10/day (FREE_RATE_LIMIT_REQUESTS)
- *    - Agent mode (local sandbox only): 5/day (FREE_AGENT_RATE_LIMIT_REQUESTS)
+ *    - Shared request-unit counting within a daily fixed window (resets at midnight UTC)
+ *    - Ask mode costs 1 unit
+ *    - Agent mode (local sandbox only) costs 2 units
+ *    - Default free budget: 10 units/day (FREE_RATE_LIMIT_REQUESTS)
  */
 
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -52,6 +53,11 @@ export {
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export { acquireFreeRunConcurrencyLock } from "./free-concurrency";
+export {
+  checkFreeMonthlyCostLimit,
+  recordFreeMonthlyCost,
+} from "./free-monthly-cost";
 
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";
@@ -86,7 +92,7 @@ export const checkRateLimit = async (
   // Free users: fixed daily window
   if (subscription === "free") {
     if (isAgentMode(mode)) {
-      // Free agent mode (local sandbox only) has a separate daily budget
+      // Free agent mode shares the daily free budget and consumes 2 units.
       return checkFreeAgentRateLimit(userId);
     }
     return checkFreeUserRateLimit(userId);

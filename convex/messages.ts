@@ -1,8 +1,11 @@
 import { query, mutation, internalQuery } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Value } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
-import { paginationOptsValidator } from "convex/server";
+import type { DataModel, Doc, Id } from "./_generated/dataModel";
+import {
+  paginationOptsValidator,
+  type GenericDatabaseReader,
+} from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
@@ -16,6 +19,133 @@ const extractTextFromParts = (parts: any[]): string => {
     .map((part) => part.text || "")
     .join(" ")
     .trim();
+};
+
+const extractFileIdsFromParts = (parts: any[]): Id<"files">[] =>
+  parts
+    .filter(
+      (part) =>
+        part &&
+        typeof part === "object" &&
+        part.type === "file" &&
+        typeof part.fileId === "string",
+    )
+    .map((part) => part.fileId as Id<"files">);
+
+const getOwnedFileIdSet = async (
+  ctx: { db: GenericDatabaseReader<DataModel> },
+  fileIds: Id<"files">[],
+  userId: string,
+): Promise<Set<string>> => {
+  const uniqueFileIds = Array.from(new Set(fileIds));
+  if (uniqueFileIds.length === 0) return new Set();
+
+  const files = await Promise.all(
+    uniqueFileIds.map((fileId) =>
+      ctx.db.get(fileId).catch((error) => {
+        console.warn(
+          "Failed to read file while checking ownership:",
+          fileId,
+          error,
+        );
+        return null;
+      }),
+    ),
+  );
+
+  return new Set(
+    files
+      .filter((file) => file && file.user_id === userId)
+      .map((file) => file!._id),
+  );
+};
+
+const stripUnownedFileParts = (
+  parts: any[],
+  ownedFileIds: Set<string>,
+): any[] =>
+  parts.filter((part) => {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      part.type !== "file" ||
+      typeof part.fileId !== "string"
+    ) {
+      return true;
+    }
+
+    return ownedFileIds.has(part.fileId);
+  });
+
+const getJsonSize = (value: unknown): number => {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const getMessageSaveDiagnostics = (parts: any[]) => {
+  const partTypes: Record<string, number> = {};
+  let largestPartType = "unknown";
+  let largestPartSize = 0;
+  let textChars = 0;
+  let reasoningChars = 0;
+  let toolPartCount = 0;
+  let dataPartCount = 0;
+
+  for (const part of parts) {
+    const type = typeof part?.type === "string" ? part.type : "unknown";
+    partTypes[type] = (partTypes[type] ?? 0) + 1;
+
+    const partSize = getJsonSize(part);
+    if (partSize > largestPartSize) {
+      largestPartType = type;
+      largestPartSize = partSize;
+    }
+
+    if (type === "text" && typeof part.text === "string") {
+      textChars += part.text.length;
+    }
+    if (type === "reasoning" && typeof part.text === "string") {
+      reasoningChars += part.text.length;
+    }
+    if (type.startsWith("tool-") || type === "dynamic-tool") toolPartCount++;
+    if (type.startsWith("data-")) dataPartCount++;
+  }
+
+  return {
+    part_count: parts.length,
+    parts_json_chars: getJsonSize(parts),
+    part_types: partTypes,
+    largest_part_type: largestPartType,
+    largest_part_json_chars: largestPartSize,
+    text_chars: textChars,
+    reasoning_chars: reasoningChars,
+    tool_part_count: toolPartCount,
+    data_part_count: dataPartCount,
+  };
+};
+
+const getErrorName = (error: unknown): string =>
+  error instanceof Error ? error.name : typeof error;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const getConvexErrorData = (error: unknown): Value | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : (data as Value);
+};
+
+const getConvexErrorCode = (data: Value | undefined): string | undefined => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+
+  const code = (data as Record<string, unknown>).code;
+  return typeof code === "string" ? code : undefined;
 };
 
 /**
@@ -195,44 +325,93 @@ export const saveMessage = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    let failureStage = "start";
 
     try {
+      const ensureOwnedFiles = async (
+        fileIds: Id<"files">[] | undefined,
+      ): Promise<Doc<"files">[]> => {
+        if (!fileIds || fileIds.length === 0) return [];
+
+        const files = await Promise.all(
+          fileIds.map((fileId) =>
+            ctx.db.get(fileId).catch((error) => {
+              console.error(
+                `Failed to read file ${fileId} while validating ownership:`,
+                error,
+              );
+              return null;
+            }),
+          ),
+        );
+
+        for (let i = 0; i < fileIds.length; i++) {
+          const file = files[i];
+          if (!file) {
+            throw new Error("File not found");
+          }
+          if (file.user_id !== args.userId) {
+            throw new Error("File does not belong to user");
+          }
+        }
+
+        return files as Doc<"files">[];
+      };
+      const explicitFileIds = new Set(args.fileIds ?? []);
+      const partOnlyFileIds = Array.from(
+        new Set(
+          extractFileIdsFromParts(args.parts).filter(
+            (fileId) => !explicitFileIds.has(fileId),
+          ),
+        ),
+      );
+      if (partOnlyFileIds.length > 0) {
+        failureStage = "verify_file_part_ownership";
+        await ensureOwnedFiles(partOnlyFileIds);
+      }
+      const fileIdsForSave = args.fileIds;
+      const partsForSave = args.parts;
+
+      failureStage = "find_existing_message";
       const existingMessage = await ctx.db
         .query("messages")
         .withIndex("by_message_id", (q) => q.eq("id", args.id))
         .first();
 
       if (existingMessage) {
+        if (
+          existingMessage.chat_id !== args.chatId ||
+          existingMessage.user_id !== args.userId
+        ) {
+          failureStage = "verify_existing_message_ownership";
+          throw new ConvexError({
+            code: "MESSAGE_UNAUTHORIZED",
+            message: "You don't have permission to update this message",
+          });
+        }
+
         // Build patch for fields that need updating
         const patch: Record<string, unknown> = {};
 
         // Add new fileIds if provided
-        if (args.fileIds && args.fileIds.length > 0) {
+        if (fileIdsForSave && fileIdsForSave.length > 0) {
           const currentFileIds = existingMessage.file_ids || [];
-          const newFileIds = args.fileIds.filter(
+          const newFileIds = fileIdsForSave.filter(
             (id) => !currentFileIds.includes(id),
           );
 
           if (newFileIds.length > 0) {
+            failureStage = "validate_existing_message_file_ownership";
+            const files = await ensureOwnedFiles(newFileIds);
             patch.file_ids = [...currentFileIds, ...newFileIds];
 
             // Batch-read files in parallel, then only patch those that still
             // need the attached flag set. Skipping no-op patches avoids
             // invalidating the `by_is_attached` index for already-attached
             // files that just got referenced from another message.
-            const files = await Promise.all(
-              newFileIds.map((fileId) =>
-                ctx.db.get(fileId).catch((error) => {
-                  console.error(
-                    `Failed to read file ${fileId} while attaching:`,
-                    error,
-                  );
-                  return null;
-                }),
-              ),
-            );
             for (const file of files) {
-              if (file && !file.is_attached) {
+              if (!file.is_attached) {
+                failureStage = "patch_existing_message_file_attachment";
                 await ctx.db.patch(file._id, { is_attached: true });
               }
             }
@@ -273,6 +452,7 @@ export const saveMessage = mutation({
         // Apply patch if there are changes
         if (Object.keys(patch).length > 0) {
           patch.update_time = Date.now();
+          failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
         }
 
@@ -284,6 +464,7 @@ export const saveMessage = mutation({
           return null;
         }
 
+        failureStage = "verify_chat_ownership";
         const chatExists: boolean = await ctx.runQuery(
           internal.messages.verifyChatOwnership,
           {
@@ -297,16 +478,24 @@ export const saveMessage = mutation({
         }
       }
 
-      const content = extractTextFromParts(args.parts);
+      let newMessageFiles: Doc<"files">[] = [];
+      if (fileIdsForSave && fileIdsForSave.length > 0) {
+        failureStage = "validate_new_message_file_ownership";
+        newMessageFiles = await ensureOwnedFiles(fileIdsForSave);
+      }
 
+      failureStage = "extract_content";
+      const content = extractTextFromParts(partsForSave);
+
+      failureStage = "insert_message";
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: args.userId,
         role: args.role,
-        parts: args.parts,
+        parts: partsForSave,
         content: content || undefined,
-        file_ids: args.fileIds,
+        file_ids: fileIdsForSave,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -319,31 +508,88 @@ export const saveMessage = mutation({
 
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
-      if (args.fileIds && args.fileIds.length > 0) {
-        const files = await Promise.all(
-          args.fileIds.map((fileId) =>
-            ctx.db.get(fileId).catch((e) => {
-              console.warn("Failed to read file while attaching:", fileId, e);
-              return null;
-            }),
-          ),
-        );
-        for (const file of files) {
-          if (!file) continue;
-          if (file.user_id !== args.userId) {
-            console.warn("Skipping file not owned by user:", file._id);
-            continue;
-          }
-          if (!file.is_attached) {
-            await ctx.db.patch(file._id, { is_attached: true });
-          }
+      for (const file of newMessageFiles) {
+        if (!file.is_attached) {
+          failureStage = "patch_new_message_file_attachment";
+          await ctx.db.patch(file._id, { is_attached: true });
         }
       }
 
       return null;
     } catch (error) {
-      console.error("Failed to save message:", error);
-      throw new Error("Failed to save message");
+      const causeData = getConvexErrorData(error);
+      if (
+        failureStage === "verify_chat_ownership" &&
+        args.role === "assistant" &&
+        getConvexErrorCode(causeData) === "CHAT_NOT_FOUND"
+      ) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "convex_message_save_skipped_chat_not_found",
+            service: "convex",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            failure_stage: failureStage,
+            chat_id: args.chatId,
+            user_id: args.userId,
+            message_id: args.id,
+            message_role: args.role,
+            mode: args.mode,
+            model: args.model,
+            finish_reason: args.finishReason,
+            update_only: args.updateOnly === true,
+            hidden: args.isHidden === true,
+            file_count: args.fileIds?.length ?? 0,
+            convex_error_code: "CHAT_NOT_FOUND",
+            ...getMessageSaveDiagnostics(args.parts),
+          }),
+        );
+        return null;
+      }
+
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "convex_message_save_failed",
+          service: "convex",
+          timestamp: new Date().toISOString(),
+          db_operation: "messages.saveMessage",
+          failure_stage: failureStage,
+          chat_id: args.chatId,
+          user_id: args.userId,
+          message_id: args.id,
+          message_role: args.role,
+          mode: args.mode,
+          model: args.model,
+          finish_reason: args.finishReason,
+          update_only: args.updateOnly === true,
+          hidden: args.isHidden === true,
+          file_count: args.fileIds?.length ?? 0,
+          error_name: getErrorName(error),
+          error_message: getErrorMessage(error),
+          convex_error_data: causeData,
+          ...getMessageSaveDiagnostics(args.parts),
+        }),
+      );
+      throw new ConvexError({
+        code: "MESSAGE_SAVE_FAILED",
+        message: "Failed to save message",
+        failureStage,
+        causeName: getErrorName(error),
+        causeMessage: getErrorMessage(error),
+        causeData,
+        operation: "messages.saveMessage",
+        chatId: args.chatId,
+        messageId: args.id,
+        role: args.role,
+        mode: args.mode,
+        finishReason: args.finishReason,
+        updateOnly: args.updateOnly === true,
+        hidden: args.isHidden === true,
+        fileCount: args.fileIds?.length ?? 0,
+        ...getMessageSaveDiagnostics(args.parts),
+      });
     }
   },
 });
@@ -366,6 +612,7 @@ export const getMessagesByChatId = query({
           v.literal("system"),
         ),
         parts: v.array(v.any()),
+        created_at: v.number(),
         source_message_id: v.optional(v.string()),
         feedback: v.union(
           v.object({
@@ -446,7 +693,7 @@ export const getMessagesByChatId = query({
       // Only file metadata (fileId, name, mediaType, s3Key, storageId) is returned.
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
-        if (file) {
+        if (file && file.user_id === user.subject) {
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
@@ -486,6 +733,7 @@ export const getMessagesByChatId = query({
           id: message.id,
           role: message.role,
           parts: message.parts,
+          created_at: message._creationTime,
           source_message_id: message.source_message_id,
           feedback,
           mode: message.mode,
@@ -859,14 +1107,27 @@ export const getMessagesPageForBackend = query({
       .order("desc")
       .paginate(args.paginationOpts);
 
+    const visiblePage = result.page.filter(
+      (message) => message.is_hidden !== true,
+    );
+    const fileIds = new Set<Id<"files">>();
+    for (const message of visiblePage) {
+      extractFileIdsFromParts(message.parts).forEach((fileId) =>
+        fileIds.add(fileId),
+      );
+    }
+    const ownedFileIds = await getOwnedFileIdSet(
+      ctx,
+      Array.from(fileIds),
+      args.userId,
+    );
+
     return {
-      page: result.page
-        .filter((message) => message.is_hidden !== true)
-        .map((message) => ({
-          id: message.id,
-          role: message.role,
-          parts: message.parts,
-        })),
+      page: visiblePage.map((message) => ({
+        id: message.id,
+        role: message.role,
+        parts: stripUnownedFileParts(message.parts, ownedFileIds),
+      })),
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };
@@ -907,7 +1168,10 @@ export const searchMessages = query({
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    if (!args.searchQuery.trim()) {
+    const searchQuery = args.searchQuery.trim().replace(/\s+/g, " ");
+    const MIN_SEARCH_QUERY_LENGTH = 3;
+
+    if (!searchQuery || searchQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return {
         page: [],
         isDone: true,
@@ -917,23 +1181,62 @@ export const searchMessages = query({
 
     try {
       // Cap raw result sets to keep bandwidth predictable. Search relevance
-      // ordering means the top 200 per index covers any realistic page.
-      const SEARCH_RESULT_CAP = 200;
+      // ordering means the top results per index cover the visible pages while
+      // avoiding broad-query Convex search timeouts.
+      const SEARCH_RESULT_CAP = 75;
+      const SEARCH_CHAT_METADATA_CAP = 50;
 
-      const [messageResults, chatResults] = await Promise.all([
+      const searchStartedAt = Date.now();
+      const [messageSearch, chatSearch] = await Promise.allSettled([
         ctx.db
           .query("messages")
           .withSearchIndex("search_content", (q) =>
-            q.search("content", args.searchQuery).eq("user_id", user.subject),
+            q.search("content", searchQuery).eq("user_id", user.subject),
           )
           .take(SEARCH_RESULT_CAP),
         ctx.db
           .query("chats")
           .withSearchIndex("search_title", (q) =>
-            q.search("title", args.searchQuery).eq("user_id", user.subject),
+            q.search("title", searchQuery).eq("user_id", user.subject),
           )
           .take(SEARCH_RESULT_CAP),
       ]);
+
+      const failedIndexes: Array<{ index: string; error: string }> = [];
+      if (messageSearch.status === "rejected") {
+        failedIndexes.push({
+          index: "messages.search_content",
+          error: getErrorMessage(messageSearch.reason),
+        });
+      }
+      if (chatSearch.status === "rejected") {
+        failedIndexes.push({
+          index: "chats.search_title",
+          error: getErrorMessage(chatSearch.reason),
+        });
+      }
+
+      if (failedIndexes.length > 0) {
+        convexLogger.warn("message_search_index_failed", {
+          user_id: user.subject,
+          query_length: searchQuery.length,
+          failed_indexes: failedIndexes,
+          duration_ms: Date.now() - searchStartedAt,
+        });
+      }
+
+      const messageResults =
+        messageSearch.status === "fulfilled" ? messageSearch.value : [];
+      const chatResults =
+        chatSearch.status === "fulfilled" ? chatSearch.value : [];
+
+      if (messageResults.length === 0 && chatResults.length === 0) {
+        return {
+          page: [],
+          isDone: true,
+          continueCursor: "",
+        };
+      }
 
       // Filter out hidden messages from search results
       const visibleMessageResults = messageResults.filter(
@@ -957,19 +1260,40 @@ export const searchMessages = query({
         (id) => !chatById.has(id),
       );
       if (missingChatIds.length > 0) {
-        const fetched = await Promise.all(
-          missingChatIds.map((id) =>
+        if (missingChatIds.length > SEARCH_CHAT_METADATA_CAP) {
+          convexLogger.warn("message_search_metadata_cap_reached", {
+            user_id: user.subject,
+            query_length: searchQuery.length,
+            missing_chat_count: missingChatIds.length,
+            metadata_cap: SEARCH_CHAT_METADATA_CAP,
+          });
+        }
+
+        const fetched = await Promise.allSettled(
+          missingChatIds.slice(0, SEARCH_CHAT_METADATA_CAP).map((id) =>
             ctx.db
               .query("chats")
               .withIndex("by_chat_id", (q) => q.eq("id", id))
               .first(),
           ),
         );
-        for (const chat of fetched) {
-          if (chat) {
-            chatById.set(chat.id, {
-              title: chat.title,
-              update_time: chat.update_time,
+        const metadataFailures = fetched.filter(
+          (result) => result.status === "rejected",
+        );
+        if (metadataFailures.length > 0) {
+          convexLogger.warn("message_search_metadata_fetch_failed", {
+            user_id: user.subject,
+            query_length: searchQuery.length,
+            failed_count: metadataFailures.length,
+            requested_count: fetched.length,
+          });
+        }
+
+        for (const result of fetched) {
+          if (result.status === "fulfilled" && result.value) {
+            chatById.set(result.value.id, {
+              title: result.value.title,
+              update_time: result.value.update_time,
             });
           }
         }
@@ -1069,7 +1393,16 @@ export const searchMessages = query({
         continueCursor: hasMoreItems ? nextOffset.toString() : "",
       };
     } catch (error) {
-      console.error("Failed to search messages:", error);
+      convexLogger.error("message_search_failed", {
+        user_id: user.subject,
+        query_length: searchQuery.length,
+        requested_page_size: args.paginationOpts.numItems,
+        has_cursor: Boolean(args.paginationOpts.cursor),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
       return {
         page: [],
         isDone: true,
@@ -1568,7 +1901,7 @@ export const getPreviewMessages = query({
 
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
-        if (file) {
+        if (file && file.user_id === identity.subject) {
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,

@@ -12,6 +12,7 @@ import {
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
+import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import type { SubscriptionTier } from "@/types";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
@@ -34,6 +35,23 @@ function tierDirection(
   if (ti > fi) return "upgrade";
   if (ti < fi) return "downgrade";
   return "lateral";
+}
+
+const centsToDollars = (amount: number | null | undefined): number =>
+  (amount ?? 0) / 100;
+
+function priceBillingInterval(
+  price: Stripe.Price | undefined,
+): "day" | "week" | "month" | "year" | undefined {
+  return price?.recurring?.interval ?? undefined;
+}
+
+function invoicePaidAtMs(invoice: Stripe.Invoice): number {
+  const paidAt = invoice.status_transitions?.paid_at;
+  if (paidAt) return paidAt * 1000;
+  return (
+    ((invoice as { created?: number }).created ?? Date.now() / 1000) * 1000
+  );
 }
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
@@ -118,6 +136,88 @@ async function resolveSubscription(subscriptionId: string): Promise<{
   }
 }
 
+async function recordSubscriptionRevenue({
+  invoice,
+  customerId,
+  userIds,
+  orgId,
+  tier,
+  subscription,
+  reason,
+}: {
+  invoice: Stripe.Invoice;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+  reason: string;
+}) {
+  const grossRevenueDollars = centsToDollars(
+    (invoice as { amount_paid?: number }).amount_paid,
+  );
+
+  if (grossRevenueDollars <= 0 || userIds.length === 0) return;
+
+  const item = subscription.items?.data[0];
+  const price = item?.price;
+  const occurredAt = invoicePaidAtMs(invoice);
+  const attributedRevenueDollars = grossRevenueDollars / userIds.length;
+  const attributionStrategy = userIds.length > 1 ? "split_evenly" : "direct";
+
+  await Promise.all([
+    ...userIds.map((uid) =>
+      convex.mutation(api.unitEconomics.recordRevenueEvent, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        entityType: "user",
+        entityId: uid,
+        userId: uid,
+        organizationId: orgId,
+        source: "subscription",
+        sourceEventId: invoice.id,
+        idempotencyKey: `subscription:${invoice.id}:user:${uid}`,
+        grossRevenueDollars: attributedRevenueDollars,
+        currency: invoice.currency ?? "usd",
+        occurredAt,
+        attributionStrategy,
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscription.id,
+        stripeInvoiceId: invoice.id,
+        stripePriceId: price?.id,
+        plan: price?.lookup_key ?? tier,
+        quantity: item?.quantity,
+        userCount: userIds.length,
+        description: reason,
+      }),
+    ),
+    ...(orgId
+      ? [
+          convex.mutation(api.unitEconomics.recordRevenueEvent, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            entityType: "organization",
+            entityId: orgId,
+            organizationId: orgId,
+            source: "subscription",
+            sourceEventId: invoice.id,
+            idempotencyKey: `subscription:${invoice.id}:organization:${orgId}`,
+            grossRevenueDollars,
+            currency: invoice.currency ?? "usd",
+            occurredAt,
+            attributionStrategy: "organization_pool",
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscription.id,
+            stripeInvoiceId: invoice.id,
+            stripePriceId: price?.id,
+            plan: price?.lookup_key ?? tier,
+            quantity: item?.quantity,
+            userCount: userIds.length,
+            description: reason,
+          }),
+        ]
+      : []),
+  ]);
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -148,6 +248,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     return;
   }
 
+  const resetMode = getInvoicePaidBucketResetMode(invoice);
   const [customerResult, resolved] = await Promise.all([
     resolveUserIdsFromCustomer(customerId),
     resolveSubscription(subscriptionId),
@@ -163,13 +264,41 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const { tier, subscription } = resolved;
-  const billingReason = (invoice as any).billing_reason as string | undefined;
+
+  try {
+    await recordSubscriptionRevenue({
+      invoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      tier,
+      subscription,
+      reason: resetMode.reason,
+    });
+  } catch (error) {
+    console.error("[Subscription Webhook] Failed to record revenue:", {
+      error,
+      invoiceId: invoice.id,
+      customerId,
+      userCount: userIds.length,
+      orgId,
+      tier,
+      resetReason: resetMode.reason,
+    });
+  }
+
+  if (resetMode.mode === "skip") {
+    console.log(
+      `[Subscription Webhook] invoice.paid (${resetMode.reason}): skipping bucket reset for invoice ${invoice.id}`,
+    );
+    return;
+  }
 
   // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
   // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
   // a real tier change). Other subscription_update reasons (quantity changes,
-  // billing anchor changes) fall through to the full reset path.
-  if (billingReason === "subscription_update") {
+  // billing anchor changes) are ignored so they cannot mint fresh credits.
+  if (resetMode.mode === "subscription_update_proration") {
     // Check each user for a tier-change stash; collect those that have one
     const stashResults = await Promise.all(
       userIds.map(async (uid) => ({
@@ -218,14 +347,59 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
       return;
     }
-    // No stash found for any user — not a tier change, fall through to full reset
+
+    console.log(
+      `[Subscription Webhook] invoice.paid (subscription_update): no tier-change stash for invoice ${invoice.id}; skipping bucket reset`,
+    );
+    return;
   }
 
   // Regular renewal or new subscription: full credits
   console.log(
-    `[Subscription Webhook] invoice.paid (${billingReason ?? "unknown"}): resetting ${tier} buckets for ${userIds.length} user(s)`,
+    `[Subscription Webhook] invoice.paid (${resetMode.reason}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
+
+  if (resetMode.reason === "subscription_create") {
+    const item = subscription.items?.data[0];
+    const price = item?.price;
+    const invoiceAmountPaidDollars = centsToDollars(
+      (invoice as { amount_paid?: number }).amount_paid,
+    );
+    const attributedRevenueDollars =
+      userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
+
+    for (const uid of userIds) {
+      phLogger.event("subscription_started", {
+        userId: uid,
+        from_tier: "free",
+        to_tier: tier,
+        conversion_type: "free_to_paid",
+        org_id: orgId,
+        user_count: userIds.length,
+        plan: price?.lookup_key,
+        billing_interval: priceBillingInterval(price),
+        billing_interval_count: price?.recurring?.interval_count,
+        quantity: item?.quantity,
+        invoice_amount_paid_dollars: invoiceAmountPaidDollars,
+        attributed_revenue_dollars: attributedRevenueDollars,
+        revenue_dollars: attributedRevenueDollars,
+        currency: invoice.currency,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscription.id,
+        stripe_invoice_id: invoice.id,
+        stripe_price_id: price?.id,
+        $set: {
+          subscription_tier: tier,
+          last_subscription_started_at: new Date().toISOString(),
+        },
+        $set_once: {
+          first_subscription_started_at: new Date().toISOString(),
+          first_paid_tier: tier,
+        },
+      });
+    }
+  }
 
   // Clear team seat rotation debt on renewal (fresh cycle)
   if (tier === "team" && orgId) {

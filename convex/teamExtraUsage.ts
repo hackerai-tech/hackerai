@@ -7,7 +7,7 @@ import {
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
-import { computeExtraUsageCap } from "./extraUsage";
+import { recordRevenueEventInternal } from "./unitEconomicsLib";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -91,6 +91,15 @@ export const addTeamCredits = mutation({
     amountDollars: v.number(),
     idempotencyKey: v.optional(v.string()),
     legacyIdempotencyKey: v.optional(v.string()),
+    revenueSource: v.optional(
+      v.union(
+        v.literal("team_extra_usage_purchase"),
+        v.literal("team_extra_usage_auto_reload"),
+      ),
+    ),
+    stripeCustomerId: v.optional(v.string()),
+    stripeCheckoutSessionId: v.optional(v.string()),
+    stripePaymentIntentId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(),
@@ -98,6 +107,17 @@ export const addTeamCredits = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    const sessionKey = args.idempotencyKey;
+    if (sessionKey) {
+      const durableExisting = await ctx.db
+        .query("processed_checkout_sessions")
+        .withIndex("by_session_key", (q) => q.eq("session_key", sessionKey))
+        .unique();
+      if (durableExisting) {
+        return { newBalance: 0, alreadyProcessed: true };
+      }
+    }
 
     const dedupKeys = [args.idempotencyKey, args.legacyIdempotencyKey].filter(
       (k): k is string => typeof k === "string" && k.length > 0,
@@ -131,27 +151,49 @@ export const addTeamCredits = mutation({
     if (row) {
       await ctx.db.patch(row._id, {
         balance_points: newBalancePoints,
-        first_successful_charge_at: row.first_successful_charge_at ?? now,
-        cumulative_spend_dollars:
-          (row.cumulative_spend_dollars ?? 0) + args.amountDollars,
         updated_at: now,
       });
     } else {
       await ctx.db.insert("team_extra_usage", {
         organization_id: args.organizationId,
         balance_points: newBalancePoints,
-        first_successful_charge_at: now,
-        cumulative_spend_dollars: args.amountDollars,
         updated_at: now,
       });
     }
 
     if (args.idempotencyKey) {
+      await ctx.db.insert("processed_checkout_sessions", {
+        session_key: args.idempotencyKey,
+        processed_at: Date.now(),
+      });
       await ctx.db.insert("processed_webhooks", {
         event_id: args.idempotencyKey,
         processed_at: Date.now(),
       });
     }
+
+    await recordRevenueEventInternal(ctx, {
+      entityType: "organization",
+      entityId: args.organizationId,
+      organizationId: args.organizationId,
+      source: "team_extra_usage",
+      sourceEventId:
+        args.stripeCheckoutSessionId ??
+        args.stripePaymentIntentId ??
+        args.idempotencyKey ??
+        `team_extra_usage:${args.organizationId}:${Date.now()}`,
+      idempotencyKey:
+        args.idempotencyKey ??
+        args.stripePaymentIntentId ??
+        args.stripeCheckoutSessionId,
+      grossRevenueDollars: args.amountDollars,
+      currency: "usd",
+      attributionStrategy: "organization_pool",
+      stripeCustomerId: args.stripeCustomerId,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      description: args.revenueSource ?? "team_extra_usage_purchase",
+    });
 
     convexLogger.info("team_credits_added", {
       organization_id: args.organizationId,
@@ -174,7 +216,7 @@ export const addTeamCredits = mutation({
  *   - team pool enabled
  *   - member not disabled
  *   - member's per-member cap
- *   - team's monthly cap (with trust cap as ceiling)
+ *   - team's monthly cap
  *   - sufficient team balance
  */
 export const deductTeamPoints = mutation({
@@ -193,8 +235,6 @@ export const deductTeamPoints = mutation({
     memberCapExceeded: v.boolean(),
     memberDisabled: v.boolean(),
     poolDisabled: v.boolean(),
-    trustCapExceeded: v.optional(v.boolean()),
-    trustCapDollars: v.optional(v.union(v.null(), v.number())),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -237,22 +277,8 @@ export const deductTeamPoints = mutation({
       };
     }
 
-    const currentBalancePoints = team.balance_points ?? 0;
-
-    if (currentBalancePoints < args.amountPoints) {
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: false,
-      };
-    }
-
     const currentMonth = currentMonthString();
+    const currentBalancePoints = team.balance_points ?? 0;
 
     // Reset team monthly spent if cycle rolled over
     let teamMonthlySpent = team.monthly_spent_points ?? 0;
@@ -267,29 +293,11 @@ export const deductTeamPoints = mutation({
       memberMonthlySpent = 0;
     }
 
-    // Compute effective team cap (user-set vs trust)
-    const teamCap = team.monthly_cap_points;
-    const { capDollars: trustCapDollars } = computeExtraUsageCap(team);
-    const trustCapPoints =
-      trustCapDollars !== null ? dollarsToPoints(trustCapDollars) : undefined;
-
-    let effectiveTeamCap: number | undefined;
-    if (teamCap !== undefined && trustCapPoints !== undefined) {
-      effectiveTeamCap = Math.min(teamCap, trustCapPoints);
-    } else {
-      effectiveTeamCap = teamCap ?? trustCapPoints;
-    }
-
-    const isTrustCap =
-      effectiveTeamCap !== undefined &&
-      trustCapPoints !== undefined &&
-      effectiveTeamCap === trustCapPoints &&
-      (teamCap === undefined || trustCapPoints <= teamCap);
-
     // Team monthly cap check
-    if (effectiveTeamCap !== undefined) {
+    const teamCap = team.monthly_cap_points;
+    if (teamCap !== undefined) {
       const newTeamSpent = teamMonthlySpent + args.amountPoints;
-      if (newTeamSpent > effectiveTeamCap) {
+      if (newTeamSpent > teamCap) {
         return {
           success: false,
           newBalancePoints: currentBalancePoints,
@@ -299,8 +307,6 @@ export const deductTeamPoints = mutation({
           memberCapExceeded: false,
           memberDisabled: false,
           poolDisabled: false,
-          trustCapExceeded: isTrustCap,
-          trustCapDollars: isTrustCap ? trustCapDollars : undefined,
         };
       }
     }
@@ -321,6 +327,19 @@ export const deductTeamPoints = mutation({
           poolDisabled: false,
         };
       }
+    }
+
+    if (currentBalancePoints < args.amountPoints) {
+      return {
+        success: false,
+        newBalancePoints: currentBalancePoints,
+        newBalanceDollars: pointsToDollars(currentBalancePoints),
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: false,
+      };
     }
 
     // All checks passed — commit
@@ -541,8 +560,6 @@ export const getTeamExtraUsageAdminView = query({
     autoReloadAmountDollars: v.optional(v.number()),
     monthlyCapDollars: v.optional(v.number()),
     monthlySpentDollars: v.number(),
-    trustCapDollars: v.union(v.null(), v.number()),
-    trustReason: v.string(),
     autoReloadDisabledReason: v.optional(v.string()),
     members: v.array(
       v.object({
@@ -568,7 +585,6 @@ export const getTeamExtraUsageAdminView = query({
 
     const currentMonth = currentMonthString();
 
-    const { capDollars, trustReason } = computeExtraUsageCap(team ?? {});
     const teamMonthlySpent =
       team?.monthly_reset_date === currentMonth
         ? (team?.monthly_spent_points ?? 0)
@@ -586,8 +602,6 @@ export const getTeamExtraUsageAdminView = query({
         ? pointsToDollars(team.monthly_cap_points)
         : undefined,
       monthlySpentDollars: pointsToDollars(teamMonthlySpent),
-      trustCapDollars: capDollars,
-      trustReason,
       autoReloadDisabledReason: team?.auto_reload_disabled_reason,
       members: members.map((m) => {
         const spent =

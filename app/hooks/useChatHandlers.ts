@@ -5,6 +5,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
@@ -20,6 +21,11 @@ import {
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
 } from "@/lib/utils/message-utils";
+import {
+  createFileMessagePartFromUploadedFile,
+  getMaxFilesLimitForMode,
+} from "@/lib/utils/file-utils";
+import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -83,7 +89,16 @@ export const useChatHandlers = ({
   // previous mode in the request body. Reading from a ref always gets the
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
+  const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const subscriptionRef = useLatestRef(subscription);
+
+  const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
+    file.uploaded &&
+    !file.uploading &&
+    !file.error &&
+    (file.storage === "local-desktop"
+      ? !!file.localAttachmentId && !!file.localPath
+      : !!file.url && !!file.fileId);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -221,24 +236,42 @@ export const useChatHandlers = ({
       return;
     }
     // Allow submission if there's text input or uploaded files
-    const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
+    const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
     if (input.trim() || hasValidFiles) {
+      const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
+      if (uploadedFiles.length > maxFilesLimit) {
+        toast.error("Cannot send files in this mode", {
+          description: `Maximum ${maxFilesLimit} files allowed. Please remove some files or switch modes.`,
+        });
+        return;
+      }
+
+      const currentChatMode = chatModeRef.current;
+      const hasLocalDesktopFiles = uploadedFiles.some(
+        (file) => file.storage === "local-desktop",
+      );
+      if (
+        hasLocalDesktopFiles &&
+        (!isAgentMode(currentChatMode) ||
+          sandboxPreferenceRef.current !== "desktop")
+      ) {
+        toast.error("Local attachments require desktop Agent mode", {
+          description:
+            "Switch back to Agent mode with the desktop sandbox or reattach the file for upload.",
+        });
+        return;
+      }
+
       // If streaming in Agent mode, check queue behavior
       if (status === "streaming") {
-        const validFiles = uploadedFiles.filter(
-          (file) => file.uploaded && file.url && file.fileId,
-        );
+        const validFiles = uploadedFiles
+          .filter(isSendableUploadedFile)
+          .map(createFileMessagePartFromUploadedFile)
+          .filter((part): part is NonNullable<typeof part> => part !== null);
 
         if (queueBehavior === "queue") {
           // Queue the message - will auto-send after current response completes
-          queueMessage(
-            input,
-            validFiles.map((f) => ({
-              file: f.file,
-              fileId: f.fileId! as Id<"files">,
-              url: f.url!,
-            })),
-          );
+          queueMessage(input, validFiles);
           clearInput();
           clearUploadedFiles();
           return;
@@ -275,7 +308,6 @@ export const useChatHandlers = ({
         }
       }
       // Check token limit before sending based on user plan
-      const currentChatMode = chatModeRef.current;
       const tokenCount = countInputTokens(input, uploadedFiles);
       const maxTokens = getMaxTokensForSubscription(subscription, {
         mode: currentChatMode,
@@ -311,23 +343,16 @@ export const useChatHandlers = ({
 
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
-        const validFiles = uploadedFiles.filter(
-          (file) => file.uploaded && file.url && file.fileId,
-        );
+        const validFiles = uploadedFiles
+          .filter(isSendableUploadedFile)
+          .map(createFileMessagePartFromUploadedFile)
+          .filter((part): part is NonNullable<typeof part> => part !== null);
 
         sendMessage(
           {
             text: input.trim() || undefined,
-            files:
-              validFiles.length > 0
-                ? validFiles.map((uploadedFile) => ({
-                    type: "file" as const,
-                    filename: uploadedFile.file.name,
-                    mediaType: uploadedFile.file.type,
-                    url: uploadedFile.url!,
-                    fileId: uploadedFile.fileId!,
-                  }))
-                : undefined,
+            files: validFiles.length > 0 ? validFiles : undefined,
+            metadata: { createdAt: Date.now() },
           },
           {
             body: {
@@ -344,7 +369,7 @@ export const useChatHandlers = ({
         console.error("Failed to process files:", error);
         // Fallback to text-only message if file processing fails
         sendMessage(
-          { text: input },
+          { text: input, metadata: { createdAt: Date.now() } },
           {
             body: {
               mode: currentChatMode,
@@ -407,6 +432,12 @@ export const useChatHandlers = ({
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
     setMessages(trimmedMessages);
 
+    const shouldSendClientMessagesForRegenerate =
+      hasRestageableLocalDesktopAttachments(trimmedMessages);
+    const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
+      ? trimmedMessages
+      : [];
+
     if (!temporaryChatsEnabled) {
       // Delete the entire trailing auto-continue chain (all assistant + hidden user messages)
       // back to the last real user message, so regeneration starts from the original request
@@ -420,9 +451,10 @@ export const useChatHandlers = ({
       regenerate({
         body: {
           mode: chatModeRef.current,
-          messages: [],
+          messages: persistentRegenerateMessages,
           todos: cleanedTodos,
           regenerate: true,
+          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
           selectedModel,
@@ -699,14 +731,10 @@ export const useChatHandlers = ({
 
       // Only add files if they exist
       if (validFiles.length > 0) {
-        messagePayload.files = validFiles.map((f) => ({
-          type: "file" as const,
-          filename: f.file.name,
-          mediaType: f.file.type,
-          url: f.url,
-          fileId: f.fileId,
-        }));
+        messagePayload.files = validFiles;
       }
+
+      messagePayload.metadata = { createdAt: message.timestamp };
 
       sendMessage(messagePayload, {
         body: {

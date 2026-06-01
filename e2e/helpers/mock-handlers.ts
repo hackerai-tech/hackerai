@@ -34,18 +34,6 @@ export async function setupMocks(
         }),
       });
     });
-
-    // Agent mode: Vercel streaming (same shape as /api/chat)
-    await page.route("**/api/agent", async (route: Route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          message: "This is a mocked Agent response for testing",
-          done: true,
-        }),
-      });
-    });
   }
 
   // Note: WorkOS and Convex are used with real test data

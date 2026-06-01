@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
+import {
+  captureAuthenticatedEvent,
+  getPostHogRequestHeaders,
+} from "@/lib/analytics/client";
 
 export const useUpgrade = () => {
   const { user } = useAuth();
@@ -35,8 +39,9 @@ export const useUpgrade = () => {
     setUpgradeLoading(true);
 
     try {
+      const selectedPlan = planKey || "pro-monthly-plan";
       const requestBody: { plan: string; quantity?: number } = {
-        plan: planKey || "pro-monthly-plan",
+        plan: selectedPlan,
       };
 
       // Add quantity for team plans
@@ -46,10 +51,18 @@ export const useUpgrade = () => {
 
       // Use regular checkout for new subscriptions (free users)
       if (!currentSubscription || currentSubscription === "free") {
+        captureAuthenticatedEvent("checkout_intent_clicked", {
+          plan: selectedPlan,
+          quantity,
+          from_tier: currentSubscription ?? "free",
+          checkout_type: "new_subscription",
+        });
+
         const res = await fetch("/api/subscribe", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...getPostHogRequestHeaders(),
           },
           body: JSON.stringify(requestBody),
         });
@@ -66,6 +79,12 @@ export const useUpgrade = () => {
         const { error, url } = data;
 
         if (url) {
+          captureAuthenticatedEvent("checkout_redirected", {
+            plan: selectedPlan,
+            quantity,
+            from_tier: currentSubscription ?? "free",
+            checkout_type: "new_subscription",
+          });
           window.location.href = url;
           return;
         }
@@ -78,10 +97,18 @@ export const useUpgrade = () => {
       } else {
         // For existing subscribers, use immediate subscription update
         // This prevents the "free credit" exploit
+        captureAuthenticatedEvent("subscription_change_intent_clicked", {
+          plan: selectedPlan,
+          quantity,
+          from_tier: currentSubscription,
+          checkout_type: "subscription_change",
+        });
+
         const res = await fetch("/api/subscription-details", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...getPostHogRequestHeaders(),
           },
           body: JSON.stringify({
             plan: planKey,

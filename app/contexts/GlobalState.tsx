@@ -27,8 +27,11 @@ import {
   computeReplaceAssistantTodos,
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
+import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useQuery } from "convex/react";
@@ -42,6 +45,7 @@ import {
   readSelectedModel,
   writeSelectedModel,
   cleanupExpiredDrafts,
+  markHasAuthenticatedBefore,
 } from "@/lib/utils/client-storage";
 
 interface GlobalStateType {
@@ -99,13 +103,9 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
-  queueMessage: (
-    text: string,
-    files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
-  ) => void;
+  queueMessage: (text: string, files?: FileMessagePart[]) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
-  dequeueNext: () => QueuedMessage | null;
 
   // Queue behavior preference
   queueBehavior: QueueBehavior;
@@ -189,6 +189,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     writeChatMode(chatMode);
   }, [chatMode]);
 
+  useEffect(() => {
+    if (user) {
+      markHasAuthenticatedBefore();
+    }
+  }, [user]);
+
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile ?? false),
@@ -212,6 +218,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
+  const desktopEntitlementRefreshUserRef = useRef<string | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -325,35 +332,62 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     if (!user) {
       setSubscription("free");
+      desktopEntitlementRefreshUserRef.current = null;
       return;
     }
 
     if (Array.isArray(entitlements)) {
-      const hasUltra =
-        entitlements.includes("ultra-plan") ||
-        entitlements.includes("ultra-monthly-plan") ||
-        entitlements.includes("ultra-yearly-plan");
-      const hasTeam = entitlements.includes("team-plan");
-      const hasProPlus =
-        entitlements.includes("pro-plus-plan") ||
-        entitlements.includes("pro-plus-monthly-plan") ||
-        entitlements.includes("pro-plus-yearly-plan");
-      const hasPro =
-        entitlements.includes("pro-plan") ||
-        entitlements.includes("pro-monthly-plan") ||
-        entitlements.includes("pro-yearly-plan");
-      setSubscriptionWithNormalize(
-        hasUltra
-          ? "ultra"
-          : hasTeam
-            ? "team"
-            : hasProPlus
-              ? "pro-plus"
-              : hasPro
-                ? "pro"
-                : "free",
-      );
+      setSubscriptionWithNormalize(resolveSubscriptionTier(entitlements));
     }
+  }, [user, entitlements, setSubscriptionWithNormalize]);
+
+  // Desktop sessions are created through a separate OAuth transfer flow. Older
+  // desktop sessions may be unscoped, so refresh once to pull WorkOS
+  // entitlements from the user's organization before showing them as free.
+  useEffect(() => {
+    const refreshDesktopEntitlements = async () => {
+      if (!user || typeof window === "undefined" || !isTauriEnvironment()) {
+        return;
+      }
+
+      const currentEntitlements = Array.isArray(entitlements)
+        ? entitlements
+        : [];
+      if (resolveSubscriptionTier(currentEntitlements) !== "free") {
+        return;
+      }
+
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("refresh") === "entitlements") {
+        return;
+      }
+
+      if (desktopEntitlementRefreshUserRef.current === user.id) {
+        return;
+      }
+      desktopEntitlementRefreshUserRef.current = user.id;
+
+      setIsCheckingProPlan(true);
+      try {
+        const response = await fetch("/api/entitlements", {
+          credentials: "include",
+        });
+        if (!response.ok) return;
+
+        const data = await response.json();
+        setSubscriptionWithNormalize(
+          resolveSubscriptionTier(
+            Array.isArray(data.entitlements) ? data.entitlements : [],
+          ),
+        );
+      } catch {
+        // Keep the token-derived tier; this is only a best-effort desktop heal.
+      } finally {
+        setIsCheckingProPlan(false);
+      }
+    };
+
+    refreshDesktopEntitlements();
   }, [user, entitlements, setSubscriptionWithNormalize]);
 
   // Refresh entitlements only when explicitly requested via URL param
@@ -540,10 +574,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue handlers
   const queueMessage = useCallback(
-    (
-      text: string,
-      files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
-    ) => {
+    (text: string, files?: FileMessagePart[]) => {
       setMessageQueue((prev) => {
         // Limit queue size to 10 messages
         if (prev.length >= 10) {
@@ -572,16 +603,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
-  }, []);
-
-  const dequeueNext = useCallback((): QueuedMessage | null => {
-    let nextMessage: QueuedMessage | null = null;
-    setMessageQueue((prev) => {
-      if (prev.length === 0) return prev;
-      nextMessage = prev[0];
-      return prev.slice(1);
-    });
-    return nextMessage;
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
@@ -736,7 +757,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     queueMessage,
     removeQueuedMessage,
     clearQueue,
-    dequeueNext,
 
     queueBehavior,
     setQueueBehavior: setQueueBehaviorState,

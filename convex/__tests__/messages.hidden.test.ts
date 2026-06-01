@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
+import { ConvexError } from "convex/values";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -146,6 +147,42 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("rejects hiding an existing message owned by another chat or user", async () => {
+    const existing = makeMessage({
+      _id: "victim-doc" as Id<"messages">,
+      id: "victim-message-id",
+      chat_id: "victim-chat",
+      user_id: "victim-user",
+      is_hidden: false,
+    });
+    setupExistingMessage(existing);
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "victim-message-id",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "continue" }],
+        isHidden: true,
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_existing_message_ownership",
+        causeData: expect.objectContaining({
+          code: "MESSAGE_UNAUTHORIZED",
+        }),
+      }),
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
+  });
+
   it("should not include is_hidden: true on insert when isHidden is not provided", async () => {
     setupExistingMessage(null);
 
@@ -168,6 +205,109 @@ describe("saveMessage — is_hidden handling", () => {
       "messages",
       expect.objectContaining({ is_hidden: true }),
     );
+  });
+
+  it("skips assistant inserts when the chat was deleted before save", async () => {
+    setupExistingMessage(null);
+    mockCtx.runQuery.mockRejectedValue(
+      new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "This chat doesn't exist",
+      }),
+    );
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-assistant",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "done" }],
+        finishReason: "preemptive-timeout",
+      }),
+    ).resolves.toBeNull();
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("convex_message_save_skipped_chat_not_found"),
+    );
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("rejects unowned file IDs before inserting a new message", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-victim" as Id<"files">,
+      user_id: "victim-user",
+      is_attached: false,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-unowned-file",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [
+          { type: "text", text: "read this" },
+          { type: "file", fileId: "file-victim" as Id<"files"> },
+        ],
+        fileIds: ["file-victim" as Id<"files">],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "validate_new_message_file_ownership",
+        causeMessage: "File does not belong to user",
+      }),
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unowned file IDs before updating an existing message", async () => {
+    const existing = makeMessage({
+      _id: "existing-doc" as Id<"messages">,
+      file_ids: [],
+    });
+    setupExistingMessage(existing);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "file-victim" as Id<"files">,
+      user_id: "victim-user",
+      is_attached: false,
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [
+          { type: "text", text: "read this" },
+          { type: "file", fileId: "file-victim" as Id<"files"> },
+        ],
+        fileIds: ["file-victim" as Id<"files">],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "validate_existing_message_file_ownership",
+        causeMessage: "File does not belong to user",
+      }),
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
   });
 });
 

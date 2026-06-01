@@ -16,16 +16,266 @@ import {
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
+import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import type { ChatMode } from "@/types/chat";
+import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
+import { sanitizeForConvexValue } from "./convex-value-sanitizer";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
+const MAX_DATABASE_ERROR_DATA_STRING_LENGTH = 500;
+const MAX_DATABASE_ERROR_DATA_BYTES = 4 * 1024;
+const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
+const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
+const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
+const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+
+const sensitiveErrorDataKeys = new Set([
+  "authorization",
+  "body",
+  "content",
+  "cookie",
+  "cookies",
+  "file",
+  "files",
+  "headers",
+  "messages",
+  "output",
+  "parts",
+  "password",
+  "prompt",
+  "request",
+  "requestbody",
+  "response",
+  "responsebody",
+  "result",
+  "text",
+  "token",
+]);
 
 export { setConvexUrl };
+
+const stringifyError = (error: unknown): string => {
+  return stringifyRedactedError(error);
+};
+
+const getErrorData = (error: unknown): unknown => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : sanitizeErrorData(data);
+};
+
+const getJsonByteLength = (value: unknown): number => {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf-8");
+  } catch {
+    return 0;
+  }
+};
+
+const truncateErrorDataString = (value: string): string =>
+  value.length > MAX_DATABASE_ERROR_DATA_STRING_LENGTH
+    ? `${value.slice(0, MAX_DATABASE_ERROR_DATA_STRING_LENGTH)}...`
+    : value;
+
+const isSensitiveErrorDataKey = (key: string): boolean => {
+  const normalized = key.replace(/[-_\s]/g, "").toLowerCase();
+  return (
+    sensitiveErrorDataKeys.has(normalized) ||
+    /apikey|authorization|bearer|cookie|password|secret|servicekey/.test(
+      normalized,
+    )
+  );
+};
+
+const summarizeErrorDataObject = (value: object) => ({
+  truncated: true,
+  keys: Object.keys(value).slice(0, MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH),
+});
+
+const sanitizeErrorDataValue = (
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown => {
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === "string") return truncateErrorDataString(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function" || typeof value === "symbol") {
+    return String(value);
+  }
+  if (typeof value !== "object") return String(value);
+
+  if (seen.has(value)) return "[Circular]";
+  if (depth >= MAX_DATABASE_ERROR_DATA_DEPTH) {
+    return summarizeErrorDataObject(value);
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const sanitized = value
+      .slice(0, MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH)
+      .map((item) => sanitizeErrorDataValue(item, depth + 1, seen));
+    if (value.length > MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH) {
+      sanitized.push({
+        truncated: true,
+        remaining: value.length - MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH,
+      });
+    }
+    seen.delete(value);
+    return sanitized;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, childValue] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    sanitized[key] = isSensitiveErrorDataKey(key)
+      ? REDACTED_ERROR_DATA_VALUE
+      : sanitizeErrorDataValue(childValue, depth + 1, seen);
+  }
+
+  seen.delete(value);
+  return sanitized;
+};
+
+const sanitizeErrorData = (data: unknown): unknown => {
+  const sanitized = sanitizeErrorDataValue(data, 0, new WeakSet<object>());
+  const sizeBytes = getJsonByteLength(sanitized);
+  if (sizeBytes <= MAX_DATABASE_ERROR_DATA_BYTES) return sanitized;
+
+  if (sanitized && typeof sanitized === "object") {
+    return {
+      truncated: true,
+      size_bytes: sizeBytes,
+      keys: Object.keys(sanitized).slice(
+        0,
+        MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH,
+      ),
+    };
+  }
+
+  return {
+    truncated: true,
+    size_bytes: sizeBytes,
+  };
+};
+
+const truncateDiagnosticString = (value: string): string =>
+  value.length > MAX_DATABASE_ERROR_MESSAGE_LENGTH
+    ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
+    : value;
+
+const getObjectString = (value: unknown, key: string): string | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return typeof child === "string" ? child : undefined;
+};
+
+const getNestedObject = (
+  value: unknown,
+  key: string,
+): Record<string, unknown> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" && !Array.isArray(child)
+    ? (child as Record<string, unknown>)
+    : undefined;
+};
+
+const getDatabaseErrorCode = (data: unknown): string | undefined =>
+  getObjectString(data, "code") ??
+  getObjectString(getNestedObject(data, "causeData"), "code");
+
+const getDatabaseFailureStage = (data: unknown): string | undefined =>
+  getObjectString(data, "failureStage");
+
+const isChatNotFoundMessageSaveError = (
+  operation: string,
+  dbErrorData: unknown,
+): boolean =>
+  operation === "messages.saveMessage" &&
+  getDatabaseErrorCode(dbErrorData) === "CHAT_NOT_FOUND";
+
+const logChatMessagePreparationFailure = (
+  event: string,
+  level: "warn" | "error",
+  fields: Record<string, unknown>,
+) => {
+  const payload = {
+    level,
+    event,
+    service: "chat-handler",
+    timestamp: new Date().toISOString(),
+    ...fields,
+  };
+  const line = JSON.stringify(payload);
+  if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.error(line);
+  }
+};
+
+const databaseError = (
+  operation: string,
+  error: unknown,
+  metadata: Record<string, unknown> = {},
+) => {
+  const dbErrorName = error instanceof Error ? error.name : typeof error;
+  const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
+  const dbErrorData = getErrorData(error);
+  const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
+  const diagnosticMetadata = {
+    db_operation: operation,
+    db_error_name: dbErrorName,
+    db_error_message: dbErrorMessage,
+    db_error_data: dbErrorData,
+    db_error_code: getDatabaseErrorCode(dbErrorData),
+    db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    ...metadata,
+  };
+
+  const logPayload = {
+    level: isChatNotFound ? "warn" : "error",
+    event: isChatNotFound
+      ? "database_operation_skipped_chat_not_found"
+      : "database_operation_failed",
+    service: "chat-handler",
+    timestamp: new Date().toISOString(),
+    ...diagnosticMetadata,
+  };
+
+  const logLine = JSON.stringify(logPayload);
+  if (isChatNotFound) {
+    console.warn(logLine);
+  } else {
+    console.error(logLine);
+  }
+
+  return new ChatSDKError(
+    isChatNotFound ? "not_found:chat" : "bad_request:database",
+    isChatNotFound
+      ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
+      : `Database operation failed: ${operation}: ${dbErrorMessage}`,
+    diagnosticMetadata,
+  );
+};
 
 export async function getChatById({ id }: { id: string }) {
   try {
@@ -35,7 +285,7 @@ export async function getChatById({ id }: { id: string }) {
     });
     return selectedChat;
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to get chat by id");
+    throw databaseError("chats.getChatById", error, { chat_id: id });
   }
 }
 
@@ -56,7 +306,11 @@ export async function saveChat({
       title,
     });
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to save chat");
+    throw databaseError("chats.saveChat", error, {
+      chat_id: id,
+      user_id: userId,
+      title_length: title.length,
+    });
   }
 }
 export async function saveMessage({
@@ -72,6 +326,8 @@ export async function saveMessage({
   usage,
   updateOnly,
   isHidden,
+  wasAborted,
+  wasPreemptiveTimeout,
 }: {
   chatId: string;
   userId: string;
@@ -89,16 +345,79 @@ export async function saveMessage({
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
+  wasAborted?: boolean;
+  wasPreemptiveTimeout?: boolean;
 }) {
+  let fixedParts = message.parts;
+  let partsForSave = message.parts;
+  let persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
+
   try {
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
-    const fixedParts =
+    fixedParts =
       message.role === "assistant"
-        ? fixIncompleteMessageParts(message.parts)
+        ? fixIncompleteMessageParts(message.parts, {
+            logContext: {
+              service: "chat-handler",
+              source: "save_message",
+              chatId,
+              userId,
+              messageId: message.id,
+              mode,
+              finishReason,
+              updateOnly,
+            },
+          })
         : message.parts;
+    const convexSafeParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
+      any,
+      any
+    >[];
+    const storageSafeMessage =
+      message.role === "assistant"
+        ? compactMessageForStorage({ ...message, parts: convexSafeParts })
+        : null;
+    const storageSafeParts =
+      storageSafeMessage?.message.parts ?? convexSafeParts;
+    if (storageSafeMessage?.compacted) {
+      console.info("[db] compacted assistant message before save", {
+        chatId,
+        messageId: message.id,
+        beforeSizeBytes: storageSafeMessage.beforeSizeBytes,
+        afterSizeBytes: storageSafeMessage.afterSizeBytes,
+        prunedCount: storageSafeMessage.prunedCount,
+        strippedUiOnlyFields: storageSafeMessage.strippedUiOnlyFields,
+      });
+    }
+
+    partsForSave = sanitizeForConvexValue(storageSafeParts) as UIMessagePart<
+      any,
+      any
+    >[];
+    persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
+    if (
+      message.role === "assistant" &&
+      persistenceDiagnostics.parts_size_bytes > LARGE_MESSAGE_SAVE_WARNING_BYTES
+    ) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "large_message_save_attempt",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          chat_id: chatId,
+          user_id: userId,
+          message_id: message.id,
+          mode,
+          model,
+          finish_reason: finishReason,
+          ...persistenceDiagnostics,
+        }),
+      );
+    }
 
     // Extract file IDs from file parts
-    const fileIds = extractFileIdsFromParts(fixedParts);
+    const fileIds = extractFileIdsFromParts(partsForSave);
     const mergedFileIds = [
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
@@ -110,7 +429,7 @@ export async function saveMessage({
       chatId,
       userId,
       role: message.role,
-      parts: fixedParts,
+      parts: partsForSave,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
       mode,
@@ -122,7 +441,22 @@ export async function saveMessage({
       isHidden,
     });
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to save message");
+    throw databaseError("messages.saveMessage", error, {
+      chat_id: chatId,
+      user_id: userId,
+      message_id: message.id,
+      message_role: message.role,
+      mode,
+      model,
+      finish_reason: finishReason,
+      update_only: updateOnly === true,
+      hidden: isHidden === true,
+      was_aborted: wasAborted,
+      was_preemptive_timeout: wasPreemptiveTimeout,
+      extra_file_count: extraFileIds?.length ?? 0,
+      usage_keys: usage ? Object.keys(usage).sort() : undefined,
+      ...persistenceDiagnostics,
+    });
   }
 }
 
@@ -241,6 +575,7 @@ export async function getMessagesByChatId({
   subscription,
   isTemporary,
   mode,
+  useClientMessagesForRegenerate,
 }: {
   chatId: string;
   userId: string;
@@ -249,6 +584,7 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   isTemporary?: boolean;
   mode?: import("@/types").ChatMode;
+  useClientMessagesForRegenerate?: boolean;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -260,8 +596,22 @@ export async function getMessagesByChatId({
     chat = await getChatById({ id: chatId });
     isNewChat = !chat;
 
+    const shouldUseClientMessagesForRegenerate =
+      !!regenerate &&
+      !!useClientMessagesForRegenerate &&
+      Array.isArray(newMessages) &&
+      newMessages.length > 0 &&
+      hasRestageableLocalDesktopAttachments(newMessages);
+
+    if (!isNewChat && shouldUseClientMessagesForRegenerate) {
+      // Persisted local desktop attachments are saved without source paths.
+      // When the current client still has those paths, use that trimmed
+      // history for this regenerate so the files can be staged again.
+      existingMessages = newMessages;
+    }
+
     // Only fetch existing messages if chat exists
-    if (!isNewChat) {
+    if (!isNewChat && !shouldUseClientMessagesForRegenerate) {
       try {
         // Fetch latest summary only if chat has a summary ID
         const latestSummary = chat?.latest_summary_id
@@ -311,7 +661,7 @@ export async function getMessagesByChatId({
               (id) => !(id in fileTokensFromLoop),
             );
             if (uncachedIds.length > 0) {
-              const newTokens = await getFileTokensByIds(uncachedIds);
+              const newTokens = await getFileTokensByIds(uncachedIds, userId);
               Object.assign(fileTokensFromLoop, newTokens);
             }
           }
@@ -431,8 +781,28 @@ export async function getMessagesByChatId({
           };
         }
       } catch (error) {
-        // If error fetching, use empty array
-        console.warn("Failed to fetch existing messages:", error);
+        logChatMessagePreparationFailure("chat_history_fetch_failed", "warn", {
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          is_temporary: !!isTemporary,
+          regenerate: !!regenerate,
+          new_messages_count: newMessages.length,
+          error_name: error instanceof Error ? error.name : typeof error,
+          error_message: truncateDiagnosticString(stringifyError(error)),
+          db_error_data: getErrorData(error),
+        });
+
+        if (newMessages.length === 0) {
+          throw databaseError("messages.getMessagesPageForBackend", error, {
+            chat_id: chatId,
+            user_id: userId,
+            mode,
+            is_temporary: !!isTemporary,
+            regenerate: !!regenerate,
+            new_messages_count: newMessages.length,
+          });
+        }
       }
     }
   }
@@ -463,43 +833,68 @@ export async function getMessagesByChatId({
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
     mode,
+    userId,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
 
   if (!truncatedMessages || truncatedMessages.length === 0) {
-    // Structured diagnostic log (no user content)
+    let emptyPromptMetadata: Record<string, unknown> | undefined;
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
-      const fileTokens = await getFileTokensByIds(fileIds as any);
+      const fileTokens = await getFileTokensByIds(fileIds as any, userId);
       const maxTokens = getMaxTokensForSubscription(subscription, {
         mode,
       });
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
-      console.error("chat-truncation-empty", {
-        chatId,
-        userId,
-        isTemporary: !!isTemporary,
+      const largestFileToken = Object.values(fileTokens).length
+        ? Math.max(...Object.values(fileTokens))
+        : 0;
+      emptyPromptMetadata = {
+        chat_id: chatId,
+        user_id: userId,
+        is_temporary: !!isTemporary,
         regenerate: !!regenerate,
         subscription,
-        existingMessagesCount: existingMessages.length,
-        newMessagesCount: newMessages.length,
-        allMessagesCount: allMessages.length,
-        totalTokensBefore,
-        maxTokens,
-        fileIdsCount: fileIds.length,
-        fileTokensSample: Object.entries(fileTokens)
+        mode,
+        existing_messages_count: existingMessages.length,
+        new_messages_count: newMessages.length,
+        all_messages_count: allMessages.length,
+        total_tokens_before: totalTokensBefore,
+        max_tokens: maxTokens,
+        file_ids_count: fileIds.length,
+        file_tokens_sample: Object.entries(fileTokens)
           .slice(0, 5)
           .map(([k, v]) => ({ fileId: k, tokens: v })),
-        largestFileToken: Object.values(fileTokens).length
-          ? Math.max(...Object.values(fileTokens))
-          : 0,
-      });
+        largest_file_token: largestFileToken,
+      };
+      logChatMessagePreparationFailure(
+        allMessages.length === 0
+          ? "chat_prompt_empty"
+          : "chat_truncation_dropped_all_messages",
+        "error",
+        emptyPromptMetadata,
+      );
     } catch {}
+
+    if (allMessages.length === 0) {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "No message content was found for this request. Please send a new message and try again.",
+        {
+          empty_prompt: true,
+          ...emptyPromptMetadata,
+        },
+      );
+    }
 
     throw new ChatSDKError(
       "bad_request:api",
       "Your input (including any attached files) is too large to process. Please remove some attachments or shorten your message and try again.",
+      {
+        truncation_dropped_all_messages: true,
+        ...emptyPromptMetadata,
+      },
     );
   }
 
@@ -865,6 +1260,11 @@ export async function getNotes({
 
 export async function logUsageRecord({
   userId,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  subscription,
   model,
   type,
   inputTokens,
@@ -873,8 +1273,16 @@ export async function logUsageRecord({
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
+  modelCostDollars,
+  nonModelCostDollars,
+  costSource,
 }: {
   userId: string;
+  organizationId?: string;
+  chatId?: string;
+  endpoint?: "/api/chat" | "/api/agent-long";
+  mode?: ChatMode;
+  subscription?: SubscriptionTier;
   model: string;
   type: "included" | "extra";
   inputTokens: number;
@@ -883,11 +1291,19 @@ export async function logUsageRecord({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
+  modelCostDollars?: number;
+  nonModelCostDollars?: number;
+  costSource?: "provider" | "token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       user_id: userId,
+      organization_id: organizationId,
+      chat_id: chatId,
+      endpoint,
+      mode,
+      subscription,
       model,
       type,
       input_tokens: inputTokens,
@@ -896,14 +1312,25 @@ export async function logUsageRecord({
       cache_write_tokens: cacheWriteTokens,
       total_tokens: totalTokens,
       cost_dollars: costDollars,
+      model_cost_dollars: modelCostDollars,
+      non_model_cost_dollars: nonModelCostDollars,
+      cost_source: costSource,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
       userId,
+      organizationId,
+      chatId,
+      endpoint,
+      mode,
+      subscription,
       model,
       type,
       costDollars,
+      modelCostDollars,
+      nonModelCostDollars,
+      costSource,
       inputTokens,
       outputTokens,
     });

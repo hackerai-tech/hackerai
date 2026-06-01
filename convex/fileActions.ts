@@ -21,7 +21,7 @@ import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
-import { generateS3DownloadUrl } from "./s3Utils";
+import { generateS3DownloadUrl, getS3ObjectSizeBytes } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
 import type {
   FileItemChunk,
@@ -31,38 +31,103 @@ import type {
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import {
+  getUploadLimitsForMode,
   isSupportedImageMediaType,
-  MAX_IMAGE_SIZE,
-} from "../lib/utils/file-utils";
+  validateUploadPolicy,
+} from "../lib/utils/upload-policy";
 import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
-import { MAX_GENERATED_FILE_SIZE_BYTES } from "../lib/constants/s3";
+import {
+  MAX_GENERATED_FILE_SIZE_BYTES,
+  S3_USER_FILES_PREFIX,
+} from "../lib/constants/s3";
+import {
+  hasPaidEntitlement,
+  parseEntitlements,
+} from "../lib/auth/entitlements";
 
-// Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
-const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
-
-// File upload rate limit: 80 files per 5 hours for paid tiers
-const FILE_UPLOAD_LIMIT = 80;
 const FILE_UPLOAD_WINDOW = "5 h";
+
+type FileUploadRateLimitTier = "pro" | "pro-plus" | "team" | "ultra";
+
+type FileUploadRateLimitConfig = {
+  tier: FileUploadRateLimitTier;
+  limit: number;
+  window: typeof FILE_UPLOAD_WINDOW;
+};
+
+const isUserScopedS3Key = (s3Key: string, userId: string) =>
+  s3Key.startsWith(`${S3_USER_FILES_PREFIX}/${userId}/`);
+
+const FILE_UPLOAD_RATE_LIMITS: Record<
+  FileUploadRateLimitTier,
+  FileUploadRateLimitConfig
+> = {
+  pro: { tier: "pro", limit: 400, window: FILE_UPLOAD_WINDOW },
+  "pro-plus": { tier: "pro-plus", limit: 800, window: FILE_UPLOAD_WINDOW },
+  team: { tier: "team", limit: 800, window: FILE_UPLOAD_WINDOW },
+  ultra: { tier: "ultra", limit: 1600, window: FILE_UPLOAD_WINDOW },
+};
+
+const FILE_UPLOAD_RATE_LIMIT_ENTITLEMENTS: Record<
+  FileUploadRateLimitTier,
+  ReadonlySet<string>
+> = {
+  pro: new Set(["pro-plan", "pro-monthly-plan", "pro-yearly-plan"]),
+  "pro-plus": new Set([
+    "pro-plus-plan",
+    "pro-plus-monthly-plan",
+    "pro-plus-yearly-plan",
+  ]),
+  team: new Set(["team-plan"]),
+  ultra: new Set(["ultra-plan", "ultra-monthly-plan", "ultra-yearly-plan"]),
+};
+
+const hasEntitlement = (
+  entitlements: Array<string>,
+  tier: FileUploadRateLimitTier,
+) =>
+  entitlements.some((entitlement) =>
+    FILE_UPLOAD_RATE_LIMIT_ENTITLEMENTS[tier].has(entitlement),
+  );
+
+export const getFileUploadRateLimitConfig = (
+  entitlements: Array<string> = [],
+): FileUploadRateLimitConfig => {
+  if (hasEntitlement(entitlements, "ultra")) {
+    return FILE_UPLOAD_RATE_LIMITS.ultra;
+  }
+  if (hasEntitlement(entitlements, "team")) {
+    return FILE_UPLOAD_RATE_LIMITS.team;
+  }
+  if (hasEntitlement(entitlements, "pro-plus")) {
+    return FILE_UPLOAD_RATE_LIMITS["pro-plus"];
+  }
+  return FILE_UPLOAD_RATE_LIMITS.pro;
+};
 
 /** Rate limit check result with remaining count */
 export type RateLimitResult = {
   remaining: number;
   limit: number;
   reset: number;
+  tier: FileUploadRateLimitTier;
 };
 
 /**
- * Check file upload rate limit using sliding window algorithm.
- * Allows 80 file uploads per 5 hours for paid tiers.
+ * Check cloud file upload rate limit using sliding window algorithm.
+ * This protects S3 writes and presigned URL generation; local desktop
+ * attachments bypass this path and are governed by per-turn/file-size limits.
  *
  * @param userId - The user's unique identifier
  * @param consume - If true, consumes a token from the bucket. If false, just peeks at the current state.
+ * @param options.entitlements - WorkOS entitlements used to choose a paid-tier quota.
  * @returns RateLimitResult with remaining count, or null if Redis is not configured
  * @throws ConvexError if rate limited
  */
 export const checkFileUploadRateLimit = async (
   userId: string,
   consume: boolean = true,
+  options: { entitlements?: Array<string> } = {},
 ): Promise<RateLimitResult | null> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -74,6 +139,7 @@ export const checkFileUploadRateLimit = async (
   }
 
   try {
+    const config = getFileUploadRateLimitConfig(options.entitlements);
     // Dynamic imports in Convex Node runtime expose modules via .default
     const ratelimitModule = await import("@upstash/ratelimit");
     const Ratelimit = ratelimitModule.default.Ratelimit;
@@ -87,11 +153,11 @@ export const checkFileUploadRateLimit = async (
 
     const ratelimit = new Ratelimit({
       redis,
-      limiter: Ratelimit.slidingWindow(FILE_UPLOAD_LIMIT, FILE_UPLOAD_WINDOW),
+      limiter: Ratelimit.slidingWindow(config.limit, config.window),
       prefix: "file_upload_limit",
     });
 
-    const rateLimitKey = `${userId}:file_upload`;
+    const rateLimitKey = `${userId}:${config.tier}:s3_upload`;
 
     let success: boolean;
     let reset: number;
@@ -125,11 +191,11 @@ export const checkFileUploadRateLimit = async (
 
       throw new ConvexError({
         code: "FILE_UPLOAD_RATE_LIMIT",
-        message: `You've reached your file upload limit of ${FILE_UPLOAD_LIMIT} files per 5 hours. Please try again after ${timeString}.`,
+        message: `You've reached your cloud file upload limit of ${config.limit} files per 5 hours. Desktop Agent attachments from your local workspace do not count toward this limit. Please try again after ${timeString}.`,
       });
     }
 
-    return { remaining, limit, reset };
+    return { remaining, limit, reset, tier: config.tier };
   } catch (error) {
     // Re-throw ConvexError
     if (error instanceof ConvexError) {
@@ -190,7 +256,7 @@ const validateTokenLimit = (
   if (totalTokens > maxTokens) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
     });
   }
 };
@@ -406,7 +472,7 @@ const processFileAuto = async (
         if (!skipTokenValidation && fallbackTokens > maxTokens) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent or Agent Long mode to upload larger files without token limits.`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
           });
         }
 
@@ -638,11 +704,7 @@ export const saveFile = action({
         });
       }
       actingUserId = user.subject;
-      entitlements = Array.isArray(user.entitlements)
-        ? user.entitlements.filter(
-            (e: unknown): e is string => typeof e === "string",
-          )
-        : [];
+      entitlements = parseEntitlements(user.entitlements);
 
       // Security: Only backend (service key) flows can directly set skipTokenValidation
       // Client can use mode="agent" to skip validation
@@ -658,25 +720,13 @@ export const saveFile = action({
     // Determine if we should skip token validation based on mode
     // Agent mode: files are accessed in sandbox, no token counting needed
     // Ask mode: files are included in context, token counting required
+    const isAgentUploadMode =
+      args.mode === "agent" || args.mode === "agent-long";
     const shouldSkipTokenValidation =
-      args.skipTokenValidation ||
-      args.mode === "agent" ||
-      args.mode === "agent-long";
+      args.skipTokenValidation || isAgentUploadMode;
 
     // Check if paid tier (free tier cannot upload)
-    const hasPaidEntitlement =
-      entitlements.includes("ultra-plan") ||
-      entitlements.includes("ultra-monthly-plan") ||
-      entitlements.includes("ultra-yearly-plan") ||
-      entitlements.includes("pro-plus-plan") ||
-      entitlements.includes("pro-plus-monthly-plan") ||
-      entitlements.includes("pro-plus-yearly-plan") ||
-      entitlements.includes("team-plan") ||
-      entitlements.includes("pro-plan") ||
-      entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan");
-
-    if (!hasPaidEntitlement) {
+    if (!hasPaidEntitlement(entitlements)) {
       throw new ConvexError({
         code: "PAID_PLAN_REQUIRED",
         message: "Paid plan required for file uploads",
@@ -685,10 +735,104 @@ export const saveFile = action({
 
     // Check file upload rate limit (peek mode - verify limit not exceeded)
     // Token was already consumed at URL generation step
-    await checkFileUploadRateLimit(actingUserId, false);
+    await checkFileUploadRateLimit(actingUserId, false, { entitlements });
 
-    // Enforce file size limit (20 MB) regardless of skipTokenValidation
-    if (args.size > MAX_FILE_SIZE_BYTES) {
+    let verifiedSize = args.size;
+    if (args.s3Key) {
+      try {
+        verifiedSize = await getS3ObjectSizeBytes(args.s3Key);
+      } catch (error) {
+        convexLogger.error("file_upload_s3_metadata_fetch_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          s3Key: args.s3Key,
+          mode: args.mode,
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: `Failed to upload ${args.name}: File not found in storage`,
+        });
+      }
+
+      const reservation = await ctx.runQuery(
+        internal.fileStorage.getFileByS3Key,
+        { s3Key: args.s3Key },
+      );
+      if (!reservation) {
+        if (isUserScopedS3Key(args.s3Key, actingUserId)) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        }
+        throw new ConvexError({
+          code: "INVALID_UPLOAD_RESERVATION",
+          message: `Failed to upload ${args.name}: Upload reservation not found`,
+        });
+      }
+      if (reservation.user_id !== actingUserId) {
+        throw new ConvexError({
+          code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+          message: `Failed to upload ${args.name}: Upload reservation belongs to another user`,
+        });
+      }
+      if (reservation.size !== verifiedSize) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.s3Cleanup.deleteS3ObjectAction,
+          { s3Key: args.s3Key },
+        );
+        throw new ConvexError({
+          code: "FILE_SIZE_MISMATCH",
+          message: `File "${args.name}" uploaded size does not match the reserved upload size`,
+        });
+      }
+    } else if (args.storageId) {
+      try {
+        const metadata = await ctx.storage.getMetadata(args.storageId);
+        if (!metadata) {
+          throw new Error("Storage metadata not found");
+        }
+        verifiedSize = metadata.size;
+      } catch (error) {
+        convexLogger.error("file_upload_storage_metadata_fetch_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          storageId: args.storageId,
+          mode: args.mode,
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: `Failed to upload ${args.name}: File not found in storage`,
+        });
+      }
+    }
+
+    const uploadLimits = getUploadLimitsForMode(args.mode, {
+      surface: "backend",
+    });
+    const uploadValidation = validateUploadPolicy({
+      mode: args.mode,
+      size: verifiedSize,
+      mediaType: args.mediaType,
+      surface: "backend",
+    });
+
+    // Ask-mode uploads are processed for model context; Agent uploads may be
+    // larger because oversized attachments are staged into the sandbox only.
+    if (
+      !uploadValidation.valid &&
+      uploadValidation.code === "FILE_SIZE_EXCEEDED"
+    ) {
       // Clean up storage before throwing error
       try {
         if (args.s3Key) {
@@ -715,13 +859,13 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
-        message: `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `File "${args.name}" exceeds the maximum file size limit of ${uploadLimits.maxFileSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
     if (
-      isSupportedImageMediaType(args.mediaType) &&
-      args.size > MAX_IMAGE_SIZE
+      !uploadValidation.valid &&
+      uploadValidation.code === "IMAGE_SIZE_EXCEEDED"
     ) {
       try {
         if (args.s3Key) {
@@ -748,7 +892,7 @@ export const saveFile = action({
       }
       throw new ConvexError({
         code: "IMAGE_SIZE_EXCEEDED",
-        message: `Image "${args.name}" exceeds the maximum image size limit of ${MAX_IMAGE_SIZE / (1024 * 1024)} MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+        message: `Image "${args.name}" exceeds the maximum image size limit of ${uploadLimits.maxProviderImageSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
       });
     }
 
@@ -769,63 +913,86 @@ export const saveFile = action({
       });
     }
 
-    const response = await fetch(fileUrl);
-
-    if (!response.ok) {
-      throw new ConvexError({
-        code: "FILE_FETCH_FAILED",
-        message: `Failed to upload ${args.name}: ${response.statusText}`,
-      });
-    }
-
-    const file = await response.blob();
-
     // Calculate token size using the comprehensive file processing logic
     let tokenSize = 0;
     let fileContent: string | undefined = undefined;
 
     try {
-      // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
-      const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
+      if (isAgentUploadMode) {
+        convexLogger.info("agent_file_upload_saved_without_processing", {
+          userId: actingUserId,
+          fileName: args.name,
+          size: verifiedSize,
+          mediaType: args.mediaType,
+          mode: args.mode,
+        });
+      } else {
+        const response = await fetch(fileUrl);
 
-      // Use the comprehensive file processing for all file types (including auto-detection and default handling)
-      const chunks = await processFileAuto(
-        file,
-        args.name,
-        args.mediaType,
-        undefined,
-        shouldSkipTokenValidation,
-        maxFileTokens,
-      );
-      tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
+        if (!response.ok) {
+          throw new ConvexError({
+            code: "FILE_FETCH_FAILED",
+            message: `Failed to upload ${args.name}: ${response.statusText}`,
+          });
+        }
 
-      // Save content for non-image, non-PDF, non-binary files
-      // Note: Unsupported image formats will have content extracted, so we check for supported images
-      const shouldSaveContent =
-        !isSupportedImageMediaType(args.mediaType) &&
-        args.mediaType !== "application/pdf" &&
-        chunks.length > 0 &&
-        chunks[0].content.length > 0;
+        const file = await response.blob();
 
-      if (shouldSaveContent) {
-        const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
-        // Always truncate content to maxFileTokens before saving to database
-        // This ensures database content field stays reasonable even for agent mode files
-        fileContent = truncateContentByTokens(rawContent, maxFileTokens);
+        // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
+        const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
+
+        // Use the comprehensive file processing for all file types (including auto-detection and default handling)
+        const chunks = await processFileAuto(
+          file,
+          args.name,
+          args.mediaType,
+          undefined,
+          shouldSkipTokenValidation,
+          maxFileTokens,
+        );
+        tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
+
+        // Save content for non-image, non-PDF, non-binary files
+        // Note: Unsupported image formats will have content extracted, so we check for supported images
+        const shouldSaveContent =
+          !isSupportedImageMediaType(args.mediaType) &&
+          args.mediaType !== "application/pdf" &&
+          chunks.length > 0 &&
+          chunks[0].content.length > 0;
+
+        if (shouldSaveContent) {
+          const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
+          // Always truncate content to maxFileTokens before saving to database
+          // This ensures database content field stays reasonable even for agent mode files
+          fileContent = truncateContentByTokens(rawContent, maxFileTokens);
+        }
       }
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
       if (error instanceof ConvexError) {
+        const errorData = error.data as { code?: string; message?: string };
         // Best-effort cleanup: delete storage before re-throwing
-        convexLogger.error("file_upload_processing_convex_error", {
-          userId: actingUserId,
-          fileName: args.name,
-          size: args.size,
-          mediaType: args.mediaType,
-          mode: args.mode,
-          errorCode: (error.data as { code?: string })?.code,
-          errorMessage: (error.data as { message?: string })?.message,
-        });
+        if (errorData?.code === "FILE_TOKEN_LIMIT_EXCEEDED") {
+          convexLogger.warn("file_upload_token_limit_exceeded", {
+            userId: actingUserId,
+            fileName: args.name,
+            size: args.size,
+            mediaType: args.mediaType,
+            mode: args.mode,
+            errorCode: errorData.code,
+            errorMessage: errorData.message,
+          });
+        } else {
+          convexLogger.error("file_upload_processing_convex_error", {
+            userId: actingUserId,
+            fileName: args.name,
+            size: args.size,
+            mediaType: args.mediaType,
+            mode: args.mode,
+            errorCode: errorData?.code,
+            errorMessage: errorData?.message,
+          });
+        }
         try {
           if (args.s3Key) {
             await ctx.scheduler.runAfter(
@@ -857,7 +1024,7 @@ export const saveFile = action({
         error instanceof Error &&
         error.message.includes("exceeds the maximum token limit")
       ) {
-        convexLogger.error("file_upload_token_limit_exceeded", {
+        convexLogger.warn("file_upload_token_limit_exceeded", {
           userId: actingUserId,
           fileName: args.name,
           size: args.size,
@@ -946,7 +1113,7 @@ export const saveFile = action({
       userId: actingUserId,
       name: args.name,
       mediaType: args.mediaType,
-      size: args.size,
+      size: verifiedSize,
       fileTokenSize: tokenSize,
       content: fileContent,
     })) as Id<"files">;
@@ -1035,6 +1202,7 @@ export const saveSandboxGeneratedFile = action({
         mediaType: args.mediaType,
         size: args.size,
         fileTokenSize: 0,
+        trustedServiceGenerated: true,
       })) as Id<"files">;
 
       return {

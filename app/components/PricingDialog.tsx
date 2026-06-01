@@ -265,7 +265,9 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleTeamClick = () => {
     if (!user) {
-      navigateToAuth("/login");
+      navigateToAuth("/signup?intent=pricing", {
+        preferSignInForReturningUser: true,
+      });
       return;
     }
 
@@ -294,7 +296,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "secondary" as const,
-        onClick: () => navigateToAuth("/signup"),
+        onClick: () =>
+          navigateToAuth("/signup", {
+            preferSignInForReturningUser: true,
+          }),
       };
     } else {
       return {
@@ -343,7 +348,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "default" as const,
-        onClick: () => navigateToAuth("/login"),
+        onClick: () =>
+          navigateToAuth("/signup?intent=pricing", {
+            preferSignInForReturningUser: true,
+          }),
       };
     }
   };
@@ -379,7 +387,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: () => navigateToAuth("/login"),
+        onClick: () =>
+          navigateToAuth("/signup?intent=pricing", {
+            preferSignInForReturningUser: true,
+          }),
       };
     }
   };
@@ -416,7 +427,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: () => navigateToAuth("/login"),
+        onClick: () =>
+          navigateToAuth("/signup?intent=pricing", {
+            preferSignInForReturningUser: true,
+          }),
       };
     }
   };

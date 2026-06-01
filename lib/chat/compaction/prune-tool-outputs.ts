@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { countTokens } from "gpt-tokenizer";
+import { safeCountTokens } from "@/lib/token-utils";
 
 /**
  * Default rolling token budget for tool outputs (protection window).
@@ -47,6 +47,22 @@ export interface PruneResult {
     | "below-minimum-savings"
     | null;
 }
+
+export interface StorageCompactionResult<T extends UIMessage = UIMessage> {
+  message: T;
+  compacted: boolean;
+  beforeSizeBytes: number;
+  afterSizeBytes: number;
+  strippedUiOnlyFields: boolean;
+  prunedCount: number;
+}
+
+const STORAGE_MESSAGE_SOFT_LIMIT_BYTES = 850 * 1024;
+const STORAGE_TOOL_OUTPUT_TOKEN_BUDGET = 20_000;
+const STORAGE_REASONING_CHAR_BUDGET = 32_000;
+const STORAGE_REASONING_PART_CHAR_LIMIT = 8_000;
+const STORAGE_COMPACTED_REASONING_PREFIX =
+  "[Earlier reasoning compacted for storage]\n\n";
 
 // ---------------------------------------------------------------------------
 // Placeholder builders per tool type
@@ -142,9 +158,184 @@ const buildPlaceholder = (part: ToolPart): string => {
 
 const countOutputTokens = (output: unknown): number => {
   if (output == null) return 0;
-  if (typeof output === "string") return countTokens(output);
-  return countTokens(JSON.stringify(output));
+  if (typeof output === "string") return safeCountTokens(output);
+  return safeCountTokens(JSON.stringify(output));
 };
+
+export const estimateSerializedSizeBytes = (value: unknown): number =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
+  if (!part || typeof part !== "object") return part;
+  const output = part.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return part;
+  }
+
+  if (part.type === "tool-file") {
+    const { originalContent, modifiedContent, ...restOutput } =
+      output as Record<string, unknown>;
+
+    if (originalContent !== undefined || modifiedContent !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  if (part.type === "tool-update_note") {
+    const { original, modified, ...restOutput } = output as Record<
+      string,
+      unknown
+    >;
+
+    if (original !== undefined || modified !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  if (
+    part.type === "tool-run_terminal_cmd" ||
+    part.type === "tool-interact_terminal_session"
+  ) {
+    const { rawSnapshot, ...restOutput } = output as Record<string, unknown>;
+
+    if (rawSnapshot !== undefined) {
+      return { ...part, output: restOutput };
+    }
+  }
+
+  return part;
+};
+
+const compactReasoningParts = (
+  parts: UIMessage["parts"],
+): UIMessage["parts"] => {
+  let remainingReasoningChars = STORAGE_REASONING_CHAR_BUDGET;
+
+  const compacted = parts
+    .slice()
+    .reverse()
+    .map((part) => {
+      if (part?.type !== "reasoning") return part;
+
+      const text = typeof part.text === "string" ? part.text : "";
+      if (!text.trim()) return null;
+      if (remainingReasoningChars <= 0) return null;
+
+      const charLimit = Math.min(
+        remainingReasoningChars,
+        STORAGE_REASONING_PART_CHAR_LIMIT,
+      );
+      remainingReasoningChars -= Math.min(text.length, charLimit);
+
+      if (text.length <= charLimit) return part;
+
+      const prefixBudget = Math.min(
+        STORAGE_COMPACTED_REASONING_PREFIX.length,
+        charLimit,
+      );
+      const tailBudget = Math.max(0, charLimit - prefixBudget);
+
+      return {
+        ...part,
+        text: `${STORAGE_COMPACTED_REASONING_PREFIX.slice(
+          0,
+          prefixBudget,
+        )}${tailBudget > 0 ? text.slice(-tailBudget) : ""}`,
+      };
+    })
+    .filter((part): part is UIMessage["parts"][number] => part !== null)
+    .reverse();
+
+  return compacted;
+};
+
+const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
+  parts.filter(
+    (part) =>
+      part?.type !== "step-start" && part?.type !== "data-summarization",
+  );
+
+/**
+ * Compacts a single assistant UIMessage before database storage.
+ *
+ * Convex documents are capped at 1 MiB, so long agent runs can fail when a
+ * single assistant message accumulates many tool outputs. This preserves normal
+ * messages, then progressively removes UI-only bulk and old tool output detail
+ * once the serialized parts payload approaches the document limit.
+ */
+export function compactMessageForStorage<T extends UIMessage>(
+  message: T,
+  {
+    softLimitBytes = STORAGE_MESSAGE_SOFT_LIMIT_BYTES,
+    toolOutputTokenBudget = STORAGE_TOOL_OUTPUT_TOKEN_BUDGET,
+  }: {
+    softLimitBytes?: number;
+    toolOutputTokenBudget?: number;
+  } = {},
+): StorageCompactionResult<T> {
+  const beforeSizeBytes = estimateSerializedSizeBytes(message.parts);
+
+  if (message.role !== "assistant" || beforeSizeBytes <= softLimitBytes) {
+    return {
+      message,
+      compacted: false,
+      beforeSizeBytes,
+      afterSizeBytes: beforeSizeBytes,
+      strippedUiOnlyFields: false,
+      prunedCount: 0,
+    };
+  }
+
+  let strippedUiOnlyFields = false;
+  let parts = message.parts.map((part) => {
+    const stripped = stripBulkyOutputFields(part as ToolPart);
+    if (stripped !== part) strippedUiOnlyFields = true;
+    return stripped as UIMessage["parts"][number];
+  });
+
+  let afterSizeBytes = estimateSerializedSizeBytes(parts);
+  let prunedCount = 0;
+
+  if (afterSizeBytes > softLimitBytes) {
+    const pruneResult = pruneToolOutputs(
+      [{ ...message, parts }],
+      toolOutputTokenBudget,
+      0,
+    );
+    parts = pruneResult.messages[0]?.parts ?? parts;
+    prunedCount += pruneResult.prunedCount;
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    const pruneResult = pruneToolOutputs([{ ...message, parts }], 0, 0);
+    parts = pruneResult.messages[0]?.parts ?? parts;
+    prunedCount += pruneResult.prunedCount;
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    parts = compactReasoningParts(parts);
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  if (afterSizeBytes > softLimitBytes) {
+    parts = stripStorageOnlyParts(parts);
+    afterSizeBytes = estimateSerializedSizeBytes(parts);
+  }
+
+  const compacted =
+    strippedUiOnlyFields || prunedCount > 0 || afterSizeBytes < beforeSizeBytes;
+
+  return {
+    message: compacted ? ({ ...message, parts } as T) : message,
+    compacted,
+    beforeSizeBytes,
+    afterSizeBytes,
+    strippedUiOnlyFields,
+    prunedCount,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Main pruning function
@@ -225,7 +416,7 @@ export function pruneToolOutputs(
     if (remainingBudget <= 0) {
       toPrune.add(`${entry.msgIdx}:${entry.partIdx}`);
       prunedCount++;
-      const placeholderTokens = countTokens(buildPlaceholder(entry.part));
+      const placeholderTokens = safeCountTokens(buildPlaceholder(entry.part));
       tokensSaved += entry.tokens - placeholderTokens;
       continue;
     }
@@ -409,7 +600,7 @@ export function pruneModelMessages(
         args,
         entry.output,
       );
-      tokensSaved += entry.tokens - countTokens(placeholder);
+      tokensSaved += entry.tokens - safeCountTokens(placeholder);
       continue;
     }
     remainingBudget -= entry.tokens;

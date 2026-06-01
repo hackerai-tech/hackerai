@@ -80,6 +80,104 @@ describe("fileStorage - Aggregate Integration", () => {
     mockFileCountAggregate.sum.mockResolvedValue(0);
   });
 
+  describe("service file retrieval ownership", () => {
+    it("should only return token counts for files owned by the requested user", async () => {
+      const { getFileTokensByFileIds } = await import("../fileStorage");
+      const ownedFileId = "owned-file-id" as Id<"files">;
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest
+            .fn<any>()
+            .mockResolvedValueOnce({
+              _id: ownedFileId,
+              user_id: testUserId,
+              file_token_size: 123,
+            })
+            .mockResolvedValueOnce({
+              _id: victimFileId,
+              user_id: "other-user",
+              file_token_size: 999,
+            }),
+        },
+      };
+
+      const result = await getFileTokensByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [ownedFileId, victimFileId],
+      });
+
+      expect(result).toEqual([123, 0]);
+    });
+
+    it("should not return file content or metadata for unowned files", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getFileContentByFileIds } = await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            content: "private content",
+            file_token_size: 999,
+          }),
+        },
+      };
+
+      const result = await getFileContentByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: victimFileId,
+          name: "Unknown",
+          mediaType: "unknown",
+          content: null,
+          tokenSize: 0,
+        },
+      ]);
+    });
+
+    it("should not return file metadata for unowned files", async () => {
+      const { getFileMetadataByFileIds } = await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            storage_id: "storage-secret",
+            s3_key: undefined,
+          }),
+        },
+      };
+
+      const result = await getFileMetadataByFileIds.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: testUserId,
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([null]);
+    });
+  });
+
   describe("saveFileToDb", () => {
     it("should insert file into aggregate using insertIfDoesNotExist", async () => {
       const mockFile = {
@@ -177,6 +275,170 @@ describe("fileStorage - Aggregate Integration", () => {
       ).rejects.toThrow("Storage limit exceeded");
 
       expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    });
+
+    it("should finalize an existing S3 upload reservation without double-counting storage", async () => {
+      const reservedFile = {
+        _id: testFileId,
+        s3_key: "users/test-user-123/file.pdf",
+        user_id: testUserId,
+        name: "file.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 0,
+        is_attached: false,
+      };
+      const unique = jest.fn<any>().mockResolvedValue(reservedFile);
+      const mockCtx: any = {
+        db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
+          patch: jest.fn<any>().mockResolvedValue(undefined),
+          insert: jest.fn<any>(),
+        },
+      };
+
+      const { saveFileToDb } = (await import("../fileStorage")) as any;
+      const result = await saveFileToDb.handler(mockCtx, {
+        s3Key: "users/test-user-123/file.pdf",
+        userId: testUserId,
+        name: "file.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+        fileTokenSize: 100,
+      });
+
+      expect(result).toBe(testFileId);
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(
+        testFileId,
+        expect.objectContaining({ file_token_size: 100 }),
+      );
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockFileCountAggregate.sum).not.toHaveBeenCalled();
+      expect(
+        mockFileCountAggregate.insertIfDoesNotExist,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("should reject S3 saves without a reservation", async () => {
+      const unique = jest.fn<any>().mockResolvedValue(null);
+      const mockCtx: any = {
+        db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
+          insert: jest.fn<any>(),
+        },
+      };
+
+      const { saveFileToDb } = (await import("../fileStorage")) as any;
+      await expect(
+        saveFileToDb.handler(mockCtx, {
+          s3Key: "users/test-user-123/file.pdf",
+          userId: testUserId,
+          name: "file.pdf",
+          mediaType: "application/pdf",
+          size: 1024,
+          fileTokenSize: 100,
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "MISSING_UPLOAD_RESERVATION" }),
+      });
+
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockFileCountAggregate.sum).not.toHaveBeenCalled();
+    });
+
+    it("should allow trusted service-generated S3 saves without a reservation", async () => {
+      const unique = jest.fn<any>().mockResolvedValue(null);
+      const mockFile = {
+        _id: testFileId,
+        s3_key: "users/test-user-123/generated.zip",
+        user_id: testUserId,
+        name: "generated.zip",
+        media_type: "application/zip",
+        size: 1024,
+        file_token_size: 0,
+        is_attached: false,
+      };
+      const mockCtx: any = {
+        db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
+          insert: jest.fn<any>().mockResolvedValue(testFileId),
+          get: jest.fn<any>().mockResolvedValue(mockFile),
+        },
+      };
+
+      const { saveFileToDb } = (await import("../fileStorage")) as any;
+      const result = await saveFileToDb.handler(mockCtx, {
+        s3Key: "users/test-user-123/generated.zip",
+        userId: testUserId,
+        name: "generated.zip",
+        mediaType: "application/zip",
+        size: 1024,
+        fileTokenSize: 0,
+        trustedServiceGenerated: true,
+      });
+
+      expect(result).toBe(testFileId);
+      expect(mockCtx.db.insert).toHaveBeenCalled();
+      expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
+    });
+  });
+
+  describe("createPendingS3File", () => {
+    it("should reserve storage for pending S3 uploads", async () => {
+      const mockFile = {
+        _id: testFileId,
+        s3_key: "users/test-user-123/file.pdf",
+        user_id: testUserId,
+        name: "file.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 0,
+        is_attached: false,
+      };
+      const unique = jest.fn<any>().mockResolvedValue(null);
+      const mockCtx: any = {
+        db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
+          insert: jest.fn<any>().mockResolvedValue(testFileId),
+          get: jest.fn<any>().mockResolvedValue(mockFile),
+        },
+      };
+
+      const { createPendingS3File } = (await import("../fileStorage")) as any;
+      const result = await createPendingS3File.handler(mockCtx, {
+        s3Key: "users/test-user-123/file.pdf",
+        userId: testUserId,
+        name: "file.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+      });
+
+      expect(result).toBe(testFileId);
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "files",
+        expect.objectContaining({
+          s3_key: "users/test-user-123/file.pdf",
+          user_id: testUserId,
+          size: 1024,
+          file_token_size: 0,
+          is_attached: false,
+        }),
+      );
+      expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
     });
   });
 

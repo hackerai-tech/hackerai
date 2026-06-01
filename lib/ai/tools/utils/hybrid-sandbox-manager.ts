@@ -1,4 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
+import { Centrifuge, type Subscription } from "centrifuge";
 import type {
   SandboxBootInfo,
   SandboxManager,
@@ -12,6 +13,8 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
+import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
+import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -39,6 +42,177 @@ export interface SandboxFallbackInfo {
  * - Dangerous mode (no Docker) with OS context for AI
  */
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
+export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
+const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
+
+interface CentrifugoPresenceResult {
+  clients?: Record<string, unknown>;
+}
+
+interface PresenceProbeResult {
+  reliable: boolean;
+  onlineConnectionIds: Set<string>;
+  durationMs: number;
+  error?: unknown;
+}
+
+interface PresenceFilterResult {
+  availableConnections: ConnectionInfo[];
+  staleConnections: ConnectionInfo[];
+}
+
+const logStructured = (
+  level: "warn" | "error",
+  event: string,
+  fields: Record<string, unknown>,
+) => {
+  const payload = {
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    service: "chat-handler",
+    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    request_id: process.env.VERCEL_REQUEST_ID ?? null,
+    ...fields,
+  };
+
+  const message = JSON.stringify(payload);
+  if (level === "error") {
+    console.error(message);
+  } else {
+    console.warn(message);
+  }
+};
+
+export function filterConnectionsByPresence(
+  connections: ConnectionInfo[],
+  onlineConnectionIds: Set<string>,
+  now = Date.now(),
+): PresenceFilterResult {
+  const availableConnections: ConnectionInfo[] = [];
+  const staleConnections: ConnectionInfo[] = [];
+
+  for (const connection of connections) {
+    const recentlySeen =
+      connection.lastSeen != null &&
+      now - connection.lastSeen <= LOCAL_SANDBOX_PRESENCE_GRACE_MS;
+    if (onlineConnectionIds.has(connection.connectionId) || recentlySeen) {
+      availableConnections.push(connection);
+    } else {
+      staleConnections.push(connection);
+    }
+  }
+
+  return { availableConnections, staleConnections };
+}
+
+async function queryLiveSandboxConnectionIds(
+  userId: string,
+  connectionIds: string[],
+): Promise<PresenceProbeResult> {
+  if (connectionIds.length === 0) {
+    return {
+      reliable: true,
+      onlineConnectionIds: new Set(),
+      durationMs: 0,
+    };
+  }
+
+  const wsUrl = process.env.CENTRIFUGO_WS_URL;
+  if (!wsUrl) {
+    return {
+      reliable: false,
+      onlineConnectionIds: new Set(),
+      durationMs: 0,
+      error: new Error("CENTRIFUGO_WS_URL is not configured"),
+    };
+  }
+
+  const start = Date.now();
+  let client: Centrifuge | null = null;
+  const subscriptions: Subscription[] = [];
+
+  try {
+    const token = await generateCentrifugoToken(userId, 30);
+    client = new Centrifuge(wsUrl, { token });
+    const onlineConnectionIds = new Set<string>();
+
+    const probes = connectionIds.map(
+      (connectionId) =>
+        new Promise<void>((resolve, reject) => {
+          const sub = client!.newSubscription(
+            sandboxConnectionChannel(userId, connectionId),
+          );
+          subscriptions.push(sub);
+
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(
+              new Error(
+                `Centrifugo presence timeout for connection ${connectionId}`,
+              ),
+            );
+          }, LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS);
+
+          const cleanup = () => {
+            clearTimeout(timeout);
+            sub.removeAllListeners();
+          };
+
+          sub.on("subscribed", async () => {
+            try {
+              const result = await sub.presence();
+              cleanup();
+              const clients =
+                (result as CentrifugoPresenceResult).clients ?? {};
+              if (Object.keys(clients).length > 0) {
+                onlineConnectionIds.add(connectionId);
+              }
+              resolve();
+            } catch (error) {
+              cleanup();
+              reject(error);
+            }
+          });
+
+          sub.on("error", (ctx) => {
+            cleanup();
+            reject(
+              new Error(ctx.error?.message ?? "Centrifugo subscription error"),
+            );
+          });
+
+          sub.subscribe();
+        }),
+    );
+
+    client.connect();
+    await Promise.all(probes);
+
+    return {
+      reliable: true,
+      onlineConnectionIds,
+      durationMs: Date.now() - start,
+    };
+  } catch (error) {
+    return {
+      reliable: false,
+      onlineConnectionIds: new Set(),
+      durationMs: Date.now() - start,
+      error,
+    };
+  } finally {
+    try {
+      for (const sub of subscriptions) {
+        sub.removeAllListeners();
+        sub.unsubscribe();
+      }
+      client?.disconnect();
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+}
 
 export class HybridSandboxManager implements SandboxManager {
   private sandbox: SandboxInstance | null = null;
@@ -173,6 +347,19 @@ export class HybridSandboxManager implements SandboxManager {
       : "remote-connection";
   }
 
+  async supportsInteractivePty(): Promise<boolean> {
+    if (this.sandboxPreference === "e2b") {
+      return true;
+    }
+
+    const connection = await this.getPreferredOrFallbackConnection();
+    if (!connection) {
+      return this.subscription !== "free";
+    }
+
+    return connection.capabilities?.pty !== false;
+  }
+
   /**
    * List available connections for this user
    */
@@ -185,9 +372,76 @@ export class HybridSandboxManager implements SandboxManager {
           userId: this.userID,
         },
       );
-      return connections;
+      if (connections.length === 0) {
+        return connections;
+      }
+
+      const presence = await queryLiveSandboxConnectionIds(
+        this.userID,
+        connections.map((connection) => connection.connectionId),
+      );
+      if (!presence.reliable) {
+        logStructured("warn", "local_sandbox_presence_unavailable", {
+          user_id: this.userID,
+          connection_count: connections.length,
+          duration_ms: presence.durationMs,
+          error:
+            presence.error instanceof Error
+              ? presence.error.message
+              : String(presence.error ?? "unknown"),
+        });
+        return connections;
+      }
+
+      const { availableConnections, staleConnections } =
+        filterConnectionsByPresence(connections, presence.onlineConnectionIds);
+
+      if (staleConnections.length > 0) {
+        logStructured("warn", "local_sandbox_stale_connections_filtered", {
+          user_id: this.userID,
+          stale_connection_count: staleConnections.length,
+          available_connection_count: availableConnections.length,
+          online_connection_count: presence.onlineConnectionIds.size,
+          duration_ms: presence.durationMs,
+          stale_connection_ids: staleConnections.map(
+            (connection) => connection.connectionId,
+          ),
+        });
+
+        const disconnectResults = await Promise.allSettled(
+          staleConnections.map((connection) =>
+            getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
+              serviceKey: this.serviceKey,
+              connectionId: connection.connectionId,
+            }),
+          ),
+        );
+
+        const failedDisconnects = disconnectResults.filter(
+          (result) => result.status === "rejected",
+        );
+        if (failedDisconnects.length > 0) {
+          logStructured("error", "local_sandbox_stale_disconnect_failed", {
+            user_id: this.userID,
+            failed_count: failedDisconnects.length,
+            stale_connection_count: staleConnections.length,
+            errors: failedDisconnects.map((result) =>
+              result.status === "rejected" && result.reason instanceof Error
+                ? result.reason.message
+                : String(
+                    result.status === "rejected" ? result.reason : "unknown",
+                  ),
+            ),
+          });
+        }
+      }
+
+      return availableConnections;
     } catch (error) {
-      console.error(`[${this.userID}] Failed to list connections:`, error);
+      logStructured("error", "local_sandbox_connections_list_failed", {
+        user_id: this.userID,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }
@@ -259,6 +513,18 @@ export class HybridSandboxManager implements SandboxManager {
     };
 
     return this.getE2BSandbox();
+  }
+
+  private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
+    const connections = await this.listConnections();
+    const preferredConnection =
+      this.sandboxPreference === "desktop"
+        ? connections.find((conn) => conn.isDesktop)
+        : connections.find(
+            (conn) => conn.connectionId === this.sandboxPreference,
+          );
+
+    return preferredConnection ?? connections[0] ?? null;
   }
 
   /**
@@ -339,15 +605,7 @@ export class HybridSandboxManager implements SandboxManager {
       return null;
     }
 
-    const connections = await this.listConnections();
-    const preferredConnection =
-      this.sandboxPreference === "desktop"
-        ? connections.find((conn) => conn.isDesktop)
-        : connections.find(
-            (conn) => conn.connectionId === this.sandboxPreference,
-          );
-
-    const connection = preferredConnection || connections[0];
+    const connection = await this.getPreferredOrFallbackConnection();
     if (!connection) {
       return null;
     }
@@ -378,6 +636,7 @@ System Environment:
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
+- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
 
 Security Warning:
 - File system operations affect the host directly

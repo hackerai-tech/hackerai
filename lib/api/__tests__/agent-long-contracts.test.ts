@@ -2,8 +2,9 @@
  * Structural contract tests for the three non-obvious agent-long reliability
  * invariants that are easy to break in a well-meaning refactor:
  *
- *   1. Transport STREAM_TIMEOUT_MS guard — prevents SSE hanging forever when
- *      a Trigger.dev task fails before registering its stream.
+ *   1. Transport reads the Trigger.dev "ui" stream directly and keeps a
+ *      first-chunk timeout guard — prevents late stream discovery from turning
+ *      live output into completion-time replay.
  *   2. Cancel compare-and-clear (expectedRunId) — TOCTOU guard preventing
  *      concurrent cancels from stomping each other's stored run ID.
  *   3. Resume 204 on terminal + self-heal on 404 — prevents infinite
@@ -41,18 +42,45 @@ const taskSrc = fs.readFileSync(
   "utf8",
 );
 
-describe("agent-long-transport — STREAM_TIMEOUT_MS guard", () => {
-  test("STREAM_TIMEOUT_MS is set to 30 seconds", () => {
-    expect(transportSrc).toMatch(/STREAM_TIMEOUT_MS\s*=\s*30[_,]?000/);
+const dbActionsSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../db/actions.ts"),
+  "utf8",
+);
+
+describe("agent-long-transport — direct UI stream reader", () => {
+  test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
+    expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
+    expect(transportSrc).toMatch(/AGENT_UI_STREAM_ID/);
+    expect(transportSrc).not.toMatch(/\.withStreams\(/);
   });
 
-  test("setTimeout uses sendAbortAndClose with STREAM_TIMEOUT_MS", () => {
+  test("STREAM_TIMEOUT_MS leaves room for Trigger queueing and setup", () => {
     expect(transportSrc).toMatch(
-      /setTimeout\(\s*sendAbortAndClose\s*,\s*STREAM_TIMEOUT_MS\s*\)/,
+      /STREAM_TIMEOUT_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/,
     );
+    expect(transportSrc).toMatch(/STREAM_IDLE_TIMEOUT_SECONDS/);
   });
 
-  test("clearTimeout is called after normal subscription end", () => {
+  test("failed run statuses abort the direct stream reader", () => {
+    expect(transportSrc).toMatch(/runs\.subscribeToRun\(runId/);
+    expect(transportSrc).toMatch(/TERMINAL_RUN_STATUSES\.has\(status\)/);
+    expect(transportSrc).toMatch(/readAbortController\?\.abort\(\)/);
+  });
+
+  test("setTimeout aborts the stream reader and closes the SSE", () => {
+    const timeoutIdx = transportSrc.indexOf("setTimeout(() =>");
+    const abortIdx = transportSrc.indexOf(
+      "readAbortController?.abort()",
+      timeoutIdx,
+    );
+    const closeIdx = transportSrc.indexOf("sendAbortAndClose()", timeoutIdx);
+
+    expect(timeoutIdx).toBeGreaterThan(-1);
+    expect(abortIdx).toBeGreaterThan(timeoutIdx);
+    expect(closeIdx).toBeGreaterThan(abortIdx);
+  });
+
+  test("clearTimeout is called after normal stream end", () => {
     expect(transportSrc).toMatch(/clearTimeout\(\s*timeoutId\s*\)/);
   });
 });
@@ -110,11 +138,28 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
+  test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
+    expect(routeSrc).toMatch(
+      /const messagesForPayload\s*=\s*temporary\s*\|\|\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
+    );
+    expect(routeSrc).toMatch(/messages:\s*messagesForPayload/);
+  });
+
+  test("public token creation and active run persistence are overlapped", () => {
+    const parallelIdx = routeSrc.indexOf("await Promise.all([");
+    const tokenIdx = routeSrc.indexOf("auth.createPublicToken", parallelIdx);
+    const activeRunIdx = routeSrc.indexOf("setActiveTriggerRun", parallelIdx);
+
+    expect(parallelIdx).toBeGreaterThan(-1);
+    expect(tokenIdx).toBeGreaterThan(parallelIdx);
+    expect(activeRunIdx).toBeGreaterThan(parallelIdx);
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
-    const streamErrorIdx = taskSrc.indexOf("if (streamError)", waitIdx);
+    const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
     const handledRateLimitIdx = taskSrc.indexOf(
-      "isHandledUserRateLimitError(streamError)",
+      "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
     const returnIdx = taskSrc.indexOf(
@@ -128,15 +173,62 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
-    const streamErrorIdx = taskSrc.indexOf("if (streamError)");
+    const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
-      "isHandledUserRateLimitError(streamError)",
+      "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
-    const throwIdx = taskSrc.indexOf("throw streamError", handledRateLimitIdx);
+    const throwIdx = taskSrc.indexOf(
+      "throw terminalStreamError",
+      handledRateLimitIdx,
+    );
     expect(streamErrorIdx).toBeGreaterThan(-1);
     expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
     expect(throwIdx).toBeGreaterThan(streamErrorIdx);
+  });
+
+  test("provider finishReason error fails the task after the UI stream drains", () => {
+    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const terminalErrorIdx = taskSrc.indexOf(
+      "getTerminalProviderStreamError(terminalAgentState)",
+      waitIdx,
+    );
+    const throwIdx = taskSrc.indexOf(
+      "throw terminalStreamError",
+      terminalErrorIdx,
+    );
+
+    expect(waitIdx).toBeGreaterThan(-1);
+    expect(terminalErrorIdx).toBeGreaterThan(waitIdx);
+    expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
+  });
+
+  test("outer catch checks live usage tracker before refunding", () => {
+    const liveUsagePredicateIdx = taskSrc.indexOf(
+      "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",
+    );
+    const cleanupMapIdx = taskSrc.indexOf(
+      "runCleanupMap.set(ctx.run.id",
+      liveUsagePredicateIdx,
+    );
+    const refundGuardIdx = taskSrc.indexOf("if (!hasObservedUsage())");
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const cancelRefundGuardIdx = taskSrc.indexOf(
+      "if (!cleanup.hasObservedUsage())",
+      onCancelIdx,
+    );
+    const cancelRefundIdx = taskSrc.indexOf(
+      "cleanup.usageRefundTracker.refund()",
+      onCancelIdx,
+    );
+
+    expect(liveUsagePredicateIdx).toBeGreaterThan(-1);
+    expect(cleanupMapIdx).toBeGreaterThan(liveUsagePredicateIdx);
+    expect(refundGuardIdx).toBeGreaterThan(liveUsagePredicateIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(cancelRefundGuardIdx).toBeGreaterThan(onCancelIdx);
+    expect(cancelRefundIdx).toBeGreaterThan(cancelRefundGuardIdx);
+    expect(taskSrc).not.toMatch(/hasObservedUsage\s*=\s*hasObservedUsage/);
   });
 
   test("task catch records structured metadata for dashboard filtering", () => {
@@ -146,5 +238,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/login_required/);
     expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
     expect(taskSrc).toMatch(/metadata\.flush\(\)/);
+  });
+
+  test("empty rehydrated history is classified separately from oversized input", () => {
+    const emptyPromptIdx = dbActionsSrc.indexOf("chat_prompt_empty");
+    const emptyMessageIdx = dbActionsSrc.indexOf(
+      "No message content was found for this request",
+      emptyPromptIdx,
+    );
+    const tooLargeIdx = dbActionsSrc.indexOf(
+      "Your input (including any attached files) is too large",
+      emptyMessageIdx,
+    );
+
+    expect(emptyPromptIdx).toBeGreaterThan(-1);
+    expect(emptyMessageIdx).toBeGreaterThan(emptyPromptIdx);
+    expect(tooLargeIdx).toBeGreaterThan(emptyMessageIdx);
+    expect(dbActionsSrc).toMatch(/empty_prompt:\s*true/);
+    expect(taskSrc).toMatch(/errorMetadata\?\.empty_prompt\s*===\s*true/);
+    expect(taskSrc).toMatch(/"empty_prompt"/);
+  });
+
+  test("agent-long DB rehydrate failures are not swallowed when no payload messages exist", () => {
+    const fetchFailedIdx = dbActionsSrc.indexOf("chat_history_fetch_failed");
+    const zeroNewMessagesIdx = dbActionsSrc.indexOf(
+      "newMessages.length === 0",
+      fetchFailedIdx,
+    );
+    const rethrowIdx = dbActionsSrc.indexOf(
+      'databaseError("messages.getMessagesPageForBackend"',
+      zeroNewMessagesIdx,
+    );
+
+    expect(fetchFailedIdx).toBeGreaterThan(-1);
+    expect(zeroNewMessagesIdx).toBeGreaterThan(fetchFailedIdx);
+    expect(rethrowIdx).toBeGreaterThan(zeroNewMessagesIdx);
+  });
+
+  test("normal agent-long sends reject empty message payloads before triggering", () => {
+    const guardIdx = routeSrc.indexOf("requestMessages.length === 0");
+    const emptyPayloadIdx = routeSrc.indexOf(
+      "agent_long_empty_message_payload_rejected",
+    );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", emptyPayloadIdx);
+
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(emptyPayloadIdx).toBeGreaterThan(guardIdx);
+    expect(triggerIdx).toBeGreaterThan(emptyPayloadIdx);
   });
 });

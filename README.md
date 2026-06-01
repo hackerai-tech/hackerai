@@ -28,6 +28,7 @@ You'll need the following accounts:
 - [E2B](https://e2b.dev/) - Sandbox environment for secure code execution in agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [WorkOS](https://workos.com/) - Authentication and user management
+- [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks
 
 **Optional:**
 
@@ -38,7 +39,6 @@ You'll need the following accounts:
 - [Upstash Redis](https://upstash.com/) - Rate limiting
 - [PostHog](https://posthog.com/) - Analytics
 - [Stripe](https://stripe.com/) - Payment processing
-- [Trigger.dev](https://trigger.dev/) - Durable runtime for "Agent Long" mode (long-running agent tasks)
 
 ### Clone the repo
 
@@ -79,24 +79,20 @@ pnpm run dev:next
 pnpm run dev:convex
 ```
 
-### Optional: Run the Trigger.dev worker (Agent Long mode)
+### Run the Trigger.dev worker
 
-"Agent Long" mode runs the agent loop on a [Trigger.dev](https://trigger.dev/)
-task instead of a Vercel function so it can run for up to an hour. To use it
-locally:
+Agent mode runs the agent loop on a [Trigger.dev](https://trigger.dev/) task.
+To use the agent locally:
 
 1. Create a project at https://cloud.trigger.dev and copy your **dev** secret
    key (`tr_dev_…`) into `.env.local` as `TRIGGER_SECRET_KEY`.
 2. In the Trigger.dev dashboard → your project → **Environment Variables**,
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
-   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `E2B_API_KEY`, plus any optional
-   keys you use (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
+   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `E2B_API_KEY`, plus any keys you use
+   (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
 3. Start the worker in a third terminal:
 
    ```bash
    npx trigger.dev@latest dev
    ```
-
-If `TRIGGER_SECRET_KEY` is unset the rest of the app still runs — only the
-"Agent Long" picker option will fail with a 500.

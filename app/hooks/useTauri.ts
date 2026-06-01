@@ -1,6 +1,10 @@
 "use client";
 
 import { toast } from "sonner";
+import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
+
+export const DESKTOP_UPDATE_URL =
+  "https://github.com/hackerai-tech/hackerai/releases/latest";
 
 declare global {
   interface Window {
@@ -38,23 +42,98 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 }
 
+async function promptDesktopUpdate(): Promise<void> {
+  toast.error("Update HackerAI Desktop to sign in", {
+    description:
+      "This version is missing the secure sign-in bridge. Opening the latest desktop download in your browser.",
+  });
+
+  const opened = await openInBrowser(DESKTOP_UPDATE_URL);
+  if (!opened) {
+    window.location.href = DESKTOP_UPDATE_URL;
+  }
+}
+
+type AuthFallbackPath =
+  | "/login"
+  | "/signup"
+  | `/login?${string}`
+  | `/signup?${string}`;
+
+type NavigateToAuthOptions = {
+  preferSignInForReturningUser?: boolean;
+};
+
+function resolveAuthPath(
+  fallbackPath: AuthFallbackPath,
+  options?: NavigateToAuthOptions,
+): AuthFallbackPath {
+  if (!options?.preferSignInForReturningUser || !hasAuthenticatedBefore()) {
+    return fallbackPath;
+  }
+
+  const authUrl = new URL(fallbackPath, window.location.origin);
+  if (authUrl.pathname !== "/signup") {
+    return fallbackPath;
+  }
+
+  authUrl.pathname = "/login";
+  return `${authUrl.pathname}${authUrl.search}` as AuthFallbackPath;
+}
+
 export async function navigateToAuth(
-  fallbackPath: "/login" | "/signup",
+  fallbackPath: AuthFallbackPath,
+  options?: NavigateToAuthOptions,
 ): Promise<void> {
+  const resolvedPath = resolveAuthPath(fallbackPath, options);
+
   if (detectTauri()) {
     try {
       let loginUrl = `${window.location.origin}/desktop-login`;
+      const fallbackUrl = new URL(resolvedPath, window.location.origin);
+      const authSearchParams = new URLSearchParams(fallbackUrl.search);
+      let invoke: <T>(
+        cmd: string,
+        args?: Record<string, unknown>,
+      ) => Promise<T>;
+
+      try {
+        ({ invoke } = await import("@tauri-apps/api/core"));
+      } catch (err) {
+        console.error("[Tauri] Failed to load Tauri invoke API:", err);
+        await promptDesktopUpdate();
+        return;
+      }
+
+      try {
+        const desktopAuthState = await invoke<string>(
+          "prepare_desktop_auth_state",
+        );
+        authSearchParams.set("desktop_state", desktopAuthState);
+      } catch (err) {
+        console.error("[Tauri] Failed to prepare desktop auth state:", err);
+        await promptDesktopUpdate();
+        return;
+      }
+
+      if (fallbackUrl.pathname === "/signup") {
+        authSearchParams.set("screen_hint", "sign-up");
+      }
 
       // In dev mode, pass the local auth callback port so the server
       // redirects to localhost instead of the hackerai:// deep link
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const port = await invoke<number>("get_dev_auth_port");
         if (port > 0) {
-          loginUrl += `?dev_callback_port=${port}`;
+          authSearchParams.set("dev_callback_port", String(port));
         }
       } catch {
         // Not in dev mode or command not available
+      }
+
+      const query = authSearchParams.toString();
+      if (query) {
+        loginUrl += `?${query}`;
       }
 
       const opened = await openInBrowser(loginUrl);
@@ -63,7 +142,7 @@ export async function navigateToAuth(
       // Fall through to web navigation
     }
   }
-  window.location.href = fallbackPath;
+  window.location.href = resolvedPath;
 }
 
 /**
@@ -89,6 +168,70 @@ export async function getCmdServerInfo(): Promise<{
     }
     return null;
   } catch {
+    return null;
+  }
+}
+
+export type LocalFileMetadata = {
+  path: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  lastModified: number;
+};
+
+export type LocalFileData = LocalFileMetadata & {
+  base64: string;
+};
+
+export async function pickLocalFiles(): Promise<string[]> {
+  if (!detectTauri()) return [];
+
+  try {
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    const selected = await dialog.open({
+      multiple: true,
+      directory: false,
+    });
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected : [selected];
+  } catch (err) {
+    console.error("[Tauri] Failed to pick local files:", err);
+    toast.error("Failed to open file picker");
+    return [];
+  }
+}
+
+export async function getLocalFileMetadata(
+  path: string,
+): Promise<LocalFileMetadata | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalFileMetadata>("get_local_file_metadata", {
+      path,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to read local file metadata:", err);
+    toast.error("Failed to read local file metadata");
+    return null;
+  }
+}
+
+export async function readLocalFile(
+  path: string,
+): Promise<LocalFileData | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalFileData>("read_local_file", {
+      path,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to read local file:", err);
+    toast.error("Failed to read local file");
     return null;
   }
 }

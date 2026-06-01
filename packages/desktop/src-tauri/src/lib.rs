@@ -1,17 +1,19 @@
 mod platform;
 mod pty;
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
 
 /// Port for the local dev auth callback server (0 = not started)
 static DEV_AUTH_PORT: AtomicU16 = AtomicU16::new(0);
@@ -22,10 +24,51 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 /// Session token for authenticating command server requests
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+struct PendingDesktopAuthStates(std::sync::Mutex<HashMap<String, SystemTime>>);
+
+fn generate_desktop_auth_state() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn prune_expired_auth_states(states: &mut HashMap<String, SystemTime>, now: SystemTime) {
+    states.retain(|_, expires_at| *expires_at > now);
+    while states.len() >= MAX_PENDING_DESKTOP_AUTH_STATES {
+        if let Some(oldest_key) = states
+            .iter()
+            .min_by_key(|(_, expires_at)| *expires_at)
+            .map(|(state, _)| state.clone())
+        {
+            states.remove(&oldest_key);
+        } else {
+            break;
+        }
+    }
+}
+
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
 fn get_dev_auth_port() -> u16 {
     DEV_AUTH_PORT.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn prepare_desktop_auth_state(
+    pending_states: tauri::State<'_, PendingDesktopAuthStates>,
+) -> Result<String, String> {
+    let state = generate_desktop_auth_state();
+    let now = SystemTime::now();
+    let expires_at = now + DESKTOP_AUTH_STATE_TTL;
+    let mut states = pending_states
+        .0
+        .lock()
+        .map_err(|_| "desktop auth state lock poisoned".to_string())?;
+    prune_expired_auth_states(&mut states, now);
+    states.insert(state.clone(), expires_at);
+    Ok(state)
 }
 
 /// Get the command server port, session token, and OS info
@@ -41,6 +84,116 @@ fn get_cmd_server_info() -> CmdServerInfo {
 struct CmdServerInfo {
     port: u16,
     token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFileMetadata {
+    path: String,
+    name: String,
+    media_type: String,
+    size: u64,
+    last_modified: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFileData {
+    path: String,
+    name: String,
+    media_type: String,
+    size: u64,
+    last_modified: u64,
+    base64: String,
+}
+
+fn json_error_body(message: &str) -> String {
+    serde_json::to_string(&serde_json::json!({ "error": message }))
+        .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+}
+
+fn json_stream_error_line(message: &str) -> String {
+    serde_json::to_string(&serde_json::json!({
+        "type": "error",
+        "message": message,
+    }))
+    .unwrap_or_else(|_| r#"{"type":"error","message":"serialization failed"}"#.to_string())
+}
+
+fn guess_media_type(path: &std::path::Path) -> String {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "html" | "htm" => "text/html",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" => "text/typescript",
+        "css" => "text/css",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+#[tauri::command]
+fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
+    let path_buf = PathBuf::from(&path);
+    let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
+    if !metadata.is_file() {
+        return Err("Selected path is not a file".to_string());
+    }
+
+    let name = path_buf
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let last_modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+
+    Ok(LocalFileMetadata {
+        path,
+        name,
+        media_type: guess_media_type(&path_buf),
+        size: metadata.len(),
+        last_modified,
+    })
+}
+
+#[tauri::command]
+fn read_local_file(path: String) -> Result<LocalFileData, String> {
+    use base64::Engine;
+
+    let metadata = get_local_file_metadata(path.clone())?;
+    let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(LocalFileData {
+        path: metadata.path,
+        name: metadata.name,
+        media_type: metadata.media_type,
+        size: metadata.size,
+        last_modified: metadata.last_modified,
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 // ── Command Execution Server ──────────────────────────────────────────
@@ -227,13 +380,18 @@ const MAX_HEADER_SIZE: usize = 256 * 1024;
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// Parse an HTTP request from the stream, returning (method, path, headers, body)
-async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(String, String, HashMap<String, String>, String), String> {
+async fn parse_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<(String, String, HashMap<String, String>, String), String> {
     let mut buf = vec![0u8; 64 * 1024]; // 64KB initial buffer
     let mut total_read = 0;
 
     // Read headers first (with size cap to prevent OOM)
     loop {
-        let n = stream.read(&mut buf[total_read..]).await.map_err(|e| e.to_string())?;
+        let n = stream
+            .read(&mut buf[total_read..])
+            .await
+            .map_err(|e| e.to_string())?;
         if n == 0 {
             return Err("Connection closed".into());
         }
@@ -260,7 +418,8 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
     }
 
     // Find header/body boundary in raw bytes to avoid string/byte index mismatch
-    let header_end = buf[..total_read].windows(4)
+    let header_end = buf[..total_read]
+        .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or("No header end")?;
     let body_start_idx = header_end + 4;
@@ -285,7 +444,8 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
     }
 
     // Read body based on content-length
-    let content_length: usize = headers.get("content-length")
+    let content_length: usize = headers
+        .get("content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
@@ -302,7 +462,10 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
         let mut remaining_buf = vec![0u8; remaining];
         let mut read_so_far = 0;
         while read_so_far < remaining {
-            let n = stream.read(&mut remaining_buf[read_so_far..]).await.map_err(|e| e.to_string())?;
+            let n = stream
+                .read(&mut remaining_buf[read_so_far..])
+                .await
+                .map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
             }
@@ -316,13 +479,19 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
     Ok((method, path, headers, body))
 }
 
-async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &str) -> Result<(), String> {
+async fn handle_cmd_request(
+    mut stream: tokio::net::TcpStream,
+    expected_token: &str,
+) -> Result<(), String> {
     let (method, path, headers, body) = parse_http_request(&mut stream).await?;
 
     // CORS preflight
     if method == "OPTIONS" {
         let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
-        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -335,7 +504,10 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
             "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
             body.len(), body
         );
-        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -345,7 +517,7 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
     }
 
     let (route_path, _query_string) = if let Some(idx) = path.find('?') {
-        (&path[..idx], &path[idx+1..])
+        (&path[..idx], &path[idx + 1..])
     } else {
         (path.as_str(), "")
     };
@@ -362,26 +534,26 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
 
     let (status, resp_body) = match result {
         Ok(json) => ("200 OK", json),
-        Err(e) if e == "not found" => ("404 Not Found", format!(r#"{{"error":"not found"}}"#)),
-        Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\""))),
+        Err(e) if e == "not found" => ("404 Not Found", json_error_body("not found")),
+        Err(e) => ("500 Internal Server Error", json_error_body(&e)),
     };
 
     let response = format!(
         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
         status, resp_body.len(), resp_body
     );
-    stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 async fn handle_execute(body: &str) -> Result<String, String> {
-    let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let req: ExecRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let mut cmd = platform::build_command(
-        &req.command,
-        req.cwd.as_deref(),
-        req.env.as_ref(),
-    );
+    let mut cmd = platform::build_command(&req.command, req.cwd.as_deref(), req.env.as_ref());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
 
@@ -393,12 +565,20 @@ async fn handle_execute(body: &str) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout_str = if stdout.len() > MAX_OUTPUT {
-        format!("{}... [truncated, {} total bytes]", &stdout[..MAX_OUTPUT], stdout.len())
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &stdout[..MAX_OUTPUT],
+            stdout.len()
+        )
     } else {
         stdout.to_string()
     };
     let stderr_str = if stderr.len() > MAX_OUTPUT {
-        format!("{}... [truncated, {} total bytes]", &stderr[..MAX_OUTPUT], stderr.len())
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &stderr[..MAX_OUTPUT],
+            stderr.len()
+        )
     } else {
         stderr.to_string()
     };
@@ -418,19 +598,19 @@ async fn handle_execute(body: &str) -> Result<String, String> {
 ///   {"type":"stderr","data":"..."}
 ///   {"type":"exit","exit_code":0}
 ///   {"type":"error","message":"..."}
-async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
-    let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+async fn handle_execute_stream(
+    body: &str,
+    stream: &mut tokio::net::TcpStream,
+) -> Result<(), String> {
+    let req: ExecRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let mut cmd = platform::build_command(
-        &req.command,
-        req.cwd.as_deref(),
-        req.env.as_ref(),
-    );
+    let mut cmd = platform::build_command(&req.command, req.cwd.as_deref(), req.env.as_ref());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let err_body = format!(r#"{{"error":"Failed to spawn: {}"}}"#, e.to_string().replace('"', "\\\""));
+            let err_body = json_error_body(&format!("Failed to spawn: {}", e));
             let resp = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
                 err_body.len(), err_body
@@ -442,7 +622,10 @@ async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -
 
     // Send chunked response headers
     let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
-    stream.write_all(headers.as_bytes()).await.map_err(|e| e.to_string())?;
+    stream
+        .write_all(headers.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
 
     let timeout = Duration::from_millis(req.timeout_ms);
     let mut stdout = child.stdout.take().unwrap();
@@ -489,21 +672,26 @@ async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -
 
         // Wait for process to exit
         child.wait().await
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(status)) => {
-            let line = format!(r#"{{"type":"exit","exit_code":{}}}"#, status.code().unwrap_or(-1));
+            let line = format!(
+                r#"{{"type":"exit","exit_code":{}}}"#,
+                status.code().unwrap_or(-1)
+            );
             write_chunk(stream, &line).await;
         }
         Ok(Err(e)) => {
-            let line = format!(r#"{{"type":"error","message":"Process error: {}"}}"#, e.to_string().replace('"', "\\\""));
+            let line = json_stream_error_line(&format!("Process error: {}", e));
             write_chunk(stream, &line).await;
         }
         Err(_) => {
             // Timeout — gracefully kill the process
             platform::graceful_kill(&mut child).await;
-            let line = format!(r#"{{"type":"error","message":"Command timed out after {}ms"}}"#, req.timeout_ms);
+            let line =
+                json_stream_error_line(&format!("Command timed out after {}ms", req.timeout_ms));
             write_chunk(stream, &line).await;
         }
     }
@@ -526,50 +714,73 @@ async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
 }
 
 async fn handle_file_read(body: &str) -> Result<String, String> {
-    let req: FileReadRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-    let content = tokio::fs::read_to_string(&req.path).await.map_err(|e| format!("Read error: {}", e))?;
+    let req: FileReadRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let content = tokio::fs::read_to_string(&req.path)
+        .await
+        .map_err(|e| format!("Read error: {}", e))?;
     serde_json::to_string(&serde_json::json!({ "content": content })).map_err(|e| e.to_string())
 }
 
 async fn handle_file_write(body: &str) -> Result<String, String> {
-    let req: FileWriteRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let req: FileWriteRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     // Ensure parent directory exists
     if let Some(parent) = std::path::Path::new(&req.path).parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Mkdir error: {}", e))?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Mkdir error: {}", e))?;
     }
 
     if req.is_base64 {
         use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&req.content)
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&req.content)
             .map_err(|e| format!("Base64 decode error: {}", e))?;
-        tokio::fs::write(&req.path, bytes).await.map_err(|e| format!("Write error: {}", e))?;
+        tokio::fs::write(&req.path, bytes)
+            .await
+            .map_err(|e| format!("Write error: {}", e))?;
     } else {
-        tokio::fs::write(&req.path, &req.content).await.map_err(|e| format!("Write error: {}", e))?;
+        tokio::fs::write(&req.path, &req.content)
+            .await
+            .map_err(|e| format!("Write error: {}", e))?;
     }
 
     Ok(r#"{"ok":true}"#.to_string())
 }
 
 async fn handle_file_remove(body: &str) -> Result<String, String> {
-    let req: FileRemoveRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let req: FileRemoveRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
     let path = std::path::Path::new(&req.path);
 
     if path.is_dir() {
-        tokio::fs::remove_dir_all(path).await.map_err(|e| format!("Remove error: {}", e))?;
+        tokio::fs::remove_dir_all(path)
+            .await
+            .map_err(|e| format!("Remove error: {}", e))?;
     } else {
-        tokio::fs::remove_file(path).await.map_err(|e| format!("Remove error: {}", e))?;
+        tokio::fs::remove_file(path)
+            .await
+            .map_err(|e| format!("Remove error: {}", e))?;
     }
 
     Ok(r#"{"ok":true}"#.to_string())
 }
 
 async fn handle_file_list(body: &str) -> Result<String, String> {
-    let req: FileListRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let req: FileListRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
     let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(&req.path).await.map_err(|e| format!("ReadDir error: {}", e))?;
+    let mut dir = tokio::fs::read_dir(&req.path)
+        .await
+        .map_err(|e| format!("ReadDir error: {}", e))?;
 
-    while let Some(entry) = dir.next_entry().await.map_err(|e| format!("Entry error: {}", e))? {
+    while let Some(entry) = dir
+        .next_entry()
+        .await
+        .map_err(|e| format!("Entry error: {}", e))?
+    {
         let name = entry.file_name().to_string_lossy().to_string();
         entries.push(serde_json::json!({ "name": name }));
     }
@@ -582,15 +793,21 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 enum StreamEvent {
-    Stdout { data: String },
-    Stderr { data: String },
+    Stdout {
+        data: String,
+    },
+    Stderr {
+        data: String,
+    },
     Exit {
         // Explicit rename needed: Tauri 2's Channel<T> does not apply
         // rename_all to fields inside internally-tagged enum variants.
         #[serde(rename = "exitCode")]
         exit_code: i32,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
@@ -611,12 +828,20 @@ async fn execute_command(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout_str = if stdout.len() > MAX_OUTPUT {
-        format!("{}... [truncated, {} total bytes]", &stdout[..MAX_OUTPUT], stdout.len())
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &stdout[..MAX_OUTPUT],
+            stdout.len()
+        )
     } else {
         stdout.to_string()
     };
     let stderr_str = if stderr.len() > MAX_OUTPUT {
-        format!("{}... [truncated, {} total bytes]", &stderr[..MAX_OUTPUT], stderr.len())
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &stderr[..MAX_OUTPUT],
+            stderr.len()
+        )
     } else {
         stderr.to_string()
     };
@@ -682,18 +907,25 @@ async fn execute_stream_command(
             }
         }
         child.wait().await
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(status)) => {
-            let _ = on_event.send(StreamEvent::Exit { exit_code: status.code().unwrap_or(-1) });
+            let _ = on_event.send(StreamEvent::Exit {
+                exit_code: status.code().unwrap_or(-1),
+            });
         }
         Ok(Err(e)) => {
-            let _ = on_event.send(StreamEvent::Error { message: format!("Process error: {}", e) });
+            let _ = on_event.send(StreamEvent::Error {
+                message: format!("Process error: {}", e),
+            });
         }
         Err(_) => {
             platform::graceful_kill(&mut child).await;
-            let _ = on_event.send(StreamEvent::Error { message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)) });
+            let _ = on_event.send(StreamEvent::Error {
+                message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)),
+            });
         }
     }
     if let Ok(mut commands) = state.lock() {
@@ -745,7 +977,10 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
         }
     };
     DEV_AUTH_PORT.store(port, Ordering::Relaxed);
-    log::info!("Dev auth callback server listening on http://localhost:{}", port);
+    log::info!(
+        "Dev auth callback server listening on http://localhost:{}",
+        port
+    );
 
     loop {
         let (mut stream, _) = match listener.accept().await {
@@ -796,24 +1031,41 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                 }
             };
 
-            let token = parsed.query_pairs()
+            let token = parsed
+                .query_pairs()
                 .find(|(k, _)| k == "token")
                 .map(|(_, v)| v.to_string());
-            let origin = parsed.query_pairs()
+            let origin = parsed
+                .query_pairs()
                 .find(|(k, _)| k == "origin")
                 .map(|(_, v)| v.to_string());
+            let desktop_state = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "desktop_state")
+                .map(|(_, v)| v.to_string());
 
-            match token {
-                Some(ref t) if is_valid_token_format(t) => {
+            match (token, desktop_state) {
+                (Some(ref t), Some(ref state))
+                    if is_valid_token_format(t)
+                        && consume_pending_desktop_auth_state(&handle, state) =>
+                {
                     let origin = origin
                         .filter(|o| validate_origin(o))
                         .unwrap_or_else(|| "http://localhost:3000".to_string());
 
                     let encoded_token: String =
                         url::form_urlencoded::byte_serialize(t.as_bytes()).collect();
-                    let callback_url = format!("{}/desktop-callback?token={}", origin, encoded_token);
+                    let encoded_state: String =
+                        url::form_urlencoded::byte_serialize(state.as_bytes()).collect();
+                    let callback_url = format!(
+                        "{}/desktop-callback?token={}&desktop_state={}",
+                        origin, encoded_token, encoded_state
+                    );
 
-                    log::info!("Dev auth: navigating to callback (token: {}...)", &t[..8.min(t.len())]);
+                    log::info!(
+                        "Dev auth: navigating to callback (token: {}...)",
+                        &t[..8.min(t.len())]
+                    );
 
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.set_focus();
@@ -832,7 +1084,7 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => {
-                    log::warn!("Dev auth: invalid or missing token");
+                    log::warn!("Dev auth: invalid or missing token/auth state");
                     let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
@@ -842,7 +1094,10 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
 }
 
 fn get_last_update_check_file(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|dir| dir.join("last_update_check"))
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("last_update_check"))
 }
 
 fn should_check_for_updates(app: &tauri::AppHandle) -> bool {
@@ -907,22 +1162,65 @@ fn validate_origin(origin: &str) -> bool {
     }
 }
 
+fn consume_pending_desktop_auth_state(app: &tauri::AppHandle, desktop_state: &str) -> bool {
+    if !is_valid_token_format(desktop_state) {
+        return false;
+    }
+
+    let Some(pending_states) = app.try_state::<PendingDesktopAuthStates>() else {
+        log::error!("Desktop auth state store is unavailable");
+        return false;
+    };
+
+    let now = SystemTime::now();
+    let mut states = match pending_states.0.lock() {
+        Ok(states) => states,
+        Err(_) => {
+            log::error!("Desktop auth state lock poisoned");
+            return false;
+        }
+    };
+
+    prune_expired_auth_states(&mut states, now);
+    states
+        .remove(desktop_state)
+        .map(|expires_at| expires_at > now)
+        .unwrap_or(false)
+}
+
 fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     if url.scheme() != "hackerai" {
         return;
     }
 
     if url.host_str() == Some("auth") || url.path() == "/auth" || url.path() == "auth" {
-        match url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v) {
+        match url
+            .query_pairs()
+            .find(|(k, _)| k == "token")
+            .map(|(_, v)| v)
+        {
             Some(token) => {
                 if !is_valid_token_format(&token) {
                     log::error!("Invalid token format in deep link");
                     return;
                 }
 
+                let desktop_state = match url
+                    .query_pairs()
+                    .find(|(k, _)| k == "desktop_state")
+                    .map(|(_, v)| v.to_string())
+                {
+                    Some(state) if consume_pending_desktop_auth_state(app, &state) => state,
+                    _ => {
+                        log::error!("Auth deep link missing valid desktop auth state");
+                        return;
+                    }
+                };
+
                 if let Some(window) = app.get_webview_window("main") {
                     // Get and validate origin from deep link query params
-                    let origin = url.query_pairs()
+                    let origin = url
+                        .query_pairs()
                         .find(|(k, _)| k == "origin")
                         .map(|(_, v)| v.to_string())
                         .filter(|o| validate_origin(o))
@@ -931,9 +1229,18 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                             "https://hackerai.co".to_string()
                         });
 
-                    let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
-                    let callback_url = format!("{}/desktop-callback?token={}", origin, encoded_token);
-                    log::info!("Navigating to desktop callback (token: {}...)", &token[..8.min(token.len())]);
+                    let encoded_token: String =
+                        url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+                    let encoded_state: String =
+                        url::form_urlencoded::byte_serialize(desktop_state.as_bytes()).collect();
+                    let callback_url = format!(
+                        "{}/desktop-callback?token={}&desktop_state={}",
+                        origin, encoded_token, encoded_state
+                    );
+                    log::info!(
+                        "Navigating to desktop callback (token: {}...)",
+                        &token[..8.min(token.len())]
+                    );
 
                     match callback_url.parse() {
                         Ok(parsed_url) => {
@@ -973,7 +1280,8 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::warn!("Auto-update check failed to get updater: {}", e);
             } else {
                 log::error!("Failed to get updater: {}", e);
-                let _ = app.dialog()
+                let _ = app
+                    .dialog()
                     .message(format!("Failed to check for updates: {}", e))
                     .kind(MessageDialogKind::Error)
                     .title("Update Error")
@@ -988,7 +1296,8 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
             let version = update.version.clone();
             log::info!("Update available: {}", version);
 
-            let should_update = app.dialog()
+            let should_update = app
+                .dialog()
                 .message(format!(
                     "A new version ({}) is available. Would you like to update now?",
                     version
@@ -1002,18 +1311,23 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::info!("User accepted update to version {}", version);
                 if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
                     log::error!("Failed to install update: {}", e);
-                    let _ = app.dialog()
+                    let _ = app
+                        .dialog()
                         .message(format!("Failed to install update: {}", e))
                         .kind(MessageDialogKind::Error)
                         .title("Update Error")
                         .blocking_show();
                 } else {
                     log::info!("Update installed successfully");
-                    let restart_now = app.dialog()
+                    let restart_now = app
+                        .dialog()
                         .message("Update installed successfully. Restart now to apply changes?")
                         .kind(MessageDialogKind::Info)
                         .title("Update Complete")
-                        .buttons(MessageDialogButtons::OkCancelCustom("Restart Now".into(), "Later".into()))
+                        .buttons(MessageDialogButtons::OkCancelCustom(
+                            "Restart Now".into(),
+                            "Later".into(),
+                        ))
                         .blocking_show();
                     if restart_now {
                         app.restart();
@@ -1026,7 +1340,8 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::info!("No updates available (auto-check)");
             } else {
                 log::info!("No updates available");
-                let _ = app.dialog()
+                let _ = app
+                    .dialog()
                     .message("You're running the latest version.")
                     .kind(MessageDialogKind::Info)
                     .title("No Updates")
@@ -1038,7 +1353,8 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::warn!("Auto-update check failed: {}", e);
             } else {
                 log::error!("Failed to check for updates: {}", e);
-                let _ = app.dialog()
+                let _ = app
+                    .dialog()
                     .message(format!("Failed to check for updates: {}", e))
                     .kind(MessageDialogKind::Error)
                     .title("Update Error")
@@ -1100,7 +1416,20 @@ async fn execute_pty_kill(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, cancel_stream_command, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
+        .invoke_handler(tauri::generate_handler![
+            get_dev_auth_port,
+            prepare_desktop_auth_state,
+            get_cmd_server_info,
+            get_local_file_metadata,
+            read_local_file,
+            execute_command,
+            execute_stream_command,
+            cancel_stream_command,
+            execute_pty_create,
+            execute_pty_input,
+            execute_pty_resize,
+            execute_pty_kill
+        ])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1125,7 +1454,13 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
-        .manage(std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new())) as StreamCommandState)
+        .manage(
+            std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
+                as StreamCommandState,
+        )
+        .manage(PendingDesktopAuthStates(std::sync::Mutex::new(
+            HashMap::new(),
+        )))
         .setup(|app| {
             #[cfg(desktop)]
             {

@@ -10,10 +10,19 @@ import {
 } from "@jest/globals";
 
 jest.mock("../_generated/server", () => ({
+  action: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
   internalQuery: jest.fn((config: any) => config),
+}));
+const mockGetOrganization = jest.fn();
+jest.mock("@workos-inc/node", () => ({
+  WorkOS: jest.fn().mockImplementation(() => ({
+    organizations: {
+      getOrganization: mockGetOrganization,
+    },
+  })),
 }));
 jest.mock("convex/values", () => ({
   v: {
@@ -43,14 +52,21 @@ jest.mock("../lib/logger", () => ({
 
 const SERVICE_KEY = "test-service-key";
 const ORIGINAL_SERVICE_KEY = process.env.CONVEX_SERVICE_ROLE_KEY;
+const ORIGINAL_WORKOS_API_KEY = process.env.WORKOS_API_KEY;
 beforeAll(() => {
   process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
+  process.env.WORKOS_API_KEY = "test-workos-key";
 });
 afterAll(() => {
   if (ORIGINAL_SERVICE_KEY === undefined) {
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
   } else {
     process.env.CONVEX_SERVICE_ROLE_KEY = ORIGINAL_SERVICE_KEY;
+  }
+  if (ORIGINAL_WORKOS_API_KEY === undefined) {
+    delete process.env.WORKOS_API_KEY;
+  } else {
+    process.env.WORKOS_API_KEY = ORIGINAL_WORKOS_API_KEY;
   }
 });
 
@@ -71,9 +87,6 @@ type TeamRow = {
   monthly_cap_points?: number;
   monthly_spent_points?: number;
   monthly_reset_date?: string;
-  first_successful_charge_at?: number;
-  cumulative_spend_dollars?: number;
-  override_monthly_cap_dollars?: number;
   auto_reload_consecutive_failures?: number;
   auto_reload_disabled_reason?: string;
   updated_at: number;
@@ -97,6 +110,21 @@ type WebhookRow = {
   status?: "pending" | "completed";
 };
 
+type RevenueRow = {
+  _id: string;
+  idempotency_key: string;
+  entity_type: "user" | "organization";
+  entity_id: string;
+  source_event_id: string;
+};
+
+type UnitEconomicsDailyRow = {
+  _id: string;
+  entity_type: "user" | "organization";
+  entity_id: string;
+  day: string;
+};
+
 /**
  * Mock ctx that simulates the three tables touched by team extra usage:
  * team_extra_usage, team_member_usage, processed_webhooks. Index lookups
@@ -107,10 +135,14 @@ function makeMockCtx(opts?: {
   team?: TeamRow[];
   members?: MemberRow[];
   webhooks?: WebhookRow[];
+  revenue?: RevenueRow[];
+  rollups?: UnitEconomicsDailyRow[];
 }) {
   const team: TeamRow[] = [...(opts?.team ?? [])];
   const members: MemberRow[] = [...(opts?.members ?? [])];
   const webhooks: WebhookRow[] = [...(opts?.webhooks ?? [])];
+  const revenue: RevenueRow[] = [...(opts?.revenue ?? [])];
+  const rollups: UnitEconomicsDailyRow[] = [...(opts?.rollups ?? [])];
 
   let nextId = 1;
   const mintId = () => `id-${nextId++}`;
@@ -146,6 +178,19 @@ function makeMockCtx(opts?: {
           if (table === "processed_webhooks") {
             return webhooks.filter((r) => r.event_id === captured.event_id);
           }
+          if (table === "revenue_events") {
+            return revenue.filter(
+              (r) => r.idempotency_key === captured.idempotency_key,
+            );
+          }
+          if (table === "unit_economics_daily") {
+            return rollups.filter(
+              (r) =>
+                r.entity_type === captured.entity_type &&
+                r.entity_id === captured.entity_id &&
+                r.day === captured.day,
+            );
+          }
           return [];
         })();
         void depth;
@@ -176,23 +221,25 @@ function makeMockCtx(opts?: {
         if (table === "team_extra_usage") team.push(row);
         else if (table === "team_member_usage") members.push(row);
         else if (table === "processed_webhooks") webhooks.push(row);
+        else if (table === "revenue_events") revenue.push(row);
+        else if (table === "unit_economics_daily") rollups.push(row);
         else throw new Error(`unexpected table: ${table}`);
         return id;
       }),
       patch: jest.fn(async (id: string, patch: any) => {
-        const all: any[] = [...team, ...members, ...webhooks];
+        const all: any[] = [...team, ...members, ...webhooks, ...rollups];
         const row = all.find((r) => r._id === id);
         if (!row) throw new Error(`row ${id} not found`);
         Object.assign(row, patch);
       }),
       get: jest.fn(async (id: string) => {
-        const all: any[] = [...team, ...members, ...webhooks];
+        const all: any[] = [...team, ...members, ...webhooks, ...rollups];
         return all.find((r) => r._id === id) ?? null;
       }),
     },
   };
 
-  return { ctx, team, members, webhooks };
+  return { ctx, team, members, webhooks, revenue, rollups };
 }
 
 async function callDeduct(
@@ -240,6 +287,18 @@ async function callGetState(
   const { getTeamExtraUsageStateForBackend } =
     await import("../teamExtraUsage");
   return (getTeamExtraUsageStateForBackend as any).handler(ctx, {
+    serviceKey: SERVICE_KEY,
+    ...args,
+  });
+}
+
+async function callDeductWithAutoReloadForTeam(
+  ctx: any,
+  args: { organizationId: string; userId: string; amountPoints: number },
+) {
+  const { deductWithAutoReloadForTeam } =
+    await import("../teamExtraUsageActions");
+  return (deductWithAutoReloadForTeam as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
     ...args,
   });
@@ -328,6 +387,30 @@ describe("deductTeamPoints", () => {
     });
   });
 
+  it("returns monthlyCapExceeded even when balance is insufficient", async () => {
+    const { ctx } = makeMockCtx({
+      team: [
+        enabledTeamRow({
+          balance_points: 100,
+          monthly_cap_points: 500,
+          monthly_spent_points: 400,
+          monthly_reset_date: new Date().toISOString().slice(0, 7),
+        }),
+      ],
+    });
+    const result = await callDeduct(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      monthlyCapExceeded: true,
+      memberCapExceeded: false,
+    });
+  });
+
   it("returns monthlyCapExceeded when team cap would be breached", async () => {
     const { ctx } = makeMockCtx({
       team: [
@@ -372,6 +455,34 @@ describe("deductTeamPoints", () => {
     });
     expect(result).toMatchObject({
       success: false,
+      memberCapExceeded: true,
+      monthlyCapExceeded: false,
+    });
+  });
+
+  it("returns memberCapExceeded even when balance is insufficient", async () => {
+    const { ctx } = makeMockCtx({
+      team: [enabledTeamRow({ balance_points: 100 })],
+      members: [
+        {
+          _id: "m-1",
+          organization_id: ORG_ID,
+          user_id: USER_ID,
+          monthly_limit_points: 1000,
+          monthly_spent_points: 900,
+          monthly_reset_date: new Date().toISOString().slice(0, 7),
+          updated_at: 0,
+        },
+      ],
+    });
+    const result = await callDeduct(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
       memberCapExceeded: true,
       monthlyCapExceeded: false,
     });
@@ -478,6 +589,90 @@ describe("deductTeamPoints", () => {
   });
 });
 
+describe("deductWithAutoReloadForTeam", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("checks auto-reload after a successful deduction crosses the threshold", async () => {
+    mockGetOrganization.mockResolvedValue({ stripeCustomerId: null });
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        enabled: true,
+        balanceDollars: 10,
+        balancePoints: 100_000,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 7.5,
+        autoReloadThresholdPoints: 75_000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: true,
+        newBalancePoints: 70_000,
+        newBalanceDollars: 7,
+        insufficientFunds: false,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 30_000,
+    });
+
+    expect(mockGetOrganization).toHaveBeenCalledWith(ORG_ID);
+    expect(result).toMatchObject({
+      success: true,
+      newBalanceDollars: 7,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: false, reason: "no_stripe_customer" },
+    });
+  });
+
+  it("does not auto-reload when cap precheck blocks an underfunded request", async () => {
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        enabled: true,
+        balanceDollars: 0.01,
+        balancePoints: 100,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 7.5,
+        autoReloadThresholdPoints: 75_000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: false,
+        newBalancePoints: 100,
+        newBalanceDollars: 0.01,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: true,
+        memberDisabled: false,
+        poolDisabled: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 200,
+    });
+
+    expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      memberCapExceeded: true,
+      autoReloadTriggered: false,
+    });
+  });
+});
+
 describe("refundTeamPoints", () => {
   beforeEach(() => jest.clearAllMocks());
 
@@ -567,7 +762,7 @@ describe("addTeamCredits idempotency", () => {
     ).rejects.toThrow();
   });
 
-  it("credits the team balance and tracks cumulative spend", async () => {
+  it("credits the team balance", async () => {
     const { ctx, team } = makeMockCtx();
     const result = await callAddCredits(ctx, {
       organizationId: ORG_ID,
@@ -577,8 +772,6 @@ describe("addTeamCredits idempotency", () => {
     expect(result.newBalance).toBe(25);
     expect(team).toHaveLength(1);
     expect(team[0].balance_points).toBe(25 * POINTS_PER_DOLLAR);
-    expect(team[0].cumulative_spend_dollars).toBe(25);
-    expect(team[0].first_successful_charge_at).toBeGreaterThan(0);
   });
 
   it("returns alreadyProcessed when the idempotency key was already seen", async () => {

@@ -3,6 +3,8 @@ import {
   readSelectedModel,
   writeSelectedModel,
   clearSelectedModelFromStorage,
+  hasAuthenticatedBefore,
+  markHasAuthenticatedBefore,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -130,5 +132,20 @@ describe("client-storage selected model", () => {
       expect(window.localStorage.getItem(LEGACY_ASK_KEY)).toBeNull();
       expect(window.localStorage.getItem(LEGACY_AGENT_KEY)).toBeNull();
     });
+  });
+});
+
+describe("client-storage auth marker", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("returns false before the browser has authenticated", () => {
+    expect(hasAuthenticatedBefore()).toBe(false);
+  });
+
+  it("persists that this browser has authenticated before", () => {
+    markHasAuthenticatedBefore();
+    expect(hasAuthenticatedBefore()).toBe(true);
   });
 });

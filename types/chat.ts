@@ -306,6 +306,7 @@ export const messageMetadataSchema = z.object({
   feedbackType: z.enum(["positive", "negative"]).optional(),
   isAutoContinue: z.boolean().optional(),
   mode: z.enum(["agent", "ask"]).optional(),
+  createdAt: z.number().optional(),
   generationStartedAt: z.number().optional(),
   generationTimeMs: z.number().optional(),
 });
@@ -313,6 +314,7 @@ export const messageMetadataSchema = z.object({
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
+  createdAt?: number;
   fileDetails?: FileDetails[];
   sourceMessageId?: string;
 };
@@ -344,11 +346,7 @@ export interface ExtraUsageConfig {
 export interface QueuedMessage {
   id: string;
   text: string;
-  files?: Array<{
-    file: File;
-    fileId: Id<"files">;
-    url: string;
-  }>;
+  files?: import("@/types/file").FileMessagePart[];
   timestamp: number;
 }
 

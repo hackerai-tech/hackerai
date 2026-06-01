@@ -29,8 +29,6 @@ type Pool = {
   autoReloadAmountDollars?: number;
   monthlyCapDollars?: number;
   monthlySpentDollars: number;
-  trustCapDollars: number | null;
-  trustReason: string;
   autoReloadDisabledReason?: string;
 };
 
@@ -229,18 +227,7 @@ export const TeamExtraUsageSection = () => {
   }
 
   const monthlyCapDollars = pool.monthlyCapDollars;
-  const trustCapDollars = pool.trustCapDollars;
-  const trustReason = pool.trustReason;
-
-  const effectiveCapDollars =
-    monthlyCapDollars != null && trustCapDollars != null
-      ? Math.min(monthlyCapDollars, trustCapDollars)
-      : (monthlyCapDollars ?? trustCapDollars);
-
-  const isTrustCapActive =
-    trustCapDollars != null &&
-    trustReason !== "trusted" &&
-    (monthlyCapDollars == null || trustCapDollars <= monthlyCapDollars);
+  const effectiveCapDollars = monthlyCapDollars;
 
   return (
     <>
@@ -311,19 +298,6 @@ export const TeamExtraUsageSection = () => {
                     </p>
                   </div>
                 </div>
-                {isTrustCapActive && (
-                  <p className="text-xs text-muted-foreground">
-                    Your team&apos;s extra usage limit is ${trustCapDollars}
-                    /month while your account builds payment history.{" "}
-                    <a
-                      href="mailto:support@hackerai.co"
-                      className="underline underline-offset-[3px] hover:text-foreground"
-                    >
-                      Contact us
-                    </a>{" "}
-                    for a higher limit.
-                  </p>
-                )}
               </div>
             )}
 

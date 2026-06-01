@@ -48,6 +48,8 @@ type DateCategory =
   | "Previous 30 Days"
   | "Older";
 
+const MIN_SEARCH_QUERY_LENGTH = 3;
+
 export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   isOpen,
   onClose,
@@ -62,6 +64,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const shouldFetchChats = isOpen && !searchQuery.trim();
   const chatsQuery = useChats(shouldFetchChats);
   const chats = chatsQuery.results ?? [];
+  const trimmedDebouncedQuery = debouncedQuery.trim();
+  const isSearchReady = trimmedDebouncedQuery.length >= MIN_SEARCH_QUERY_LENGTH;
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
@@ -72,9 +76,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Use Convex usePaginatedQuery for search
   const searchResults = usePaginatedQuery(
     api.messages.searchMessages,
-    debouncedQuery.trim() && user
-      ? { searchQuery: debouncedQuery.trim() }
-      : "skip",
+    isSearchReady && user ? { searchQuery: trimmedDebouncedQuery } : "skip",
     { initialNumItems: 20 },
   );
 
@@ -104,6 +106,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
   // Handle search results updates
   useEffect(() => {
+    if (!isSearchReady) {
+      setIsSearching(false);
+      setAllResults([]);
+      return;
+    }
+
     if (searchResults.status === "LoadingFirstPage") {
       setIsSearching(true);
 
@@ -120,16 +128,16 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         setAllResults(searchResults.results);
       }
     }
-  }, [searchResults.status, searchResults.results]);
+  }, [isSearchReady, searchResults.status, searchResults.results]);
 
   // Reset results when query changes
   useEffect(() => {
-    if (!debouncedQuery.trim()) {
+    if (!isSearchReady) {
       setAllResults([]);
 
       setIsSearching(false);
     }
-  }, [debouncedQuery]);
+  }, [isSearchReady]);
 
   // Set up Intersection Observer for infinite scrolling of search results
   useEffect(() => {
@@ -141,7 +149,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     // Only set up observer if we have results and can load more
     if (
       searchResults.status === "CanLoadMore" &&
-      debouncedQuery.trim() &&
+      isSearchReady &&
       allResults.length > 0
     ) {
       const options = {
@@ -155,7 +163,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         if (
           entry.isIntersecting &&
           searchResults.status === "CanLoadMore" &&
-          debouncedQuery.trim() &&
+          isSearchReady &&
           !searchResults.isLoading
         ) {
           searchResults.loadMore(10);
@@ -176,7 +184,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     searchResults.status,
-    debouncedQuery,
+    isSearchReady,
     searchResults.loadMore,
     searchResults.isLoading,
     allResults.length,
@@ -344,7 +352,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
         <div className="flex-1 overflow-hidden">
           <div className="h-full overflow-y-auto">
-            {!debouncedQuery.trim() ? (
+            {!trimmedDebouncedQuery ? (
               chats.length === 0 ? (
                 <div className="flex items-center justify-center py-12 text-muted-foreground">
                   <div className="text-center">
@@ -421,6 +429,16 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   )}
                 </div>
               )
+            ) : !isSearchReady ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <div className="text-center">
+                  <Search size={48} className="mx-auto mb-4 opacity-50" />
+                  <p className="text-sm">Keep typing</p>
+                  <p className="text-xs mt-2">
+                    Search starts at {MIN_SEARCH_QUERY_LENGTH} characters
+                  </p>
+                </div>
+              </div>
             ) : isSearching ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="animate-spin mr-2" size={20} />
@@ -452,7 +470,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                             message.chat_title || "Untitled Chat",
                             message.match_type === "title" ||
                               message.match_type === "both"
-                              ? debouncedQuery
+                              ? trimmedDebouncedQuery
                               : "",
                           )}
                         </span>
@@ -471,7 +489,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                         <div className="text-sm line-clamp-3 text-foreground/80 leading-relaxed ml-7">
                           {highlightSearchTerm(
                             truncateContent(message.content),
-                            debouncedQuery,
+                            trimmedDebouncedQuery,
                           )}
                         </div>
                       )}
@@ -480,7 +498,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
                 {/* Loader element for intersection observer - only show if we have results and can load more */}
                 {searchResults.status === "CanLoadMore" &&
-                  debouncedQuery.trim() &&
+                  isSearchReady &&
                   allResults.length > 0 &&
                   !searchResults.isLoading && (
                     <div

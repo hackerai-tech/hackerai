@@ -15,10 +15,20 @@ import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
 import { coerceSelectedModel } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
+import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import {
+  getUploadBasePath,
+  hasLocalDesktopSourcePaths,
+  prepareLocalDesktopAttachmentsForTrigger,
+  rewriteSandboxFilePathsInMessages,
+  stripLocalDesktopSourcePaths,
+  uploadSandboxFiles,
+} from "@/lib/utils/sandbox-file-utils";
 
 export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
+  const routeStartedAt = Date.now();
   try {
     const {
       messages,
@@ -54,6 +64,30 @@ export async function POST(req: NextRequest) {
       rawSelectedModel,
     });
 
+    const requestMessages = Array.isArray(messages) ? messages : [];
+    if (!regenerate && !isAutoContinue && requestMessages.length === 0) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "agent_long_empty_message_payload_rejected",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          chat_id: chatId,
+          user_id: userId,
+          temporary: !!temporary,
+          subscription,
+        }),
+      );
+      throw new ChatSDKError(
+        "bad_request:api",
+        "No message content was found for this request. Please send a new message and try again.",
+        {
+          empty_prompt: true,
+          new_messages_count: 0,
+        },
+      );
+    }
+
     // Fetch existing chat to: (a) detect isNewChat for title generation,
     // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
     //     regenerate/auto-continue and does the ownership check instead.
@@ -61,11 +95,65 @@ export async function POST(req: NextRequest) {
     const isNewChat =
       !temporary && !existingChat && !regenerate && !isAutoContinue;
 
+    let messagesForPersistence = stripLocalDesktopSourcePaths(requestMessages);
+    let messagesForTrigger = messagesForPersistence;
+    let localDesktopAttachmentsPrepared = false;
+
+    if (hasLocalDesktopSourcePaths(requestMessages)) {
+      if (sandboxPreference !== "desktop") {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Desktop-local attachments can only be used with the desktop sandbox.",
+        );
+      }
+
+      let { messages: preparedMessages, sandboxFiles } =
+        prepareLocalDesktopAttachmentsForTrigger(
+          requestMessages,
+          getUploadBasePath("desktop"),
+        );
+      if (sandboxFiles.length > 0) {
+        const sandboxManager = new HybridSandboxManager(
+          userId,
+          () => {},
+          "desktop",
+          process.env.CONVEX_SERVICE_ROLE_KEY!,
+          null,
+          subscription,
+        );
+        let stagedSandbox: any = null;
+        let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
+        try {
+          uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
+            const { sandbox } = await sandboxManager.getSandbox();
+            stagedSandbox = sandbox;
+            return sandbox;
+          });
+        } finally {
+          await stagedSandbox?.close?.().catch(() => {});
+        }
+        if (uploadResult.failedCount > 0) {
+          const noun =
+            uploadResult.failedCount === 1 ? "attachment" : "attachments";
+          throw new ChatSDKError(
+            "bad_request:api",
+            `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+          );
+        }
+        preparedMessages = rewriteSandboxFilePathsInMessages(
+          preparedMessages,
+          uploadResult.pathRewrites,
+        );
+      }
+      messagesForTrigger = preparedMessages;
+      localDesktopAttachmentsPrepared = true;
+    }
+
     if (!temporary) {
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
-        messages,
+        messages: messagesForPersistence,
         regenerate,
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
@@ -75,6 +163,14 @@ export async function POST(req: NextRequest) {
     const triggerTags = [`user_${userId}`, `chat_${chatId}`];
     if (subscription !== "free") triggerTags.push(`sub_${subscription}`);
 
+    // Persisted chats are rehydrated from Convex inside the task after the
+    // route saves the latest user message. Avoid sending the same history
+    // through Trigger unless the task cannot rehydrate it, or the route has
+    // prepared desktop-local attachment tags that only exist in this payload.
+    const messagesForPayload =
+      temporary || localDesktopAttachmentsPrepared ? messagesForTrigger : [];
+
+    const triggerRequestedAt = Date.now();
     const handle = await tasks.trigger<typeof agentLongTask>(
       "agent-long",
       {
@@ -82,7 +178,8 @@ export async function POST(req: NextRequest) {
         userId,
         subscription,
         organizationId,
-        messages,
+        messages: messagesForPayload,
+        localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
         sandboxPreference,
         selectedModel: selectedModelOverride,
@@ -92,6 +189,10 @@ export async function POST(req: NextRequest) {
         regenerate,
         isNewChat,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+        requestTiming: {
+          routeStartedAt,
+          triggerRequestedAt,
+        },
       },
       {
         tags: triggerTags,
@@ -101,20 +202,39 @@ export async function POST(req: NextRequest) {
           userId,
           subscription,
           loginRequired: false,
+          routeStartedAt,
+          triggerRequestedAt,
+          triggerPayloadMessageCount: messagesForPayload.length,
         },
       },
     );
 
-    if (!temporary) {
-      await setActiveTriggerRun({ chatId, triggerRunId: handle.id });
-    }
+    const triggerCompletedAt = Date.now();
 
     // Public access token scoped to this run only — the client uses it to
     // subscribe to the realtime stream without ever seeing TRIGGER_SECRET_KEY.
-    const publicAccessToken = await auth.createPublicToken({
-      scopes: { read: { runs: [handle.id] } },
-      // 6h is enough to cover the 1h max task duration plus reconnect grace.
-      expirationTime: "6h",
+    // Updating Convex with the active run id is independent, so overlap both
+    // network calls before returning the handle to the browser.
+    const [publicAccessToken] = await Promise.all([
+      auth.createPublicToken({
+        scopes: { read: { runs: [handle.id] } },
+        // 6h is enough to cover the 1h max task duration plus reconnect grace.
+        expirationTime: "6h",
+      }),
+      temporary
+        ? Promise.resolve(null)
+        : setActiveTriggerRun({ chatId, triggerRunId: handle.id }),
+    ]);
+
+    console.info("[/api/agent-long] started trigger run", {
+      chatId,
+      runId: handle.id,
+      routeDurationMs: Date.now() - routeStartedAt,
+      triggerDurationMs: triggerCompletedAt - triggerRequestedAt,
+      triggerPayloadMessageCount: messagesForPayload.length,
+      persistedMessageCount: messagesForPersistence.length,
+      temporary: !!temporary,
+      localDesktopAttachmentsPrepared,
     });
 
     return NextResponse.json({

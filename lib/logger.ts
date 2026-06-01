@@ -21,7 +21,7 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler";
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent-long";
   version: string;
   region?: string;
 
@@ -164,7 +164,9 @@ export interface ChatWideEvent {
     type: string;
     code?: string;
     message: string;
+    cause?: string;
     retriable: boolean;
+    metadata?: Record<string, unknown>;
   };
 
   // True when the provider stream errored (e.g., AI_RetryError) but the
@@ -172,6 +174,7 @@ export interface ChatWideEvent {
   // one where the model leg died and we recovered (fallback, partial output).
   had_provider_error?: boolean;
   provider_error?: {
+    category?: string;
     status_code?: number;
     url?: string;
     reason?: string;
@@ -201,7 +204,7 @@ export class WideEventBuilder {
   constructor(
     requestId: string,
     chatId: string,
-    endpoint: "/api/chat" | "/api/agent",
+    endpoint: "/api/chat" | "/api/agent-long",
   ) {
     this.event = {
       timestamp: new Date().toISOString(),
@@ -532,6 +535,7 @@ export class WideEventBuilder {
    * outcome — call setSuccess/setError separately based on overall result.
    */
   markProviderError(details: {
+    category?: string;
     statusCode?: number;
     url?: string;
     reason?: string;
@@ -541,6 +545,7 @@ export class WideEventBuilder {
   }): this {
     this.event.had_provider_error = true;
     this.event.provider_error = {
+      category: details.category,
       status_code: details.statusCode,
       url: details.url,
       reason: details.reason,
@@ -558,8 +563,10 @@ export class WideEventBuilder {
     type: string;
     code?: string;
     message: string;
+    cause?: string;
     statusCode: number;
     retriable?: boolean;
+    metadata?: Record<string, unknown>;
   }): this {
     this.event.outcome = "error";
     this.event.status_code = error.statusCode;
@@ -567,7 +574,9 @@ export class WideEventBuilder {
       type: error.type,
       code: error.code,
       message: error.message,
+      cause: error.cause,
       retriable: error.retriable ?? false,
+      metadata: error.metadata,
     };
     return this;
   }
@@ -680,7 +689,7 @@ export const logger = {
  */
 export function createWideEventBuilder(
   chatId: string,
-  endpoint: "/api/chat" | "/api/agent",
+  endpoint: "/api/chat" | "/api/agent-long",
 ): WideEventBuilder {
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return new WideEventBuilder(requestId, chatId, endpoint);

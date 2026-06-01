@@ -1,20 +1,42 @@
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
-import { NextRequest, NextResponse } from "next/server";
+import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
+import { phLogger } from "@/lib/posthog/server";
+
+function planLookupKeyToTier(
+  lookupKey: string,
+): "pro" | "pro-plus" | "ultra" | "team" | null {
+  if (lookupKey.startsWith("ultra")) return "ultra";
+  if (lookupKey.startsWith("pro-plus")) return "pro-plus";
+  if (lookupKey.startsWith("team")) return "team";
+  if (lookupKey.startsWith("pro")) return "pro";
+  return null;
+}
+
+function canManageOrganizationBilling(
+  membership: Awaited<
+    ReturnType<typeof workos.userManagement.listOrganizationMemberships>
+  >["data"][number],
+) {
+  return membership.role?.slug === "admin" || membership.role?.slug === "owner";
+}
 
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
     const requestedQuantity: number | undefined = body?.quantity;
+    const posthogDistinctId = req.headers.get("x-posthog-distinct-id");
+    const posthogSessionId = req.headers.get("x-posthog-session-id");
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
-    // Get user details from WorkOS to use email as organization name
+    // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
-    const orgName = user.email;
+    const orgName = buildWorkOSOrganizationName(user);
     const allowedPlans = new Set([
       "pro-monthly-plan",
       "pro-plus-monthly-plan",
@@ -46,6 +68,7 @@ export const POST = async (req: NextRequest) => {
     const existingMemberships =
       await workos.userManagement.listOrganizationMemberships({
         userId,
+        statuses: ["active"],
       });
 
     let organization;
@@ -53,6 +76,13 @@ export const POST = async (req: NextRequest) => {
     if (existingMemberships.data && existingMemberships.data.length > 0) {
       // User already has an organization, use the first one
       const membership = existingMemberships.data[0];
+      if (!canManageOrganizationBilling(membership)) {
+        return NextResponse.json(
+          { error: "Only organization admins or owners can manage billing" },
+          { status: 403 },
+        );
+      }
+
       organization = await workos.organizations.getOrganization(
         membership.organizationId,
       );
@@ -104,32 +134,49 @@ export const POST = async (req: NextRequest) => {
 
     // Check if organization already has a Stripe customer
     let customer;
+    let shouldAttachCustomerToOrganization = false;
 
-    // Try to find existing customer by email and organization metadata
-    const existingCustomers = await stripe.customers.list({
-      email: user.email,
-      limit: 10, // Get more to check metadata
-    });
+    if (organization.stripeCustomerId) {
+      const existingCustomer = await stripe.customers.retrieve(
+        organization.stripeCustomerId,
+      );
 
-    // Look for a customer with matching organization ID in metadata
-    const matchingCustomer = existingCustomers.data.find(
-      (c) => c.metadata.workOSOrganizationId === organization.id,
-    );
+      if ("deleted" in existingCustomer && existingCustomer.deleted) {
+        return NextResponse.json(
+          { error: "Billing account is no longer available" },
+          { status: 409 },
+        );
+      }
 
-    if (matchingCustomer) {
+      customer = existingCustomer;
+    } else {
+      // Try to find existing customer by email and organization metadata
+      const existingCustomers = await stripe.customers.list({
+        email: user.email,
+        limit: 10, // Get more to check metadata
+      });
+
+      // Look for a customer with matching organization ID in metadata
+      const matchingCustomer = existingCustomers.data.find(
+        (c) => c.metadata.workOSOrganizationId === organization.id,
+      );
+
+      if (matchingCustomer) {
+        customer = matchingCustomer;
+        shouldAttachCustomerToOrganization = true;
+      }
+    }
+
+    if (customer) {
       // Reject blocked customers (flagged by fraud webhook)
-      if (matchingCustomer.metadata.blocked === "true") {
+      if (customer.metadata.blocked === "true") {
         return NextResponse.json(
           {
-            error: getSuspensionMessage(
-              matchingCustomer.metadata.blocked_reason,
-            ),
+            error: getSuspensionMessage(customer.metadata.blocked_reason),
           },
           { status: 403 },
         );
       }
-
-      customer = matchingCustomer;
     }
 
     if (!customer) {
@@ -141,6 +188,10 @@ export const POST = async (req: NextRequest) => {
         },
       });
 
+      shouldAttachCustomerToOrganization = true;
+    }
+
+    if (shouldAttachCustomerToOrganization) {
       // Update WorkOS organization with Stripe customer ID
       // This will allow WorkOS to automatically add entitlements to the access token
       await workos.organizations.updateOrganization({
@@ -184,6 +235,18 @@ export const POST = async (req: NextRequest) => {
       mode: "subscription",
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
+      metadata: {
+        userId,
+        workOSOrganizationId: organization.id,
+        requestedPlan: subscriptionLevel,
+      },
+      subscription_data: {
+        metadata: {
+          userId,
+          workOSOrganizationId: organization.id,
+          requestedPlan: subscriptionLevel,
+        },
+      },
       custom_text: {
         submit: {
           message:
@@ -191,6 +254,32 @@ export const POST = async (req: NextRequest) => {
         },
       },
     });
+
+    const selectedPrice = price.data[0];
+    phLogger.event("checkout_started", {
+      userId,
+      org_id: organization.id,
+      from_tier: "free",
+      to_tier: planLookupKeyToTier(subscriptionLevel),
+      plan: subscriptionLevel,
+      billing_interval: selectedPrice.recurring?.interval,
+      billing_interval_count: selectedPrice.recurring?.interval_count,
+      quantity,
+      checkout_amount_dollars:
+        selectedPrice.unit_amount != null
+          ? (selectedPrice.unit_amount * quantity) / 100
+          : undefined,
+      currency: selectedPrice.currency,
+      stripe_customer_id: customer.id,
+      stripe_checkout_session_id: session.id,
+      stripe_price_id: selectedPrice.id,
+      client_distinct_id: posthogDistinctId ?? undefined,
+      $session_id: posthogSessionId ?? undefined,
+      $set: {
+        last_checkout_started_at: new Date().toISOString(),
+      },
+    });
+    after(() => phLogger.flush());
 
     return NextResponse.json({ url: session.url });
   } catch (error: unknown) {

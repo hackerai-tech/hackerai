@@ -18,7 +18,7 @@
 
 import { Centrifuge, type Subscription } from "centrifuge";
 
-import { sandboxChannel } from "@/lib/centrifugo/types";
+import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import type { PtyHandle, CreatePtyOptions } from "./e2b-pty-adapter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
 import { createResolvableExited } from "./pty-exited-promise";
@@ -40,14 +40,14 @@ interface PtyCreatePayload {
   rows: number;
   cwd?: string;
   env?: Record<string, string>;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyInputPayload {
   type: "pty_input";
   sessionId: string;
   data: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyResizePayload {
@@ -55,13 +55,13 @@ interface PtyResizePayload {
   sessionId: string;
   cols: number;
   rows: number;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 interface PtyKillPayload {
   type: "pty_kill";
   sessionId: string;
-  targetConnectionId?: string;
+  targetConnectionId: string;
 }
 
 type PtyOutgoingPayload =
@@ -147,7 +147,7 @@ function parsePtyMessage(data: unknown): PtyIncomingMsg | null {
 /**
  * Create a PtyHandle that tunnels through Centrifugo to a local runner.
  *
- * Uses the same `sandbox:user#{userId}` channel as one-shot commands.
+ * Uses the same per-connection channel as one-shot commands.
  * Filters incoming publications by `sessionId`.
  */
 export async function createCentrifugoPtyHandle(
@@ -157,7 +157,7 @@ export async function createCentrifugoPtyHandle(
   const sessionId = crypto.randomUUID();
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
-  const channel = sandboxChannel(userId);
+  const channel = sandboxConnectionChannel(userId, connectionId);
 
   // Long-lived token: PTY sessions can last minutes.
   const tokenExpSeconds = 600;

@@ -68,6 +68,35 @@ describe("createDesktopTransferToken", () => {
     );
   });
 
+  it("stores the optional return path with the transfer token", async () => {
+    await createDesktopTransferToken("sealed-session-data", {
+      returnPath: "/#pricing",
+    });
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.stringContaining("desktop-auth-transfer:"),
+      expect.objectContaining({
+        sealedSession: "sealed-session-data",
+        returnPath: "/#pricing",
+      }),
+      { ex: 300 },
+    );
+  });
+
+  it("stores the desktop auth state with the transfer token", async () => {
+    const desktopAuthState = "c".repeat(64);
+    await createDesktopTransferToken("sealed-session-data", {
+      desktopAuthState,
+    });
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.stringContaining("desktop-auth-transfer:"),
+      expect.objectContaining({
+        sealedSession: "sealed-session-data",
+        desktopAuthState,
+      }),
+      { ex: 300 },
+    );
+  });
+
   it("generates unique tokens", async () => {
     const token1 = await createDesktopTransferToken("session1");
     const token2 = await createDesktopTransferToken("session2");
@@ -82,6 +111,54 @@ describe("exchangeDesktopTransferToken", () => {
 
     const result = await exchangeDesktopTransferToken(token!);
     expect(result).toEqual({ sealedSession: "my-sealed-session" });
+  });
+
+  it("returns the preserved return path for valid token", async () => {
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      returnPath: "/#pricing",
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!);
+    expect(result).toEqual({
+      sealedSession: "my-sealed-session",
+      returnPath: "/#pricing",
+    });
+  });
+
+  it("returns sealed session when desktop auth state matches", async () => {
+    const desktopAuthState = "d".repeat(64);
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      desktopAuthState,
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!, {
+      desktopAuthState,
+    });
+    expect(result).toEqual({ sealedSession: "my-sealed-session" });
+  });
+
+  it("returns null when desktop auth state does not match", async () => {
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      desktopAuthState: "e".repeat(64),
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!, {
+      desktopAuthState: "f".repeat(64),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when a state-bound token is exchanged without desktop auth state", async () => {
+    const token = await createDesktopTransferToken("my-sealed-session", {
+      desktopAuthState: "a".repeat(64),
+    });
+    expect(token).not.toBeNull();
+
+    const result = await exchangeDesktopTransferToken(token!);
+    expect(result).toBeNull();
   });
 
   it("returns null for invalid token format", async () => {
@@ -135,10 +212,18 @@ describe("createOAuthState", () => {
   });
 
   it("stores state with metadata as JSON", async () => {
-    await createOAuthState({ devCallbackPort: 3456 });
+    await createOAuthState({
+      devCallbackPort: 3456,
+      returnPath: "/#pricing",
+      desktopAuthState: "a".repeat(64),
+    });
     expect(mockRedis.set).toHaveBeenCalledWith(
       expect.stringContaining("desktop-oauth-state:"),
-      JSON.stringify({ devCallbackPort: 3456 }),
+      JSON.stringify({
+        devCallbackPort: 3456,
+        returnPath: "/#pricing",
+        desktopAuthState: "a".repeat(64),
+      }),
       { ex: 300 },
     );
   });
@@ -154,12 +239,20 @@ describe("verifyAndConsumeOAuthState", () => {
   });
 
   it("returns valid with metadata for a stored state", async () => {
-    const state = await createOAuthState({ devCallbackPort: 9999 });
+    const state = await createOAuthState({
+      devCallbackPort: 9999,
+      returnPath: "/#pricing",
+      desktopAuthState: "b".repeat(64),
+    });
     expect(state).not.toBeNull();
 
     const result = await verifyAndConsumeOAuthState(state!);
     expect(result.valid).toBe(true);
-    expect(result.metadata).toEqual({ devCallbackPort: 9999 });
+    expect(result.metadata).toEqual({
+      devCallbackPort: 9999,
+      returnPath: "/#pricing",
+      desktopAuthState: "b".repeat(64),
+    });
   });
 
   it("returns invalid for non-existent state", async () => {

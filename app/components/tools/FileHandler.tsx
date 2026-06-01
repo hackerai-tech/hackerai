@@ -6,6 +6,7 @@ import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
 import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
@@ -46,6 +47,7 @@ function areFilePropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.errorText !== next.part.errorText) return false;
   if (prev.part.input !== next.part.input) return false;
   return true;
 }
@@ -56,6 +58,11 @@ export const FileHandler = memo(function FileHandler({
 }: FileHandlerProps) {
   const input = part.input as FileInput | undefined;
   const action = input?.action;
+  const outputErrorText =
+    typeof part.errorText === "string" ? part.errorText : undefined;
+  const isIncompleteState =
+    part.state === "input-streaming" || part.state === "input-available";
+  const isStoppedIncomplete = isIncompleteState && status !== "streaming";
 
   const getFileRange = () => {
     if (!input?.range) return "";
@@ -72,15 +79,21 @@ export const FileHandler = memo(function FileHandler({
   // failures still read clearly.
   const briefText = input?.brief?.trim() || "";
   const isOutputError =
-    part.state === "output-available" &&
-    typeof part.output === "object" &&
-    part.output !== null &&
-    "error" in part.output;
+    isStoppedIncomplete ||
+    part.state === "output-error" ||
+    (part.state === "output-available" &&
+      typeof part.output === "object" &&
+      part.output !== null &&
+      "error" in part.output);
+  const isStoppedByUser =
+    isStoppedIncomplete || isUserStoppedToolError(outputErrorText);
   const useBriefOnly = !!briefText && !isOutputError;
   const briefLabel = (fallback: string) =>
     useBriefOnly ? briefText : fallback;
   const briefTarget = (fallback: string | undefined) =>
     useBriefOnly ? undefined : fallback;
+  const errorLabel = (failed: string, stopped: string) =>
+    isStoppedByUser ? stopped : failed;
 
   // Compute sidebar content based on action and state
   const sidebarContent = useMemo((): SidebarFile | null => {
@@ -107,17 +120,18 @@ export const FileHandler = memo(function FileHandler({
         content: input.text || "",
         action: action === "append" ? "appending" : "creating",
         toolCallId,
-        isExecuting: true,
+        isExecuting: status === "streaming",
       };
     }
 
     // Output available — build content from result
-    if (part.state === "output-available") {
+    if (part.state === "output-available" || part.state === "output-error") {
       const output = part.output;
       const isError =
-        typeof output === "object" && output !== null && "error" in output;
+        part.state === "output-error" ||
+        (typeof output === "object" && output !== null && "error" in output);
       const errorMessage = isError
-        ? (output as { error: string }).error
+        ? outputErrorText || (output as { error: string } | undefined)?.error
         : undefined;
 
       if (action === "read") {
@@ -238,7 +252,15 @@ export const FileHandler = memo(function FileHandler({
     }
 
     return null;
-  }, [action, part.state, part.output, input, part.toolCallId]);
+  }, [
+    action,
+    part.state,
+    part.output,
+    input,
+    part.toolCallId,
+    outputErrorText,
+    status,
+  ]);
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId: part.toolCallId,
@@ -299,6 +321,16 @@ export const FileHandler = memo(function FileHandler({
 
     switch (state) {
       case "input-streaming":
+        if (isStoppedIncomplete && input?.path) {
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FileText />}
+              action="Stopped reading"
+              target={`${input.path}${getFileRange()}`}
+            />
+          );
+        }
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
@@ -308,6 +340,16 @@ export const FileHandler = memo(function FileHandler({
           />
         ) : null;
       case "input-available":
+        if (isStoppedIncomplete && input?.path) {
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FileText />}
+              action="Stopped reading"
+              target={`${input.path}${getFileRange()}`}
+            />
+          );
+        }
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
@@ -319,14 +361,19 @@ export const FileHandler = memo(function FileHandler({
             isShimmer={true}
           />
         ) : null;
-      case "output-available": {
+      case "output-available":
+      case "output-error": {
         if (!input) return null;
 
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FileText />}
-            action={briefLabel(isOutputError ? `Failed to read` : "Read")}
+            action={briefLabel(
+              isOutputError
+                ? errorLabel("Failed to read", "Stopped reading")
+                : "Read",
+            )}
             target={briefTarget(`${input.path}${getFileRange()}`)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}
@@ -347,7 +394,20 @@ export const FileHandler = memo(function FileHandler({
         const hasContent = !!input?.text;
         const hasFilePath = !!input?.path;
 
-        if (status !== "streaming") return null;
+        if (status !== "streaming") {
+          if (!hasFilePath) return null;
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePlus />}
+              action="Stopped writing"
+              target={input.path}
+              isClickable={isClickable}
+              onClick={isClickable ? handleOpenInSidebar : undefined}
+              onKeyDown={isClickable ? handleKeyDown : undefined}
+            />
+          );
+        }
 
         return (
           <ToolBlock
@@ -363,7 +423,20 @@ export const FileHandler = memo(function FileHandler({
         );
       }
       case "input-available":
-        if (status !== "streaming") return null;
+        if (status !== "streaming") {
+          if (!input?.path) return null;
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePlus />}
+              action="Stopped writing"
+              target={input.path}
+              isClickable={isClickable}
+              onClick={isClickable ? handleOpenInSidebar : undefined}
+              onKeyDown={isClickable ? handleKeyDown : undefined}
+            />
+          );
+        }
         return (
           <ToolBlock
             key={toolCallId}
@@ -376,7 +449,8 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
-      case "output-available": {
+      case "output-available":
+      case "output-error": {
         if (!input) return null;
 
         return (
@@ -384,7 +458,9 @@ export const FileHandler = memo(function FileHandler({
             key={toolCallId}
             icon={<FilePlus />}
             action={briefLabel(
-              isOutputError ? "Failed to write" : "Successfully wrote",
+              isOutputError
+                ? errorLabel("Failed to write", "Stopped writing")
+                : "Successfully wrote",
             )}
             target={briefTarget(input.path)}
             isClickable={isClickable}
@@ -406,7 +482,20 @@ export const FileHandler = memo(function FileHandler({
         const hasContent = !!input?.text;
         const hasFilePath = !!input?.path;
 
-        if (status !== "streaming") return null;
+        if (status !== "streaming") {
+          if (!hasFilePath) return null;
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FileOutput />}
+              action="Stopped appending to"
+              target={input.path}
+              isClickable={isClickable}
+              onClick={isClickable ? handleOpenInSidebar : undefined}
+              onKeyDown={isClickable ? handleKeyDown : undefined}
+            />
+          );
+        }
 
         return (
           <ToolBlock
@@ -422,7 +511,20 @@ export const FileHandler = memo(function FileHandler({
         );
       }
       case "input-available":
-        if (status !== "streaming") return null;
+        if (status !== "streaming") {
+          if (!input?.path) return null;
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FileOutput />}
+              action="Stopped appending to"
+              target={input.path}
+              isClickable={isClickable}
+              onClick={isClickable ? handleOpenInSidebar : undefined}
+              onKeyDown={isClickable ? handleKeyDown : undefined}
+            />
+          );
+        }
         return (
           <ToolBlock
             key={toolCallId}
@@ -435,7 +537,8 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
-      case "output-available": {
+      case "output-available":
+      case "output-error": {
         if (!input) return null;
 
         return (
@@ -444,7 +547,7 @@ export const FileHandler = memo(function FileHandler({
             icon={<FileOutput />}
             action={briefLabel(
               isOutputError
-                ? "Failed to append to"
+                ? errorLabel("Failed to append to", "Stopped appending to")
                 : "Successfully appended to",
             )}
             target={briefTarget(input.path)}
@@ -464,6 +567,16 @@ export const FileHandler = memo(function FileHandler({
 
     switch (state) {
       case "input-streaming":
+        if (isStoppedIncomplete && input?.path) {
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePen />}
+              action="Stopped editing"
+              target={input.path}
+            />
+          );
+        }
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
@@ -473,6 +586,16 @@ export const FileHandler = memo(function FileHandler({
           />
         ) : null;
       case "input-available":
+        if (isStoppedIncomplete && input?.path) {
+          return (
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePen />}
+              action="Stopped editing"
+              target={input.path}
+            />
+          );
+        }
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
@@ -486,14 +609,19 @@ export const FileHandler = memo(function FileHandler({
             isShimmer={true}
           />
         ) : null;
-      case "output-available": {
+      case "output-available":
+      case "output-error": {
         if (!input) return null;
 
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={briefLabel(isOutputError ? "Failed to edit" : "Edited")}
+            action={briefLabel(
+              isOutputError
+                ? errorLabel("Failed to edit", "Stopped editing")
+                : "Edited",
+            )}
             target={briefTarget(input.path)}
             isClickable={isClickable}
             onClick={handleOpenInSidebar}

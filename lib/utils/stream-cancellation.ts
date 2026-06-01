@@ -20,7 +20,7 @@ type PollOptions = {
   pollIntervalMs?: number;
 };
 
-type ApiEndpoint = "/api/chat" | "/api/agent" | "/api/chat/[id]/stream";
+type ApiEndpoint = "/api/chat" | "/api/chat/[id]/stream";
 
 type PreemptiveTimeoutOptions = {
   chatId: string;
@@ -217,7 +217,7 @@ export const createPreemptiveTimeout = ({
   safetyBuffer = 30,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
-  const maxDuration = endpoint === "/api/chat" ? 180 : 800;
+  const maxDuration = endpoint === "/api/chat" ? 420 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
   const startTime = Date.now();
 

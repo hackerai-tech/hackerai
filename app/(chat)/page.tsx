@@ -16,6 +16,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
 import { useTypingAnimation } from "../hooks/useTypingAnimation";
+import { upsertDraft } from "@/lib/utils/client-storage";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
@@ -27,11 +28,16 @@ const LOGIN_TYPING_TAILS = [
   "hunt for bugs in...",
 ];
 
-// Simple unauthenticated content that redirects to login on message send
+// Simple unauthenticated content that redirects to signup on message send
 const UnauthenticatedContent = () => {
+  const { input } = useGlobalState();
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    navigateToAuth("/login");
+    if (input.trim()) {
+      upsertDraft("new", input);
+    }
+    navigateToAuth("/signup", { preferSignInForReturningUser: true });
   };
 
   const animatedTail = useTypingAnimation({
@@ -50,7 +56,9 @@ const UnauthenticatedContent = () => {
         window.location.hash === "#pricing" ||
         window.location.hash === "#team-pricing-seat-selection"
       ) {
-        navigateToAuth("/login");
+        navigateToAuth("/signup?intent=pricing", {
+          preferSignInForReturningUser: true,
+        });
       }
     };
     checkHash();

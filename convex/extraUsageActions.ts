@@ -18,7 +18,7 @@ function getStripe(): Stripe {
   if (!stripeInstance) {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key) throw new Error("STRIPE_SECRET_KEY not configured");
-    stripeInstance = new Stripe(key, { apiVersion: "2026-04-22.dahlia" });
+    stripeInstance = new Stripe(key, { apiVersion: "2026-05-27.dahlia" });
   }
   return stripeInstance;
 }
@@ -38,19 +38,44 @@ function getWorkOS(): WorkOS {
 // Helper Functions
 // =============================================================================
 
+type BillingMembership = {
+  organizationId: string;
+  status?: string;
+  role?: { slug?: string } | null;
+  roles?: Array<{ slug?: string } | null> | null;
+};
+
+function canManageOrganizationBilling(membership: BillingMembership): boolean {
+  const status = membership.status;
+  const roleSlug = membership.role?.slug;
+  const roles = membership.roles;
+  const hasBillingRole =
+    roleSlug === "admin" ||
+    roleSlug === "owner" ||
+    roles?.some((role) => role?.slug === "admin" || role?.slug === "owner");
+
+  return (status === undefined || status === "active") && !!hasBillingRole;
+}
+
 async function getStripeCustomerId(userId: string): Promise<string | null> {
   const workos = getWorkOS();
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    statuses: ["active"],
   });
 
   if (!memberships.data || memberships.data.length === 0) {
     return null;
   }
 
+  const billingMembership = memberships.data.find(canManageOrganizationBilling);
+  if (!billingMembership) {
+    return null;
+  }
+
   const organization = await workos.organizations.getOrganization(
-    memberships.data[0].organizationId,
+    billingMembership.organizationId,
   );
 
   return organization.stripeCustomerId || null;
@@ -469,8 +494,6 @@ export const deductWithAutoReload = action({
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
     monthlyCapExceeded: v.boolean(),
-    trustCapExceeded: v.optional(v.boolean()),
-    trustCapDollars: v.optional(v.union(v.null(), v.number())),
     autoReloadTriggered: v.boolean(),
     autoReloadResult: v.optional(
       v.object({
@@ -592,6 +615,10 @@ export const deductWithAutoReload = action({
                     serviceKey: args.serviceKey,
                     userId: args.userId,
                     amountDollars: amountToCharge,
+                    idempotencyKey: paymentResult.paymentIntentId,
+                    revenueSource: "extra_usage_auto_reload",
+                    stripeCustomerId,
+                    stripePaymentIntentId: paymentResult.paymentIntentId,
                   });
                   autoReloadResult = {
                     success: true,
@@ -650,8 +677,6 @@ export const deductWithAutoReload = action({
       newBalanceDollars: number;
       insufficientFunds: boolean;
       monthlyCapExceeded: boolean;
-      trustCapExceeded?: boolean;
-      trustCapDollars?: number | null;
     } = await ctx.runMutation(api.extraUsage.deductPoints, {
       serviceKey: args.serviceKey,
       userId: args.userId,
@@ -676,8 +701,6 @@ export const deductWithAutoReload = action({
       newBalanceDollars: deductResult.newBalanceDollars,
       insufficientFunds: deductResult.insufficientFunds,
       monthlyCapExceeded: deductResult.monthlyCapExceeded,
-      trustCapExceeded: deductResult.trustCapExceeded,
-      trustCapDollars: deductResult.trustCapDollars,
       autoReloadTriggered,
       autoReloadResult,
     };

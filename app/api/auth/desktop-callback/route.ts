@@ -6,6 +6,17 @@ import {
 } from "@/lib/desktop-auth";
 import { workos } from "@/app/api/workos";
 
+const DESKTOP_AUTH_STATE_REGEX = /^[a-f0-9]{64}$/;
+
+type DesktopAuthSession = {
+  accessToken: string;
+  refreshToken: string;
+  user: unknown;
+  impersonator?: unknown;
+  authenticationMethod?: unknown;
+  sealedSession?: string;
+};
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -60,6 +71,20 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  if (
+    !stateMetadata?.desktopAuthState ||
+    !DESKTOP_AUTH_STATE_REGEX.test(stateMetadata.desktopAuthState)
+  ) {
+    console.warn("[Desktop Auth] Missing desktop auth state metadata");
+    return new Response(
+      renderErrorPage("Invalid authentication request. Please try again."),
+      {
+        status: 400,
+        headers: noStoreHeaders,
+      },
+    );
+  }
+
   const clientId = process.env.WORKOS_CLIENT_ID;
   const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
 
@@ -81,18 +106,60 @@ export async function GET(request: NextRequest) {
         clientId,
       });
 
-    const session = {
+    let session: DesktopAuthSession = {
       accessToken,
       refreshToken,
       user,
       impersonator,
     };
 
-    const sealedSession = await sealData(session, {
-      password: cookiePassword,
-    });
+    let organizationId: string | undefined;
+    try {
+      const memberships =
+        await workos.userManagement.listOrganizationMemberships({
+          userId: user.id,
+          statuses: ["active"],
+        });
+      organizationId = memberships.data?.[0]?.organizationId;
+    } catch (err) {
+      console.error(
+        "[Desktop Auth] Failed to fetch organization memberships:",
+        err,
+      );
+    }
 
-    const transferToken = await createDesktopTransferToken(sealedSession);
+    if (organizationId) {
+      session = await workos.userManagement.authenticateWithRefreshToken({
+        clientId,
+        refreshToken,
+        organizationId,
+        session: {
+          sealSession: true,
+          cookiePassword,
+        },
+      });
+    }
+
+    const sealedSession =
+      session.sealedSession ??
+      (await sealData(
+        {
+          accessToken: session.accessToken,
+          refreshToken: session.refreshToken,
+          user: session.user,
+          impersonator: session.impersonator,
+          authenticationMethod: session.authenticationMethod,
+        },
+        {
+          password: cookiePassword,
+          ttl: 0,
+        },
+      ));
+
+    const transferToken = await createDesktopTransferToken(sealedSession, {
+      returnPath: stateMetadata?.returnPath,
+      desktopAuthState: stateMetadata.desktopAuthState,
+    });
 
     if (!transferToken) {
       return new Response(
@@ -108,14 +175,14 @@ export async function GET(request: NextRequest) {
 
     // In dev mode, redirect to local HTTP server instead of deep link
     if (stateMetadata?.devCallbackPort) {
-      const devCallbackUrl = `http://localhost:${stateMetadata.devCallbackPort}/auth-callback?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
+      const devCallbackUrl = `http://localhost:${stateMetadata.devCallbackPort}/auth-callback?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}&desktop_state=${encodeURIComponent(stateMetadata.desktopAuthState)}`;
       return new Response(renderSuccessPage(devCallbackUrl), {
         status: 200,
         headers: noStoreHeaders,
       });
     }
 
-    const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
+    const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}&desktop_state=${encodeURIComponent(stateMetadata.desktopAuthState)}`;
     return new Response(renderSuccessPage(deepLinkUrl), {
       status: 200,
       headers: noStoreHeaders,

@@ -5,6 +5,8 @@ import {
   pruneModelMessages,
   filterEmptyAssistantMessages,
   repairAnthropicModelMessages,
+  compactMessageForStorage,
+  estimateSerializedSizeBytes,
 } from "../prune-tool-outputs";
 
 // Helper to create a UIMessage with tool parts
@@ -57,6 +59,27 @@ describe("pruneToolOutputs", () => {
     expect(result.prunedCount).toBe(0);
     expect(result.tokensSaved).toBe(0);
     expect(result.messages).toBe(messages); // same reference
+  });
+
+  it("counts tool outputs containing tokenizer special tokens without throwing", () => {
+    const messages: UIMessage[] = [
+      makeAssistantMessage([
+        makeToolPart(
+          "file",
+          {
+            content:
+              "Shell script contains a literal sentinel: <|im_start|>\nDone.",
+          },
+          { action: "read", path: "/tmp/script.sh" },
+        ),
+      ]),
+    ];
+
+    const result = pruneToolOutputs(messages, 50_000, NO_MIN);
+
+    expect(result.prunedCount).toBe(0);
+    expect(result.skipReason).toBe("within-budget");
+    expect(result.messages).toBe(messages);
   });
 
   it("prunes oldest tool outputs first when over budget", () => {
@@ -693,6 +716,116 @@ describe("pruneToolOutputs", () => {
   });
 });
 
+describe("compactMessageForStorage", () => {
+  it("leaves small assistant messages unchanged", () => {
+    const message = makeAssistantMessage([
+      { type: "text", text: "small answer" },
+      makeToolPart(
+        "file",
+        { content: "ok", originalContent: "ok" },
+        { action: "read", path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 10_000,
+    });
+
+    expect(result.compacted).toBe(false);
+    expect(result.message).toBe(message);
+    expect(result.prunedCount).toBe(0);
+  });
+
+  it("strips bulky UI-only file fields before storage", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file",
+        {
+          content: "latest content",
+          originalContent: "x".repeat(5000),
+          modifiedContent: "y".repeat(5000),
+        },
+        { action: "edit", path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    const part = result.message.parts[0] as any;
+    expect(result.compacted).toBe(true);
+    expect(result.strippedUiOnlyFields).toBe(true);
+    expect(part.output).toEqual({ content: "latest content" });
+    expect(result.afterSizeBytes).toBeLessThan(result.beforeSizeBytes);
+  });
+
+  it("prunes old tool outputs when stripped parts are still too large", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file",
+        { content: "old ".repeat(2000) },
+        { action: "read", path: "/tmp/old.txt" },
+      ),
+      makeToolPart(
+        "file",
+        { content: "new ".repeat(2000) },
+        { action: "read", path: "/tmp/new.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 100,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.prunedCount).toBeGreaterThan(0);
+    expect(estimateSerializedSizeBytes(result.message.parts)).toBeLessThan(
+      estimateSerializedSizeBytes(message.parts),
+    );
+  });
+
+  it("compacts oversized reasoning and storage-only status parts", () => {
+    const message = makeAssistantMessage([
+      { type: "step-start" },
+      { type: "data-summarization", data: { status: "completed" } },
+      { type: "reasoning", text: "old ".repeat(20_000), state: "done" },
+      { type: "text", text: "final answer" },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1_000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(
+      result.message.parts.some((part) => part.type === "step-start"),
+    ).toBe(false);
+    expect(
+      result.message.parts.some((part) => part.type === "data-summarization"),
+    ).toBe(false);
+    expect(estimateSerializedSizeBytes(result.message.parts)).toBeLessThan(
+      estimateSerializedSizeBytes(message.parts),
+    );
+    expect(result.message.parts.at(-1)).toEqual({
+      type: "text",
+      text: "final answer",
+    });
+  });
+
+  it("does not compact user messages", () => {
+    const message = makeUserMessage("x".repeat(5000));
+
+    const result = compactMessageForStorage(message, { softLimitBytes: 100 });
+
+    expect(result.compacted).toBe(false);
+    expect(result.message).toBe(message);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // pruneModelMessages (ModelMessage-level pruning for agentic loop)
 // ---------------------------------------------------------------------------
@@ -750,6 +883,34 @@ describe("pruneModelMessages", () => {
     ];
 
     const result = pruneModelMessages(messages, 50_000, NO_MIN);
+    expect(result.prunedCount).toBe(0);
+    expect(result.skipReason).toBe("within-budget");
+    expect(result.messages).toBe(messages);
+  });
+
+  it("counts model tool results containing tokenizer special tokens without throwing", () => {
+    const messages = [
+      makeAssistantModelMsg([
+        {
+          toolCallId: "c1",
+          toolName: "file",
+          args: { action: "read", path: "/tmp/upgrade_model.sh" },
+        },
+      ]),
+      makeToolModelMsg([
+        {
+          toolCallId: "c1",
+          toolName: "file",
+          output: {
+            content:
+              "Template text includes reserved model syntax: <|im_start|>system",
+          },
+        },
+      ]),
+    ];
+
+    const result = pruneModelMessages(messages, 50_000, NO_MIN);
+
     expect(result.prunedCount).toBe(0);
     expect(result.skipReason).toBe("within-budget");
     expect(result.messages).toBe(messages);

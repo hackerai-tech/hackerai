@@ -298,11 +298,26 @@ export const TerminalCodeBlock = ({
         className={`h-full w-full bg-background ${useXterm ? "overflow-hidden" : "overflow-auto"}`}
       >
         {isExecuting && !output && status === "streaming" ? (
-          <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
-            <Shimmer>
-              {isInteractiveAction ? "Waiting for output" : "Executing command"}
-            </Shimmer>
-          </div>
+          isInteractiveAction ? (
+            <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
+              <Shimmer>Waiting for output</Shimmer>
+            </div>
+          ) : (
+            <div className="h-full w-full overflow-auto px-[1em] py-[1em] text-sm font-[450] text-card-foreground">
+              <pre
+                className={`m-0 font-mono ${
+                  isWrapped
+                    ? "whitespace-pre-wrap break-words"
+                    : "whitespace-pre overflow-x-auto"
+                }`}
+              >
+                <code>{`${commandPrefix} ${command}`}</code>
+              </pre>
+              <div className="mt-3 text-muted-foreground">
+                <Shimmer>Executing command</Shimmer>
+              </div>
+            </div>
+          )
         ) : useXterm ? (
           <XtermRenderer
             bytes={rawBytes}

@@ -5,16 +5,64 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { UIMessage } from "ai";
 import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
-import { isSupportedImageMediaType, MAX_IMAGE_SIZE } from "./file-utils";
+import {
+  isSandboxOnlyAgentUpload,
+  isSupportedImageMediaType,
+  MAX_PROVIDER_IMAGE_SIZE_BYTES as MAX_IMAGE_SIZE,
+} from "./upload-policy";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
+import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
+
+type FileToProcess = {
+  fileId?: string;
+  url?: string;
+  mediaType?: string;
+  positions: Array<{ messageIndex: number; partIndex: number }>;
+};
+
+type SizeProbeResult = {
+  bytes: number;
+  source: "content_length" | "content_range" | "download_probe";
+};
+
+const redactUrlForLog = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0];
+  }
+};
+
+const validateResolvedFileUrl = (
+  url: string | null | undefined,
+  fileId: string,
+): string | null => {
+  if (!url) return null;
+
+  try {
+    validateDownloadUrl(url);
+    return url;
+  } catch (error) {
+    logger.warn("resolved_file_url_rejected", {
+      event: "resolved_file_url_rejected",
+      service: "chat-handler",
+      file_id: fileId,
+      url: redactUrlForLog(url),
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
 
 const containsPdfAttachments = (messages: UIMessage[]): boolean =>
   messages.some((msg: any) =>
@@ -56,7 +104,23 @@ const convertUrlToBase64DataUrl = async (
   }
 };
 
-const probeContentLength = async (url: string): Promise<number | null> => {
+const parseContentLength = (value: string | null): number | null => {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseContentRangeTotal = (value: string | null): number | null => {
+  if (!value) return null;
+  const match = value.match(/\/(\d+)$/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const probeContentLength = async (
+  url: string,
+): Promise<SizeProbeResult | null> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -66,16 +130,76 @@ const probeContentLength = async (url: string): Promise<number | null> => {
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    const length = response.headers.get("content-length");
-    if (!length) return null;
-    const parsed = Number(length);
-    return Number.isFinite(parsed) ? parsed : null;
+    const parsed = parseContentLength(response.headers.get("content-length"));
+    return parsed == null ? null : { bytes: parsed, source: "content_length" };
   } catch {
     return null;
   } finally {
     clearTimeout(timeoutId);
   }
 };
+
+const probeDownloadSize = async (
+  url: string,
+  limitBytes: number,
+): Promise<SizeProbeResult | null> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(url, {
+      headers: { Range: `bytes=0-${limitBytes}` },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) return null;
+
+    const rangeTotal = parseContentRangeTotal(
+      response.headers.get("content-range"),
+    );
+    if (rangeTotal != null) {
+      return { bytes: rangeTotal, source: "content_range" };
+    }
+
+    const contentLength = parseContentLength(
+      response.headers.get("content-length"),
+    );
+    if (contentLength != null && response.status !== 206) {
+      return { bytes: contentLength, source: "content_length" };
+    }
+
+    if (!response.body) {
+      return contentLength == null
+        ? null
+        : { bytes: contentLength, source: "download_probe" };
+    }
+
+    const reader = response.body.getReader();
+    let bytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limitBytes) {
+        controller.abort();
+        return { bytes, source: "download_probe" };
+      }
+    }
+
+    return { bytes, source: "download_probe" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const probeImageSize = async (
+  url: string,
+  limitBytes: number,
+): Promise<SizeProbeResult | null> =>
+  (await probeContentLength(url)) ?? (await probeDownloadSize(url, limitBytes));
 
 const imageOmittedText = (
   name: unknown,
@@ -119,30 +243,24 @@ const collectFilesToProcess = (
   mode: ChatMode,
 ): {
   hasMedia: boolean;
-  files: Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >;
+  files: Map<string, FileToProcess>;
 } => {
   let hasMedia = false;
-  const files = new Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >();
+  const files = new Map<string, FileToProcess>();
 
   messages.forEach((msg, messageIndex) => {
     if (!msg.parts) return;
 
     (msg.parts as any[]).forEach((part, partIndex) => {
-      if (!isFilePart(part) || !part.fileId) return;
+      if (!isFilePart(part)) return;
+
+      const fileId = typeof part.fileId === "string" ? part.fileId : undefined;
+      if (fileId) {
+        // File IDs are storage references, not proof that a request-supplied URL
+        // is safe. Clear any client URL so every server-side fetch/download uses
+        // an owner-checked URL resolved from storage below.
+        delete (part as any).url;
+      }
 
       if (isMediaFile(part.mediaType)) hasMedia = true;
 
@@ -152,10 +270,18 @@ const collectFilesToProcess = (
         isMediaFile(part.mediaType);
 
       if (shouldProcess) {
-        if (!files.has(part.fileId)) {
-          files.set(part.fileId, { mediaType: part.mediaType, positions: [] });
+        if (!fileId) return;
+
+        const key = `file:${fileId}`;
+
+        if (!files.has(key)) {
+          files.set(key, {
+            fileId,
+            mediaType: part.mediaType,
+            positions: [],
+          });
         }
-        files.get(part.fileId)!.positions.push({ messageIndex, partIndex });
+        files.get(key)!.positions.push({ messageIndex, partIndex });
       }
     });
   });
@@ -163,21 +289,35 @@ const collectFilesToProcess = (
   return { hasMedia, files };
 };
 
-const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
+const fetchFileUrls = async (
+  fileIds: string[],
+  userId: string | undefined,
+): Promise<(string | null)[]> => {
   if (!fileIds.length) return [];
+  if (!userId) {
+    logger.warn("file_url_fetch_skipped_missing_user_id", {
+      event: "file_url_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return [];
+  }
 
   try {
     return await getConvexClient().action(
       api.s3Actions.getFileUrlsByFileIdsAction,
       {
         serviceKey,
+        userId,
         fileIds: fileIds as Id<"files">[],
       },
     );
   } catch (error) {
-    console.error("Failed to fetch file URLs:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileCount: fileIds.length,
+    logger.warn("file_url_fetch_failed", {
+      event: "file_url_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
     return [];
   }
@@ -185,30 +325,28 @@ const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
 
 const applyUrlsToFileParts = async (
   messages: UIMessage[],
-  filesToProcess: Map<
-    string,
-    {
-      url?: string;
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >,
+  filesToProcess: Map<string, FileToProcess>,
   mode: ChatMode,
+  userId: string,
 ) => {
-  const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
-    .filter(([_, file]) => !file.url)
-    .map(([fileId]) => fileId);
+  const filesNeedingUrls = Array.from(filesToProcess.values()).filter(
+    (file) => file.fileId && !file.url,
+  );
+  const fileIdsNeedingUrls = filesNeedingUrls.map((file) => file.fileId!);
 
-  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls);
+  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
-  fileIdsNeedingUrls.forEach((fileId, index) => {
-    const file = filesToProcess.get(fileId);
-    if (file && fetchedUrls[index]) {
-      file.url = fetchedUrls[index];
+  filesNeedingUrls.forEach((file, index) => {
+    const resolvedUrl = validateResolvedFileUrl(
+      fetchedUrls[index],
+      file.fileId!,
+    );
+    if (resolvedUrl) {
+      file.url = resolvedUrl;
     }
   });
 
-  for (const [fileId, file] of filesToProcess) {
+  for (const [fileKey, file] of filesToProcess) {
     if (!file.url) continue;
 
     // Only convert PDFs to base64 in "ask" mode for inline viewing.
@@ -226,12 +364,17 @@ const applyUrlsToFileParts = async (
         ] as any)
       : null;
     const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
-    const probedImageSize =
-      isSupportedImage && typeof firstPart?.size !== "number"
-        ? await probeContentLength(file.url)
-        : null;
+    const shouldProbeImageSize =
+      isSupportedImage &&
+      file.url &&
+      (!file.fileId || typeof firstPart?.size !== "number");
+    const probedImageSize = shouldProbeImageSize
+      ? await probeImageSize(file.url, MAX_IMAGE_SIZE)
+      : null;
     const effectiveImageSize =
-      typeof firstPart?.size === "number" ? firstPart.size : probedImageSize;
+      typeof firstPart?.size === "number"
+        ? firstPart.size
+        : (probedImageSize?.bytes ?? null);
     const imageLimit =
       effectiveImageSize != null &&
       effectiveImageSize > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
@@ -242,18 +385,20 @@ const applyUrlsToFileParts = async (
       effectiveImageSize != null &&
       effectiveImageSize > imageLimit;
 
-    if (shouldOmitImage) {
+    if (shouldOmitImage && mode !== "agent") {
       logger.warn("image_attachment_omitted_before_provider_call", {
         event: "image_attachment_omitted_before_provider_call",
         service: "chat-handler",
-        file_id: fileId,
+        file_id: file.fileId,
+        file_ref: file.fileId ? "file_id" : "inline_url",
+        file_key: file.fileId ? fileKey : undefined,
         media_type: file.mediaType,
         size_bytes: effectiveImageSize,
         limit_bytes: imageLimit,
         size_source:
           typeof firstPart?.size === "number"
             ? "message_part"
-            : "content_length",
+            : probedImageSize?.source,
         mode,
       });
     }
@@ -261,7 +406,7 @@ const applyUrlsToFileParts = async (
     file.positions.forEach(({ messageIndex, partIndex }) => {
       const filePart = messages[messageIndex].parts![partIndex] as any;
       if (filePart.type !== "file") return;
-      if (shouldOmitImage) {
+      if (shouldOmitImage && mode !== "agent") {
         messages[messageIndex].parts![partIndex] = {
           type: "text",
           text: imageOmittedText(
@@ -293,21 +438,26 @@ const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
 const applyModeSpecificTransforms = async (
   messages: UIMessage[],
   mode: ChatMode,
+  userId: string,
   sandboxFiles: SandboxFile[],
   uploadBasePath?: string,
   maxFileTokens?: number,
+  allowLocalDesktopFiles?: boolean,
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
   if (mode === "agent") {
-    collectSandboxFiles(messages, sandboxFiles, uploadBasePath);
-    removeNonMediaFileParts(messages);
+    collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
+      allowLocalDesktopFiles,
+    });
+    removeNonMediaAndOversizedImageFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
       await addDocumentContentToMessages(
         messages,
         nonMediaFileIds,
+        userId,
         maxFileTokens,
       );
     }
@@ -335,14 +485,17 @@ const applyModeSpecificTransforms = async (
  *
  * @param messages - Messages to process
  * @param mode - Chat mode ("ask" or "agent")
+ * @param userId - Authenticated requester used to authorize stored file IDs
  * @param uploadBasePath - Override for agent mode (/home/user/upload or /tmp/hackerai-upload for local dangerous)
  * @returns Processed messages with file metadata and sandbox files for upload
  */
 export const processMessageFiles = async (
   messages: UIMessage[],
-  mode: ChatMode = "ask",
+  mode: ChatMode,
+  userId: string,
   uploadBasePath?: string,
   subscription?: SubscriptionTier,
+  allowLocalDesktopFiles: boolean = false,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -361,12 +514,14 @@ export const processMessageFiles = async (
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
   const sandboxFiles: SandboxFile[] = [];
 
-  replaceOversizedImageParts(updatedMessages);
+  if (mode !== "agent") {
+    replaceOversizedImageParts(updatedMessages);
+  }
 
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files, mode);
+    await applyUrlsToFileParts(updatedMessages, files, mode, userId);
   }
 
   const maxFileTokens = subscription
@@ -376,9 +531,11 @@ export const processMessageFiles = async (
   await applyModeSpecificTransforms(
     updatedMessages,
     mode,
+    userId,
     sandboxFiles,
     uploadBasePath,
     maxFileTokens,
+    allowLocalDesktopFiles,
   );
 
   return {
@@ -425,14 +582,23 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
+  userId: string | undefined,
   maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
+  if (!userId) {
+    logger.warn("document_content_fetch_skipped_missing_user_id", {
+      event: "document_content_fetch_skipped_missing_user_id",
+      service: "chat-handler",
+      file_count: fileIds.length,
+    });
+    return;
+  }
 
   try {
     const fileContents = await getConvexClient().query(
       api.fileStorage.getFileContentByFileIds,
-      { serviceKey, fileIds },
+      { serviceKey, userId, fileIds },
     );
 
     const processableFiles = new Map<
@@ -497,9 +663,11 @@ const addDocumentContentToMessages = async (
       }
     });
   } catch (error) {
-    console.error("Failed to fetch and add document content:", {
-      error: error instanceof Error ? error.message : String(error),
-      fileIds,
+    logger.warn("document_content_fetch_failed", {
+      event: "document_content_fetch_failed",
+      service: "chat-handler",
+      error: stringifyRedactedError(error),
+      file_count: fileIds.length,
     });
   }
 };
@@ -516,11 +684,20 @@ const pruneFileParts = (
   });
 };
 
-const removeNonMediaFileParts = (messages: UIMessage[]) =>
-  pruneFileParts(
-    messages,
-    (mediaType) => !!mediaType && isSupportedImageMediaType(mediaType),
-  );
+const removeNonMediaAndOversizedImageFileParts = (messages: UIMessage[]) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = msg.parts.filter((part: any) => {
+      if (part?.type !== "file") return true;
+      if (!isSupportedImageMediaType(part.mediaType ?? "")) return false;
+      return !isSandboxOnlyAgentUpload({
+        mode: "agent",
+        size: typeof part.size === "number" ? part.size : 0,
+        mediaType: part.mediaType ?? "",
+      });
+    });
+  });
+};
 
 const removeAudioFileParts = (messages: UIMessage[]) =>
   pruneFileParts(messages, (mediaType) => !mediaType?.startsWith("audio/"));

@@ -7,7 +7,7 @@ import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
 interface CodeHighlightProps {
   className?: string | undefined;
   children?: ReactNode | undefined;
-  node?: Element | undefined;
+  node?: unknown;
 }
 
 const CodeHighlightImpl = ({
@@ -22,7 +22,9 @@ const CodeHighlightImpl = ({
 
   const [isWrapped, setIsWrapped] = useState(false);
 
-  const isInline: boolean | undefined = node ? isInlineCode(node) : undefined;
+  const isInline: boolean | undefined = node
+    ? isInlineCode(node as Element)
+    : undefined;
 
   // Check if language is supported by Shiki
   const shouldUsePlainText = useMemo(() => {
@@ -103,7 +105,7 @@ const CodeHighlightImpl = ({
     </div>
   ) : (
     <code
-      className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded text-sm font-mono"
+      className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded text-sm font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
       {...props}
     >
       {children}

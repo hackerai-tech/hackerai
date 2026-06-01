@@ -3,10 +3,37 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
+import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 
 export type SandboxFile = {
-  url: string;
   localPath: string;
+} & (
+  | {
+      kind: "url";
+      url: string;
+    }
+  | {
+      kind: "localPath";
+      path: string;
+    }
+);
+
+export type SandboxFilePathRewrite = {
+  from: string;
+  to: string;
+};
+
+type SandboxUploadResult = {
+  failedCount: number;
+  pathRewrites: SandboxFilePathRewrite[];
+};
+
+const logLocalAttachmentDebug = (
+  event: string,
+  data: Record<string, unknown>,
+) => {
+  if (process.env.NODE_ENV !== "development") return;
+  console.info(`[local-attachments] ${event}`, data);
 };
 
 /**
@@ -27,7 +54,7 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
-const sanitizeFilenameForTerminal = (filename: string): string => {
+export const sanitizeFilenameForTerminal = (filename: string): string => {
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
   const lastDotIndex = basename.lastIndexOf(".");
   const hasExtension = lastDotIndex > 0;
@@ -64,6 +91,7 @@ export const collectSandboxFiles = (
   updatedMessages: UIMessage[],
   sandboxFiles: SandboxFile[],
   uploadBasePath: string = getUploadBasePath(undefined),
+  options: { allowLocalDesktopFiles?: boolean } = {},
 ): void => {
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
@@ -73,14 +101,40 @@ export const collectSandboxFiles = (
 
     const tags: string[] = [];
     (msg.parts as any[]).forEach((part) => {
-      if (part?.type === "file" && part?.fileId && part?.url) {
+      if (part?.type !== "file") return;
+
+      if (part?.storage === "local-desktop") {
+        if (!part.localPath) return;
+        if (!options.allowLocalDesktopFiles) {
+          throw new Error(
+            "Desktop-local attachments can only be used with the desktop sandbox.",
+          );
+        }
+        const sanitizedName = sanitizeFilenameForTerminal(
+          part.name || part.filename || "file",
+        );
+        const localPath = `${uploadBasePath}/${sanitizedName}`;
+        if (i === lastUserIdx) {
+          sandboxFiles.push({
+            kind: "localPath",
+            path: part.localPath,
+            localPath,
+          });
+        }
+        tags.push(
+          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+        );
+        return;
+      }
+
+      if (part?.fileId && part?.url) {
         const sanitizedName = sanitizeFilenameForTerminal(
           part.name || part.filename || "file",
         );
         const localPath = `${uploadBasePath}/${sanitizedName}`;
 
         if (i === lastUserIdx) {
-          sandboxFiles.push({ url: part.url, localPath });
+          sandboxFiles.push({ kind: "url", url: part.url, localPath });
         }
         tags.push(
           `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
@@ -94,6 +148,125 @@ export const collectSandboxFiles = (
   });
 };
 
+export const stripLocalDesktopSourcePaths = <T extends { parts?: any[] }>(
+  messages: T[],
+): T[] =>
+  messages.map((message) => {
+    if (!message.parts) return message;
+    return {
+      ...message,
+      parts: message.parts.map((part) => {
+        if (part?.type !== "file" || part.storage !== "local-desktop") {
+          return part;
+        }
+        const { localPath: _localPath, ...safePart } = part;
+        return safePart;
+      }),
+    };
+  });
+
+export const hasLocalDesktopSourcePaths = (
+  messages: Array<{ parts?: any[] }>,
+): boolean =>
+  messages.some((message) =>
+    message.parts?.some(
+      (part) =>
+        part?.type === "file" &&
+        part.storage === "local-desktop" &&
+        typeof part.localPath === "string" &&
+        part.localPath.length > 0,
+    ),
+  );
+
+const replaceAllPathOccurrences = (
+  value: string,
+  rewrites: SandboxFilePathRewrite[],
+): string =>
+  rewrites.reduce(
+    (text, rewrite) => text.split(rewrite.from).join(rewrite.to),
+    value,
+  );
+
+export const rewriteSandboxFilePathsInMessages = <T extends { parts?: any[] }>(
+  messages: T[],
+  rewrites: SandboxFilePathRewrite[],
+): T[] => {
+  if (rewrites.length === 0) return messages;
+
+  return messages.map((message) => {
+    if (!message.parts) return message;
+    return {
+      ...message,
+      parts: message.parts.map((part) => {
+        if (typeof part?.text !== "string") return part;
+        return {
+          ...part,
+          text: replaceAllPathOccurrences(part.text, rewrites),
+        };
+      }),
+    };
+  });
+};
+
+export const prepareLocalDesktopAttachmentsForTrigger = (
+  messages: UIMessage[],
+  uploadBasePath: string = getUploadBasePath("desktop"),
+): { messages: UIMessage[]; sandboxFiles: SandboxFile[] } => {
+  const clonedMessages =
+    typeof structuredClone === "function"
+      ? structuredClone(messages)
+      : JSON.parse(JSON.stringify(messages));
+  const preparedMessages = stripLocalDesktopSourcePaths(
+    clonedMessages,
+  ) as UIMessage[];
+  const sandboxFiles: SandboxFile[] = [];
+  const lastUserIdx = getLastUserMessageIndex(messages);
+
+  messages.forEach((message, messageIndex) => {
+    if (message.role !== "user" || !message.parts) return;
+
+    const tags: string[] = [];
+    (message.parts as any[]).forEach((part) => {
+      if (
+        part?.type !== "file" ||
+        part.storage !== "local-desktop" ||
+        !part.localPath
+      ) {
+        return;
+      }
+      const sanitizedName = sanitizeFilenameForTerminal(
+        part.name || part.filename || "file",
+      );
+      const localPath = `${uploadBasePath}/${sanitizedName}`;
+      if (messageIndex === lastUserIdx) {
+        sandboxFiles.push({
+          kind: "localPath",
+          path: part.localPath,
+          localPath,
+        });
+      }
+      tags.push(
+        `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+      );
+    });
+
+    if (tags.length > 0) {
+      (preparedMessages[messageIndex].parts as any[]).push({
+        type: "text",
+        text: tags.join("\n"),
+      });
+    }
+  });
+
+  logLocalAttachmentDebug("prepared-trigger-local-files", {
+    fileCount: sandboxFiles.length,
+    scrubbedHasLocalPath:
+      JSON.stringify(preparedMessages).includes("localPath"),
+  });
+
+  return { messages: preparedMessages, sandboxFiles };
+};
+
 /**
  * Downloads a file from URL to sandbox path
  * Works with both E2B and CentrifugoSandbox
@@ -103,6 +276,8 @@ const downloadFileToSandbox = async (
   url: string,
   localPath: string,
 ): Promise<void> => {
+  validateDownloadUrl(url);
+
   // CentrifugoSandbox has downloadFromUrl method
   if (sandbox.files?.downloadFromUrl) {
     return sandbox.files.downloadFromUrl(url, localPath);
@@ -172,6 +347,121 @@ const downloadFileToSandbox = async (
   );
 };
 
+const copyLocalFileToSandbox = async (
+  sandbox: any,
+  sourcePath: string,
+  localPath: string,
+): Promise<void> => {
+  if (!sandbox.files?.copyLocal) {
+    throw new Error(
+      "Desktop-local attachments require a desktop local sandbox.",
+    );
+  }
+
+  return sandbox.files.copyLocal(sourcePath, localPath);
+};
+
+const shellQuote = (value: string): string =>
+  `'${value.replace(/'/g, "'\\''")}'`;
+
+const shouldTryUploadPathFallback = (
+  localPath: string,
+  error: unknown,
+): boolean => {
+  if (!localPath.startsWith("/tmp/hackerai-upload/")) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /permission denied|read-only file system|cannot create directory|failed to create directory/i.test(
+    message,
+  );
+};
+
+const resolveWritableUploadFallbackPath = async (
+  sandbox: any,
+  originalLocalPath: string,
+): Promise<string | null> => {
+  const fileName = originalLocalPath.split(/[/\\]/).pop();
+  if (!fileName || !sandbox.commands?.run) return null;
+
+  const script = [
+    `filename=${shellQuote(fileName)}`,
+    `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
+    `  [ -n "$base" ] || continue`,
+    `  dir="$base/hackerai-upload"`,
+    `  if mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then`,
+    `    cd "$dir" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$filename"`,
+    `    exit 0`,
+    `  fi`,
+    `done`,
+    `exit 1`,
+  ].join("\n");
+
+  const result = await sandbox.commands.run(script, {
+    displayName: "",
+  });
+  if (result.exitCode !== 0) return null;
+  const fallbackPath = result.stdout.trim();
+  return fallbackPath ? fallbackPath : null;
+};
+
+const stageSandboxFile = async (
+  sandbox: any,
+  file: SandboxFile,
+): Promise<SandboxFilePathRewrite | null> => {
+  try {
+    if (file.kind === "url") {
+      await downloadFileToSandbox(sandbox, file.url, file.localPath);
+    } else {
+      await copyLocalFileToSandbox(sandbox, file.path, file.localPath);
+    }
+    return null;
+  } catch (error) {
+    if (!shouldTryUploadPathFallback(file.localPath, error)) {
+      throw error;
+    }
+
+    const fallbackPath = await resolveWritableUploadFallbackPath(
+      sandbox,
+      file.localPath,
+    );
+    if (!fallbackPath || fallbackPath === file.localPath) {
+      throw error;
+    }
+
+    console.warn(
+      `[sandbox-upload] ${file.localPath} is not writable, retrying attachment staging at ${fallbackPath}`,
+    );
+
+    const fallbackFile = { ...file, localPath: fallbackPath } as SandboxFile;
+    try {
+      if (fallbackFile.kind === "url") {
+        await downloadFileToSandbox(
+          sandbox,
+          fallbackFile.url,
+          fallbackFile.localPath,
+        );
+      } else {
+        await copyLocalFileToSandbox(
+          sandbox,
+          fallbackFile.path,
+          fallbackFile.localPath,
+        );
+      }
+    } catch (fallbackError) {
+      const originalMessage =
+        error instanceof Error ? error.message : String(error);
+      const fallbackMessage =
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+      throw new Error(
+        `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
+      );
+    }
+
+    return { from: file.localPath, to: fallbackPath };
+  }
+};
+
 const safeUrlForLog = (url: string): string => {
   try {
     const parsed = new URL(url);
@@ -179,6 +469,32 @@ const safeUrlForLog = (url: string): string => {
   } catch {
     return url.split("?")[0];
   }
+};
+
+const describeSandboxFileForLog = (file: SandboxFile) => {
+  if (file.kind === "url") {
+    return {
+      kind: file.kind,
+      url: safeUrlForLog(file.url),
+      urlLength: file.url.length,
+      protocol: file.url.split("://")[0],
+      localPath: file.localPath,
+    };
+  }
+  return {
+    kind: file.kind,
+    sourcePath: "[redacted-local-path]",
+    localPath: file.localPath,
+  };
+};
+
+const redactSandboxUploadError = (
+  file: SandboxFile,
+  error: unknown,
+): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (file.kind !== "localPath") return message;
+  return message.split(file.path).join("[redacted-local-path]");
 };
 
 /**
@@ -191,21 +507,26 @@ const safeUrlForLog = (url: string): string => {
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
   ensureSandbox: () => Promise<any>,
-): Promise<{ failedCount: number }> => {
-  if (sandboxFiles.length === 0) return { failedCount: 0 };
+): Promise<SandboxUploadResult> => {
+  if (sandboxFiles.length === 0) return { failedCount: 0, pathRewrites: [] };
+
+  logLocalAttachmentDebug("sandbox-staging-start", {
+    totalCount: sandboxFiles.length,
+    localPathCount: sandboxFiles.filter((file) => file.kind === "localPath")
+      .length,
+    urlCount: sandboxFiles.filter((file) => file.kind === "url").length,
+  });
 
   let sandbox: any;
   try {
     sandbox = await ensureSandbox();
   } catch (e) {
     console.error("Failed to acquire sandbox for upload:", e);
-    return { failedCount: sandboxFiles.length };
+    return { failedCount: sandboxFiles.length, pathRewrites: [] };
   }
 
   const results = await Promise.allSettled(
-    sandboxFiles.map((file) =>
-      downloadFileToSandbox(sandbox, file.url, file.localPath),
-    ),
+    sandboxFiles.map((file) => stageSandboxFile(sandbox, file)),
   );
 
   const failedIndices = results
@@ -220,17 +541,15 @@ export const uploadSandboxFiles = async (
       const file = sandboxFiles[i];
       const result = results[i] as PromiseRejectedResult;
       console.error("  -", {
-        url: safeUrlForLog(file.url),
-        urlLength: file.url.length,
-        localPath: file.localPath,
-        protocol: file.url.split("://")[0],
-        error:
-          result.reason instanceof Error
-            ? result.reason.message
-            : String(result.reason),
+        ...describeSandboxFileForLog(file),
+        error: redactSandboxUploadError(file, result.reason),
       });
     });
   }
 
-  return { failedCount: failedIndices.length };
+  const pathRewrites = results.flatMap((result) =>
+    result.status === "fulfilled" && result.value ? [result.value] : [],
+  );
+
+  return { failedCount: failedIndices.length, pathRewrites };
 };

@@ -360,7 +360,12 @@ export async function uploadSandboxFileToConvex(args: {
   let uploadUrl: string;
   let s3Key: string;
   try {
-    const generatedUrl = await generateS3UploadUrl(name, mediaType, userId);
+    const generatedUrl = await generateS3UploadUrl(
+      name,
+      mediaType,
+      userId,
+      fileSize,
+    );
     uploadUrl = generatedUrl.uploadUrl;
     s3Key = generatedUrl.s3Key;
   } catch (error) {

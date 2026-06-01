@@ -40,6 +40,7 @@ import {
   type ShellToolOutput,
 } from "@/app/components/tools/shell-tool-utils";
 import { PROXY_COMPLETED_LABELS } from "@/app/components/tools/ProxyToolHandler";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface MessagePart {
   type: string;
@@ -58,6 +59,9 @@ interface SharedMessagePartHandlerProps {
   isUser: boolean;
   allParts?: MessagePart[];
 }
+
+const isStoppedToolPart = (part: MessagePart) =>
+  isUserStoppedToolError(part.errorText);
 
 export const SharedMessagePartHandler = ({
   part,
@@ -270,18 +274,42 @@ function renderLegacyFileTool(
     sidebarAction = "reading";
   }
   if (part.type === "tool-write_file") {
-    action = "Successfully wrote";
+    action =
+      part.state === "output-error"
+        ? isStoppedToolPart(part)
+          ? "Stopped writing"
+          : "Failed to write"
+        : "Successfully wrote";
     icon = <FilePlus aria-hidden="true" />;
     sidebarAction = "writing";
   }
   if (part.type === "tool-delete_file") {
-    action = "Successfully deleted";
+    action =
+      part.state === "output-error"
+        ? isStoppedToolPart(part)
+          ? "Stopped deleting"
+          : "Failed to delete"
+        : "Successfully deleted";
     icon = <FileMinus aria-hidden="true" />;
   }
   if (part.type === "tool-search_replace" || part.type === "tool-multi_edit") {
-    action = "Successfully edited";
+    action =
+      part.state === "output-error"
+        ? isStoppedToolPart(part)
+          ? "Stopped editing"
+          : "Failed to edit"
+        : "Successfully edited";
     icon = <FilePen aria-hidden="true" />;
     sidebarAction = "editing";
+  }
+  if (part.type === "tool-read_file" && part.state === "output-error") {
+    action = isStoppedToolPart(part) ? "Stopped reading" : "Failed to read";
+  }
+
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock key={idx} icon={icon} action={action} target={filePath} />
+    );
   }
 
   if (part.state === "output-available") {
@@ -420,13 +448,32 @@ function renderFileTool(
     sidebarAction = "editing";
   }
 
-  if (fileOutput?.error) {
-    action = `Failed to ${fileAction}`;
+  const isError = part.state === "output-error" || !!fileOutput?.error;
+  if (isError) {
+    if (isStoppedToolPart(part)) {
+      if (fileAction === "read") action = "Stopped reading";
+      if (fileAction === "write") action = "Stopped writing";
+      if (fileAction === "append") action = "Stopped appending to";
+      if (fileAction === "edit") action = "Stopped editing";
+    } else {
+      action = `Failed to ${fileAction}`;
+    }
   }
 
   // Mirror the live FileHandler: when the model supplies a `brief` and the
   // call didn't error, the brief stands alone as the block label.
-  const useBriefOnly = !!brief && !fileOutput?.error;
+  const useBriefOnly = !!brief && !isError;
+
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={icon}
+        action={action}
+        target={`${filePath}${getFileRange()}`}
+      />
+    );
+  }
 
   if (part.state === "output-available") {
     const handleOpenInSidebar = () => {
@@ -509,6 +556,19 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
 
   const brief = webInput?.brief?.trim() || "";
 
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<Search aria-hidden="true" />}
+        action={
+          isStoppedToolPart(part) ? "Stopped searching web" : "Search failed"
+        }
+        target={target}
+      />
+    );
+  }
+
   if (part.state === "output-available") {
     return (
       <ToolBlock
@@ -526,6 +586,19 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
 function renderOpenUrlTool(part: MessagePart, idx: number) {
   const urlInput = part.input as { url?: string; brief?: string };
   const brief = urlInput?.brief?.trim() || "";
+
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<ExternalLink aria-hidden="true" />}
+        action={
+          isStoppedToolPart(part) ? "Stopped opening URL" : "Failed to open URL"
+        }
+        target={urlInput?.url}
+      />
+    );
+  }
 
   if (part.state === "output-available") {
     return (
@@ -552,11 +625,23 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
     return paths.map((path) => path.split("/").pop() || path).join(", ");
   };
 
+  const fileNames = getFileNames(filesInput?.files || []);
+  const brief = filesInput?.brief?.trim() || "";
+
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<FileDown aria-hidden="true" />}
+        action={isStoppedToolPart(part) ? "Stopped sharing" : "Failed to share"}
+        target={fileNames}
+      />
+    );
+  }
+
   if (part.state === "output-available") {
     const fileCount =
       filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
-    const fileNames = getFileNames(filesInput?.files || []);
-    const brief = filesInput?.brief?.trim() || "";
 
     return (
       <ToolBlock
@@ -595,6 +680,27 @@ function renderTodoTool(part: MessagePart, idx: number) {
         key={idx}
         icon={<ListTodo aria-hidden="true" />}
         action="Updated todos"
+      />
+    );
+  }
+  if (part.state === "output-error") {
+    const todoInput = part.input as { merge?: boolean; todos?: unknown[] };
+    const stoppedTodoAction = todoInput?.merge
+      ? "Stopped updating to-do list"
+      : "Stopped creating to-do list";
+    const failedTodoAction = todoInput?.merge
+      ? "Todo update failed"
+      : "Todo creation failed";
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<ListTodo aria-hidden="true" />}
+        action={isStoppedToolPart(part) ? stoppedTodoAction : failedTodoAction}
+        target={
+          todoInput?.todos?.length
+            ? `${todoInput.todos.length} items`
+            : undefined
+        }
       />
     );
   }
@@ -654,9 +760,14 @@ function renderProxyTool(
     return "";
   };
 
-  const isError = !!part.errorText || !!part.output?.result?.error;
+  const isError =
+    part.state === "output-error" ||
+    !!part.errorText ||
+    !!part.output?.result?.error;
   const actionText = isError
-    ? "Proxy action failed"
+    ? isStoppedToolPart(part)
+      ? "Stopped proxy action"
+      : "Proxy action failed"
     : PROXY_COMPLETED_LABELS[toolName] || "Executed";
 
   if (
@@ -768,7 +879,9 @@ function renderHttpRequestTool(
     : "";
 
   const getActionText = () => {
-    if (httpOutput?.error) return "Request failed";
+    if (part.state === "output-error" || httpOutput?.error || part.errorText) {
+      return isStoppedToolPart(part) ? "Stopped request" : "Request failed";
+    }
     return "Requested";
   };
 
@@ -780,7 +893,7 @@ function renderHttpRequestTool(
     const handleOpenInSidebar = () => {
       openSidebar({
         command: displayCommand,
-        output: httpOutput?.output || httpOutput?.error || "",
+        output: httpOutput?.output || httpOutput?.error || part.errorText || "",
         isExecuting: false,
         toolCallId: part.toolCallId || "",
       });
@@ -892,6 +1005,21 @@ function renderNotesTool(
     }
     return undefined;
   };
+
+  if (part.state === "output-error") {
+    return (
+      <ToolBlock
+        key={idx}
+        icon={getNotesIcon(toolName)}
+        action={
+          isStoppedToolPart(part)
+            ? "Stopped note action"
+            : getNotesActionText(toolName, true)
+        }
+        target={getTarget()}
+      />
+    );
+  }
 
   if (part.state === "output-available") {
     // Check for failure state

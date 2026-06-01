@@ -91,7 +91,7 @@ sudo docker compose up -d
 
 ## Channel Security
 
-Channels use the format `sandbox:user#userId` where `#` is Centrifugo's user boundary. Combined with `allow_user_limited_channels: true`, only the JWT-authenticated user matching `userId` can subscribe to their channel.
+Command and result streams use per-connection channels in the format `sandbox:connection:connectionId#userId`, where `#` is Centrifugo's user boundary. Combined with `allow_user_limited_channels: true`, only the JWT-authenticated user matching `userId` can subscribe, while the random `connectionId` keeps one authorized local agent from joining another agent's command stream.
 
 ## Environment Variables
 

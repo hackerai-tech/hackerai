@@ -49,6 +49,12 @@ export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+const RATE_LIMIT_SERVICE_NOT_CONFIGURED =
+  "Rate limiting service is not configured";
+
+const throwRateLimitServiceNotConfigured = (): never => {
+  throw new ChatSDKError("rate_limit:chat", RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+};
 
 // =============================================================================
 // Cost Calculation
@@ -151,7 +157,11 @@ export const checkTokenBucketLimit = async (
   const redis = createRedisClient();
 
   if (!redis) {
-    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    if (process.env.NODE_ENV === "production") {
+      throwRateLimitServiceNotConfigured();
+    }
+
+    // Skip rate limiting if Redis is not configured in local dev/test.
     const { monthly } = getBudgetLimits(subscription);
     return {
       remaining: monthly,
@@ -198,6 +208,19 @@ export const checkTokenBucketLimit = async (
         : subscription === "pro-plus"
           ? " or upgrade to Ultra for higher limits"
           : "";
+
+    const monthlyLimitError = (reset: number) => {
+      const resetTime = formatTimeRemaining(new Date(reset));
+      return new ChatSDKError(
+        "rate_limit:chat",
+        `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`,
+        {
+          resetTimestamp: reset,
+          subscription,
+          capReason: "monthly_exhausted",
+        },
+      );
+    };
 
     // Helper to build RateLimitInfo from a limiter result
     const buildResult = (
@@ -253,6 +276,22 @@ export const checkTokenBucketLimit = async (
             rate: bucketDeduct,
           });
 
+          if (!monthlyResult.success) {
+            try {
+              if (isTeamPool) {
+                await refundToTeamBalance(organizationId!, userId, shortfall);
+              } else {
+                await refundToBalance(userId, shortfall);
+              }
+            } catch (refundError) {
+              console.error(
+                "[checkTokenBucketLimit] Failed to refund extra usage after bucket debit failed:",
+                refundError,
+              );
+            }
+            throw monthlyLimitError(monthlyResult.reset);
+          }
+
           return buildResult(monthlyResult, bucketDeduct, shortfall);
         }
 
@@ -287,17 +326,6 @@ export const checkTokenBucketLimit = async (
               resetTimestamp: monthlyCheck.reset,
               subscription,
               capReason: "team_member_cap",
-            });
-          }
-
-          if (deductResult.trustCapExceeded) {
-            const capAmount = deductResult.trustCapDollars ?? 100;
-            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              trustCapExceeded: true,
-              capReason: "trust_cap",
             });
           }
 
@@ -374,6 +402,10 @@ export const checkTokenBucketLimit = async (
       rate: estimatedCost,
     });
 
+    if (!monthlyResult.success) {
+      throw monthlyLimitError(monthlyResult.reset);
+    }
+
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
     if (error instanceof ChatSDKError) throw error;
@@ -408,7 +440,10 @@ export const deductUsage = async (
   organizationId?: string,
 ): Promise<void> => {
   const redis = createRedisClient();
-  if (!redis) return;
+  if (!redis) {
+    if (process.env.NODE_ENV !== "production") return;
+    throwRateLimitServiceNotConfigured();
+  }
 
   try {
     const { monthly, monthlyLimit } = createRateLimiter(
@@ -549,8 +584,10 @@ export const resetRateLimitBuckets = async (
  * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
  *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
  *   - upgrade:carryover:<userId>     — upgrade proration stash
- *   - free_limit:<userId>:*          — free-tier ask sliding window
- *   - free_agent_limit:<userId>:*    — free-tier agent sliding window
+ *   - free_limit:<userId>:*          — free-tier shared ask/agent sliding window
+ *   - free_agent_limit:<userId>:*    — legacy free-tier agent sliding window
+ *   - free_monthly_cost:<userId>:*   — free-tier monthly provider/tool cost cap
+ *   - free_run_lock:<userId>         — free-tier active-run concurrency lock
  *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
  *
  * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
@@ -567,6 +604,8 @@ export const deleteUserRateLimitKeys = async (
     `upgrade:carryover:${userId}`,
     `free_limit:${userId}:*`,
     `free_agent_limit:${userId}:*`,
+    `free_monthly_cost:${userId}:*`,
+    `free_run_lock:${userId}`,
     `team:debt_applied:*:${userId}`,
   ];
 

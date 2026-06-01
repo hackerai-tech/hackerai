@@ -9,6 +9,8 @@ const TOKEN_FORMAT_REGEX = /^[a-f0-9]{64}$/;
 type TransferTokenData = {
   sealedSession: string;
   createdAt: number;
+  returnPath?: string;
+  desktopAuthState?: string;
 };
 
 function getRedis(): Redis | null {
@@ -35,6 +37,7 @@ function generateTransferToken(): string {
 
 export async function createDesktopTransferToken(
   sealedSession: string,
+  options?: { returnPath?: string; desktopAuthState?: string },
 ): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
@@ -51,6 +54,12 @@ export async function createDesktopTransferToken(
     sealedSession,
     createdAt: Date.now(),
   };
+  if (options?.returnPath) {
+    data.returnPath = options.returnPath;
+  }
+  if (options?.desktopAuthState) {
+    data.desktopAuthState = options.desktopAuthState;
+  }
 
   try {
     await redis.set(key, data, { ex: TRANSFER_TOKEN_TTL_SECONDS });
@@ -67,7 +76,11 @@ export async function createDesktopTransferToken(
 
 export async function exchangeDesktopTransferToken(
   transferToken: string,
-): Promise<{ sealedSession: string } | null> {
+  options?: { desktopAuthState?: string },
+): Promise<{
+  sealedSession: string;
+  returnPath?: string;
+} | null> {
   if (!TOKEN_FORMAT_REGEX.test(transferToken)) {
     console.warn("[Desktop Auth] Invalid transfer token format");
     return null;
@@ -122,11 +135,32 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
-  return { sealedSession: data.sealedSession };
+  if (data.desktopAuthState && !options?.desktopAuthState) {
+    console.warn("[Desktop Auth] Desktop auth state required but not provided");
+    return null;
+  }
+
+  if (
+    options?.desktopAuthState &&
+    data.desktopAuthState !== options.desktopAuthState
+  ) {
+    console.warn("[Desktop Auth] Desktop auth state mismatch");
+    return null;
+  }
+
+  const result: { sealedSession: string; returnPath?: string } = {
+    sealedSession: data.sealedSession,
+  };
+  if (typeof data.returnPath === "string") {
+    result.returnPath = data.returnPath;
+  }
+  return result;
 }
 
 export type OAuthStateMetadata = {
   devCallbackPort?: number;
+  returnPath?: string;
+  desktopAuthState?: string;
 };
 
 export async function createOAuthState(

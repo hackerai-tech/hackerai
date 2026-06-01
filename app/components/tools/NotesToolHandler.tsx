@@ -3,6 +3,7 @@ import ToolBlock from "@/components/ui/tool-block";
 import type { ChatStatus, SidebarNote, SidebarNotes } from "@/types/chat";
 import { isSidebarNotes } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
   getNotesIcon,
   getNotesStreamingActionText,
@@ -22,7 +23,22 @@ export const NotesToolHandler = memo(function NotesToolHandler({
   status,
   toolName,
 }: NotesToolHandlerProps) {
-  const { toolCallId, state, input, output } = part;
+  const { toolCallId, state, input, output, errorText } = part;
+  const isStoppedByUser = isUserStoppedToolError(errorText);
+  const stoppedActionText = () => {
+    switch (toolName) {
+      case "create_note":
+        return "Stopped creating note";
+      case "list_notes":
+        return "Stopped listing notes";
+      case "update_note":
+        return "Stopped updating note";
+      case "delete_note":
+        return "Stopped deleting note";
+      default:
+        return "Stopped note action";
+    }
+  };
 
   const getTarget = () => {
     if (toolName === "create_note" && input?.title) {
@@ -150,6 +166,20 @@ export const NotesToolHandler = memo(function NotesToolHandler({
         />
       );
     }
+
+    case "output-error":
+      return (
+        <ToolBlock
+          key={toolCallId}
+          icon={getNotesIcon(toolName, "h-4 w-4")}
+          action={
+            isStoppedByUser
+              ? stoppedActionText()
+              : getNotesActionText(toolName, true)
+          }
+          target={getTarget()}
+        />
+      );
 
     default:
       return null;

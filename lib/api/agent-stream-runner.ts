@@ -1,7 +1,7 @@
 /**
  * Shared streamText factory for the agent loop.
  *
- * Both /api/agent (chat-handler.ts) and the trigger.dev agent-long task
+ * Both the Next.js chat handler and the trigger.dev agent-long task
  * run the same multi-step tool loop. This module owns the single canonical
  * implementation of that loop — prepareStep, stopWhen, onChunk, onStepFinish,
  * streamText.onFinish, onError, onAbort — so divergence is impossible.
@@ -53,6 +53,10 @@ import {
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 import { isAnthropicModel } from "@/lib/ai/providers";
+import {
+  FREE_MAX_OUTPUT_TOKENS,
+  PAID_MAX_OUTPUT_TOKENS,
+} from "@/lib/rate-limit/free-config";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
@@ -79,6 +83,8 @@ export type AgentStreamState = {
   streamFinishReason: string | undefined;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
+  /** Original provider/AI SDK error captured from streamText.onError. */
+  providerError: unknown;
   /** Stop-condition flags set by the respective onFired callbacks. */
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
@@ -98,6 +104,7 @@ export function initAgentStreamState(
     streamFinishReason: undefined,
     streamUsage: undefined,
     responseModel: undefined,
+    providerError: undefined,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
@@ -142,6 +149,7 @@ export type AgentStreamContext = {
   budgetMonitor: BudgetMonitor | null;
   sandboxManager: {
     getSandboxType(toolName: string): string | undefined;
+    supportsInteractivePty?(): Promise<boolean>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
@@ -165,8 +173,31 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const getActiveTools = async (): Promise<
+    Array<keyof typeof ctx.tools> | undefined
+  > => {
+    let supportsPty: boolean | undefined;
+    try {
+      supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
+    } catch (error) {
+      console.warn("[agent-stream] PTY capability probe failed:", error);
+      return undefined;
+    }
+    if (supportsPty !== false) {
+      return undefined;
+    }
+
+    return Object.keys(ctx.tools).filter(
+      (toolName) => toolName !== "interact_terminal_session",
+    ) as Array<keyof typeof ctx.tools>;
+  };
+  const initialActiveTools = await getActiveTools();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  const maxOutputTokens =
+    ctx.subscription === "free"
+      ? FREE_MAX_OUTPUT_TOKENS
+      : PAID_MAX_OUTPUT_TOKENS;
   const prepareProviderMessages = (
     messages: ModelMessage[],
   ): ModelMessage[] => {
@@ -187,17 +218,19 @@ export async function createAgentStream(
 
   return streamText({
     model: requestedLanguageModel,
-    maxOutputTokens: 30000,
+    maxOutputTokens,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
     messages: prepareProviderMessages(
       await convertToModelMessages(state.finalMessages),
     ),
     tools: ctx.tools,
+    activeTools: initialActiveTools,
     abortSignal: ctx.abortController.signal,
     providerOptions: buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
       modelName,
+      ctx.mode,
     ),
 
     prepareStep: async ({ steps, messages }) => {
@@ -235,6 +268,7 @@ export async function createAgentStream(
               ctx.isReasoningModel,
               ctx.userId,
               modelName,
+              ctx.mode,
             ),
           });
 
@@ -248,6 +282,7 @@ export async function createAgentStream(
               state.ctxUsage = result.contextUsage;
             }
             return {
+              activeTools: await getActiveTools(),
               messages: prepareProviderMessages(
                 await convertToModelMessages(result.summarizedMessages),
               ),
@@ -289,6 +324,7 @@ export async function createAgentStream(
         }
 
         return {
+          activeTools: await getActiveTools(),
           messages: prepareProviderMessages(
             addCacheBreakpointToLastUserMessage(
               updatedMessages,
@@ -388,7 +424,7 @@ export async function createAgentStream(
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
 
-      const fallbackSlugs = getFallbackSlugs(modelName);
+      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
       logOpenRouterFallbackIfFired({
         fallbackSlugs,
         requestedSlug,
@@ -413,10 +449,15 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
+      state.providerError = error;
       if (!isXaiSafetyError(error)) {
+        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
         ctx.chatLogger?.recordProviderError(error, {
           mode: ctx.mode,
           model: modelName,
+          requestedModelSlug: requestedSlug,
+          fallbackModelSlugs:
+            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
           userId: ctx.userId,
           subscription: ctx.subscription,
           isTemporary: ctx.temporary,

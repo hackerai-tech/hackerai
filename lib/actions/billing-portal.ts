@@ -15,7 +15,7 @@ export default async function redirectToBillingPortal() {
     throw new Error("No organization found");
   }
 
-  // Check if user is an admin of the organization (for team subscriptions)
+  // Check if user can manage billing for the organization.
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId: user.id,
     organizationId,
@@ -27,9 +27,11 @@ export default async function redirectToBillingPortal() {
     throw new Error("User is not a member of this organization");
   }
 
-  // Only admins can access billing portal for team subscriptions
-  if (userMembership.role?.slug !== "admin") {
-    throw new Error("Only admins can manage billing");
+  if (
+    userMembership.role?.slug !== "admin" &&
+    userMembership.role?.slug !== "owner"
+  ) {
+    throw new Error("Only admins or owners can manage billing");
   }
 
   const response = await fetch(

@@ -8,7 +8,7 @@
  */
 
 import { EventEmitter } from "events";
-import { CentrifugoSandbox } from "../centrifugo-sandbox";
+import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 
 // Track all created mock subscriptions and clients for assertions
@@ -45,7 +45,10 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
 }));
 
 jest.mock("@/lib/centrifugo/types", () => ({
-  sandboxChannel: jest.fn((userId: string) => `sandbox:user#${userId}`),
+  sandboxConnectionChannel: jest.fn(
+    (userId: string, connectionId: string) =>
+      `sandbox:connection:${connectionId}#${userId}`,
+  ),
 }));
 
 // Use a stable UUID for assertions
@@ -101,6 +104,51 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  describe("parseSandboxMessage", () => {
+    it("ignores known PTY traffic without warning", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(
+          parseSandboxMessage({
+            type: "pty_create",
+            sessionId: "pty-1",
+            command: "bash",
+          }),
+        ).toBeNull();
+        expect(
+          parseSandboxMessage({
+            type: "pty_data",
+            sessionId: "pty-1",
+            data: "hello",
+          }),
+        ).toBeNull();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("still warns for truly unknown message types", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(
+          parseSandboxMessage({
+            type: "something_else",
+            commandId: FIXED_UUID,
+          }),
+        ).toBeNull();
+        expect(warnSpy).toHaveBeenCalledWith(
+          "Invalid sandbox message: unknown type",
+          "something_else",
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
   describe("commands.run happy path", () => {
     it("subscribes, receives stdout/stderr/exit messages, and returns aggregated result", async () => {
       const sandbox = createSandbox();
@@ -118,6 +166,9 @@ describe("CentrifugoSandbox", () => {
 
       const sub = mockSubscriptions[0];
       expect(sub).toBeDefined();
+      expect(mockClients[0].newSubscription).toHaveBeenCalledWith(
+        "sandbox:connection:conn-1#user-1",
+      );
 
       // Simulate "subscribed" event, then publications
       sub.emit("subscribed");
@@ -166,6 +217,33 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).rejects.toThrow(
         `Command timeout after ${timeoutMs + 5000}ms`,
       );
+    });
+
+    it("does not count the echoed command publication as the first response", async () => {
+      const sandbox = createSandbox();
+      const timeoutMs = 1000;
+
+      const { promise } = startCommand(sandbox, "sleep 999", {
+        timeoutMs,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      sub.emit("publication", {
+        data: {
+          type: "command",
+          commandId: FIXED_UUID,
+          command: "sleep 999",
+        },
+      });
+
+      jest.advanceTimersByTime(timeoutMs + 5000 + 1);
+
+      await expect(promise).rejects.toThrow("firstMsg: no");
     });
   });
 

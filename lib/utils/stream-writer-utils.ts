@@ -4,11 +4,14 @@ import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 // Upload status notifications
-export const writeUploadStartStatus = (writer: UIMessageStreamWriter): void => {
+export const writeUploadStartStatus = (
+  writer: UIMessageStreamWriter,
+  message: string = "Uploading attachments to the computer",
+): void => {
   writer.write({
     type: "data-upload-status",
     data: {
-      message: "Uploading attachments to the computer",
+      message,
       isUploading: true,
     },
     transient: true,
@@ -92,7 +95,7 @@ export const findSummarizationInsertIndex = (
 // Unified rate limit warning data types
 export type RateLimitWarningData =
   | {
-      // Free users: sliding window (remaining count)
+      // Free users: sliding window (remaining request units)
       warningType: "sliding-window";
       remaining: number;
       resetTime: string;

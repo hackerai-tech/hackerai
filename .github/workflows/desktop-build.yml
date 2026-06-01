@@ -10,12 +10,6 @@ on:
     tags:
       - "desktop-v*"
   workflow_dispatch:
-    inputs:
-      release:
-        description: "Create a release"
-        required: false
-        default: false
-        type: boolean
 
 env:
   APP_URL: https://hackerai.co
@@ -24,7 +18,7 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag_name }}
@@ -47,40 +41,17 @@ jobs:
             echo "version=$VERSION" >> $GITHUB_OUTPUT
             echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
             echo "should_release=true" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # Triggered by push to main - create new tag
-            LATEST_TAG=$(git tag -l "desktop-v*" | sort -V | tail -1)
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="desktop-v0.0.0"
-            fi
-
-            VERSION="${LATEST_TAG#desktop-v}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            NEW_TAG="desktop-v${NEW_VERSION}"
-
-            echo "Creating new tag: $NEW_TAG"
-
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$NEW_TAG" -m "Auto-release: $NEW_TAG"
-            git push origin "$NEW_TAG"
-
-            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            echo "tag_name=$NEW_TAG" >> $GITHUB_OUTPUT
-            echo "should_release=true" >> $GITHUB_OUTPUT
           else
-            # Manual dispatch or other
+            # Main and manual runs build without publishing a release.
             echo "version=dev" >> $GITHUB_OUTPUT
             echo "tag_name=" >> $GITHUB_OUTPUT
-            echo "should_release=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> $GITHUB_OUTPUT
           fi
 
   build:
     needs: prepare
     permissions:
-      contents: write
+      contents: read
     environment: ${{ matrix.platform == 'windows-latest' && 'trusted-signing' || '' }}
     strategy:
       fail-fast: false
@@ -108,6 +79,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -142,19 +115,47 @@ jobs:
           # already scoped to packages/desktop/src-tauri and covers it.
           cache: false
 
-      - name: Install Rust stable (macOS — bypass rustup-init shim)
+      - name: Install Rust stable (macOS - pinned rustup-init)
         if: matrix.platform == 'macos-latest'
         shell: bash
+        env:
+          RUSTUP_VERSION: 1.29.0
+          RUSTUP_INIT_SHA256_AARCH64_APPLE_DARWIN: aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1
+          RUSTUP_INIT_SHA256_X86_64_APPLE_DARWIN: 33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7
         run: |
+          set -euo pipefail
+
           # The standard rust-toolchain actions short-circuit on
           # `command -v rustup`, but the GitHub-hosted macOS runner ships a
           # `rustup-init` shim aliased as `rustup`/`cargo`, fooling that
           # heuristic. The action then skips installing the real toolchain
           # and `cargo metadata` invokes the shim, which doesn't know
-          # `metadata` and dies with rustup-init's usage screen. Install
-          # rustup directly to bypass the broken detection.
-          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -fsSL \
-            https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+          # `metadata` and dies with rustup-init's usage screen. Download an
+          # archived rustup-init binary and verify its pinned checksum instead
+          # of executing a live shell installer.
+          case "$(uname -m)" in
+            arm64)
+              rustup_host="aarch64-apple-darwin"
+              rustup_sha256="$RUSTUP_INIT_SHA256_AARCH64_APPLE_DARWIN"
+              ;;
+            x86_64)
+              rustup_host="x86_64-apple-darwin"
+              rustup_sha256="$RUSTUP_INIT_SHA256_X86_64_APPLE_DARWIN"
+              ;;
+            *)
+              echo "::error::Unsupported macOS runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          rustup_init="$RUNNER_TEMP/rustup-init"
+          rustup_url="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rustup_host}/rustup-init"
+
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -fsSLo "$rustup_init" "$rustup_url"
+          printf '%s  %s\n' "$rustup_sha256" "$rustup_init" | shasum -a 256 -c -
+          chmod +x "$rustup_init"
+          "$rustup_init" -y --default-host "$rustup_host" --default-toolchain stable --profile minimal --no-modify-path
+
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" target add "${{ matrix.target }}"
           "$HOME/.cargo/bin/cargo" --version
@@ -220,7 +221,7 @@ jobs:
           rm $CERTIFICATE_PATH
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -285,7 +286,7 @@ jobs:
 
       - name: Sign Windows executables with Azure Trusted Signing
         if: matrix.platform == 'windows-latest'
-        uses: azure/trusted-signing-action@v1
+        uses: azure/trusted-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -306,7 +307,7 @@ jobs:
           find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f 2>/dev/null || true
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.name }}
           path: |
@@ -318,10 +319,14 @@ jobs:
     needs: [prepare, build]
     runs-on: macos-latest
     if: needs.prepare.outputs.should_release == 'true'
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download macOS arm64 artifact
         uses: actions/download-artifact@v4
@@ -494,7 +499,7 @@ jobs:
           spctl --assess --type open --context context:primary-signature -v HackerAI-universal.dmg || true
 
       - name: Upload universal artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-macOS-universal
           path: HackerAI-universal.dmg
@@ -512,6 +517,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

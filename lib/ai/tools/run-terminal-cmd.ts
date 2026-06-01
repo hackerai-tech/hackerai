@@ -226,6 +226,22 @@ In using these tools, adhere to the following guidelines:
             };
           }
 
+          const supportsCentrifugoPty =
+            !isCentrifugo ||
+            typeof sandbox.supportsPty !== "function" ||
+            sandbox.supportsPty();
+
+          if (!supportsCentrifugoPty) {
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Interactive terminal sessions are unavailable on this local connection. Use non-interactive terminal commands instead.",
+              },
+            };
+          }
+
           // Set up Caido proxy env vars before spawning the PTY so the session
           // launches with proxy env pointing at a running Caido. Mirrors the
           // non-interactive `executeCommand` flow: only eager on E2B; on
@@ -804,7 +820,13 @@ In using these tools, adhere to the following guidelines:
           });
         } // end of executeCommand
       } catch (error) {
-        return error as CommandExitError;
+        return {
+          result: {
+            exitCode: error instanceof CommandExitError ? error.exitCode : 1,
+            output: "",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        };
       }
     },
     // For interactive PTY results, strip rawSnapshot from what the model
