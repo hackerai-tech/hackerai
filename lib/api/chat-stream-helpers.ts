@@ -453,9 +453,9 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Because agent runs may include multimodal tool
- * results from file.view, Claude's agent fallback chain must stay
- * multimodal-capable instead of falling through to text-only agent models.
+ * this fallback can fire. Claude agent calls use the cheaper Kimi fallback
+ * while the run is text-only, then switch to multimodal-capable fallbacks once
+ * image tool results enter the context.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -473,16 +473,29 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["fallback-gemini-3.5-flash", "fallback-grok-4.3"],
+    agent: ["model-kimi-k2.6", "fallback-grok-4.3"],
     ask: ["model-gemini-3-flash"],
   };
+
+const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
+  "fallback-gemini-3.5-flash",
+  "fallback-grok-4.3",
+] as const satisfies readonly ModelName[];
+
+type FallbackOptions = {
+  hasMultimodalToolResults?: boolean;
+};
 
 const getFallbackKeys = (
   modelName?: string,
   mode?: ChatMode,
+  options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
   if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
+    if (mode === "agent" && options.hasMultimodalToolResults) {
+      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
+    }
     return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
   }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
@@ -522,8 +535,9 @@ const resolveSlug = (modelName: string): string | undefined => {
 export function getFallbackSlugs(
   modelName?: string,
   mode?: ChatMode,
+  options: FallbackOptions = {},
 ): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode);
+  const fallbackKeys = getFallbackKeys(modelName, mode, options);
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
@@ -539,10 +553,11 @@ export function buildProviderOptions(
   userId?: string,
   modelName?: string,
   mode?: ChatMode,
+  options: FallbackOptions = {},
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const fallbackSlugs = getFallbackSlugs(modelName, mode);
+  const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   return {
     openrouter: {
       ...(isReasoningModel

@@ -112,6 +112,34 @@ export function initAgentStreamState(
   };
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isImageViewOutput = (output: unknown): boolean => {
+  if (!isRecord(output)) return false;
+
+  return (
+    output.action === "view" &&
+    output.kind === "image" &&
+    typeof output.mediaType === "string" &&
+    output.mediaType.startsWith("image/")
+  );
+};
+
+const uiMessagesContainImageViewResult = (messages: UIMessage[]): boolean =>
+  messages.some((message) =>
+    message.parts?.some((part) => {
+      if (!isRecord(part) || part.type !== "tool-file") return false;
+      return isImageViewOutput(part.output);
+    }),
+  );
+
+const toolResultsContainImageViewResult = (toolResults: unknown[]): boolean =>
+  toolResults.some((toolResult) => {
+    if (!isRecord(toolResult) || toolResult.toolName !== "file") return false;
+    return isImageViewOutput(toolResult.output);
+  });
+
 // ---------------------------------------------------------------------------
 // Immutable context — everything the runner needs besides mutable state.
 // ---------------------------------------------------------------------------
@@ -198,6 +226,19 @@ export async function createAgentStream(
     ctx.subscription === "free"
       ? FREE_MAX_OUTPUT_TOKENS
       : PAID_MAX_OUTPUT_TOKENS;
+  let streamHasImageViewResults = uiMessagesContainImageViewResult(
+    state.finalMessages,
+  );
+  const getStepProviderOptions = () =>
+    buildProviderOptions(
+      ctx.isReasoningModel,
+      ctx.userId,
+      modelName,
+      ctx.mode,
+      {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      },
+    );
   const prepareProviderMessages = (
     messages: ModelMessage[],
   ): ModelMessage[] => {
@@ -226,12 +267,7 @@ export async function createAgentStream(
     tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal: ctx.abortController.signal,
-    providerOptions: buildProviderOptions(
-      ctx.isReasoningModel,
-      ctx.userId,
-      modelName,
-      ctx.mode,
-    ),
+    providerOptions: getStepProviderOptions(),
 
     prepareStep: async ({ steps, messages }) => {
       try {
@@ -243,6 +279,14 @@ export async function createAgentStream(
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
           state.finalMessages = pruneResult.messages;
+        }
+
+        const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+        const toolResults =
+          (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
+          [];
+        if (toolResultsContainImageViewResult(toolResults)) {
+          streamHasImageViewResults = true;
         }
 
         if (!ctx.temporary && !ctx.summarizationTracker.hasSummarized) {
@@ -264,12 +308,7 @@ export async function createAgentStream(
             providerInputTokens: state.lastStepInputTokens,
             chatSystemPrompt: ctx.currentSystemPrompt,
             tools: ctx.tools,
-            providerOptions: buildProviderOptions(
-              ctx.isReasoningModel,
-              ctx.userId,
-              modelName,
-              ctx.mode,
-            ),
+            providerOptions: getStepProviderOptions(),
           });
 
           if (result.needsSummarization && result.summarizedMessages) {
@@ -283,6 +322,7 @@ export async function createAgentStream(
             }
             return {
               activeTools: await getActiveTools(),
+              providerOptions: getStepProviderOptions(),
               messages: prepareProviderMessages(
                 await convertToModelMessages(result.summarizedMessages),
               ),
@@ -295,11 +335,6 @@ export async function createAgentStream(
         if (modelPrune.prunedCount > 0) {
           currentMessages = modelPrune.messages;
         }
-
-        const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
-        const toolResults =
-          (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
-          [];
 
         let updatedMessages = await applyPrepareStepReminders(currentMessages, {
           toolResults,
@@ -325,6 +360,7 @@ export async function createAgentStream(
 
         return {
           activeTools: await getActiveTools(),
+          providerOptions: getStepProviderOptions(),
           messages: prepareProviderMessages(
             addCacheBreakpointToLastUserMessage(
               updatedMessages,
@@ -339,7 +375,10 @@ export async function createAgentStream(
           console.error("[agent-stream] prepareStep error:", error);
         }
         return ctx.currentSystemPrompt
-          ? { system: ctx.currentSystemPrompt }
+          ? {
+              providerOptions: getStepProviderOptions(),
+              system: ctx.currentSystemPrompt,
+            }
           : {};
       }
     },
@@ -424,7 +463,9 @@ export async function createAgentStream(
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
 
-      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
+      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      });
       logOpenRouterFallbackIfFired({
         fallbackSlugs,
         requestedSlug,
@@ -451,7 +492,9 @@ export async function createAgentStream(
     onError: async ({ error }) => {
       state.providerError = error;
       if (!isXaiSafetyError(error)) {
-        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode);
+        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
+          hasMultimodalToolResults: streamHasImageViewResults,
+        });
         ctx.chatLogger?.recordProviderError(error, {
           mode: ctx.mode,
           model: modelName,

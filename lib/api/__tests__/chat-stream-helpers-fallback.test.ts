@@ -21,6 +21,7 @@ jest.mock("@/lib/logger", () => ({
 const GEMINI_SLUG = "google/gemini-3-flash-preview";
 const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
+const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
   it("resolves Opus 4.6 ask chain to Gemini slug", () => {
@@ -31,12 +32,26 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 agent chain to multimodal Gemini 3.5 then Grok slugs", () => {
+  it("resolves Opus 4.6 text-only agent chain to Kimi then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
       "model-opus-4.6",
       "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("resolves Opus 4.6 multimodal agent chain to Gemini 3.5 then Grok slugs", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+      { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
       models: [GEMINI_3_5_SLUG, GROK_SLUG],
@@ -57,12 +72,26 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 agent chain to multimodal Gemini 3.5 then Grok slugs", () => {
+  it("resolves Sonnet 4.6 text-only agent chain to Kimi then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
       "model-sonnet-4.6",
       "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("resolves Sonnet 4.6 multimodal agent chain to Gemini 3.5 then Grok slugs", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-sonnet-4.6",
+      "agent",
+      { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
       models: [GEMINI_3_5_SLUG, GROK_SLUG],
@@ -129,7 +158,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [GEMINI_3_5_SLUG, GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
     });
 
     const noReasoning = buildProviderOptions(
@@ -140,6 +169,18 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
+      models: [KIMI_SLUG, GROK_SLUG],
+    });
+
+    const multimodal = buildProviderOptions(
+      true,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+      { hasMultimodalToolResults: true },
+    );
+    expect(multimodal.openrouter).toMatchObject({
+      reasoning: { enabled: true },
       models: [GEMINI_3_5_SLUG, GROK_SLUG],
     });
   });
