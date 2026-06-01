@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { Download, ZoomIn, ZoomOut } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 
 interface ImageViewerProps {
@@ -6,6 +7,7 @@ interface ImageViewerProps {
   onClose: () => void;
   imageSrc: string;
   imageAlt: string;
+  fileName?: string;
 }
 
 export const ImageViewer = ({
@@ -13,14 +15,29 @@ export const ImageViewer = ({
   onClose,
   imageSrc,
   imageAlt,
+  fileName,
 }: ImageViewerProps) => {
   const [isImageLoading, setIsImageLoading] = useState(true);
+  const [zoom, setZoom] = useState(100);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const imageFrameRef = useRef<HTMLDivElement>(null);
+  const didDragRef = useRef(false);
+  const dragStartRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
 
   // Reset loading state when imageSrc changes
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsImageLoading(true);
+    setZoom(100);
+    setPan({ x: 0, y: 0 });
   }, [imageSrc]);
 
   // Focus the dialog when it opens
@@ -63,6 +80,149 @@ export const ImageViewer = ({
     onClose();
   };
 
+  const setZoomAtPoint = (
+    nextZoom: number,
+    point?: { x: number; y: number },
+  ) => {
+    setZoom((currentZoom) => {
+      const clampedZoom = Math.min(300, Math.max(25, nextZoom));
+
+      if (!point || clampedZoom <= 100) {
+        setPan({ x: 0, y: 0 });
+        return clampedZoom;
+      }
+
+      const oldScale = currentZoom / 100;
+      const newScale = clampedZoom / 100;
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+
+      setPan((currentPan) => ({
+        x:
+          point.x -
+          centerX -
+          (newScale / oldScale) * (point.x - centerX - currentPan.x),
+        y:
+          point.y -
+          centerY -
+          (newScale / oldScale) * (point.y - centerY - currentPan.y),
+      }));
+
+      return clampedZoom;
+    });
+  };
+
+  const handleDownload = async () => {
+    const downloadName =
+      fileName ||
+      imageAlt
+        .trim()
+        .replace(/[^\w.\- ]+/g, "")
+        .replace(/\s+/g, "-")
+        .slice(0, 80) ||
+      "image";
+
+    try {
+      const response = await fetch(imageSrc);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(imageSrc, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const handleZoomOut = () => {
+    setZoomAtPoint(zoom - 25);
+  };
+
+  const handleZoomIn = () => {
+    setZoomAtPoint(zoom + 25, {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+    });
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const direction = e.deltaY > 0 ? -25 : 25;
+    setZoomAtPoint(zoom + direction, { x: e.clientX, y: e.clientY });
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (zoom <= 100 || e.button !== 0) return;
+
+    dragStartRef.current = {
+      pointerId: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+    setIsDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const dragStart = dragStartRef.current;
+    if (!dragStart) return;
+
+    if (
+      Math.abs(e.clientX - dragStart.x) > 3 ||
+      Math.abs(e.clientY - dragStart.y) > 3
+    ) {
+      didDragRef.current = true;
+    }
+
+    setPan({
+      x: dragStart.panX + e.clientX - dragStart.x,
+      y: dragStart.panY + e.clientY - dragStart.y,
+    });
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStartRef.current?.pointerId === e.pointerId) {
+      dragStartRef.current = null;
+      setIsDragging(false);
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
+
+    if (e.target === e.currentTarget) {
+      const imageBounds = imageFrameRef.current?.getBoundingClientRect();
+      if (
+        imageBounds &&
+        e.clientX >= imageBounds.left &&
+        e.clientX <= imageBounds.right &&
+        e.clientY >= imageBounds.top &&
+        e.clientY <= imageBounds.bottom
+      ) {
+        return;
+      }
+
+      handleClose();
+    }
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    setZoomAtPoint(zoom >= 200 ? 100 : 200, {
+      x: e.clientX,
+      y: e.clientY,
+    });
+  };
+
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
       handleClose();
@@ -78,11 +238,49 @@ export const ImageViewer = ({
       tabIndex={-1}
       data-testid="image-zoom-modal"
     >
+      <div className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-black/65 py-1 pl-1 pr-3 text-white shadow-2xl backdrop-blur-2xl">
+        <button
+          type="button"
+          className="flex size-7 cursor-pointer items-center justify-center rounded transition-colors hover:bg-white/10"
+          onClick={handleDownload}
+          aria-label="Download image"
+        >
+          <Download className="h-5 w-5" aria-hidden="true" />
+        </button>
+        <div className="h-4 w-px bg-white/25" />
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            className="flex size-7 items-center justify-center rounded transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={handleZoomOut}
+            disabled={zoom <= 25}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="h-5 w-5" aria-hidden="true" />
+          </button>
+          <span className="min-w-10 text-center text-sm leading-5 text-white">
+            {zoom}%
+          </span>
+          <button
+            type="button"
+            className="flex size-7 items-center justify-center rounded transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={handleZoomIn}
+            disabled={zoom >= 300}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="h-5 w-5" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
       {/* Close Button */}
       <button
-        className="absolute end-4 top-4 hover:opacity-70 transition-opacity"
+        className="absolute end-4 top-4 z-10 hover:opacity-70 transition-opacity"
         type="button"
-        onClick={handleClose}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleClose();
+        }}
         aria-label="Close image viewer"
         tabIndex={0}
       >
@@ -106,9 +304,22 @@ export const ImageViewer = ({
         aria-labelledby="image-viewer-title"
         aria-describedby="image-viewer-description"
         data-state="open"
-        className="radix-state-open:animate-contentShow shadow-xl focus:outline-hidden relative"
+        className={`radix-state-open:animate-contentShow focus:outline-hidden relative flex h-full w-full items-center justify-center overflow-hidden ${
+          zoom > 100
+            ? isDragging
+              ? "cursor-grabbing"
+              : "cursor-grab"
+            : "cursor-zoom-in"
+        }`}
         tabIndex={-1}
         style={{ pointerEvents: "auto" }}
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onClick={handleCanvasClick}
+        onDoubleClick={handleDoubleClick}
       >
         {/* Screen reader title */}
         <div id="image-viewer-title" className="sr-only">
@@ -118,7 +329,13 @@ export const ImageViewer = ({
           {imageAlt}
         </div>
 
-        <div className="relative max-h-[85vh] max-w-[90vw]">
+        <div
+          ref={imageFrameRef}
+          className="relative select-none transition-transform duration-100"
+          style={{
+            transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom / 100})`,
+          }}
+        >
           {/* Loading Indicator */}
           {isImageLoading && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
@@ -130,7 +347,8 @@ export const ImageViewer = ({
           )}
 
           <Image
-            className={`h-full w-full object-contain transition-opacity duration-300 ${
+            draggable={false}
+            className={`object-contain transition-opacity duration-300 ${
               isImageLoading ? "opacity-0" : "opacity-100"
             }`}
             src={imageSrc}

@@ -521,6 +521,7 @@ const FilePartRendererComponent = ({
             onClose={() => setSelectedImage(null)}
             imageSrc={selectedImage.src}
             imageAlt={selectedImage.alt}
+            fileName={part.name || part.filename || selectedImage.alt}
           />,
           document.body,
         )}

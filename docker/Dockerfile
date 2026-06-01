@@ -130,6 +130,7 @@ RUN apt-get update && \
     foremost \
     # Document conversion
     pandoc \
+    poppler-utils \
     # Web application security scanner
     zaproxy \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
@@ -331,4 +332,3 @@ RUN apt-get clean && \
 
 # Default shell
 SHELL ["/bin/bash", "-c"]
-

@@ -65,8 +65,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const chatsQuery = useChats(shouldFetchChats);
   const chats = chatsQuery.results ?? [];
   const trimmedDebouncedQuery = debouncedQuery.trim();
-  const isSearchReady =
-    trimmedDebouncedQuery.length >= MIN_SEARCH_QUERY_LENGTH;
+  const isSearchReady = trimmedDebouncedQuery.length >= MIN_SEARCH_QUERY_LENGTH;
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
@@ -77,9 +76,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Use Convex usePaginatedQuery for search
   const searchResults = usePaginatedQuery(
     api.messages.searchMessages,
-    isSearchReady && user
-      ? { searchQuery: trimmedDebouncedQuery }
-      : "skip",
+    isSearchReady && user ? { searchQuery: trimmedDebouncedQuery } : "skip",
     { initialNumItems: 20 },
   );
 

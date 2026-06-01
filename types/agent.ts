@@ -5,7 +5,7 @@ import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
-import type { ChatMode } from "./chat";
+import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 
@@ -110,6 +110,11 @@ export interface ToolContext {
   /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */
   ptySessionManager: PtySessionManager;
   mode: ChatMode;
+  /** Configured model key for this request, used for model-aware tool capabilities. */
+  modelName?: string;
+  /** Returns the currently active stream model, including provider fallback legs. */
+  getCurrentModelName?: () => string | undefined;
+  subscription?: SubscriptionTier;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;
   /** Whether the Caido proxy is enabled (default true). When false, proxy tools are hidden and HTTP_PROXY env vars are not injected. */

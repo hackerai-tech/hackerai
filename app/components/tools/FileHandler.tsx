@@ -1,14 +1,15 @@
 import { memo, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
-import { FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
+import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
 import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
+import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 interface FileInput {
-  action: "read" | "write" | "append" | "edit";
+  action: "view" | "read" | "write" | "append" | "edit";
   path: string;
   brief: string;
   text?: string;
@@ -19,6 +20,22 @@ interface FileInput {
 interface FileHandlerProps {
   part: any;
   status: ChatStatus;
+}
+
+interface FileViewOutput {
+  action?: "view";
+  content?: string;
+  filename?: string;
+  mediaType?: string;
+  sizeBytes?: number;
+  kind?: "image" | "pdf";
+  previewFiles?: Array<FilePart & { page?: number }>;
+  renderedPages?: number[];
+  renderedPageLimit?: number;
+  truncatedPages?: boolean;
+  pageCount?: number;
+  previewError?: string;
+  error?: string;
 }
 
 // Custom comparison for file handler - only re-render when state/output changes
@@ -84,10 +101,18 @@ export const FileHandler = memo(function FileHandler({
     const toolCallId = part.toolCallId;
 
     // Write/Append during streaming — show content as it streams in
-    if (
-      (action === "write" || action === "append") &&
-      (part.state === "input-streaming" || part.state === "input-available")
-    ) {
+    if (part.state === "input-streaming" || part.state === "input-available") {
+      if (action === "view") {
+        return {
+          path: input.path,
+          content: "",
+          action: "viewing",
+          toolCallId,
+          isExecuting: true,
+        };
+      }
+
+      if (action !== "write" && action !== "append") return null;
       // During input-streaming, only show when content is available
       if (part.state === "input-streaming" && !input.text) return null;
       return {
@@ -131,6 +156,32 @@ export const FileHandler = memo(function FileHandler({
           toolCallId,
           isExecuting: false,
           error: errorMessage,
+        };
+      }
+
+      if (action === "view") {
+        const viewOutput =
+          !isError && typeof output === "object" && output !== null
+            ? (output as FileViewOutput)
+            : undefined;
+
+        return {
+          path: input.path,
+          content: viewOutput?.content || "",
+          action: "viewing",
+          toolCallId,
+          isExecuting: false,
+          error: errorMessage,
+          filename: viewOutput?.filename,
+          mediaType: viewOutput?.mediaType,
+          sizeBytes: viewOutput?.sizeBytes,
+          kind: viewOutput?.kind,
+          previewFiles: viewOutput?.previewFiles,
+          renderedPages: viewOutput?.renderedPages,
+          renderedPageLimit: viewOutput?.renderedPageLimit,
+          truncatedPages: viewOutput?.truncatedPages,
+          pageCount: viewOutput?.pageCount,
+          previewError: viewOutput?.previewError,
         };
       }
 
@@ -218,6 +269,52 @@ export const FileHandler = memo(function FileHandler({
   });
 
   const isClickable = !!sidebarContent;
+
+  const renderViewAction = () => {
+    const { toolCallId, state } = part;
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Eye />}
+            action="Viewing file"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Eye />}
+            action={briefLabel("Viewing")}
+            target={briefTarget(input?.path)}
+            isShimmer={true}
+            isClickable={isClickable}
+            onClick={isClickable ? handleOpenInSidebar : undefined}
+            onKeyDown={isClickable ? handleKeyDown : undefined}
+          />
+        ) : null;
+      case "output-available": {
+        if (!input) return null;
+
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Eye />}
+            action={briefLabel(isOutputError ? "Failed to view" : "Viewed")}
+            target={briefTarget(input.path)}
+            isClickable={isClickable}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
 
   const renderReadAction = () => {
     const { toolCallId, state } = part;
@@ -539,6 +636,8 @@ export const FileHandler = memo(function FileHandler({
 
   // Route to the appropriate renderer based on action
   switch (action) {
+    case "view":
+      return renderViewAction();
     case "read":
       return renderReadAction();
     case "write":

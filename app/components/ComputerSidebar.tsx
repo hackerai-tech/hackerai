@@ -1,5 +1,18 @@
 import React from "react";
-import { Minimize2, Terminal, Play, SkipBack, SkipForward } from "lucide-react";
+import Image from "next/image";
+import { createPortal } from "react-dom";
+import { useAction, useConvex } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import {
+  Eye,
+  FileText,
+  Maximize2,
+  Minimize2,
+  Terminal,
+  Play,
+  SkipBack,
+  SkipForward,
+} from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
@@ -24,8 +37,11 @@ import {
   type NoteCategory,
 } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
+import { ImageViewer } from "./ImageViewer";
 import { TodoPanel } from "./TodoPanel";
+import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import {
   getCategoryColor,
   getLanguageFromPath,
@@ -43,6 +59,230 @@ interface ComputerSidebarProps {
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
 }
+
+const formatFileSize = (sizeBytes?: number): string | null => {
+  if (typeof sizeBytes !== "number") return null;
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const SidebarPreviewImage = ({
+  file,
+  label,
+}: {
+  file: FilePart & { page?: number };
+  label: string;
+}) => {
+  const convex = useConvex();
+  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const fileUrlCache = useFileUrlCacheContext();
+  const [fileUrl, setFileUrl] = useState<string | null>(() => {
+    if (file.fileId && fileUrlCache) {
+      return fileUrlCache.getCachedUrl(file.fileId) || null;
+    }
+    return file.url || null;
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchUrl() {
+      if (file.url) {
+        setFileUrl(file.url);
+        return;
+      }
+
+      if (file.fileId && fileUrlCache) {
+        const cachedUrl = fileUrlCache.getCachedUrl(file.fileId);
+        if (cachedUrl) {
+          setFileUrl(cachedUrl);
+          return;
+        }
+      }
+
+      try {
+        setError(null);
+        let url: string | null = null;
+
+        if (file.fileId) {
+          url = await getFileUrlAction({ fileId: file.fileId });
+          if (url && fileUrlCache) {
+            fileUrlCache.setCachedUrl(file.fileId, url);
+          }
+        } else if (file.storageId) {
+          url = await convex.query(api.fileStorage.getFileDownloadUrl, {
+            storageId: file.storageId,
+          });
+        }
+
+        if (!cancelled) {
+          if (url) {
+            setFileUrl(url);
+          } else {
+            setError("Preview URL unavailable");
+          }
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setError(
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Failed to load preview",
+          );
+        }
+      }
+    }
+
+    fetchUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    convex,
+    file.fileId,
+    file.storageId,
+    file.url,
+    fileUrlCache,
+    getFileUrlAction,
+  ]);
+
+  if (error) {
+    return (
+      <div className="flex min-h-[180px] w-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        {error}
+      </div>
+    );
+  }
+
+  if (!fileUrl) {
+    return (
+      <div className="flex min-h-[180px] w-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        Loading preview...
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex w-full justify-center">
+        <button
+          type="button"
+          className="group relative block cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          onClick={() => setViewerOpen(true)}
+          aria-label={`View ${label} in full size`}
+        >
+          <Image
+            src={fileUrl}
+            alt={label}
+            width={1600}
+            height={2200}
+            className="block h-auto max-h-none w-auto max-w-full object-contain"
+            unoptimized
+          />
+          <span className="pointer-events-none absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/65 text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <Maximize2 className="h-4 w-4" aria-hidden="true" />
+          </span>
+        </button>
+      </div>
+      {viewerOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <ImageViewer
+            isOpen={viewerOpen}
+            onClose={() => setViewerOpen(false)}
+            imageSrc={fileUrl}
+            imageAlt={label}
+            fileName={file.name || file.filename || label}
+          />,
+          document.body,
+        )}
+    </>
+  );
+};
+
+const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
+  if (!isSidebarFile(file)) return null;
+
+  const filename = file.filename || file.path.split("/").pop() || file.path;
+  const kindLabel = file.kind === "pdf" ? "PDF" : "Image";
+  const sizeLabel = formatFileSize(file.sizeBytes);
+  const metadata = [file.mediaType, sizeLabel].filter(Boolean).join(" | ");
+
+  const pageSummary =
+    file.renderedPages && file.renderedPages.length > 0
+      ? `Page${file.renderedPages.length === 1 ? "" : "s"} ${file.renderedPages.join(", ")}${file.pageCount ? ` of ${file.pageCount}` : ""}${file.truncatedPages && file.renderedPageLimit ? ` | first ${file.renderedPageLimit} shown` : ""}`
+      : null;
+
+  if (file.previewFiles && file.previewFiles.length > 0) {
+    return (
+      <div className="h-full overflow-auto bg-background font-sans">
+        <div className="flex min-h-full w-full flex-col items-center gap-6 px-4 py-0">
+          {file.previewFiles.map((previewFile, index) => (
+            <SidebarPreviewImage
+              key={
+                previewFile.fileId ||
+                `${file.toolCallId || file.path}-preview-${index}`
+              }
+              file={previewFile}
+              label={
+                previewFile.page
+                  ? `${filename} page ${previewFile.page}`
+                  : filename
+              }
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto font-sans">
+      <div className="flex min-h-full items-center justify-center p-6">
+        <div className="w-full max-w-[420px] rounded-lg border border-border bg-muted/20 px-5 py-6 text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-background text-foreground">
+            {file.kind === "pdf" ? (
+              <FileText className="h-6 w-6" aria-hidden="true" />
+            ) : (
+              <Eye className="h-6 w-6" aria-hidden="true" />
+            )}
+          </div>
+          <div className="text-sm font-medium text-foreground">
+            Viewed {kindLabel.toLowerCase()} file
+          </div>
+          <div className="mt-1 break-words font-mono text-xs text-muted-foreground">
+            {filename}
+          </div>
+          {metadata && (
+            <div className="mt-3 text-xs text-muted-foreground">{metadata}</div>
+          )}
+          {pageSummary && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              {pageSummary}
+            </div>
+          )}
+          <div className="mt-4 rounded-md bg-background/70 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground break-all">
+            {file.path}
+          </div>
+          {file.error && (
+            <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-left text-xs text-destructive">
+              {file.error}
+            </div>
+          )}
+          {!file.error && file.previewError && (
+            <div className="mt-4 rounded-md border border-border bg-background/70 px-3 py-2 text-left text-xs text-muted-foreground">
+              Preview unavailable: {file.previewError}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   sidebarOpen,
@@ -341,7 +581,12 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     variant="sidebar"
                     // xterm manages its own wrapping; the toggle is a no-op
                     // for interactive PTY output.
-                    showWrap={!(isTerminal && resolvedTerminal?.rawBytes)}
+                    showWrap={
+                      !(
+                        (isTerminal && resolvedTerminal?.rawBytes) ||
+                        (isFile && resolvedFile?.action === "viewing")
+                      )
+                    }
                   />
                 )}
               </div>
@@ -360,33 +605,39 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     >
                       {isFile && resolvedFile && (
                         <>
-                          {/* Show DiffView for editing/appending actions with diff data */}
-                          {(resolvedFile.action === "editing" ||
-                            resolvedFile.action === "appending") &&
-                          resolvedFile.originalContent !== undefined &&
-                          resolvedFile.modifiedContent !== undefined ? (
-                            <DiffView
-                              originalContent={resolvedFile.originalContent}
-                              modifiedContent={resolvedFile.modifiedContent}
-                              language={
-                                resolvedFile.language ||
-                                getLanguageFromPath(resolvedFile.path)
-                              }
-                              wrap={isWrapped}
-                            />
+                          {resolvedFile.action === "viewing" ? (
+                            <ViewFileSummary file={resolvedFile} />
                           ) : (
-                            <ComputerCodeBlock
-                              language={
-                                resolvedFile.action === "searching"
-                                  ? "text"
-                                  : resolvedFile.language ||
+                            <>
+                              {/* Show DiffView for editing/appending actions with diff data */}
+                              {(resolvedFile.action === "editing" ||
+                                resolvedFile.action === "appending") &&
+                              resolvedFile.originalContent !== undefined &&
+                              resolvedFile.modifiedContent !== undefined ? (
+                                <DiffView
+                                  originalContent={resolvedFile.originalContent}
+                                  modifiedContent={resolvedFile.modifiedContent}
+                                  language={
+                                    resolvedFile.language ||
                                     getLanguageFromPath(resolvedFile.path)
-                              }
-                              wrap={isWrapped}
-                              showButtons={false}
-                            >
-                              {resolvedFile.content}
-                            </ComputerCodeBlock>
+                                  }
+                                  wrap={isWrapped}
+                                />
+                              ) : (
+                                <ComputerCodeBlock
+                                  language={
+                                    resolvedFile.action === "searching"
+                                      ? "text"
+                                      : resolvedFile.language ||
+                                        getLanguageFromPath(resolvedFile.path)
+                                  }
+                                  wrap={isWrapped}
+                                  showButtons={false}
+                                >
+                                  {resolvedFile.content}
+                                </ComputerCodeBlock>
+                              )}
+                            </>
                           )}
                         </>
                       )}

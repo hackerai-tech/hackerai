@@ -403,6 +403,8 @@ export const createChatHandler = () => {
               getFileAccumulator,
               sandboxManager,
               getSandboxSessionCost,
+              setCurrentModelName,
+              getToolsForModel,
             } = createTools(
               userId,
               chatId,
@@ -429,6 +431,7 @@ export const createChatHandler = () => {
               subscription,
               (info) => chatLogger?.setSandboxBoot(info),
               (info) => chatLogger?.setCaidoReady(info),
+              selectedModel,
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -738,8 +741,11 @@ export const createChatHandler = () => {
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
 
-            const createStream = (modelName: string) =>
-              createAgentStream(modelName, streamCtx, state);
+            const createStream = (modelName: string) => {
+              streamCtx.tools = getToolsForModel(modelName);
+              setCurrentModelName(modelName);
+              return createAgentStream(modelName, streamCtx, state);
+            };
 
             let result;
             try {

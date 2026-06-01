@@ -2,6 +2,7 @@
 
 import {
   ImageIcon,
+  Eye,
   Terminal,
   Radar,
   Search,
@@ -374,13 +375,32 @@ function renderFileTool(
   openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const fileInput = part.input as {
-    action?: "read" | "write" | "append" | "edit";
+    action?: "view" | "read" | "write" | "append" | "edit";
     path?: string;
     text?: string;
     range?: [number, number];
     brief?: string;
   };
   const fileOutput = part.output as {
+    content?: string;
+    filename?: string;
+    mediaType?: string;
+    sizeBytes?: number;
+    kind?: "image" | "pdf";
+    previewFiles?: Array<{
+      fileId?: any;
+      name?: string;
+      filename?: string;
+      mediaType?: string;
+      storageId?: string;
+      s3Key?: string;
+      page?: number;
+    }>;
+    renderedPages?: number[];
+    renderedPageLimit?: number;
+    truncatedPages?: boolean;
+    pageCount?: number;
+    previewError?: string;
     originalContent?: string;
     modifiedContent?: string;
     error?: string;
@@ -400,12 +420,17 @@ function renderFileTool(
   let icon = <FileText aria-hidden="true" />;
   let sidebarAction:
     | "reading"
+    | "viewing"
     | "creating"
     | "editing"
     | "writing"
     | "appending" = "reading";
 
-  if (fileAction === "read") {
+  if (fileAction === "view") {
+    action = "Viewed";
+    icon = <Eye aria-hidden="true" />;
+    sidebarAction = "viewing";
+  } else if (fileAction === "read") {
     action = "Read";
     icon = <FileText aria-hidden="true" />;
     sidebarAction = "reading";
@@ -453,7 +478,9 @@ function renderFileTool(
   if (part.state === "output-available") {
     const handleOpenInSidebar = () => {
       let content = "";
-      if (fileAction === "read") {
+      if (fileAction === "view") {
+        content = fileOutput?.content || "";
+      } else if (fileAction === "read") {
         content = fileOutput?.originalContent || "";
       } else if (fileAction === "write" || fileAction === "append") {
         content = fileInput?.text || "";
@@ -473,6 +500,17 @@ function renderFileTool(
         content,
         range,
         action: sidebarAction,
+        filename: fileOutput?.filename,
+        mediaType: fileOutput?.mediaType,
+        sizeBytes: fileOutput?.sizeBytes,
+        kind: fileOutput?.kind,
+        previewFiles: fileOutput?.previewFiles,
+        renderedPages: fileOutput?.renderedPages,
+        renderedPageLimit: fileOutput?.renderedPageLimit,
+        truncatedPages: fileOutput?.truncatedPages,
+        pageCount: fileOutput?.pageCount,
+        previewError: fileOutput?.previewError,
+        error: fileOutput?.error,
       });
     };
 

@@ -453,8 +453,9 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. If Opus/Sonnet still fails due to provider-side
- * issues, use a mode-appropriate fallback: Kimi for agent, Gemini for ask.
+ * this fallback can fire. Because agent runs may include multimodal tool
+ * results from file.view, Claude's agent fallback chain must stay
+ * multimodal-capable instead of falling through to text-only agent models.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -472,7 +473,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-kimi-k2.6", "fallback-grok-4.3"],
+    agent: ["fallback-gemini-3.5-flash", "fallback-grok-4.3"],
     ask: ["model-gemini-3-flash"],
   };
 

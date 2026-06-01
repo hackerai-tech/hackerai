@@ -1,7 +1,7 @@
 import { UIMessage } from "ai";
 import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
-import type { FileDetails } from "./file";
+import type { FileDetails, FilePart } from "./file";
 
 export type ChatMode = "agent" | "ask";
 
@@ -98,6 +98,7 @@ export interface SidebarFile {
     end?: number;
   };
   action?:
+    | "viewing"
     | "reading"
     | "creating"
     | "editing"
@@ -113,6 +114,26 @@ export interface SidebarFile {
   modifiedContent?: string;
   /** Error message if the operation failed */
   error?: string;
+  /** Media type for viewed multimodal files */
+  mediaType?: string;
+  /** File size for viewed multimodal files */
+  sizeBytes?: number;
+  /** File kind for viewed multimodal files */
+  kind?: "image" | "pdf";
+  /** Display filename returned by the file tool */
+  filename?: string;
+  /** Preview images for viewed images/PDF pages */
+  previewFiles?: Array<FilePart & { page?: number }>;
+  /** PDF pages rendered for this view action */
+  renderedPages?: number[];
+  /** Maximum PDF pages rendered for this view action */
+  renderedPageLimit?: number;
+  /** Whether the PDF view was truncated to the render limit */
+  truncatedPages?: boolean;
+  /** Total PDF page count when known */
+  pageCount?: number;
+  /** Non-fatal preview upload/render error */
+  previewError?: string;
 }
 
 export interface SidebarTerminal {
