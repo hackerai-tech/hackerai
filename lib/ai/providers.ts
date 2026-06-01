@@ -51,6 +51,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
     "fallback-agent-model": or("google/gemini-3-flash-preview"),
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
+    "fallback-gemini-3.5-flash": or("google/gemini-3.5-flash"),
     "fallback-grok-4.3": or("x-ai/grok-4.3"),
     "title-generator-model": or("google/gemini-2.5-flash-lite"),
   }) as Record<string, any>;
@@ -72,6 +73,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-kimi-k2.6": "April 2024",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
+  "fallback-gemini-3.5-flash": "May 2026",
   "fallback-grok-4.3": "December 2025",
   "title-generator-model": "January 2025",
 };
@@ -89,6 +91,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
+  "fallback-gemini-3.5-flash": "Google Gemini 3.5 Flash",
   "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "Google Gemini 2.5 Flash Lite",
 };
@@ -129,7 +132,9 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized.includes("gpt-") ||
     normalized.includes("o1") ||
     normalized.includes("o3") ||
-    normalized.includes("o4")
+    normalized.includes("o4") ||
+    normalized.includes("x-ai/") ||
+    normalized.includes("grok")
   );
 }
 

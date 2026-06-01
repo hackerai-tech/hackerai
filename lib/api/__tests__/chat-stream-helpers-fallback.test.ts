@@ -18,8 +18,8 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
-const KIMI_SLUG = "moonshotai/kimi-k2.6:exacto";
 const GEMINI_SLUG = "google/gemini-3-flash-preview";
+const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
 
 describe("buildProviderOptions fallback chain", () => {
@@ -31,7 +31,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 agent chain to Kimi then Grok slugs", () => {
+  it("resolves Opus 4.6 agent chain to multimodal Gemini 3.5 then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -39,7 +39,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [GEMINI_3_5_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -57,7 +57,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 agent chain to Kimi then Grok slugs", () => {
+  it("resolves Sonnet 4.6 agent chain to multimodal Gemini 3.5 then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -65,7 +65,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [GEMINI_3_5_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -129,7 +129,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [GEMINI_3_5_SLUG, GROK_SLUG],
     });
 
     const noReasoning = buildProviderOptions(
@@ -140,7 +140,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
-      models: [KIMI_SLUG, GROK_SLUG],
+      models: [GEMINI_3_5_SLUG, GROK_SLUG],
     });
   });
 });
