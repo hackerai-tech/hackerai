@@ -125,6 +125,7 @@ export const createTools = (
     mode,
     modelName,
     getCurrentModelName: () => currentModelName,
+    subscription,
     isE2BSandbox,
     guardrailsConfig,
     caidoEnabled,

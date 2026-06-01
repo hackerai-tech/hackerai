@@ -8,6 +8,7 @@ import { isCentrifugoSandbox } from "./utils/sandbox-types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
+import { phLogger } from "@/lib/posthog/server";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const FILE_ACTIONS_WITH_VIEW = [
@@ -52,6 +53,11 @@ type SandboxViewPayload = {
   kind: ViewKind;
   data?: string;
 };
+
+type FileViewImageUsageOutcome =
+  | "success"
+  | "unsupported_model"
+  | "inspection_failed";
 
 const VIEW_FILE_SCRIPT = String.raw`
 import base64
@@ -122,8 +128,87 @@ emit(payload)
 
 const getFilename = (path: string) => path.split("/").pop() || path;
 
+const getFileExtension = (path: string): string | undefined => {
+  const filename = getFilename(path);
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === filename.length - 1) return undefined;
+  return filename.slice(dotIndex + 1).toLowerCase();
+};
+
 function getViewSandboxType(sandbox: any): "centrifugo" | "e2b" {
   return isCentrifugoSandbox(sandbox) ? "centrifugo" : "e2b";
+}
+
+function getActiveModelName(context: ToolContext): string | undefined {
+  return context.getCurrentModelName?.() ?? context.modelName;
+}
+
+function classifyFileViewError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("Unsupported media type")) {
+    return "unsupported_media_type";
+  }
+  if (message.includes("too large")) {
+    return "file_too_large";
+  }
+  if (message.includes("File not found")) {
+    return "file_not_found";
+  }
+  if (message.includes("Windows local sandboxes")) {
+    return "unsupported_sandbox";
+  }
+  if (message.includes("SVG files")) {
+    return "unsupported_svg";
+  }
+
+  return "inspection_error";
+}
+
+function captureFileViewImageUsage(args: {
+  context: ToolContext;
+  sandbox: any;
+  path: string;
+  outcome: FileViewImageUsageOutcome;
+  durationMs: number;
+  mediaType?: string;
+  sizeBytes?: number;
+  previewUploadSucceeded?: boolean;
+  failureReason?: string;
+}) {
+  const {
+    context,
+    sandbox,
+    path,
+    outcome,
+    durationMs,
+    mediaType,
+    sizeBytes,
+    previewUploadSucceeded,
+    failureReason,
+  } = args;
+
+  phLogger.event("file_view_image_used", {
+    userId: context.userID,
+    user_id: context.userID,
+    chat_id: context.chatId,
+    mode: context.mode,
+    subscription: context.subscription,
+    subscription_tier: context.subscription,
+    model: getActiveModelName(context),
+    configured_model: context.modelName,
+    sandbox_type: getViewSandboxType(sandbox),
+    file_extension: getFileExtension(path),
+    outcome,
+    success: outcome === "success",
+    duration_ms: durationMs,
+    ...(mediaType && { media_type: mediaType }),
+    ...(typeof sizeBytes === "number" && { size_bytes: sizeBytes }),
+    ...(typeof previewUploadSucceeded === "boolean" && {
+      preview_upload_succeeded: previewUploadSucceeded,
+    }),
+    ...(failureReason && { failure_reason: failureReason }),
+  });
 }
 
 function errorToLog(error: unknown) {
@@ -390,15 +475,35 @@ ${instructionsDescription}`,
 
         switch (action) {
           case "view": {
+            const viewStartedAt = Date.now();
+
             if (!canViewMultimodalFiles()) {
+              captureFileViewImageUsage({
+                context,
+                sandbox,
+                path,
+                outcome: "unsupported_model",
+                durationMs: Date.now() - viewStartedAt,
+                failureReason: "unsupported_model",
+              });
               return { error: MULTIMODAL_UPGRADE_MESSAGE };
             }
 
-            const viewPayload = await readSandboxFileForView(
-              sandbox,
-              path,
-              false,
-            );
+            let viewPayload: SandboxViewPayload;
+            try {
+              viewPayload = await readSandboxFileForView(sandbox, path, false);
+            } catch (error) {
+              captureFileViewImageUsage({
+                context,
+                sandbox,
+                path,
+                outcome: "inspection_failed",
+                durationMs: Date.now() - viewStartedAt,
+                failureReason: classifyFileViewError(error),
+              });
+              throw error;
+            }
+
             const filename = getFilename(path);
             let previewFiles: ViewPreviewFile[] = [];
             let previewUploadError: string | undefined;
@@ -429,6 +534,17 @@ ${instructionsDescription}`,
                 },
               );
             }
+
+            captureFileViewImageUsage({
+              context,
+              sandbox,
+              path,
+              outcome: "success",
+              durationMs: Date.now() - viewStartedAt,
+              mediaType: viewPayload.mediaType,
+              sizeBytes: viewPayload.sizeBytes,
+              previewUploadSucceeded: !previewUploadError,
+            });
 
             return {
               action: "view",
