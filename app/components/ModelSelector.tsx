@@ -18,7 +18,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -56,81 +55,42 @@ interface ModelSelectorProps {
   mode: ChatMode;
 }
 
-const SwitchRow = ({
-  label,
-  description,
-  checked,
-  onToggle,
-  ariaLabel,
+const AUTO_MODEL_DESCRIPTION =
+  "Balanced quality and speed, recommended for most tasks";
+
+const AutoOptionButton = ({
+  isSelected,
+  onSelect,
   mobile = false,
 }: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onToggle: (checked: boolean) => void;
-  ariaLabel: string;
-  mobile?: boolean;
-}) => {
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.target !== e.currentTarget) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onToggle(!checked);
-    }
-  };
-
-  return (
-    <div
-      role="button"
-      onClick={() => onToggle(!checked)}
-      onKeyDown={handleKeyDown}
-      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-muted/50 ${
-        mobile ? "py-2.5" : "py-2"
-      }`}
-      aria-label={ariaLabel}
-      tabIndex={0}
-    >
-      <div className="flex-1 min-w-0">
-        <span className="text-sm font-medium text-foreground">{label}</span>
-        {description && (
-          <p className="text-xs text-muted-foreground leading-snug mt-0.5">
-            {description}
-          </p>
-        )}
-      </div>
-      <Switch
-        checked={checked}
-        onCheckedChange={onToggle}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        aria-label={ariaLabel}
-        className="shrink-0"
-      />
-    </div>
-  );
-};
-
-const AutoToggle = ({
-  isAuto,
-  onToggle,
-  mobile = false,
-}: {
-  isAuto: boolean;
-  onToggle: (checked: boolean) => void;
+  isSelected: boolean;
+  onSelect: () => void;
   mobile?: boolean;
 }) => (
-  <SwitchRow
-    label="Auto"
-    description={
-      isAuto
-        ? "Balanced quality and speed, recommended for most tasks"
-        : undefined
-    }
-    checked={isAuto}
-    onToggle={onToggle}
-    ariaLabel="Toggle auto model selection"
-    mobile={mobile}
-  />
+  <button
+    type="button"
+    onClick={onSelect}
+    aria-pressed={isSelected}
+    className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+      mobile ? "py-2.5" : "py-2"
+    } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+  >
+    <div className="flex-1 min-w-0">
+      <span
+        className={`text-sm font-medium transition-colors ${
+          isSelected
+            ? "text-accent-foreground"
+            : "text-muted-foreground group-hover:text-foreground"
+        }`}
+      >
+        Auto
+      </span>
+      <p className="text-xs text-muted-foreground leading-snug mt-0.5">
+        {AUTO_MODEL_DESCRIPTION}
+      </p>
+    </div>
+    {isSelected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+  </button>
 );
 
 const ModelOptionButton = ({
@@ -218,7 +178,7 @@ const ModelOptionList = ({
   isAuto,
   isFreeUser,
   mode,
-  onAutoToggle,
+  onAutoSelect,
   onSelect,
   onClose,
   mobile = false,
@@ -228,7 +188,7 @@ const ModelOptionList = ({
   isAuto: boolean;
   isFreeUser: boolean;
   mode: ChatMode;
-  onAutoToggle: (checked: boolean) => void;
+  onAutoSelect: () => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
   mobile?: boolean;
@@ -249,82 +209,84 @@ const ModelOptionList = ({
         <div className="my-1.5 border-b border-border/50" />
       </>
     ) : (
-      <AutoToggle isAuto={isAuto} onToggle={onAutoToggle} mobile={mobile} />
-    )}
-
-    {(!isAuto || isFreeUser) && (
       <>
-        {!isFreeUser && <div className="my-1 border-b border-border/50" />}
-        {options.map((option) => {
-          const isSelected = value === option.id;
-          const showUpgradeTooltip = isFreeUser && !mobile;
-
-          if (!showUpgradeTooltip) {
-            return (
-              <div key={option.id}>
-                <ModelOptionButton
-                  option={option}
-                  isSelected={isSelected}
-                  isFreeUser={isFreeUser}
-                  onSelect={onSelect}
-                  mode={mode}
-                  mobile={mobile}
-                />
-              </div>
-            );
-          }
-
-          return (
-            <Tooltip key={option.id}>
-              <TooltipTrigger asChild>
-                <div>
-                  <ModelOptionButton
-                    option={option}
-                    isSelected={isSelected}
-                    isFreeUser={isFreeUser}
-                    onSelect={onSelect}
-                    mode={mode}
-                    mobile={mobile}
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent
-                side="right"
-                sideOffset={12}
-                align="start"
-                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] space-y-1.5 [&_svg]:!hidden"
-              >
-                {option.description ? (
-                  <p className="text-sm font-semibold text-foreground leading-snug">
-                    {option.description}
-                  </p>
-                ) : (
-                  <p className="text-sm font-semibold text-foreground leading-snug">
-                    {option.label}
-                  </p>
-                )}
-                {option.poweredBy && (
-                  <p className="text-xs text-muted-foreground">
-                    Powered by {option.poweredBy}
-                  </p>
-                )}
-                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-                  <a
-                    href="#pricing"
-                    onClick={() => onClose()}
-                    className="text-foreground underline underline-offset-2 hover:text-foreground/80"
-                    tabIndex={0}
-                  >
-                    Upgrade your plan
-                  </a>{" "}
-                  to unlock.
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
+        <AutoOptionButton
+          isSelected={isAuto}
+          onSelect={onAutoSelect}
+          mobile={mobile}
+        />
+        <div className="my-1 border-b border-border/50" />
       </>
     )}
+
+    {options.map((option) => {
+      const isSelected = value === option.id;
+      const showUpgradeTooltip = isFreeUser && !mobile;
+
+      if (!showUpgradeTooltip) {
+        return (
+          <div key={option.id}>
+            <ModelOptionButton
+              option={option}
+              isSelected={isSelected}
+              isFreeUser={isFreeUser}
+              onSelect={onSelect}
+              mode={mode}
+              mobile={mobile}
+            />
+          </div>
+        );
+      }
+
+      return (
+        <Tooltip key={option.id}>
+          <TooltipTrigger asChild>
+            <div>
+              <ModelOptionButton
+                option={option}
+                isSelected={isSelected}
+                isFreeUser={isFreeUser}
+                onSelect={onSelect}
+                mode={mode}
+                mobile={mobile}
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent
+            side="right"
+            sideOffset={12}
+            align="start"
+            className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] space-y-1.5 [&_svg]:!hidden"
+          >
+            {option.description ? (
+              <p className="text-sm font-semibold text-foreground leading-snug">
+                {option.description}
+              </p>
+            ) : (
+              <p className="text-sm font-semibold text-foreground leading-snug">
+                {option.label}
+              </p>
+            )}
+            {option.poweredBy && (
+              <p className="text-xs text-muted-foreground">
+                Powered by {option.poweredBy}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+              <a
+                href="#pricing"
+                onClick={() => onClose()}
+                className="text-foreground underline underline-offset-2 hover:text-foreground/80"
+                tabIndex={0}
+              >
+                Upgrade your plan
+              </a>{" "}
+              to unlock.
+            </p>
+          </TooltipContent>
+        </Tooltip>
+      );
+    })}
   </div>
 );
 
@@ -357,13 +319,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         ? "Auto"
         : selected.label;
 
-  const handleAutoToggle = (checked: boolean) => {
-    if (isFreeUser) {
-      window.location.hash = "pricing";
-      setOpen(false);
-      return;
-    }
-    onChange(checked ? "auto" : getDefaultModelForMode(mode));
+  const handleAutoSelect = () => {
+    onChange("auto");
+    setOpen(false);
   };
 
   const applyModelChoice = (option: ModelOption) => {
@@ -460,11 +418,11 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             </SheetHeader>
             <ModelOptionList
               options={options}
-              value={effectiveValue}
+              value={value}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
               mode={mode}
-              onAutoToggle={handleAutoToggle}
+              onAutoSelect={handleAutoSelect}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
               mobile
@@ -483,11 +441,11 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
           <ModelOptionList
             options={options}
-            value={effectiveValue}
+            value={value}
             isAuto={isAuto}
             isFreeUser={isFreeUser}
             mode={mode}
-            onAutoToggle={handleAutoToggle}
+            onAutoSelect={handleAutoSelect}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}
           />

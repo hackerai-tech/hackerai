@@ -352,6 +352,7 @@ export const useChatHandlers = ({
           {
             text: input.trim() || undefined,
             files: validFiles.length > 0 ? validFiles : undefined,
+            metadata: { createdAt: Date.now() },
           },
           {
             body: {
@@ -368,7 +369,7 @@ export const useChatHandlers = ({
         console.error("Failed to process files:", error);
         // Fallback to text-only message if file processing fails
         sendMessage(
-          { text: input },
+          { text: input, metadata: { createdAt: Date.now() } },
           {
             body: {
               mode: currentChatMode,
@@ -732,6 +733,8 @@ export const useChatHandlers = ({
       if (validFiles.length > 0) {
         messagePayload.files = validFiles;
       }
+
+      messagePayload.metadata = { createdAt: message.timestamp };
 
       sendMessage(messagePayload, {
         body: {

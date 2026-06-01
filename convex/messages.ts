@@ -612,6 +612,7 @@ export const getMessagesByChatId = query({
           v.literal("system"),
         ),
         parts: v.array(v.any()),
+        created_at: v.number(),
         source_message_id: v.optional(v.string()),
         feedback: v.union(
           v.object({
@@ -732,6 +733,7 @@ export const getMessagesByChatId = query({
           id: message.id,
           role: message.role,
           parts: message.parts,
+          created_at: message._creationTime,
           source_message_id: message.source_message_id,
           feedback,
           mode: message.mode,

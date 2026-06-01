@@ -792,12 +792,17 @@ export const createChatHandler = () => {
                 generateMessageId: () => assistantMessageId,
                 messageMetadata: ({ part }) => {
                   if (part.type === "start") {
-                    return { mode, generationStartedAt: streamStartTime };
+                    return {
+                      mode,
+                      createdAt: streamStartTime,
+                      generationStartedAt: streamStartTime,
+                    };
                   }
 
                   if (part.type === "finish") {
                     return {
                       mode,
+                      createdAt: streamStartTime,
                       generationStartedAt: streamStartTime,
                       generationTimeMs: Date.now() - streamStartTime,
                     };
@@ -860,6 +865,7 @@ export const createChatHandler = () => {
                               if (part.type === "start") {
                                 return {
                                   mode,
+                                  createdAt: fallbackStartTime,
                                   generationStartedAt: fallbackStartTime,
                                 };
                               }
@@ -867,6 +873,7 @@ export const createChatHandler = () => {
                               if (part.type === "finish") {
                                 return {
                                   mode,
+                                  createdAt: fallbackStartTime,
                                   generationStartedAt: fallbackStartTime,
                                   generationTimeMs:
                                     Date.now() - fallbackStartTime,

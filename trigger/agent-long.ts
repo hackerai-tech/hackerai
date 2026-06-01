@@ -1176,12 +1176,17 @@ export const agentLongTask = task({
                   sendReasoning: true,
                   messageMetadata: ({ part }) => {
                     if (part.type === "start") {
-                      return { mode, generationStartedAt: streamStartTime };
+                      return {
+                        mode,
+                        createdAt: streamStartTime,
+                        generationStartedAt: streamStartTime,
+                      };
                     }
 
                     if (part.type === "finish") {
                       return {
                         mode,
+                        createdAt: streamStartTime,
                         generationStartedAt: streamStartTime,
                         generationTimeMs: Date.now() - streamStartTime,
                       };
@@ -1235,6 +1240,7 @@ export const agentLongTask = task({
                                 if (part.type === "start") {
                                   return {
                                     mode,
+                                    createdAt: fallbackStartTime,
                                     generationStartedAt: fallbackStartTime,
                                   };
                                 }
@@ -1242,6 +1248,7 @@ export const agentLongTask = task({
                                 if (part.type === "finish") {
                                   return {
                                     mode,
+                                    createdAt: fallbackStartTime,
                                     generationStartedAt: fallbackStartTime,
                                     generationTimeMs:
                                       Date.now() - fallbackStartTime,
@@ -1362,6 +1369,7 @@ export const agentLongTask = task({
                                       type: "message-metadata",
                                       messageMetadata: {
                                         mode,
+                                        createdAt: fallbackStartTime,
                                         generationStartedAt: fallbackStartTime,
                                         generationTimeMs:
                                           fallbackGenerationTimeMs,
@@ -1586,6 +1594,7 @@ export const agentLongTask = task({
                             type: "message-metadata",
                             messageMetadata: {
                               mode,
+                              createdAt: streamStartTime,
                               generationStartedAt: streamStartTime,
                               generationTimeMs: finalGenerationTimeMs,
                             },
