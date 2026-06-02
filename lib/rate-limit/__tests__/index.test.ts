@@ -60,7 +60,10 @@ describe("checkRateLimit", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 2, expect.any(Number)],
       );
       expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
@@ -76,7 +79,10 @@ describe("checkRateLimit", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 1, expect.any(Number)],
       );
       expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();

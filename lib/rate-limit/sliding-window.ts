@@ -15,28 +15,83 @@ import {
 import { createRedisClient } from "./redis";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const REFERRAL_BONUS_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+const getFreeReferralBonusKey = (userId: string) =>
+  `free_referral_bonus:${userId}`;
+
+const getFreeReferralBonusGrantKey = (idempotencyKey: string) =>
+  `free_referral_bonus_grant:${idempotencyKey}`;
 
 // Upstash fixedWindow supports `{ rate: 2 }`, but failed multi-unit calls are
 // counted before failure is returned. This checks capacity before incrementing
 // so a blocked agent request cannot consume the last ask unit.
 const CONSUME_FREE_REQUEST_UNITS_SCRIPT = `
-local key = KEYS[1]
+local usageKey = KEYS[1]
+local bonusKey = KEYS[2]
 local requestLimit = tonumber(ARGV[1])
 local requestCost = tonumber(ARGV[2])
 local ttlMs = tonumber(ARGV[3])
-local used = tonumber(redis.call("GET", key) or "0")
-local remaining = requestLimit - used
+local used = tonumber(redis.call("GET", usageKey) or "0")
+local bonusRemaining = tonumber(redis.call("GET", bonusKey) or "0")
+local baseRemaining = requestLimit - used
 
-if requestCost > requestLimit or remaining < requestCost then
-  return {0, remaining}
+if baseRemaining < 0 then
+  baseRemaining = 0
 end
 
-local nextUsed = redis.call("INCRBY", key, requestCost)
+if bonusRemaining < 0 then
+  bonusRemaining = 0
+end
+
+local totalRemaining = baseRemaining + bonusRemaining
+
+if totalRemaining < requestCost then
+  return {0, totalRemaining}
+end
+
+local bonusToConsume = 0
+if requestCost > baseRemaining then
+  bonusToConsume = requestCost - baseRemaining
+end
+
+local nextUsed = redis.call("INCRBY", usageKey, requestCost)
 if nextUsed == requestCost then
-  redis.call("PEXPIRE", key, ttlMs)
+  redis.call("PEXPIRE", usageKey, ttlMs)
 end
 
-return {1, requestLimit - nextUsed}
+local nextBonusRemaining = bonusRemaining
+if bonusToConsume > 0 then
+  nextBonusRemaining = redis.call("DECRBY", bonusKey, bonusToConsume)
+  if nextBonusRemaining <= 0 then
+    redis.call("DEL", bonusKey)
+    nextBonusRemaining = 0
+  end
+end
+
+local nextBaseRemaining = requestLimit - nextUsed
+if nextBaseRemaining < 0 then
+  nextBaseRemaining = 0
+end
+
+return {1, nextBaseRemaining + nextBonusRemaining}
+`;
+
+const GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT = `
+local bonusKey = KEYS[1]
+local grantKey = KEYS[2]
+local bonusUnits = tonumber(ARGV[1])
+local ttlSeconds = tonumber(ARGV[2])
+
+local didSet = redis.call("SET", grantKey, "1", "NX", "EX", ttlSeconds)
+if not didSet then
+  return {0, 0}
+end
+
+local newBonus = redis.call("INCRBY", bonusKey, bonusUnits)
+redis.call("EXPIRE", bonusKey, ttlSeconds)
+
+return {1, newBonus}
 `;
 
 const getCurrentUtcDayWindow = () => {
@@ -66,9 +121,10 @@ const consumeFreeRequestUnits = async ({
   ttlMs: number;
 }) => {
   const rateLimitKey = `free_limit:${userId}:free:${bucket}`;
+  const referralBonusKey = getFreeReferralBonusKey(userId);
   const result = (await redis.eval(
     CONSUME_FREE_REQUEST_UNITS_SCRIPT,
-    [rateLimitKey],
+    [rateLimitKey, referralBonusKey],
     [requestLimit, requestCost, ttlMs],
   )) as [number | string, number | string];
 
@@ -76,6 +132,44 @@ const consumeFreeRequestUnits = async ({
     success: Number(result[0]) === 1,
     remaining: Math.max(0, Number(result[1])),
   };
+};
+
+export const grantFreeReferralBonusUnits = async (
+  userId: string,
+  units: number,
+  idempotencyKey: string,
+): Promise<{
+  granted: boolean;
+  units: number;
+  alreadyGranted?: boolean;
+  rateLimitSkipped?: boolean;
+}> => {
+  const bonusUnits = Math.max(0, Math.trunc(units));
+  if (bonusUnits <= 0) {
+    return { granted: false, units: 0 };
+  }
+
+  const redis = createRedisClient();
+  if (!redis) {
+    if (process.env.NODE_ENV !== "production") {
+      return { granted: true, units: bonusUnits, rateLimitSkipped: true };
+    }
+    return { granted: false, units: 0 };
+  }
+
+  const bonusKey = getFreeReferralBonusKey(userId);
+  const grantKey = getFreeReferralBonusGrantKey(idempotencyKey);
+  const result = (await redis.eval(
+    GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT,
+    [bonusKey, grantKey],
+    [bonusUnits, REFERRAL_BONUS_TTL_SECONDS],
+  )) as [number | string, number | string];
+
+  if (Number(result[0]) !== 1) {
+    return { granted: false, units: 0, alreadyGranted: true };
+  }
+
+  return { granted: true, units: bonusUnits };
 };
 
 /**

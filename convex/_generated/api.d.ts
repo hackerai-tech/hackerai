@@ -25,6 +25,7 @@ import type * as messages from "../messages.js";
 import type * as notes from "../notes.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
 import type * as redisPubsub from "../redisPubsub.js";
+import type * as referrals from "../referrals.js";
 import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
@@ -63,6 +64,7 @@ declare const fullApi: ApiFromModules<{
   notes: typeof notes;
   rateLimitStatus: typeof rateLimitStatus;
   redisPubsub: typeof redisPubsub;
+  referrals: typeof referrals;
   s3Actions: typeof s3Actions;
   s3Cleanup: typeof s3Cleanup;
   s3Utils: typeof s3Utils;

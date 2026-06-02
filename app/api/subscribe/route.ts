@@ -5,6 +5,15 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+import {
+  REFERRAL_COOKIE_NAME,
+  getReferralRewardConfig,
+  isValidReferralCode,
+} from "@/lib/referrals/config";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 function planLookupKeyToTier(
   lookupKey: string,
@@ -24,6 +33,12 @@ function canManageOrganizationBilling(
   return membership.role?.slug === "admin" || membership.role?.slug === "owner";
 }
 
+function parseCreatedAtMs(raw: unknown): number | undefined {
+  if (typeof raw !== "string") return undefined;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
@@ -37,6 +52,46 @@ export const POST = async (req: NextRequest) => {
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
     const orgName = buildWorkOSOrganizationName(user);
+    const referralConfig = getReferralRewardConfig();
+    const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
+
+    if (
+      referralConfig.enabled &&
+      referralCode &&
+      isValidReferralCode(referralCode)
+    ) {
+      try {
+        const attribution = await convex.mutation(
+          api.referrals.attributeReferredSignup,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            referralCode,
+            starterBonusUnits: 0,
+            userCreatedAtMs: parseCreatedAtMs(user.createdAt),
+            maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
+            source: "subscribe_route_referral_cookie",
+          },
+        );
+
+        if (attribution.status === "attributed") {
+          phLogger.event("referred_signup_attributed", {
+            userId,
+            referrer_user_id: attribution.referrerUserId,
+            referral_code: referralCode,
+            starter_bonus_awarded: attribution.starterBonusAwarded,
+            starter_bonus_units: 0,
+            source: "subscribe_route",
+          });
+        }
+      } catch (error) {
+        phLogger.warn("referral_attribution_failed_before_checkout", {
+          userId,
+          referral_code: referralCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const allowedPlans = new Set([
       "pro-monthly-plan",
       "pro-plus-monthly-plan",
@@ -254,6 +309,40 @@ export const POST = async (req: NextRequest) => {
         },
       },
     });
+
+    if (referralConfig.enabled) {
+      try {
+        const referralSession = await convex.mutation(
+          api.referrals.recordReferralCheckoutSession,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            stripeCustomerId: customer.id,
+            stripeCheckoutSessionId: session.id,
+            requestedPlan: subscriptionLevel,
+          },
+        );
+
+        if (referralSession?.recorded) {
+          phLogger.event("referral_stripe_checkout_session_created", {
+            userId,
+            referrer_user_id: referralSession.referrerUserId,
+            referral_code: referralSession.referralCode,
+            stripe_customer_id: customer.id,
+            stripe_checkout_session_id: session.id,
+            requested_plan: subscriptionLevel,
+          });
+        }
+      } catch (error) {
+        phLogger.warn("referral_checkout_session_record_failed", {
+          userId,
+          stripe_customer_id: customer.id,
+          stripe_checkout_session_id: session.id,
+          requested_plan: subscriptionLevel,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const selectedPrice = price.data[0];
     phLogger.event("checkout_started", {

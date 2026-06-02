@@ -53,7 +53,10 @@ describe("sliding-window", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 1, expect.any(Number)],
       );
       expect(result.remaining).toBe(5);
@@ -113,7 +116,10 @@ describe("sliding-window", () => {
 
       expect(mockEvalFn).toHaveBeenCalledWith(
         expect.any(String),
-        [expect.stringMatching(/^free_limit:user-123:free:\d+$/)],
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
         [10, 2, expect.any(Number)],
       );
       expect(result.remaining).toBe(5);
@@ -133,6 +139,32 @@ describe("sliding-window", () => {
         expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
       }
+    });
+  });
+
+  describe("grantFreeReferralBonusUnits", () => {
+    it("should grant referral bonus request units", async () => {
+      const { grantFreeReferralBonusUnits } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({
+        eval: mockEvalFn,
+      });
+
+      const result = await grantFreeReferralBonusUnits(
+        "user-123",
+        5,
+        "referral_signup:user-123",
+      );
+
+      expect(result).toEqual({ granted: true, units: 5 });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          "free_referral_bonus:user-123",
+          "free_referral_bonus_grant:referral_signup:user-123",
+        ],
+        [5, 30 * 24 * 60 * 60],
+      );
     });
   });
 });

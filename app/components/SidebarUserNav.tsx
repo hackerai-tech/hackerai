@@ -16,6 +16,8 @@ import {
   Download,
   ExternalLink,
   RefreshCw,
+  Gift,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -40,9 +42,106 @@ import {
 } from "@/components/ui/tooltip";
 import { clientLogout } from "@/lib/utils/logout";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+
+const REFERRAL_CARD_DISMISSED_COOKIE = "referral_sidebar_dismissed";
+
+const readCookie = (name: string): string | null => {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(
+    new RegExp(
+      `(?:^|; )${name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1")}=([^;]*)`,
+    ),
+  );
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
+const writeCookie = (name: string, value: string, days: number) => {
+  if (typeof document === "undefined") return;
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+};
+
+const ReferralSidebarCard = ({
+  isCollapsed,
+  onOpen,
+}: {
+  isCollapsed: boolean;
+  onOpen: () => void;
+}) => {
+  const [dismissed, setDismissed] = useState(
+    () => readCookie(REFERRAL_CARD_DISMISSED_COOKIE) === "1",
+  );
+
+  if (dismissed) return null;
+
+  const handleDismiss = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    writeCookie(REFERRAL_CARD_DISMISSED_COOKIE, "1", 365);
+    setDismissed(true);
+  };
+
+  if (isCollapsed) {
+    return (
+      <div className="mb-1">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-testid="referral-button-collapsed"
+                variant="secondary"
+                size="sm"
+                className="h-8 w-full border-0 px-2"
+                onClick={onOpen}
+                aria-label="Refer a friend"
+              >
+                <Gift className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Refer a friend</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/referral-card relative mb-2">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="Refer a friend and earn credits per paid referral"
+        className="bg-muted/50 hover:bg-muted/80 border-sidebar-border flex w-full cursor-pointer items-center gap-3 rounded-xl border p-3 pr-9 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <div className="bg-background/70 border-sidebar-border flex size-8 shrink-0 items-center justify-center rounded-full border">
+          <Gift className="size-4" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-foreground truncate text-sm font-medium leading-none">
+            Refer a friend
+          </p>
+          <p className="text-muted-foreground truncate text-xs">
+            Earn credits per paid referral
+          </p>
+        </div>
+      </button>
+      <button
+        type="button"
+        onClick={handleDismiss}
+        aria-label="Dismiss referral card"
+        title="Dismiss"
+        className="bg-background/80 text-muted-foreground hover:bg-background hover:text-foreground border-sidebar-border absolute top-2 right-2 flex size-6 items-center justify-center rounded-full border opacity-100 shadow-sm transition-[opacity,colors] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/referral-card:opacity-100"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+};
 
 const GithubIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" fill="currentColor" className={className} {...props}>
@@ -104,6 +203,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
   const [rateLimitsExpanded, setRateLimitsExpanded] = useState(false);
+  const [referralDialogOpen, setReferralDialogOpen] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<{
     monthly: {
       remaining: number;
@@ -240,6 +340,19 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
+      <ReferralRewardDialog
+        open={referralDialogOpen}
+        onOpenChange={setReferralDialogOpen}
+      />
+
+      {/* Referral card for paid users */}
+      {isPaidUser && !isCheckingProPlan && (
+        <ReferralSidebarCard
+          isCollapsed={isCollapsed}
+          onOpen={() => setReferralDialogOpen(true)}
+        />
+      )}
+
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />
 
@@ -364,6 +477,15 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           {isPaidUser && (
             <div>
+              <DropdownMenuItem
+                data-testid="referral-menu-item"
+                onSelect={() => setReferralDialogOpen(true)}
+                className="py-1.5"
+              >
+                <Gift className="mr-2 h-4 w-4 text-foreground" />
+                <span>Refer a friend</span>
+              </DropdownMenuItem>
+
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
