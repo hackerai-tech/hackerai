@@ -6,14 +6,32 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
 
-// Custom fetch that patches assistant tool-call messages for Kimi K2.5.
+const OPENROUTER_METADATA_HEADER = "X-OpenRouter-Experimental-Metadata";
+
+const withOpenRouterMetadataHeader = (
+  headers: HeadersInit | undefined,
+): Headers => {
+  const nextHeaders = new Headers(headers);
+  if (!nextHeaders.has(OPENROUTER_METADATA_HEADER)) {
+    nextHeaders.set(OPENROUTER_METADATA_HEADER, "enabled");
+  }
+  return nextHeaders;
+};
+
+// Custom fetch that patches assistant tool-call messages for Kimi K2.5 and opts
+// into OpenRouter routing metadata for provider attribution.
 // When reasoning mode is enabled, Kimi's API requires a `reasoning` field
 // on every assistant message with tool_calls, but the AI SDK doesn't always
 // include it (e.g. model made a tool call without emitting reasoning tokens).
 const kimiReasoningPatchFetch: typeof fetch = async (url, init) => {
-  if (init?.body && typeof init.body === "string") {
+  let nextInit = {
+    ...init,
+    headers: withOpenRouterMetadataHeader(init?.headers),
+  };
+
+  if (nextInit.body && typeof nextInit.body === "string") {
     try {
-      const body = JSON.parse(init.body);
+      const body = JSON.parse(nextInit.body);
       if (Array.isArray(body.messages) && body.reasoning?.enabled === true) {
         for (const msg of body.messages) {
           if (
@@ -25,13 +43,13 @@ const kimiReasoningPatchFetch: typeof fetch = async (url, init) => {
             msg.reasoning = ".";
           }
         }
-        init = { ...init, body: JSON.stringify(body) };
+        nextInit = { ...nextInit, body: JSON.stringify(body) };
       }
     } catch {
       // If parsing fails, send the request as-is
     }
   }
-  return globalThis.fetch(url, init);
+  return globalThis.fetch(url, nextInit);
 };
 
 const openrouter = createOpenRouter({ fetch: kimiReasoningPatchFetch });

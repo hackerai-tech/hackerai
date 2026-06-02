@@ -8,6 +8,7 @@
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
+import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 
 /**
  * Wide event structure for chat/agent API requests
@@ -66,6 +67,18 @@ export interface ChatWideEvent {
   model?: {
     configured: string;
     actual?: string;
+    provider_gateway?: "openrouter";
+    provider_name?: string;
+    openrouter_generation_id?: string;
+    openrouter_request_id?: string;
+    openrouter_is_byok?: boolean;
+    openrouter_router?: string;
+    openrouter_strategy?: string;
+    openrouter_region?: string;
+    openrouter_attempt?: number;
+    openrouter_upstream_id?: string;
+    openrouter_selected_model?: string;
+    openrouter_attempts?: OpenRouterModelMetadata["openrouter_attempts"];
     fallback_triggered?: boolean;
     fallback_chain?: string[];
   };
@@ -319,6 +332,24 @@ export class WideEventBuilder {
     } else {
       this.event.model = { configured: actual, actual };
     }
+    return this;
+  }
+
+  /**
+   * Attach OpenRouter routing/provider metadata to the model block.
+   */
+  setOpenRouterMetadata(metadata: OpenRouterModelMetadata): this {
+    if (!this.event.model) {
+      this.event.model = {
+        configured: metadata.openrouter_selected_model ?? "",
+      };
+    }
+
+    this.event.model = {
+      ...this.event.model,
+      ...metadata,
+    };
+
     return this;
   }
 

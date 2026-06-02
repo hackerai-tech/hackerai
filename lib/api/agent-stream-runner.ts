@@ -61,6 +61,11 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import {
+  extractOpenRouterMetadata,
+  fetchOpenRouterGenerationMetadata,
+  mergeOpenRouterMetadata,
+} from "@/lib/api/openrouter-metadata";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type { BudgetMonitor } from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
@@ -445,7 +450,8 @@ export async function createAgentStream(
       }
     },
 
-    onFinish: async ({ finishReason, usage, response }) => {
+    onFinish: async (finishResult) => {
+      const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (hardReason !== null) {
         state.streamFinishReason = hardReason;
@@ -462,6 +468,31 @@ export async function createAgentStream(
       }
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
+
+      const finishMetadata = finishResult as {
+        providerMetadata?: unknown;
+        steps?: Array<{ providerMetadata?: unknown }>;
+      };
+      const stepProviderMetadata = Array.isArray(finishMetadata.steps)
+        ? finishMetadata.steps.at(-1)?.providerMetadata
+        : undefined;
+      let openRouterMetadata = extractOpenRouterMetadata({
+        response,
+        providerMetadata:
+          finishMetadata.providerMetadata ?? stepProviderMetadata,
+      });
+      if (
+        ctx.chatLogger &&
+        !openRouterMetadata.provider_name &&
+        openRouterMetadata.openrouter_generation_id
+      ) {
+        openRouterMetadata = mergeOpenRouterMetadata(
+          openRouterMetadata,
+          await fetchOpenRouterGenerationMetadata(
+            openRouterMetadata.openrouter_generation_id,
+          ),
+        );
+      }
 
       const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
@@ -480,7 +511,11 @@ export async function createAgentStream(
           model: modelName,
         });
       }
-      ctx.chatLogger?.setStreamResponse(state.responseModel, state.streamUsage);
+      ctx.chatLogger?.setStreamResponse(
+        state.responseModel,
+        state.streamUsage,
+        openRouterMetadata,
+      );
 
       await ptySessionManager
         .closeAll(ctx.chatId)
