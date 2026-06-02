@@ -295,6 +295,7 @@ export default defineSchema({
     stripe_subscription_id: v.optional(v.string()),
     stripe_invoice_id: v.optional(v.string()),
     created_at: v.number(),
+    notification_seen_at: v.optional(v.number()),
   })
     .index("by_idempotency_key", ["idempotency_key"])
     .index("by_referrer_user_id", ["referrer_user_id"])

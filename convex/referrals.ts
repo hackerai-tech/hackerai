@@ -4,7 +4,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 
@@ -59,33 +59,6 @@ async function getReferralStats(ctx: QueryCtx | MutationCtx, userId: string) {
   };
 }
 
-async function ensurePersonalExtraUsageEnabled(
-  ctx: MutationCtx,
-  userId: string,
-  now: number,
-) {
-  const customization = await ctx.db
-    .query("user_customization")
-    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
-    .first();
-
-  if (customization) {
-    if (!customization.extra_usage_enabled) {
-      await ctx.db.patch(customization._id, {
-        extra_usage_enabled: true,
-        updated_at: now,
-      });
-    }
-    return;
-  }
-
-  await ctx.db.insert("user_customization", {
-    user_id: userId,
-    extra_usage_enabled: true,
-    updated_at: now,
-  });
-}
-
 async function addPersonalCredits(
   ctx: MutationCtx,
   userId: string,
@@ -112,7 +85,6 @@ async function addPersonalCredits(
     });
   }
 
-  await ensurePersonalExtraUsageEnabled(ctx, userId, now);
   return pointsToDollars(newBalancePoints);
 }
 
@@ -131,14 +103,12 @@ async function addTeamCredits(
   const newBalancePoints = (row?.balance_points ?? 0) + amountPoints;
   if (row) {
     await ctx.db.patch(row._id, {
-      enabled: true,
       balance_points: newBalancePoints,
       updated_at: now,
     });
   } else {
     await ctx.db.insert("team_extra_usage", {
       organization_id: organizationId,
-      enabled: true,
       balance_points: newBalancePoints,
       updated_at: now,
     });
@@ -329,6 +299,77 @@ export const getOrCreateReferralCode = mutation({
       active: true,
       ...(await getReferralStats(ctx, args.userId)),
     };
+  },
+});
+
+export const getUnreadRewardNotifications = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      rewardId: v.id("referral_rewards"),
+      amountDollars: v.number(),
+      createdAt: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    const rewards = await ctx.db
+      .query("referral_rewards")
+      .withIndex("by_referrer_user_id", (q) =>
+        q.eq("referrer_user_id", identity.subject),
+      )
+      .order("desc")
+      .take(20);
+
+    return rewards
+      .filter(
+        (reward) =>
+          reward.reward_type === "referrer_conversion" &&
+          reward.status === "awarded" &&
+          reward.amount_dollars > 0 &&
+          reward.notification_seen_at === undefined,
+      )
+      .map((reward) => ({
+        rewardId: reward._id,
+        amountDollars: reward.amount_dollars,
+        createdAt: reward.created_at,
+      }));
+  },
+});
+
+export const markRewardNotificationsSeen = mutation({
+  args: {
+    rewardIds: v.array(v.id("referral_rewards")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const now = Date.now();
+    for (const rewardId of args.rewardIds) {
+      const reward = await ctx.db.get(rewardId);
+      if (
+        !reward ||
+        reward.referrer_user_id !== identity.subject ||
+        reward.reward_type !== "referrer_conversion" ||
+        reward.status !== "awarded" ||
+        reward.notification_seen_at !== undefined
+      ) {
+        continue;
+      }
+
+      await ctx.db.patch(reward._id, { notification_seen_at: now });
+    }
+
+    return null;
   },
 });
 

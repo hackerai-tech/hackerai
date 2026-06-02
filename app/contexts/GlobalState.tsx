@@ -34,7 +34,7 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
@@ -172,6 +172,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const { user, entitlements } = useAuth();
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
+  const shownReferralRewardNotificationsRef = useRef(new Set<string>());
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
@@ -228,6 +229,52 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         // Referral attribution is best-effort and must never block app startup.
       });
   }, [user]);
+
+  const unreadReferralRewardNotifications = useQuery(
+    api.referrals.getUnreadRewardNotifications,
+    user ? {} : "skip",
+  );
+  const markReferralRewardNotificationsSeen = useMutation(
+    api.referrals.markRewardNotificationsSeen,
+  );
+
+  useEffect(() => {
+    if (!user || !unreadReferralRewardNotifications?.length) return;
+
+    const notifications = unreadReferralRewardNotifications.filter(
+      (notification) =>
+        !shownReferralRewardNotificationsRef.current.has(notification.rewardId),
+    );
+    if (notifications.length === 0) return;
+
+    for (const notification of notifications) {
+      shownReferralRewardNotificationsRef.current.add(notification.rewardId);
+    }
+
+    const totalDollars = notifications.reduce(
+      (sum, notification) => sum + notification.amountDollars,
+      0,
+    );
+    const amountLabel = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: Number.isInteger(totalDollars) ? 0 : 2,
+    }).format(totalDollars);
+    const rewardIds = notifications.map(
+      (notification) => notification.rewardId,
+    );
+
+    toast.success("Referral reward added", {
+      description: `You earned ${amountLabel} in extra usage credits.`,
+    });
+    void markReferralRewardNotificationsSeen({ rewardIds }).catch(() => {
+      // The toast is non-critical; the next app load can retry marking it seen.
+    });
+  }, [
+    markReferralRewardNotificationsSeen,
+    unreadReferralRewardNotifications,
+    user,
+  ]);
 
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
