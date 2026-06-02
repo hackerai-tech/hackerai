@@ -99,6 +99,67 @@ describe("POST /api/subscription-details", () => {
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
   });
 
+  it.each(["pro-plus-monthly-plan", "pro-plus-yearly-plan"])(
+    "accepts %s as a target plan",
+    async (plan) => {
+      const { POST } = await import("../route");
+
+      const response = await POST(makeRequest({ plan }));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.totalDue).toBe(30);
+      expect(mockListPrices).toHaveBeenCalledWith({
+        lookup_keys: [plan],
+      });
+    },
+  );
+
+  it("allows organization owners to manage billing", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.totalDue).toBe(30);
+    expect(mockListPrices).toHaveBeenCalledWith({
+      lookup_keys: ["pro-monthly-plan"],
+    });
+  });
+
+  it("rejects non-owner, non-admin members from managing billing", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "member" },
+        },
+      ],
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toEqual({
+      error: "Only organization admins or owners can manage billing",
+    });
+    expect(mockGetOrganization).not.toHaveBeenCalled();
+    expect(mockListPrices).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["below the minimum", 1, "Quantity must be a finite integer of at least 2"],
     ["non-integer", 2.5, "Quantity must be a finite integer of at least 2"],
