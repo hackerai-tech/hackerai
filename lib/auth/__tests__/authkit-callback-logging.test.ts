@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, jest } from "@jest/globals";
 
 import {
+  isAuthCookieMissingError,
   isOauthCodeAlreadyExchangedError,
   isRecoverableAuthkitCallbackErrorLog,
   withRecoverableAuthkitCallbackErrorSuppressed,
@@ -22,6 +23,15 @@ describe("authkit callback logging", () => {
           "Auth cookie missing - cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
         ),
       ]),
+    ).toBe(true);
+  });
+
+  it("matches non-Error missing-cookie callback values", () => {
+    expect(isAuthCookieMissingError("Auth cookie missing")).toBe(true);
+    expect(
+      isAuthCookieMissingError({
+        message: "Auth cookie missing - cannot verify OAuth state.",
+      }),
     ).toBe(true);
   });
 

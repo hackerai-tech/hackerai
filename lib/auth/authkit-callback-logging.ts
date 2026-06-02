@@ -6,7 +6,7 @@ const CODE_ALREADY_EXCHANGED_MESSAGE = "already been exchanged";
 let activeSuppressions = 0;
 let originalConsoleError: typeof console.error | null = null;
 
-const hasRecoverableAuthCookieMessage = (value: unknown): boolean => {
+export const isAuthCookieMissingError = (value: unknown): boolean => {
   if (typeof value === "string") {
     return value.includes(AUTH_COOKIE_MISSING_MESSAGE);
   }
@@ -66,8 +66,7 @@ export const isOauthCodeAlreadyExchangedError = (value: unknown): boolean => {
 
 export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
   return (
-    hasRecoverableAuthCookieMessage(value) ||
-    isOauthCodeAlreadyExchangedError(value)
+    isAuthCookieMissingError(value) || isOauthCodeAlreadyExchangedError(value)
   );
 };
 

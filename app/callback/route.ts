@@ -1,5 +1,6 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
 import {
+  isAuthCookieMissingError,
   isOauthCodeAlreadyExchangedError,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
@@ -28,9 +29,11 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   if (isOauthCodeAlreadyExchangedError(error)) {
     return "code_already_exchanged";
   }
+  if (isAuthCookieMissingError(error)) {
+    return "cookie_missing";
+  }
   if (!(error instanceof Error)) return "unknown";
   if (error.message.includes("OAuth state mismatch")) return "state_mismatch";
-  if (error.message.includes("Auth cookie missing")) return "cookie_missing";
   if (error.name === "ValiError") {
     const issues = (error as Error & { issues?: Array<{ expected?: string }> })
       .issues;
