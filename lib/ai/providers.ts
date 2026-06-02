@@ -2,6 +2,7 @@ import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
@@ -34,7 +35,10 @@ const kimiReasoningPatchFetch: typeof fetch = async (url, init) => {
   return globalThis.fetch(url, init);
 };
 
-const openrouter = createOpenRouter({ fetch: kimiReasoningPatchFetch });
+const openrouter = createOpenRouter({
+  fetch: kimiReasoningPatchFetch,
+  headers: openrouterAttributionHeaders,
+});
 
 type OpenRouterInstance = typeof openrouter;
 
