@@ -7,6 +7,14 @@ import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 const MAX_TEAM_SEATS = 999;
 
+function canManageOrganizationBilling(
+  membership: Awaited<
+    ReturnType<typeof workos.userManagement.listOrganizationMemberships>
+  >["data"][number],
+) {
+  return membership.role?.slug === "admin" || membership.role?.slug === "owner";
+}
+
 function resolveQuantity(
   targetPlan: string,
   requestedQuantity: unknown,
@@ -50,8 +58,10 @@ export const POST = async (req: NextRequest) => {
 
     const allowedPlans = new Set([
       "pro-monthly-plan",
+      "pro-plus-monthly-plan",
       "ultra-monthly-plan",
       "pro-yearly-plan",
+      "pro-plus-yearly-plan",
       "ultra-yearly-plan",
       "team-monthly-plan",
       "team-yearly-plan",
@@ -78,9 +88,9 @@ export const POST = async (req: NextRequest) => {
     }
 
     const membership = existingMemberships.data[0];
-    if (membership.role?.slug !== "admin") {
+    if (!canManageOrganizationBilling(membership)) {
       return NextResponse.json(
-        { error: "Only organization admins can manage billing" },
+        { error: "Only organization admins or owners can manage billing" },
         { status: 403 },
       );
     }
