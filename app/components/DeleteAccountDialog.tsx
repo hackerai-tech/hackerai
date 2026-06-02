@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Lock, TriangleAlert } from "lucide-react";
+import { Loader2, Lock, TriangleAlert } from "lucide-react";
 
 type DeleteAccountDialogProps = {
   open: boolean;
@@ -51,13 +51,24 @@ export const DeleteAccountDialog = ({
 
   const expectedEmail: string = useMemo(() => user?.email ?? "", [user]);
 
-  const canDelete = useMemo(() => {
-    if (!hasRecentLogin) return false;
-    const emailMatches =
-      emailInput.trim().toLowerCase() === expectedEmail.toLowerCase();
-    const phraseMatches = confirmInput.trim() === "DELETE";
-    return emailMatches && phraseMatches && !isDeleting;
-  }, [confirmInput, emailInput, expectedEmail, hasRecentLogin, isDeleting]);
+  const emailMatches = useMemo(() => {
+    if (!expectedEmail) return false;
+    return emailInput.trim().toLowerCase() === expectedEmail.toLowerCase();
+  }, [emailInput, expectedEmail]);
+
+  const phraseMatches = useMemo(
+    () => confirmInput.trim() === "DELETE",
+    [confirmInput],
+  );
+
+  const canDelete =
+    hasRecentLogin && emailMatches && phraseMatches && !isDeleting;
+
+  useEffect(() => {
+    if (open) return;
+    setEmailInput("");
+    setConfirmInput("");
+  }, [open]);
 
   const handleRefreshLogin = async () => {
     const { clientLogout } = await import("@/lib/utils/logout");
@@ -103,20 +114,20 @@ export const DeleteAccountDialog = ({
         <DialogHeader>
           <DialogTitle>Delete account - are you sure?</DialogTitle>
         </DialogHeader>
-        <div className="text-sm">
-          <p>
-            Deleting your account will remove all your data, including chats,
-            settings, and personal information. This action cannot be undone.
-          </p>
+        <DialogDescription
+          data-testid="delete-account-description"
+          className="pt-2 text-sm text-foreground"
+        >
+          Deleting your account will remove all your data, including chats,
+          settings, and personal information. This action cannot be undone.
+        </DialogDescription>
 
-          {!hasRecentLogin && (
-            <DialogDescription className="text-xs pt-4">
-              You may only delete your account if you have logged in within the
-              last 10 minutes. Please log in again, then return here to
-              continue.
-            </DialogDescription>
-          )}
-        </div>
+        {!hasRecentLogin && (
+          <p className="text-xs pt-4 text-muted-foreground">
+            You may only delete your account if you have logged in within the
+            last 10 minutes. Please log in again, then return here to continue.
+          </p>
+        )}
 
         {hasRecentLogin && (
           <div className="pt-4 space-y-4">
@@ -133,11 +144,7 @@ export const DeleteAccountDialog = ({
                 placeholder={expectedEmail || "name@example.com"}
                 value={emailInput}
                 onChange={(e) => setEmailInput(e.target.value)}
-                aria-invalid={
-                  Boolean(emailInput) &&
-                  emailInput.trim().toLowerCase() !==
-                    expectedEmail.toLowerCase()
-                }
+                aria-invalid={Boolean(emailInput) && !emailMatches}
               />
             </div>
 
@@ -160,30 +167,35 @@ export const DeleteAccountDialog = ({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter data-testid="delete-account-footer" className="pt-4">
           {!hasRecentLogin ? (
-            <Button onClick={handleRefreshLogin} className="w-full">
+            <Button
+              type="button"
+              data-testid="refresh-login-button"
+              variant="outline"
+              onClick={handleRefreshLogin}
+              className="w-full"
+            >
               Refresh login
             </Button>
-          ) : canDelete && !isDeleting ? (
+          ) : (
             <Button
+              type="button"
               data-testid="delete-button"
               variant="destructive"
               onClick={handleConfirmDelete}
+              disabled={!canDelete}
               className="w-full"
             >
-              <TriangleAlert aria-hidden="true" className="size-4" />
-              Permanently delete my account
+              {isDeleting ? (
+                <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+              ) : canDelete ? (
+                <TriangleAlert aria-hidden="true" className="size-4" />
+              ) : (
+                <Lock aria-hidden="true" className="size-4" />
+              )}
+              {isDeleting ? "Deleting..." : "Permanently delete my account"}
             </Button>
-          ) : (
-            <div
-              role="status"
-              aria-live="polite"
-              className="w-full h-10 rounded-md border border-input bg-input/30 dark:bg-input/30 text-muted-foreground flex items-center justify-center gap-2"
-            >
-              <Lock aria-hidden="true" className="size-4" />
-              <span>{isDeleting ? "Deleting..." : "Locked"}</span>
-            </div>
           )}
         </DialogFooter>
       </DialogContent>
