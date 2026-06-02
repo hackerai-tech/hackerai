@@ -1,4 +1,8 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
+import {
+  isOauthCodeAlreadyExchangedError,
+  withRecoverableAuthkitCallbackErrorSuppressed,
+} from "@/lib/auth/authkit-callback-logging";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,9 +21,13 @@ type RecoveryBucket =
   | "state_mismatch"
   | "verifier_missing"
   | "cookie_missing"
+  | "code_already_exchanged"
   | "unknown";
 
 const classifyCallbackError = (error: unknown): RecoveryBucket => {
+  if (isOauthCodeAlreadyExchangedError(error)) {
+    return "code_already_exchanged";
+  }
   if (!(error instanceof Error)) return "unknown";
   if (error.message.includes("OAuth state mismatch")) return "state_mismatch";
   if (error.message.includes("Auth cookie missing")) return "cookie_missing";
@@ -85,7 +93,8 @@ const buildRecoveryResponse = async (
   }
 
   // Recoverable cases (stale flow, multi-tab, scanner prefetch, ITP,
-  // cross-device link, embedded webview, missing cookie): one-click recovery.
+  // cross-device link, embedded webview, missing cookie, duplicate callback):
+  // one-click recovery.
   // Preserve post_login_redirect intent so the retry lands where they wanted.
   const loginUrl = new URL("/login", request.url);
   const loginResponse = NextResponse.redirect(loginUrl);
@@ -126,7 +135,11 @@ export async function GET(request: NextRequest) {
 
   let response: NextResponse;
   try {
-    response = (await authHandler(request)) as NextResponse;
+    // AuthKit logs known recoverable callback failures at error level before
+    // onError can hand them to our warning-level recovery path.
+    response = (await withRecoverableAuthkitCallbackErrorSuppressed(() =>
+      authHandler(request),
+    )) as NextResponse;
   } catch (error) {
     // Defensive: handleAuth shouldn't throw when onError is provided, but if
     // it ever does, fall back to the same recovery pipeline.
