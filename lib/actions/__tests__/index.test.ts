@@ -60,6 +60,25 @@ describe("generateTitleFromUserMessage", () => {
     );
   });
 
+  it("constrains generated titles to non-empty strings under the chat title limit", async () => {
+    mockGenerateText.mockResolvedValue({
+      output: { title: "Schema Bound Title" },
+    });
+
+    await generateTitleFromUserMessage(makeMessage("title schema check"));
+
+    const generateTextOptions = mockGenerateText.mock.calls[0][0] as {
+      output: {
+        schema: { safeParse: (value: unknown) => { success: boolean } };
+      };
+    };
+    const schema = generateTextOptions.output.schema;
+
+    expect(schema.safeParse({ title: "Valid Title" }).success).toBe(true);
+    expect(schema.safeParse({ title: "" }).success).toBe(false);
+    expect(schema.safeParse({ title: "x".repeat(101) }).success).toBe(false);
+  });
+
   it("falls back to the first user message when structured output parsing fails", async () => {
     mockGenerateText.mockRejectedValue(
       Object.assign(new Error("No object generated"), {

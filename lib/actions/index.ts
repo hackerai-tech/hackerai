@@ -72,7 +72,14 @@ export const generateTitleFromUserMessage = async (
       },
       output: Output.object({
         schema: z.object({
-          title: z.string().describe("The generated title (3-5 words)"),
+          title: z
+            .string()
+            .trim()
+            .min(1)
+            .max(MAX_GENERATED_TITLE_LENGTH)
+            .describe(
+              "A concise chat title, 3-5 words, in the same language as the user message",
+            ),
         }),
       }),
       temperature: 0,
