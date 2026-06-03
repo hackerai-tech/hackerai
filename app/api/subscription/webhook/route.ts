@@ -13,6 +13,10 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
+import {
+  priceBillingInterval,
+  subscriptionMrrDollars,
+} from "@/lib/billing/subscription-mrr";
 import type { SubscriptionTier } from "@/types";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
@@ -41,59 +45,6 @@ type PaidStartTier = Exclude<SubscriptionTier, "free">;
 
 const centsToDollars = (amount: number | null | undefined): number =>
   (amount ?? 0) / 100;
-
-function priceBillingInterval(
-  price: Stripe.Price | undefined,
-): "day" | "week" | "month" | "year" | undefined {
-  return price?.recurring?.interval ?? undefined;
-}
-
-function priceAmountDollars(
-  price: Stripe.Price | undefined,
-): number | undefined {
-  if (typeof price?.unit_amount === "number") return price.unit_amount / 100;
-
-  const decimalAmount = Number(price?.unit_amount_decimal);
-  return Number.isFinite(decimalAmount) ? decimalAmount / 100 : undefined;
-}
-
-function recurringIntervalMonths(
-  interval: "day" | "week" | "month" | "year" | undefined,
-  intervalCount = 1,
-): number | undefined {
-  if (!interval || intervalCount <= 0) return undefined;
-  const averageDaysPerMonth = 365 / 12;
-
-  switch (interval) {
-    case "day":
-      return intervalCount / averageDaysPerMonth;
-    case "week":
-      return (intervalCount * 7) / averageDaysPerMonth;
-    case "month":
-      return intervalCount;
-    case "year":
-      return intervalCount * 12;
-  }
-}
-
-function subscriptionMrrDollars(
-  price: Stripe.Price | undefined,
-  quantity = 1,
-  fallbackIntervalAmountDollars?: number,
-): number | undefined {
-  const amountDollars =
-    priceAmountDollars(price) ?? fallbackIntervalAmountDollars;
-  const intervalMonths = recurringIntervalMonths(
-    priceBillingInterval(price),
-    price?.recurring?.interval_count ?? 1,
-  );
-
-  if (amountDollars === undefined || intervalMonths === undefined) {
-    return undefined;
-  }
-
-  return (amountDollars * quantity) / intervalMonths;
-}
 
 function invoicePaidAtMs(invoice: Stripe.Invoice): number {
   const paidAt = invoice.status_transitions?.paid_at;
@@ -219,7 +170,11 @@ async function recordSubscriptionRevenue({
   const attributionStrategy = userIds.length > 1 ? "split_evenly" : "direct";
   const mrrDollars =
     reason === "subscription_create" || reason === "subscription_cycle"
-      ? subscriptionMrrDollars(price, item?.quantity ?? 1, grossRevenueDollars)
+      ? subscriptionMrrDollars({
+          price,
+          quantity: item?.quantity ?? 1,
+          fallbackIntervalAmountDollars: grossRevenueDollars,
+        })
       : undefined;
   const attributedMrrDollars =
     mrrDollars === undefined ? undefined : mrrDollars / userIds.length;
@@ -481,11 +436,11 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     const attributedRevenueDollars =
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
     const billingInterval = priceBillingInterval(price);
-    const subscriptionMrr = subscriptionMrrDollars(
+    const subscriptionMrr = subscriptionMrrDollars({
       price,
-      item?.quantity ?? 1,
-      invoiceAmountPaidDollars,
-    );
+      quantity: item?.quantity ?? 1,
+      fallbackIntervalAmountDollars: invoiceAmountPaidDollars,
+    });
     const attributedMrrDollars =
       subscriptionMrr === undefined
         ? undefined
