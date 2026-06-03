@@ -13,6 +13,10 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
+import {
+  priceBillingInterval,
+  subscriptionMrrDollars,
+} from "@/lib/billing/subscription-mrr";
 import type { SubscriptionTier } from "@/types";
 import { getReferralRewardConfig } from "@/lib/referrals/config";
 
@@ -38,14 +42,10 @@ function tierDirection(
   return "lateral";
 }
 
+type PaidStartTier = Exclude<SubscriptionTier, "free">;
+
 const centsToDollars = (amount: number | null | undefined): number =>
   (amount ?? 0) / 100;
-
-function priceBillingInterval(
-  price: Stripe.Price | undefined,
-): "day" | "week" | "month" | "year" | undefined {
-  return price?.recurring?.interval ?? undefined;
-}
 
 function invoicePaidAtMs(invoice: Stripe.Invoice): number {
   const paidAt = invoice.status_transitions?.paid_at;
@@ -68,6 +68,10 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
   if (lookupKey.startsWith("team")) return "team";
   if (lookupKey.startsWith("pro")) return "pro";
   return null;
+}
+
+function toPaidStartTier(tier: SubscriptionTier): PaidStartTier | null {
+  return tier === "free" ? null : tier;
 }
 
 // =============================================================================
@@ -298,6 +302,16 @@ async function recordSubscriptionRevenue({
   const occurredAt = invoicePaidAtMs(invoice);
   const attributedRevenueDollars = grossRevenueDollars / userIds.length;
   const attributionStrategy = userIds.length > 1 ? "split_evenly" : "direct";
+  const mrrDollars =
+    reason === "subscription_create" || reason === "subscription_cycle"
+      ? subscriptionMrrDollars({
+          price,
+          quantity: item?.quantity ?? 1,
+          fallbackTotalIntervalAmountDollars: grossRevenueDollars,
+        })
+      : undefined;
+  const attributedMrrDollars =
+    mrrDollars === undefined ? undefined : mrrDollars / userIds.length;
 
   await Promise.all([
     ...userIds.map((uid) =>
@@ -311,6 +325,7 @@ async function recordSubscriptionRevenue({
         sourceEventId: invoice.id,
         idempotencyKey: `subscription:${invoice.id}:user:${uid}`,
         grossRevenueDollars: attributedRevenueDollars,
+        mrrDollars: attributedMrrDollars,
         currency: invoice.currency ?? "usd",
         occurredAt,
         attributionStrategy,
@@ -335,6 +350,7 @@ async function recordSubscriptionRevenue({
             sourceEventId: invoice.id,
             idempotencyKey: `subscription:${invoice.id}:organization:${orgId}`,
             grossRevenueDollars,
+            mrrDollars,
             currency: invoice.currency ?? "usd",
             occurredAt,
             attributionStrategy: "organization_pool",
@@ -350,6 +366,57 @@ async function recordSubscriptionRevenue({
         ]
       : []),
   ]);
+}
+
+async function recordPaidStartMix({
+  invoice,
+  customerId,
+  userIds,
+  orgId,
+  tier,
+  subscription,
+}: {
+  invoice: Stripe.Invoice;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+}) {
+  const paidStartTier = toPaidStartTier(tier);
+  if (!paidStartTier || userIds.length === 0) return;
+
+  const item = subscription.items?.data[0];
+  const price = item?.price;
+  const occurredAt = invoicePaidAtMs(invoice);
+  const entityType = orgId ? "organization" : "user";
+  const entityId = orgId ?? userIds[0];
+  const paidSeatCount = item?.quantity ?? userIds.length;
+
+  await convex.mutation(api.unitEconomics.recordPaidStartEvent, {
+    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    entityType,
+    entityId,
+    userId: userIds[0],
+    organizationId: orgId,
+    sourceEventId: invoice.id,
+    idempotencyKey: `paid_start:${invoice.id}:${entityType}:${entityId}`,
+    occurredAt,
+    conversionType: "free_to_paid",
+    tier: paidStartTier,
+    plan: price?.lookup_key ?? paidStartTier,
+    paidAccountStartCount: 1,
+    paidUserStartCount: userIds.length,
+    paidSeatCount,
+    billingInterval: priceBillingInterval(price),
+    billingIntervalCount: price?.recurring?.interval_count,
+    quantity: item?.quantity,
+    userCount: userIds.length,
+    stripeCustomerId: customerId,
+    stripeSubscriptionId: subscription.id,
+    stripeInvoiceId: invoice.id,
+    stripePriceId: price?.id,
+  });
 }
 
 // =============================================================================
@@ -509,8 +576,39 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     );
     const attributedRevenueDollars =
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
+    const billingInterval = priceBillingInterval(price);
+    const subscriptionMrr = subscriptionMrrDollars({
+      price,
+      quantity: item?.quantity ?? 1,
+      fallbackTotalIntervalAmountDollars: invoiceAmountPaidDollars,
+    });
+    const attributedMrrDollars =
+      subscriptionMrr === undefined
+        ? undefined
+        : subscriptionMrr / userIds.length;
+    const paidSeatCount = item?.quantity ?? userIds.length;
 
-    for (const uid of userIds) {
+    try {
+      await recordPaidStartMix({
+        invoice,
+        customerId,
+        userIds,
+        orgId: orgId ?? undefined,
+        tier,
+        subscription,
+      });
+    } catch (error) {
+      console.error("[Subscription Webhook] Failed to record paid start mix:", {
+        error,
+        invoiceId: invoice.id,
+        customerId,
+        userCount: userIds.length,
+        orgId,
+        tier,
+      });
+    }
+
+    for (const [index, uid] of userIds.entries()) {
       phLogger.event("subscription_started", {
         userId: uid,
         from_tier: "free",
@@ -519,12 +617,22 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         org_id: orgId,
         user_count: userIds.length,
         plan: price?.lookup_key,
-        billing_interval: priceBillingInterval(price),
+        paid_account_start_count: index === 0 ? 1 : 0,
+        paid_user_start_count: 1,
+        paid_account_user_count: userIds.length,
+        paid_seat_count: paidSeatCount,
+        paid_start_plan: price?.lookup_key ?? tier,
+        paid_start_tier: tier,
+        billing_interval: billingInterval,
+        paid_start_billing_interval: billingInterval ?? "unknown",
         billing_interval_count: price?.recurring?.interval_count,
         quantity: item?.quantity,
         invoice_amount_paid_dollars: invoiceAmountPaidDollars,
         attributed_revenue_dollars: attributedRevenueDollars,
         revenue_dollars: attributedRevenueDollars,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        mrr_dollars: attributedMrrDollars,
         currency: invoice.currency,
         stripe_customer_id: customerId,
         stripe_subscription_id: subscription.id,
