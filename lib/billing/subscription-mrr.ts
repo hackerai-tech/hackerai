@@ -13,7 +13,9 @@ function priceAmountDollars(
 ): number | undefined {
   if (typeof price?.unit_amount === "number") return price.unit_amount / 100;
 
-  const decimalAmount = Number(price?.unit_amount_decimal);
+  if (price?.unit_amount_decimal == null) return undefined;
+
+  const decimalAmount = Number(price.unit_amount_decimal);
   return Number.isFinite(decimalAmount) ? decimalAmount / 100 : undefined;
 }
 
@@ -39,22 +41,28 @@ function recurringIntervalMonths(
 export function subscriptionMrrDollars({
   price,
   quantity = 1,
-  fallbackIntervalAmountDollars,
+  fallbackTotalIntervalAmountDollars,
 }: {
   price: Stripe.Price | undefined;
   quantity?: number;
-  fallbackIntervalAmountDollars?: number;
+  fallbackTotalIntervalAmountDollars?: number;
 }): number | undefined {
-  const amountDollars =
-    priceAmountDollars(price) ?? fallbackIntervalAmountDollars;
+  const unitAmountDollars = priceAmountDollars(price);
+  const totalIntervalAmountDollars =
+    unitAmountDollars === undefined
+      ? fallbackTotalIntervalAmountDollars
+      : unitAmountDollars * quantity;
   const intervalMonths = recurringIntervalMonths(
     priceBillingInterval(price),
     price?.recurring?.interval_count ?? 1,
   );
 
-  if (amountDollars === undefined || intervalMonths === undefined) {
+  if (
+    totalIntervalAmountDollars === undefined ||
+    intervalMonths === undefined
+  ) {
     return undefined;
   }
 
-  return (amountDollars * quantity) / intervalMonths;
+  return totalIntervalAmountDollars / intervalMonths;
 }

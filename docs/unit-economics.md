@@ -120,6 +120,9 @@ unitEconomics.rebuildPaidStartMixDailyRollups({
 })
 ```
 
+This mutation also returns `truncated: true` when the row cap is hit. Re-run
+with a narrower day range when that happens.
+
 ## Revenue Accuracy
 
 Stripe revenue is recorded when credits are granted or subscription invoices are

@@ -222,7 +222,7 @@ export async function recordPaidStartEventInternal(
     day,
     conversion_type: args.conversionType,
     tier: args.tier,
-    plan: args.plan,
+    plan,
     paid_account_start_count: paidAccountStartCount,
     paid_user_start_count: paidUserStartCount,
     paid_seat_count: paidSeatCount,

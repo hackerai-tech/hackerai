@@ -173,7 +173,7 @@ async function recordSubscriptionRevenue({
       ? subscriptionMrrDollars({
           price,
           quantity: item?.quantity ?? 1,
-          fallbackIntervalAmountDollars: grossRevenueDollars,
+          fallbackTotalIntervalAmountDollars: grossRevenueDollars,
         })
       : undefined;
   const attributedMrrDollars =
@@ -439,7 +439,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     const subscriptionMrr = subscriptionMrrDollars({
       price,
       quantity: item?.quantity ?? 1,
-      fallbackIntervalAmountDollars: invoiceAmountPaidDollars,
+      fallbackTotalIntervalAmountDollars: invoiceAmountPaidDollars,
     });
     const attributedMrrDollars =
       subscriptionMrr === undefined

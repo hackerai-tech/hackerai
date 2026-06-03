@@ -6,15 +6,18 @@ import {
 
 function price({
   amountCents,
+  amountDecimal,
   interval,
   intervalCount = 1,
 }: {
   amountCents?: number;
+  amountDecimal?: string | null;
   interval: "day" | "week" | "month" | "year";
   intervalCount?: number;
 }) {
   return {
     unit_amount: amountCents,
+    unit_amount_decimal: amountDecimal,
     recurring: {
       interval,
       interval_count: intervalCount,
@@ -48,20 +51,38 @@ describe("subscription MRR normalization", () => {
     ).toBe(180);
   });
 
-  it("uses fallback amount only when the price amount is unavailable", () => {
+  it("uses fallback total amount only when the price amount is unavailable", () => {
     expect(
       subscriptionMrrDollars({
         price: price({ interval: "year" }),
-        fallbackIntervalAmountDollars: 120,
+        fallbackTotalIntervalAmountDollars: 120,
       }),
     ).toBe(10);
+  });
+
+  it("does not multiply fallback invoice totals by quantity again", () => {
+    expect(
+      subscriptionMrrDollars({
+        price: price({ interval: "year" }),
+        quantity: 5,
+        fallbackTotalIntervalAmountDollars: 1200,
+      }),
+    ).toBe(100);
+  });
+
+  it("does not coerce nullable Stripe decimal amounts into zero MRR", () => {
+    expect(
+      subscriptionMrrDollars({
+        price: price({ amountDecimal: null, interval: "month" }),
+      }),
+    ).toBeUndefined();
   });
 
   it("returns undefined when the billing cadence is missing or invalid", () => {
     expect(
       subscriptionMrrDollars({
         price: undefined,
-        fallbackIntervalAmountDollars: 120,
+        fallbackTotalIntervalAmountDollars: 120,
       }),
     ).toBeUndefined();
     expect(

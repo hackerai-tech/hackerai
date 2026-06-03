@@ -482,7 +482,9 @@ export default defineSchema({
   })
     .index("by_segment", ["day", "tier", "billing_interval", "plan"])
     .index("by_day", ["day"])
-    .index("by_tier_day", ["tier", "day"]),
+    .index("by_tier_day", ["tier", "day"])
+    .index("by_interval_day", ["billing_interval", "day"])
+    .index("by_tier_interval_day", ["tier", "billing_interval", "day"]),
 
   // Compact daily rows intended for dashboarding and PostHog warehouse sync.
   // Query either entity_type=user for per-user profitability or

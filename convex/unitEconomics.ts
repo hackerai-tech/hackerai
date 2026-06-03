@@ -540,39 +540,55 @@ export const listPaidStartMixForPostHog = query({
     validateServiceKey(args.serviceKey);
 
     const limit = Math.min(Math.max(Math.round(args.limit ?? 1000), 1), 5000);
-    const rows = args.tier
-      ? await ctx.db
-          .query("paid_start_mix_daily")
-          .withIndex("by_tier_day", (q) =>
-            q
-              .eq("tier", args.tier!)
-              .gte("day", args.startDay)
-              .lte("day", args.endDay),
-          )
-          .take(limit)
-      : await ctx.db
-          .query("paid_start_mix_daily")
-          .withIndex("by_day", (q) =>
-            q.gte("day", args.startDay).lte("day", args.endDay),
-          )
-          .take(limit);
+    const rows =
+      args.tier && args.billingInterval
+        ? await ctx.db
+            .query("paid_start_mix_daily")
+            .withIndex("by_tier_interval_day", (q) =>
+              q
+                .eq("tier", args.tier!)
+                .eq("billing_interval", args.billingInterval!)
+                .gte("day", args.startDay)
+                .lte("day", args.endDay),
+            )
+            .take(limit)
+        : args.tier
+          ? await ctx.db
+              .query("paid_start_mix_daily")
+              .withIndex("by_tier_day", (q) =>
+                q
+                  .eq("tier", args.tier!)
+                  .gte("day", args.startDay)
+                  .lte("day", args.endDay),
+              )
+              .take(limit)
+          : args.billingInterval
+            ? await ctx.db
+                .query("paid_start_mix_daily")
+                .withIndex("by_interval_day", (q) =>
+                  q
+                    .eq("billing_interval", args.billingInterval!)
+                    .gte("day", args.startDay)
+                    .lte("day", args.endDay),
+                )
+                .take(limit)
+            : await ctx.db
+                .query("paid_start_mix_daily")
+                .withIndex("by_day", (q) =>
+                  q.gte("day", args.startDay).lte("day", args.endDay),
+                )
+                .take(limit);
 
-    return rows
-      .filter(
-        (row) =>
-          !args.billingInterval ||
-          row.billing_interval === args.billingInterval,
-      )
-      .sort((a, b) => {
-        const dayCompare = a.day.localeCompare(b.day);
-        if (dayCompare !== 0) return dayCompare;
-        const tierCompare = a.tier.localeCompare(b.tier);
-        if (tierCompare !== 0) return tierCompare;
-        const intervalCompare = a.billing_interval.localeCompare(
-          b.billing_interval,
-        );
-        if (intervalCompare !== 0) return intervalCompare;
-        return a.plan.localeCompare(b.plan);
-      });
+    return rows.sort((a, b) => {
+      const dayCompare = a.day.localeCompare(b.day);
+      if (dayCompare !== 0) return dayCompare;
+      const tierCompare = a.tier.localeCompare(b.tier);
+      if (tierCompare !== 0) return tierCompare;
+      const intervalCompare = a.billing_interval.localeCompare(
+        b.billing_interval,
+      );
+      if (intervalCompare !== 0) return intervalCompare;
+      return a.plan.localeCompare(b.plan);
+    });
   },
 });
