@@ -84,4 +84,47 @@ describe("sanitizeOpenRouterRequestForXai", () => {
     expect(result.changed).toBe(false);
     expect(result.body).toBe(body);
   });
+
+  it("preserves encrypted_content outside provider reasoning metadata", () => {
+    const body = {
+      model: "x-ai/grok-4.3",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Please inspect this payload.",
+            },
+            {
+              type: "input_json",
+              encrypted_content: "user-owned-data",
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: "Visible text stays.",
+          tool_calls: [
+            {
+              id: "call_1",
+              function: {
+                name: "decrypt",
+                arguments: JSON.stringify({
+                  encrypted_content: "tool-owned-data",
+                }),
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = sanitizeOpenRouterRequestForXai(body);
+
+    expect(result.changed).toBe(false);
+    expect(result.body).toBe(body);
+    expect(JSON.stringify(result.body)).toContain("user-owned-data");
+    expect(JSON.stringify(result.body)).toContain("tool-owned-data");
+  });
 });

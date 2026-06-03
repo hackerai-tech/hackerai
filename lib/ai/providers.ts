@@ -24,17 +24,18 @@ const hasOwnEncryptedContent = (value: unknown): boolean =>
 
 const stripEncryptedContent = (
   value: unknown,
+  inReasoningDetails = false,
 ): { value: unknown; changed: boolean } => {
   if (Array.isArray(value)) {
     let changed = false;
     const cleaned: unknown[] = [];
 
     for (const item of value) {
-      if (hasOwnEncryptedContent(item)) {
+      if (inReasoningDetails && hasOwnEncryptedContent(item)) {
         changed = true;
         continue;
       }
-      const result = stripEncryptedContent(item);
+      const result = stripEncryptedContent(item, inReasoningDetails);
       changed ||= result.changed;
       cleaned.push(result.value);
     }
@@ -50,12 +51,14 @@ const stripEncryptedContent = (
   const cleaned: Record<string, unknown> = {};
 
   for (const [key, entryValue] of Object.entries(value)) {
-    if (key === "encrypted_content") {
+    if (inReasoningDetails && key === "encrypted_content") {
       changed = true;
       continue;
     }
 
-    const result = stripEncryptedContent(entryValue);
+    const nextInReasoningDetails =
+      inReasoningDetails || key === "reasoning_details";
+    const result = stripEncryptedContent(entryValue, nextInReasoningDetails);
     changed ||= result.changed;
 
     if (
