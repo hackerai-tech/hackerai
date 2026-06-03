@@ -75,7 +75,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
     "fallback-gemini-3.5-flash": or("google/gemini-3.5-flash"),
     "fallback-grok-4.3": or("x-ai/grok-4.3"),
-    "title-generator-model": or("google/gemini-2.5-flash-lite"),
+    "title-generator-model": or("google/gemini-2.5-flash"),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -115,7 +115,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-gemini-3.5-flash": "Google Gemini 3.5 Flash",
   "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "Google Gemini 2.5 Flash Lite",
+  "title-generator-model": "Google Gemini 2.5 Flash",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
