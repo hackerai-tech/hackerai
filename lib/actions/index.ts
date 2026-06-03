@@ -3,6 +3,10 @@ import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
 
+const MAX_GENERATED_TITLE_LENGTH = 100;
+const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
+const FALLBACK_TITLE_WORD_LIMIT = 5;
+
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
 
@@ -11,6 +15,28 @@ const truncateMiddle = (text: string, maxLength: number): string => {
   const end = text.substring(text.length - halfLength);
 
   return `${start}...${end}`;
+};
+
+const normalizeTitle = (title: unknown): string | undefined => {
+  if (typeof title !== "string") return undefined;
+
+  const normalized = title
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return undefined;
+
+  return normalized.substring(0, MAX_GENERATED_TITLE_LENGTH);
+};
+
+const fallbackTitleFromMessage = (message: string): string | undefined => {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+
+  return normalizeTitle(
+    normalized.split(" ").slice(0, FALLBACK_TITLE_WORD_LIMIT).join(" "),
+  );
 };
 
 export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
@@ -29,33 +55,48 @@ export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
 ): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
-  const textContent = firstMessage.parts
+  const textContent = (firstMessage?.parts ?? [])
     .filter((part: { type: string; text?: string }) => part.type === "text")
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
+  const fallbackTitle = fallbackTitleFromMessage(textContent);
 
-  const { output } = await generateText({
-    model: myProvider.languageModel("title-generator-model"),
-    providerOptions: {
-      xai: {
-        // Disable storing the conversation in XAI's database
-        store: false,
+  try {
+    const { output } = await generateText({
+      model: myProvider.languageModel("title-generator-model"),
+      providerOptions: {
+        xai: {
+          // Disable storing the conversation in XAI's database
+          store: false,
+        },
       },
-    },
-    output: Output.object({
-      schema: z.object({
-        title: z.string().describe("The generated title (3-5 words)"),
+      output: Output.object({
+        schema: z.object({
+          title: z
+            .string()
+            .trim()
+            .min(1)
+            .max(MAX_GENERATED_TITLE_LENGTH)
+            .describe(
+              "A concise chat title, 3-5 words, in the same language as the user message",
+            ),
+        }),
       }),
-    }),
-    messages: [
-      {
-        role: "user",
-        content: DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE(textContent),
-      },
-    ],
-  });
+      temperature: 0,
+      maxOutputTokens: TITLE_GENERATION_MAX_OUTPUT_TOKENS,
+      maxRetries: 1,
+      messages: [
+        {
+          role: "user",
+          content: DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE(textContent),
+        },
+      ],
+    });
 
-  return output?.title;
+    return normalizeTitle(output?.title) ?? fallbackTitle;
+  } catch {
+    return fallbackTitle;
+  }
 };
 
 export const generateTitleFromUserMessageWithWriter = async (
