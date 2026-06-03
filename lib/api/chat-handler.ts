@@ -762,7 +762,6 @@ export const createChatHandler = () => {
                   chatId,
                   endpoint,
                   mode,
-                  providerGateway: "openrouter",
                   originalModel: selectedModel,
                   requestedModelSlug: configuredModelId,
                   fallbackModel,
