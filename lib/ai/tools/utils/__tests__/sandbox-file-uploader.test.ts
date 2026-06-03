@@ -26,12 +26,16 @@ let mockConvexAction: jest.Mock;
 let consoleWarnSpy: jest.SpyInstance;
 let consoleErrorSpy: jest.SpyInstance;
 
-function makeSandbox(size: number, e2b = false) {
+function makeSandbox(size: number, e2b = false, windows = false) {
   return {
     ...(e2b ? {} : { sandboxKind: "centrifugo" as const }),
+    isWindows: jest.fn(() => windows),
     commands: {
       run: jest.fn(async (command: string) => {
-        if (command.startsWith("stat ")) {
+        if (command.includes("stat -c%s")) {
+          return { stdout: String(size), stderr: "", exitCode: 0 };
+        }
+        if (command.startsWith("for %I")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -197,7 +201,7 @@ describe("uploadSandboxFileToConvex", () => {
     const sandbox = makeSandbox(1234, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(
       async (command: string) => {
-        if (command.startsWith("stat ")) {
+        if (command.includes("stat -c%s")) {
           return { stdout: "1234", stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -219,6 +223,67 @@ describe("uploadSandboxFileToConvex", () => {
         mediaType: "image/png",
       }),
     ).rejects.toThrow(/curl: \(56\) response ended early/);
+  });
+
+  test("does not run Windows size fallback for E2B stat failures", async () => {
+    const sandbox = makeSandbox(0, true);
+    (sandbox.commands.run as jest.Mock).mockResolvedValueOnce({
+      stdout: "",
+      stderr: "File not found: /home/user/missing.zip\n",
+      exitCode: 66,
+    });
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/home/user/missing.zip",
+      }),
+    ).rejects.toThrow(/File not found: \/home\/user\/missing\.zip/);
+
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"sandbox_generated_file_size_failed"'),
+    );
+    expect(consoleErrorSpy.mock.calls[0][0]).not.toContain("windows_exit_code");
+  });
+
+  test("uses Windows size fallback for Windows Centrifugo sandboxes", async () => {
+    const sandbox = makeSandbox(0, false, true);
+    (sandbox.commands.run as jest.Mock).mockImplementation(
+      async (command: string) => {
+        if (command.includes("stat -c%s")) {
+          return {
+            stdout: "",
+            stderr: "'[' is not recognized as an internal or external command",
+            exitCode: 1,
+          };
+        }
+        if (command.startsWith("for %I")) {
+          return { stdout: "4321", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "unexpected command", exitCode: 1 };
+      },
+    );
+
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "C:\\Users\\user\\report.zip",
+    });
+
+    expect(sandbox.commands.run).toHaveBeenNthCalledWith(
+      2,
+      'for %I in ("C:\\Users\\user\\report.zip") do @echo %~zI',
+      expect.objectContaining({ displayName: "" }),
+    );
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.zip",
+      "application/octet-stream",
+      "u1",
+      4321,
+    );
   });
 
   test("derives the file name from Windows-style paths", async () => {
