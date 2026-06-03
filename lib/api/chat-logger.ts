@@ -23,6 +23,7 @@ import type { PostHog } from "posthog-node";
 import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -264,9 +265,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     setStreamResponse(
       responseModel: string | undefined,
       usage: Record<string, unknown> | undefined,
+      openRouterMetadata?: OpenRouterModelMetadata,
     ) {
       if (responseModel) {
         builder.setActualModel(responseModel);
+      }
+      if (openRouterMetadata) {
+        builder.setOpenRouterMetadata(openRouterMetadata);
       }
       builder.setUsage(usage);
     },
@@ -365,7 +370,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
         event: providerErrorEventName(category),
         chat_id: config.chatId,
         endpoint: config.endpoint,
-        provider_gateway: "openrouter",
         provider_error_category: category,
         ...context,
         ...details,
@@ -386,7 +390,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
         event: providerErrorEventName(category),
         chatId: config.chatId,
         endpoint: config.endpoint,
-        providerGateway: "openrouter",
         providerErrorCategory: category,
         ...context,
         ...details,

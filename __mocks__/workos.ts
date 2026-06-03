@@ -1,10 +1,10 @@
-export const useAuth = () => ({
+export const useAuth = jest.fn(() => ({
   user: null,
   entitlements: [],
   isAuthenticated: false,
   signIn: jest.fn(),
   signOut: jest.fn(),
-});
+}));
 
 export const useAccessToken = () => ({
   getAccessToken: jest.fn().mockResolvedValue("mock-access-token"),

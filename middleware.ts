@@ -1,11 +1,18 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
+import {
+  REFERRAL_COOKIE_CREATED_AT_NAME,
+  REFERRAL_COOKIE_NAME,
+  getReferralRewardConfig,
+  isValidReferralCode,
+} from "@/lib/referrals/config";
 
 const UNAUTHENTICATED_PATHS = new Set([
   "/",
   "/login",
   "/signup",
+  "/signup/auth",
   "/logout",
   "/api/clear-auth-cookies",
   "/api/auth/desktop-callback",
@@ -42,6 +49,9 @@ function isUnauthenticatedPath(pathname: string): boolean {
   if (pathname.startsWith("/share/")) {
     return true;
   }
+  if (pathname.startsWith("/invite/")) {
+    return true;
+  }
   return false;
 }
 
@@ -51,6 +61,36 @@ function isBrowserRequest(request: NextRequest): boolean {
 }
 
 const SESSION_HEADER = "x-workos-session";
+
+function withReferralCookie(
+  request: NextRequest,
+  response: NextResponse,
+): NextResponse {
+  const referralCode =
+    request.nextUrl.searchParams.get("referral_code") ??
+    request.nextUrl.searchParams.get("ref");
+  if (!referralCode || !isValidReferralCode(referralCode)) return response;
+
+  const config = getReferralRewardConfig();
+  if (!config.enabled) return response;
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    maxAge: config.cookieMaxAgeSeconds,
+    path: "/",
+  };
+
+  response.cookies.set(REFERRAL_COOKIE_NAME, referralCode, cookieOptions);
+  response.cookies.set(
+    REFERRAL_COOKIE_CREATED_AT_NAME,
+    String(Date.now()),
+    cookieOptions,
+  );
+
+  return response;
+}
 
 export default async function middleware(
   request: NextRequest,
@@ -63,8 +103,11 @@ export default async function middleware(
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return NextResponse.redirect(
-        new URL("/desktop-callback?error=unauthenticated", request.url),
+      return withReferralCookie(
+        request,
+        NextResponse.redirect(
+          new URL("/desktop-callback?error=unauthenticated", request.url),
+        ),
       );
     }
   }
@@ -89,10 +132,13 @@ export default async function middleware(
   const responseHeaders = buildResponseHeaders(headers);
 
   if (session.user || isUnauthenticatedPath(pathname)) {
-    return NextResponse.next({
-      request: { headers: requestHeaders },
-      headers: responseHeaders,
-    });
+    return withReferralCookie(
+      request,
+      NextResponse.next({
+        request: { headers: requestHeaders },
+        headers: responseHeaders,
+      }),
+    );
   }
 
   // If rate-limited (not a real session expiry), don't redirect to login
@@ -100,26 +146,35 @@ export default async function middleware(
     if (!isBrowserRequest(request)) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
-      return NextResponse.json(
-        { code: "rate_limited", message: "Please retry shortly." },
-        { status: 503, headers: rateLimitHeaders },
+      return withReferralCookie(
+        request,
+        NextResponse.json(
+          { code: "rate_limited", message: "Please retry shortly." },
+          { status: 503, headers: rateLimitHeaders },
+        ),
       );
     }
     // For browser requests, let through rather than forcing a confusing login redirect
-    return NextResponse.next({
-      request: { headers: requestHeaders },
-      headers: responseHeaders,
-    });
+    return withReferralCookie(
+      request,
+      NextResponse.next({
+        request: { headers: requestHeaders },
+        headers: responseHeaders,
+      }),
+    );
   }
 
   if (!isBrowserRequest(request)) {
-    return NextResponse.json(
-      {
-        code: "unauthorized:auth",
-        message: "You need to sign in before continuing.",
-        cause: "Session expired or invalid",
-      },
-      { status: 401, headers: responseHeaders },
+    return withReferralCookie(
+      request,
+      NextResponse.json(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        { status: 401, headers: responseHeaders },
+      ),
     );
   }
 
@@ -130,10 +185,16 @@ export default async function middleware(
     });
     const errorUrl = new URL("/auth-error", request.url);
     errorUrl.searchParams.set("code", "503");
-    return NextResponse.redirect(errorUrl, { headers: responseHeaders });
+    return withReferralCookie(
+      request,
+      NextResponse.redirect(errorUrl, { headers: responseHeaders }),
+    );
   }
 
-  return NextResponse.redirect(authorizationUrl, { headers: responseHeaders });
+  return withReferralCookie(
+    request,
+    NextResponse.redirect(authorizationUrl, { headers: responseHeaders }),
+  );
 }
 
 function buildRequestHeaders(

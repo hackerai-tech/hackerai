@@ -19,6 +19,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { generateText } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { openrouterAttributionHeaders } from "../lib/ai/openrouter-attribution";
 
 config({ path: resolve(process.cwd(), ".env.local") });
 
@@ -61,6 +62,7 @@ async function probeSuccess(openrouter: ReturnType<typeof createOpenRouter>) {
   const or = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY!,
     fetch: probeFetch,
+    headers: openrouterAttributionHeaders,
   });
 
   try {
@@ -212,6 +214,7 @@ async function main() {
   }
   const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
+    headers: openrouterAttributionHeaders,
   });
   await probeSuccess(openrouter);
   await probeError(openrouter);

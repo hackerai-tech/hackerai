@@ -1,4 +1,5 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import { mockMutation as mockConvexMutation } from "convex/browser";
 
 const mockGetUserID = jest.fn();
 const mockGetUser = jest.fn();
@@ -71,11 +72,19 @@ jest.mock("@/lib/posthog/server", () => ({
   },
 }));
 
-function makeRequest(body: Record<string, unknown> = {}) {
+function makeRequest(
+  body: Record<string, unknown> = {},
+  cookies: Record<string, string> = {},
+) {
   return {
     json: jest.fn().mockResolvedValue(body),
     headers: {
       get: jest.fn().mockReturnValue(null),
+    },
+    cookies: {
+      get: jest.fn((name: string) =>
+        cookies[name] ? { value: cookies[name] } : undefined,
+      ),
     },
   } as any;
 }
@@ -84,6 +93,9 @@ describe("POST /api/subscribe", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.example";
+    process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+
+    mockConvexMutation.mockResolvedValue(null);
 
     mockGetUserID.mockResolvedValue("user_123" as never);
     mockGetUser.mockResolvedValue({
@@ -215,6 +227,68 @@ describe("POST /api/subscribe", () => {
       expect.objectContaining({
         customer: "cus_matched",
       }),
+    );
+  });
+
+  it("records referral checkout linkage without copying referral data into Stripe metadata", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [],
+    } as never);
+    mockCreateOrganization.mockResolvedValue({
+      id: "org_new",
+    } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce({
+        status: "attributed",
+        referrerUserId: "user_referrer",
+        starterBonusAwarded: false,
+      } as never)
+      .mockResolvedValueOnce({
+        recorded: true,
+        referrerUserId: "user_referrer",
+        referralCode: "REF123",
+      } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      makeRequest({ plan: "pro-monthly-plan" }, { hackerai_ref: "REF123" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ url: "https://stripe.example/checkout" });
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          userId: "user_123",
+          workOSOrganizationId: "org_new",
+          requestedPlan: "pro-monthly-plan",
+        }),
+        subscription_data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            userId: "user_123",
+            workOSOrganizationId: "org_new",
+            requestedPlan: "pro-monthly-plan",
+          }),
+        }),
+      }),
+    );
+    const checkoutArgs = mockCreateCheckoutSession.mock.calls[0]?.[0] as any;
+    expect(checkoutArgs.client_reference_id).toBeUndefined();
+    expect(checkoutArgs.metadata).not.toHaveProperty("referral_code");
+    expect(checkoutArgs.metadata).not.toHaveProperty(
+      "referral_referred_user_id",
+    );
+    expect(checkoutArgs.subscription_data.metadata).not.toHaveProperty(
+      "referral_code",
+    );
+    expect(checkoutArgs.subscription_data.metadata).not.toHaveProperty(
+      "referral_referred_user_id",
     );
   });
 });
