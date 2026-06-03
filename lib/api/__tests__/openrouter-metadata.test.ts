@@ -145,4 +145,33 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_router: "openrouter/auto",
     });
   });
+
+  it("fills provider attribution from step metadata when finish metadata only has IDs", () => {
+    const finishMetadata = extractOpenRouterMetadata({
+      response: {
+        id: "gen-finish-only",
+      },
+      providerMetadata: {
+        openrouter: {
+          usage: {
+            promptTokens: 10,
+            completionTokens: 1,
+            totalTokens: 11,
+          },
+        },
+      },
+    });
+    const stepMetadata = extractOpenRouterMetadata({
+      providerMetadata: {
+        openrouter: {
+          provider: "Novita",
+        },
+      },
+    });
+
+    expect(mergeOpenRouterMetadata(finishMetadata, stepMetadata)).toEqual({
+      openrouter_generation_id: "gen-finish-only",
+      provider_name: "Novita",
+    });
+  });
 });

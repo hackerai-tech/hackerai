@@ -476,11 +476,17 @@ export async function createAgentStream(
       const stepProviderMetadata = Array.isArray(finishMetadata.steps)
         ? finishMetadata.steps.at(-1)?.providerMetadata
         : undefined;
-      let openRouterMetadata = extractOpenRouterMetadata({
+      const finishOpenRouterMetadata = extractOpenRouterMetadata({
         response,
-        providerMetadata:
-          finishMetadata.providerMetadata ?? stepProviderMetadata,
+        providerMetadata: finishMetadata.providerMetadata,
       });
+      const stepOpenRouterMetadata = extractOpenRouterMetadata({
+        providerMetadata: stepProviderMetadata,
+      });
+      let openRouterMetadata = mergeOpenRouterMetadata(
+        finishOpenRouterMetadata,
+        stepOpenRouterMetadata,
+      );
       if (
         ctx.chatLogger &&
         !openRouterMetadata.provider_name &&
