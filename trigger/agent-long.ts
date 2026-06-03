@@ -1148,7 +1148,6 @@ export const agentLongTask = task({
                   {
                     error,
                     chatId,
-                    providerGateway: "openrouter",
                     originalModel: selectedModel,
                     requestedModelSlug: configuredModelId,
                     fallbackModel,

@@ -71,9 +71,7 @@ describe("chat-handler — PTY closeAll wired to streamText onFinish", () => {
   });
 
   test("runner calls closeAll inside the streamText onFinish callback", () => {
-    const onFinishIdx = runnerSrc.indexOf(
-      "onFinish: async ({ finishReason, usage, response })",
-    );
+    const onFinishIdx = runnerSrc.indexOf("onFinish: async (finishResult)");
     expect(onFinishIdx).toBeGreaterThan(-1);
 
     const closeAllCallIdx = runnerSrc.indexOf(

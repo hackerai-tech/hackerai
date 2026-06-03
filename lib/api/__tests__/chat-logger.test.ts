@@ -418,6 +418,63 @@ describe("createChatLogger ChatSDKError metadata", () => {
   });
 });
 
+describe("createChatLogger OpenRouter metadata", () => {
+  it("adds provider attribution fields to the wide event model block", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_metadata",
+        endpoint: "/api/agent-long",
+      });
+      chatLogger.setRequestDetails({
+        mode: "agent",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "ultra" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          memoryEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        { inputTokens: 100, outputTokens: 1 },
+        {
+          provider_name: "Anthropic Vertex",
+          openrouter_generation_id: "gen-123",
+          openrouter_request_id: "req-123",
+          openrouter_strategy: "direct",
+        },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.model).toMatchObject({
+        configured: "model-opus-4.6",
+        actual: "anthropic/claude-opus-4.6",
+        provider_name: "Anthropic Vertex",
+        openrouter_generation_id: "gen-123",
+        openrouter_request_id: "req-123",
+        openrouter_strategy: "direct",
+      });
+      expect(wideEvent.model).not.toHaveProperty("provider_gateway");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});
+
 describe("createChatLogger provider stream timeout", () => {
   it("logs upstream idle timeouts as provider timeout warnings with the provider message", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
