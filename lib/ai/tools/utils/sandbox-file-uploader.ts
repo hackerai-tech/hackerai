@@ -4,7 +4,7 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { AnySandbox } from "@/types";
-import { isE2BSandbox } from "./sandbox-types";
+import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -47,6 +47,32 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function shouldTryWindowsFileSizeFallback(sandbox: AnySandbox): boolean {
+  return isCentrifugoSandbox(sandbox) && sandbox.isWindows();
+}
+
+function formatFileSizeFailure(
+  fullPath: string,
+  statResult: SandboxCommandResult,
+  winResult?: SandboxCommandResult,
+): Error {
+  const details = [
+    statResult.stderr,
+    statResult.stdout,
+    winResult?.stderr,
+    winResult?.stdout,
+  ]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join("; ");
+
+  return new Error(
+    `Failed to get file size for ${fullPath}: ${
+      details || `stat command failed with exit code ${statResult.exitCode}`
+    }`,
+  );
+}
+
 async function getSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
@@ -56,7 +82,7 @@ async function getSandboxFileSize(
   let statResult: SandboxCommandResult;
   try {
     statResult = await sandbox.commands.run(
-      `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
+      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then printf 'File not found: %s\\n' ${quotedPath} >&2; exit 66; fi; stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath}`,
       { ...commandOptions, displayName: "" } as typeof commandOptions & {
         displayName?: string;
       },
@@ -84,6 +110,20 @@ async function getSandboxFileSize(
   let fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && statResult.exitCode === 0) {
     return fileSize;
+  }
+
+  if (!shouldTryWindowsFileSizeFallback(sandbox)) {
+    logger.error("sandbox_generated_file_size_failed", undefined, {
+      event: "sandbox_generated_file_size_failed",
+      service: "chat-handler",
+      sandbox_type: getSandboxLogType(sandbox),
+      file_name: getFileNameFromPath(fullPath),
+      file_path: fullPath,
+      stat_exit_code: statResult.exitCode,
+      stat_stderr: statResult.stderr?.slice(0, 500),
+      stat_stdout: statResult.stdout?.slice(0, 500),
+    });
+    throw formatFileSizeFailure(fullPath, statResult);
   }
 
   // Windows cmd.exe fallback: %~zI expands to the file size.
@@ -136,11 +176,7 @@ async function getSandboxFileSize(
     windows_stderr: winResult.stderr?.slice(0, 500),
     windows_stdout: winResult.stdout?.slice(0, 500),
   });
-  throw new Error(
-    `Failed to get file size for ${fullPath}: ${
-      statResult.stderr || winResult.stderr || "stat command failed"
-    }`,
-  );
+  throw formatFileSizeFailure(fullPath, statResult, winResult);
 }
 
 function assertSandboxFileSizeAllowed(fileName: string, size: number): void {
