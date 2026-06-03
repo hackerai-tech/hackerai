@@ -446,7 +446,6 @@ describe("createChatLogger OpenRouter metadata", () => {
         "anthropic/claude-opus-4.6",
         { inputTokens: 100, outputTokens: 1 },
         {
-          provider_gateway: "openrouter",
           provider_name: "Anthropic Vertex",
           openrouter_generation_id: "gen-123",
           openrouter_request_id: "req-123",
@@ -464,12 +463,12 @@ describe("createChatLogger OpenRouter metadata", () => {
       expect(wideEvent.model).toMatchObject({
         configured: "model-opus-4.6",
         actual: "anthropic/claude-opus-4.6",
-        provider_gateway: "openrouter",
         provider_name: "Anthropic Vertex",
         openrouter_generation_id: "gen-123",
         openrouter_request_id: "req-123",
         openrouter_strategy: "direct",
       });
+      expect(wideEvent.model).not.toHaveProperty("provider_gateway");
     } finally {
       logSpy.mockRestore();
     }

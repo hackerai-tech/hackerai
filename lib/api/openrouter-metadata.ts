@@ -6,7 +6,6 @@ export type OpenRouterAttemptMetadata = {
 };
 
 export type OpenRouterModelMetadata = {
-  provider_gateway: "openrouter";
   provider_name?: string;
   openrouter_generation_id?: string;
   openrouter_request_id?: string;
@@ -201,7 +200,6 @@ export function extractOpenRouterMetadata(args: {
 }): OpenRouterModelMetadata {
   const routerMetadata = findOpenRouterMetadata(args.providerMetadata);
   return compactOpenRouterMetadata({
-    provider_gateway: "openrouter",
     openrouter_generation_id: pickGenerationId(args.response),
     openrouter_request_id: pickRequestId(args.response, routerMetadata),
     ...metadataFromRouterPayload(routerMetadata),
@@ -214,13 +212,9 @@ export function mergeOpenRouterMetadata(
 ): OpenRouterModelMetadata {
   if (!secondary) return primary;
 
-  const { provider_gateway: _primaryGateway, ...primaryFields } = primary;
-  const { provider_gateway: _secondaryGateway, ...secondaryFields } = secondary;
-
   return compactOpenRouterMetadata({
-    provider_gateway: "openrouter",
-    ...secondaryFields,
-    ...primaryFields,
+    ...secondary,
+    ...primary,
     provider_name: primary.provider_name ?? secondary.provider_name,
     openrouter_request_id:
       primary.openrouter_request_id ?? secondary.openrouter_request_id,
@@ -235,12 +229,9 @@ export function mergeOpenRouterMetadata(
 function compactOpenRouterMetadata(
   metadata: OpenRouterModelMetadata,
 ): OpenRouterModelMetadata {
-  const compact: OpenRouterModelMetadata = {
-    provider_gateway: "openrouter",
-  };
+  const compact: OpenRouterModelMetadata = {};
 
   for (const [key, value] of Object.entries(metadata)) {
-    if (key === "provider_gateway") continue;
     if (value === undefined) continue;
     if (Array.isArray(value) && value.length === 0) continue;
     (compact as Record<string, unknown>)[key] = value;
@@ -286,7 +277,6 @@ export async function fetchOpenRouterGenerationMetadata(
     if (!isRecord(payload) || !isRecord(payload.data)) return undefined;
 
     return compactOpenRouterMetadata({
-      provider_gateway: "openrouter",
       openrouter_generation_id: generationId,
       ...metadataFromGenerationPayload(payload.data),
     });

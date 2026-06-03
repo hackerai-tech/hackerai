@@ -43,7 +43,6 @@ describe("OpenRouter metadata extraction", () => {
     });
 
     expect(metadata).toEqual({
-      provider_gateway: "openrouter",
       provider_name: "Anthropic Vertex",
       openrouter_generation_id: "gen-from-header",
       openrouter_request_id: "req-from-header",
@@ -85,7 +84,6 @@ describe("OpenRouter metadata extraction", () => {
     });
 
     expect(metadata).toEqual({
-      provider_gateway: "openrouter",
       provider_name: "Azure",
       openrouter_generation_id: "gen-123",
       openrouter_request_id: "req-openrouter",
@@ -119,7 +117,6 @@ describe("OpenRouter metadata extraction", () => {
     });
 
     expect(metadata).toEqual({
-      provider_gateway: "openrouter",
       provider_name: "Google Vertex",
       openrouter_generation_id: "gen-sdk-provider",
     });
@@ -128,13 +125,11 @@ describe("OpenRouter metadata extraction", () => {
   it("merges generation metadata without overwriting response metadata", () => {
     const merged = mergeOpenRouterMetadata(
       {
-        provider_gateway: "openrouter",
         openrouter_generation_id: "gen-123",
         provider_name: "Google Vertex",
         openrouter_strategy: "direct",
       },
       {
-        provider_gateway: "openrouter",
         openrouter_generation_id: "gen-123",
         provider_name: "Google",
         openrouter_request_id: "req-123",
@@ -143,7 +138,6 @@ describe("OpenRouter metadata extraction", () => {
     );
 
     expect(merged).toEqual({
-      provider_gateway: "openrouter",
       openrouter_generation_id: "gen-123",
       provider_name: "Google Vertex",
       openrouter_strategy: "direct",

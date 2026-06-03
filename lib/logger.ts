@@ -67,7 +67,6 @@ export interface ChatWideEvent {
   model?: {
     configured: string;
     actual?: string;
-    provider_gateway?: "openrouter";
     provider_name?: string;
     openrouter_generation_id?: string;
     openrouter_request_id?: string;
