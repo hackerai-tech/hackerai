@@ -2,9 +2,15 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import {
+  applyPaidStartMixDelta,
   applyUnitEconomicsDelta,
+  recordPaidStartEventInternal,
   recordRevenueEventInternal,
   utcDay,
+  type PaidStartBillingInterval,
+  type PaidStartConversionType,
+  type PaidStartMixBillingInterval,
+  type PaidStartTier,
   type UnitEconomicsAttributionStrategy,
   type UnitEconomicsEntityType,
   type UnitEconomicsRevenueSource,
@@ -28,8 +34,41 @@ const attributionStrategyValidator = v.union(
   v.literal("organization_pool"),
 );
 
+const paidStartTierValidator = v.union(
+  v.literal("pro"),
+  v.literal("pro-plus"),
+  v.literal("ultra"),
+  v.literal("team"),
+);
+
+const paidStartBillingIntervalValidator = v.union(
+  v.literal("day"),
+  v.literal("week"),
+  v.literal("month"),
+  v.literal("year"),
+);
+
+const paidStartMixBillingIntervalValidator = v.union(
+  v.literal("day"),
+  v.literal("week"),
+  v.literal("month"),
+  v.literal("year"),
+  v.literal("unknown"),
+);
+
+const paidStartConversionTypeValidator = v.union(
+  v.literal("free_to_paid"),
+  v.literal("paid_subscription_start"),
+);
+
 function assertFiniteMoney(value: number, field: string) {
   if (!Number.isFinite(value)) {
+    throw new Error(`${field} must be finite`);
+  }
+}
+
+function assertFiniteOptionalNumber(value: number | undefined, field: string) {
+  if (value !== undefined && !Number.isFinite(value)) {
     throw new Error(`${field} must be finite`);
   }
 }
@@ -40,6 +79,7 @@ function sumRows(rows: Array<any>) {
       grossRevenueDollars:
         totals.grossRevenueDollars + row.gross_revenue_dollars,
       netRevenueDollars: totals.netRevenueDollars + row.net_revenue_dollars,
+      mrrDollars: totals.mrrDollars + (row.mrr_dollars ?? 0),
       modelCostDollars: totals.modelCostDollars + row.model_cost_dollars,
       nonModelCostDollars:
         totals.nonModelCostDollars + row.non_model_cost_dollars,
@@ -60,6 +100,7 @@ function sumRows(rows: Array<any>) {
     {
       grossRevenueDollars: 0,
       netRevenueDollars: 0,
+      mrrDollars: 0,
       modelCostDollars: 0,
       nonModelCostDollars: 0,
       totalCostDollars: 0,
@@ -89,6 +130,7 @@ export const recordRevenueEvent = mutation({
     idempotencyKey: v.optional(v.string()),
     grossRevenueDollars: v.number(),
     netRevenueDollars: v.optional(v.number()),
+    mrrDollars: v.optional(v.number()),
     currency: v.optional(v.string()),
     occurredAt: v.optional(v.number()),
     attributionStrategy: attributionStrategyValidator,
@@ -112,6 +154,9 @@ export const recordRevenueEvent = mutation({
     if (args.netRevenueDollars !== undefined) {
       assertFiniteMoney(args.netRevenueDollars, "netRevenueDollars");
     }
+    if (args.mrrDollars !== undefined) {
+      assertFiniteMoney(args.mrrDollars, "mrrDollars");
+    }
 
     return await recordRevenueEventInternal(ctx, {
       entityType: args.entityType as UnitEconomicsEntityType,
@@ -123,6 +168,7 @@ export const recordRevenueEvent = mutation({
       idempotencyKey: args.idempotencyKey,
       grossRevenueDollars: args.grossRevenueDollars,
       netRevenueDollars: args.netRevenueDollars,
+      mrrDollars: args.mrrDollars,
       currency: args.currency,
       occurredAt: args.occurredAt,
       attributionStrategy:
@@ -137,6 +183,78 @@ export const recordRevenueEvent = mutation({
       quantity: args.quantity,
       userCount: args.userCount,
       description: args.description,
+    });
+  },
+});
+
+export const recordPaidStartEvent = mutation({
+  args: {
+    serviceKey: v.string(),
+    entityType: entityTypeValidator,
+    entityId: v.string(),
+    userId: v.optional(v.string()),
+    organizationId: v.optional(v.string()),
+    sourceEventId: v.string(),
+    idempotencyKey: v.optional(v.string()),
+    occurredAt: v.optional(v.number()),
+    conversionType: paidStartConversionTypeValidator,
+    tier: paidStartTierValidator,
+    plan: v.optional(v.string()),
+    paidAccountStartCount: v.optional(v.number()),
+    paidUserStartCount: v.optional(v.number()),
+    paidSeatCount: v.optional(v.number()),
+    billingInterval: v.optional(paidStartBillingIntervalValidator),
+    billingIntervalCount: v.optional(v.number()),
+    quantity: v.optional(v.number()),
+    userCount: v.optional(v.number()),
+    stripeCustomerId: v.optional(v.string()),
+    stripeSubscriptionId: v.optional(v.string()),
+    stripeInvoiceId: v.optional(v.string()),
+    stripePriceId: v.optional(v.string()),
+  },
+  returns: v.object({
+    alreadyRecorded: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    assertFiniteOptionalNumber(args.occurredAt, "occurredAt");
+    assertFiniteOptionalNumber(
+      args.paidAccountStartCount,
+      "paidAccountStartCount",
+    );
+    assertFiniteOptionalNumber(args.paidUserStartCount, "paidUserStartCount");
+    assertFiniteOptionalNumber(args.paidSeatCount, "paidSeatCount");
+    assertFiniteOptionalNumber(
+      args.billingIntervalCount,
+      "billingIntervalCount",
+    );
+    assertFiniteOptionalNumber(args.quantity, "quantity");
+    assertFiniteOptionalNumber(args.userCount, "userCount");
+
+    return await recordPaidStartEventInternal(ctx, {
+      entityType: args.entityType as UnitEconomicsEntityType,
+      entityId: args.entityId,
+      userId: args.userId,
+      organizationId: args.organizationId,
+      sourceEventId: args.sourceEventId,
+      idempotencyKey: args.idempotencyKey,
+      occurredAt: args.occurredAt,
+      conversionType: args.conversionType as PaidStartConversionType,
+      tier: args.tier as PaidStartTier,
+      plan: args.plan,
+      paidAccountStartCount: args.paidAccountStartCount,
+      paidUserStartCount: args.paidUserStartCount,
+      paidSeatCount: args.paidSeatCount,
+      billingInterval: args.billingInterval as
+        | PaidStartBillingInterval
+        | undefined,
+      billingIntervalCount: args.billingIntervalCount,
+      quantity: args.quantity,
+      userCount: args.userCount,
+      stripeCustomerId: args.stripeCustomerId,
+      stripeSubscriptionId: args.stripeSubscriptionId,
+      stripeInvoiceId: args.stripeInvoiceId,
+      stripePriceId: args.stripePriceId,
     });
   },
 });
@@ -294,6 +412,7 @@ export const rebuildEntityDailyRollups = mutation({
         day: utcDay(event.occurred_at),
         grossRevenueDollars: event.gross_revenue_dollars,
         netRevenueDollars: event.net_revenue_dollars,
+        mrrDollars: event.mrr_dollars,
         revenueEventCount: 1,
       });
     }
@@ -303,6 +422,74 @@ export const rebuildEntityDailyRollups = mutation({
       usageRowsApplied: usageRows.length,
       revenueRowsApplied: revenueRows.length,
       truncated: usageRows.length === maxRows || revenueRows.length === maxRows,
+    };
+  },
+});
+
+export const rebuildPaidStartMixDailyRollups = mutation({
+  args: {
+    serviceKey: v.string(),
+    startDay: v.string(),
+    endDay: v.string(),
+    maxRows: v.optional(v.number()),
+  },
+  returns: v.object({
+    deletedRollups: v.number(),
+    eventRowsApplied: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const maxRows = Math.min(
+      Math.max(Math.round(args.maxRows ?? 5000), 1),
+      10_000,
+    );
+
+    const existingRollups = await ctx.db
+      .query("paid_start_mix_daily")
+      .withIndex("by_day", (q) =>
+        q.gte("day", args.startDay).lte("day", args.endDay),
+      )
+      .take(maxRows);
+
+    for (const row of existingRollups) {
+      await ctx.db.delete(row._id);
+    }
+
+    if (existingRollups.length === maxRows) {
+      return {
+        deletedRollups: existingRollups.length,
+        eventRowsApplied: 0,
+        truncated: true,
+      };
+    }
+
+    const events = await ctx.db
+      .query("paid_start_events")
+      .withIndex("by_day", (q) =>
+        q.gte("day", args.startDay).lte("day", args.endDay),
+      )
+      .take(maxRows);
+
+    for (const event of events) {
+      await applyPaidStartMixDelta(ctx, {
+        day: event.day,
+        tier: event.tier as PaidStartTier,
+        plan: event.plan ?? event.tier,
+        billingInterval:
+          (event.billing_interval as PaidStartMixBillingInterval | undefined) ??
+          "unknown",
+        paidAccountStartCount: event.paid_account_start_count,
+        paidUserStartCount: event.paid_user_start_count,
+        paidSeatCount: event.paid_seat_count,
+      });
+    }
+
+    return {
+      deletedRollups: existingRollups.length,
+      eventRowsApplied: events.length,
+      truncated: events.length === maxRows,
     };
   },
 });
@@ -337,5 +524,55 @@ export const listDailyRollupsForPostHog = query({
         `${b.entity_type}:${b.entity_id}`,
       );
     });
+  },
+});
+
+export const listPaidStartMixForPostHog = query({
+  args: {
+    serviceKey: v.string(),
+    startDay: v.string(),
+    endDay: v.string(),
+    tier: v.optional(paidStartTierValidator),
+    billingInterval: v.optional(paidStartMixBillingIntervalValidator),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const limit = Math.min(Math.max(Math.round(args.limit ?? 1000), 1), 5000);
+    const rows = args.tier
+      ? await ctx.db
+          .query("paid_start_mix_daily")
+          .withIndex("by_tier_day", (q) =>
+            q
+              .eq("tier", args.tier!)
+              .gte("day", args.startDay)
+              .lte("day", args.endDay),
+          )
+          .take(limit)
+      : await ctx.db
+          .query("paid_start_mix_daily")
+          .withIndex("by_day", (q) =>
+            q.gte("day", args.startDay).lte("day", args.endDay),
+          )
+          .take(limit);
+
+    return rows
+      .filter(
+        (row) =>
+          !args.billingInterval ||
+          row.billing_interval === args.billingInterval,
+      )
+      .sort((a, b) => {
+        const dayCompare = a.day.localeCompare(b.day);
+        if (dayCompare !== 0) return dayCompare;
+        const tierCompare = a.tier.localeCompare(b.tier);
+        if (tierCompare !== 0) return tierCompare;
+        const intervalCompare = a.billing_interval.localeCompare(
+          b.billing_interval,
+        );
+        if (intervalCompare !== 0) return intervalCompare;
+        return a.plan.localeCompare(b.plan);
+      });
   },
 });

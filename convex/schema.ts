@@ -378,6 +378,9 @@ export default defineSchema({
     idempotency_key: v.string(),
     gross_revenue_dollars: v.number(),
     net_revenue_dollars: v.number(),
+    // Normalized monthly recurring revenue for subscription invoices. Raw
+    // cash collected remains in gross/net revenue.
+    mrr_dollars: v.optional(v.number()),
     currency: v.string(),
     occurred_at: v.number(),
     attribution_strategy: v.union(
@@ -403,6 +406,84 @@ export default defineSchema({
     .index("by_org_occurred", ["organization_id", "occurred_at"])
     .index("by_source_event", ["source", "source_event_id"]),
 
+  // Append-only paid-start ledger for funnel health. One row is recorded per
+  // new paid account/subscription; user and seat counts are separate fields so
+  // team starts do not silently inflate account conversion volume.
+  paid_start_events: defineTable({
+    entity_type: v.union(v.literal("user"), v.literal("organization")),
+    entity_id: v.string(),
+    user_id: v.optional(v.string()),
+    organization_id: v.optional(v.string()),
+    source_event_id: v.string(),
+    idempotency_key: v.string(),
+    occurred_at: v.number(),
+    day: v.string(),
+    conversion_type: v.union(
+      v.literal("free_to_paid"),
+      v.literal("paid_subscription_start"),
+    ),
+    tier: v.union(
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    plan: v.optional(v.string()),
+    paid_account_start_count: v.number(),
+    paid_user_start_count: v.number(),
+    paid_seat_count: v.number(),
+    billing_interval: v.optional(
+      v.union(
+        v.literal("day"),
+        v.literal("week"),
+        v.literal("month"),
+        v.literal("year"),
+      ),
+    ),
+    billing_interval_count: v.optional(v.number()),
+    quantity: v.optional(v.number()),
+    user_count: v.optional(v.number()),
+    stripe_customer_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    stripe_price_id: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_entity_day", ["entity_type", "entity_id", "day"])
+    .index("by_day", ["day"])
+    .index("by_user_day", ["user_id", "day"])
+    .index("by_org_day", ["organization_id", "day"])
+    .index("by_tier_day", ["tier", "day"])
+    .index("by_source_event", ["source_event_id"]),
+
+  // Compact daily paid-start mix for dashboarding/PostHog warehouse sync.
+  // Counts only; join to revenue_events only when explicitly analyzing money.
+  paid_start_mix_daily: defineTable({
+    day: v.string(),
+    tier: v.union(
+      v.literal("pro"),
+      v.literal("pro-plus"),
+      v.literal("ultra"),
+      v.literal("team"),
+    ),
+    plan: v.string(),
+    billing_interval: v.union(
+      v.literal("day"),
+      v.literal("week"),
+      v.literal("month"),
+      v.literal("year"),
+      v.literal("unknown"),
+    ),
+    paid_account_start_count: v.number(),
+    paid_user_start_count: v.number(),
+    paid_seat_count: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_segment", ["day", "tier", "billing_interval", "plan"])
+    .index("by_day", ["day"])
+    .index("by_tier_day", ["tier", "day"]),
+
   // Compact daily rows intended for dashboarding and PostHog warehouse sync.
   // Query either entity_type=user for per-user profitability or
   // entity_type=organization for team pool/subscription reporting.
@@ -414,6 +495,7 @@ export default defineSchema({
     day: v.string(),
     gross_revenue_dollars: v.number(),
     net_revenue_dollars: v.number(),
+    mrr_dollars: v.optional(v.number()),
     model_cost_dollars: v.number(),
     non_model_cost_dollars: v.number(),
     total_cost_dollars: v.number(),
