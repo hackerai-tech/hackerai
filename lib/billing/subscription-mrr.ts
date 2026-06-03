@@ -2,6 +2,10 @@ import type Stripe from "stripe";
 
 type BillingInterval = "day" | "week" | "month" | "year";
 
+function finitePositive(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
 export function priceBillingInterval(
   price: Stripe.Price | undefined,
 ): BillingInterval | undefined {
@@ -11,19 +15,23 @@ export function priceBillingInterval(
 function priceAmountDollars(
   price: Stripe.Price | undefined,
 ): number | undefined {
-  if (typeof price?.unit_amount === "number") return price.unit_amount / 100;
+  if (typeof price?.unit_amount === "number") {
+    const amountDollars = price.unit_amount / 100;
+    return finitePositive(amountDollars) ? amountDollars : undefined;
+  }
 
   if (price?.unit_amount_decimal == null) return undefined;
 
   const decimalAmount = Number(price.unit_amount_decimal);
-  return Number.isFinite(decimalAmount) ? decimalAmount / 100 : undefined;
+  const amountDollars = decimalAmount / 100;
+  return finitePositive(amountDollars) ? amountDollars : undefined;
 }
 
 function recurringIntervalMonths(
   interval: BillingInterval | undefined,
   intervalCount = 1,
 ): number | undefined {
-  if (!interval || intervalCount <= 0) return undefined;
+  if (!interval || !finitePositive(intervalCount)) return undefined;
   const averageDaysPerMonth = 365 / 12;
 
   switch (interval) {
@@ -47,6 +55,8 @@ export function subscriptionMrrDollars({
   quantity?: number;
   fallbackTotalIntervalAmountDollars?: number;
 }): number | undefined {
+  if (!finitePositive(quantity)) return undefined;
+
   const unitAmountDollars = priceAmountDollars(price);
   const totalIntervalAmountDollars =
     unitAmountDollars === undefined
@@ -58,8 +68,8 @@ export function subscriptionMrrDollars({
   );
 
   if (
-    totalIntervalAmountDollars === undefined ||
-    intervalMonths === undefined
+    !finitePositive(totalIntervalAmountDollars) ||
+    !finitePositive(intervalMonths)
   ) {
     return undefined;
   }

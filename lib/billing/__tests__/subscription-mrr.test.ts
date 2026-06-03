@@ -96,6 +96,41 @@ describe("subscription MRR normalization", () => {
     ).toBeUndefined();
   });
 
+  it("returns undefined for invalid numeric inputs", () => {
+    expect(
+      subscriptionMrrDollars({
+        price: price({ amountCents: 2500, interval: "month" }),
+        quantity: Number.NaN,
+      }),
+    ).toBeUndefined();
+    expect(
+      subscriptionMrrDollars({
+        price: price({ amountCents: 2500, interval: "month" }),
+        quantity: -1,
+      }),
+    ).toBeUndefined();
+    expect(
+      subscriptionMrrDollars({
+        price: price({ interval: "month" }),
+        fallbackTotalIntervalAmountDollars: Number.POSITIVE_INFINITY,
+      }),
+    ).toBeUndefined();
+    expect(
+      subscriptionMrrDollars({
+        price: price({ amountCents: 0, interval: "month" }),
+      }),
+    ).toBeUndefined();
+    expect(
+      subscriptionMrrDollars({
+        price: price({
+          amountCents: 2500,
+          interval: "month",
+          intervalCount: Number.NaN,
+        }),
+      }),
+    ).toBeUndefined();
+  });
+
   it("exposes the billing interval used by analytics dimensions", () => {
     expect(
       priceBillingInterval(price({ amountCents: 2500, interval: "month" })),
