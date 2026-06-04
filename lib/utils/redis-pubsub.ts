@@ -1,7 +1,6 @@
-import { createClient } from "redis";
+import { createClient, type RedisClientType } from "redis";
 
-// Use ReturnType to get the correct client type from createClient
-type RedisClient = ReturnType<typeof createClient>;
+type RedisClient = RedisClientType;
 
 /**
  * Create a dedicated subscriber client for a specific channel.
