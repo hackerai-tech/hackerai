@@ -65,15 +65,22 @@ async function runTool(
 
 function makeSandbox(
   commandRun: jest.Mock<Promise<FakeCommandResult>, [string, any?]>,
+  opts?: { windows?: boolean },
 ) {
   return {
+    ...(opts?.windows
+      ? {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => true,
+        }
+      : {}),
     commands: { run: commandRun },
     files: {
       read: jest.fn(async () => {
         throw new Error("files.read should not be called");
       }),
       write: jest.fn(async () => undefined),
-      remove: jest.fn(),
+      remove: jest.fn(async () => undefined),
       list: jest.fn(),
     },
   };
@@ -139,7 +146,11 @@ describe("file tool large text safety", () => {
 
   test("refuses edit on oversized files before reading them", async () => {
     const commandRun = jest.fn(async () => ({
-      stdout: "5000000\n",
+      stdout: JSON.stringify({
+        kind: "file",
+        path: "/tmp/download.php",
+        sizeBytes: 5_000_000,
+      }),
       stderr: "",
       exitCode: 0,
     }));
@@ -161,7 +172,11 @@ describe("file tool large text safety", () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
       .mockResolvedValueOnce({
-        stdout: "5000000\n",
+        stdout: JSON.stringify({
+          kind: "file",
+          path: "/tmp/download.php",
+          sizeBytes: 5_000_000,
+        }),
         stderr: "",
         exitCode: 0,
       })
@@ -186,6 +201,126 @@ describe("file tool large text safety", () => {
       "\nnew line\n",
       { user: "user" },
     );
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+
+  test("fails closed when file size cannot be determined", async () => {
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "python missing",
+        exitCode: 1,
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "python missing",
+        exitCode: 1,
+      });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "/tmp/download.php",
+      brief: "Read when size probe fails",
+    })) as { error: string };
+
+    expect(result.error).toContain("Unable to determine file size");
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+
+  test("uses a Windows-compatible Python script path for bounded reads", async () => {
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockResolvedValueOnce({
+        stdout: "$BASH_VERSION\r\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockImplementationOnce(async (command, opts) => {
+        expect(command).toMatch(/^python "C:\\temp\\hackerai_script_/);
+        expect(command).not.toContain("<<'PY'");
+        expect(opts.envVars.HACKERAI_FILE_READ_PATH).toBe(
+          "C:\\temp\\download.php",
+        );
+        return {
+          stdout: JSON.stringify({
+            path: "C:\\temp\\download.php",
+            sizeBytes: 5_000_000,
+            totalLines: 2_216_265,
+            content: "line 500\nline 501\n",
+            startLine: 500,
+            truncated: false,
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+    const sandbox = makeSandbox(commandRun, { windows: true });
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "/tmp/download.php",
+      brief: "Read a range on Windows",
+      range: [500, 501],
+    })) as { content: string };
+
+    expect(result.content).toContain("   500|line 500");
+    expect(result.content).toContain("   501|line 501");
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+
+  test("oversized append on Windows does not use POSIX cat/rm commands", async () => {
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockResolvedValueOnce({
+        stdout: "$BASH_VERSION\r\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          kind: "file",
+          path: "C:\\temp\\download.php",
+          sizeBytes: 5_000_000,
+        }),
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: "$BASH_VERSION\r\n",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockImplementationOnce(async (command, opts) => {
+        expect(command).toMatch(/^python "C:\\temp\\hackerai_script_/);
+        expect(command).not.toContain("cat ");
+        expect(command).not.toContain("rm -f");
+        expect(opts.envVars.HACKERAI_FILE_APPEND_TARGET_PATH).toBe(
+          "C:\\temp\\download.php",
+        );
+        expect(opts.envVars.HACKERAI_FILE_APPEND_SOURCE_PATH).toMatch(
+          /^C:\\temp\\hackerai_append_/,
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+    const sandbox = makeSandbox(commandRun, { windows: true });
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "append",
+      path: "/tmp/download.php",
+      brief: "Append safely on Windows",
+      text: "\nnew line\n",
+    })) as { content: string };
+
+    expect(result.content).toContain("full diff preview was skipped");
     expect(sandbox.files.read).not.toHaveBeenCalled();
   });
 });

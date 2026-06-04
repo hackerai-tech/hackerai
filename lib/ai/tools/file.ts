@@ -224,6 +224,49 @@ emit({
 })
 `;
 
+const FILE_STATE_SCRIPT = String.raw`
+import json
+import os
+import sys
+
+path = os.environ["HACKERAI_FILE_STATE_PATH"]
+
+def emit(payload, code=0):
+    print(json.dumps(payload, separators=(",", ":")))
+    sys.exit(code)
+
+if not os.path.exists(path):
+    emit({"kind": "missing", "path": path})
+
+if not os.path.isfile(path):
+    emit({"kind": "not_file", "path": path})
+
+emit({
+    "kind": "file",
+    "path": path,
+    "sizeBytes": os.path.getsize(path),
+})
+`;
+
+const APPEND_TEXT_FILE_SCRIPT = String.raw`
+import os
+
+target_path = os.environ["HACKERAI_FILE_APPEND_TARGET_PATH"]
+source_path = os.environ["HACKERAI_FILE_APPEND_SOURCE_PATH"]
+
+with open(source_path, "rb") as source, open(target_path, "ab") as target:
+    while True:
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            break
+        target.write(chunk)
+
+try:
+    os.remove(source_path)
+except OSError:
+    pass
+`;
+
 const getFilename = (path: string) => path.split("/").pop() || path;
 
 const getFileExtension = (path: string): string | undefined => {
@@ -352,6 +395,12 @@ type SandboxTextReadPayload = {
   error?: string;
 };
 
+type SandboxFileState =
+  | { kind: "file"; path: string; sizeBytes: number }
+  | { kind: "missing"; path: string }
+  | { kind: "not_file"; path: string }
+  | { kind: "unknown"; path: string; error: string };
+
 function commandErrorToResult(error: unknown): SandboxCommandResult | null {
   if (!(error instanceof Error)) return null;
 
@@ -376,6 +425,10 @@ function commandErrorToResult(error: unknown): SandboxCommandResult | null {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function cmdQuote(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function formatBytes(bytes: number): string {
@@ -416,41 +469,132 @@ async function runSandboxCommand(
   }
 }
 
-async function getSandboxFileSize(
+function isWindowsSandbox(sandbox: AnySandbox): boolean {
+  return isCentrifugoSandbox(sandbox) && sandbox.isWindows();
+}
+
+function getWindowsNativePath(path: string): string {
+  if (/^[A-Za-z]:[\\/]/.test(path)) return path;
+  if (path.startsWith("/tmp/")) {
+    return `C:\\temp${path.slice(4).replace(/\//g, "\\")}`;
+  }
+  return path.replace(/\//g, "\\");
+}
+
+function getPythonPathForSandbox(sandbox: AnySandbox, path: string): string {
+  return isWindowsSandbox(sandbox) ? getWindowsNativePath(path) : path;
+}
+
+function toWindowsBashPath(path: string): string {
+  const drive = path.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (drive) {
+    return `/${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, "/")}`;
+  }
+  return path.replace(/\\/g, "/");
+}
+
+async function detectSandboxShell(
+  sandbox: AnySandbox,
+): Promise<"bash" | "cmd"> {
+  if (!isWindowsSandbox(sandbox)) return "bash";
+
+  const probe = await runSandboxCommand(
+    sandbox,
+    "echo $BASH_VERSION",
+    undefined,
+    10_000,
+  ).catch(() => null);
+  if (probe?.exitCode === 0 && /^\d/.test(probe.stdout.trim())) {
+    return "bash";
+  }
+
+  return "cmd";
+}
+
+async function runPythonScript(
+  sandbox: AnySandbox,
+  script: string,
+  envVars: Record<string, string>,
+  timeoutMs: number,
+): Promise<SandboxCommandResult> {
+  if (!isWindowsSandbox(sandbox)) {
+    const command = `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" - <<'PY'\n${script}\nPY`;
+    return runSandboxCommand(sandbox, command, envVars, timeoutMs);
+  }
+
+  const shell = await detectSandboxShell(sandbox);
+  const tempScriptPath = `/tmp/hackerai_script_${Date.now()}_${Math.random().toString(36).slice(2)}.py`;
+  await sandbox.files.write(tempScriptPath, script, {
+    user: "user" as const,
+  });
+
+  const nativePath = getWindowsNativePath(tempScriptPath);
+  const commandPath =
+    shell === "bash" ? toWindowsBashPath(nativePath) : nativePath;
+  const quotedPath =
+    shell === "bash" ? shellQuote(commandPath) : cmdQuote(commandPath);
+  const command =
+    shell === "bash"
+      ? `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" ${quotedPath}; status=$?; rm -f ${quotedPath}; exit $status`
+      : `python ${quotedPath}`;
+
+  try {
+    return await runSandboxCommand(sandbox, command, envVars, timeoutMs);
+  } finally {
+    if (shell === "cmd") {
+      await sandbox.files.remove(tempScriptPath).catch(() => undefined);
+    }
+  }
+}
+
+async function getSandboxFileState(
   sandbox: AnySandbox,
   path: string,
-): Promise<number | null> {
-  const quotedPath = shellQuote(path);
-  const statResult = await runSandboxCommand(
+): Promise<SandboxFileState> {
+  const pythonPath = getPythonPathForSandbox(sandbox, path);
+  const result = await runPythonScript(
     sandbox,
-    `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
-    undefined,
+    FILE_STATE_SCRIPT,
+    { HACKERAI_FILE_STATE_PATH: pythonPath },
     30_000,
-  ).catch(() => null);
+  ).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      stdout: "",
+      stderr: message,
+      exitCode: 1,
+    } satisfies SandboxCommandResult;
+  });
 
-  const statSize = statResult
-    ? Number.parseInt(statResult.stdout.trim(), 10)
-    : NaN;
-  if (statResult?.exitCode === 0 && Number.isFinite(statSize)) {
-    return statSize;
+  if (result.exitCode !== 0) {
+    return {
+      kind: "unknown",
+      path,
+      error: result.stderr || result.stdout || "file state command failed",
+    };
   }
 
-  const escapedForCmd = path.replace(/"/g, '\\"');
-  const winResult = await runSandboxCommand(
-    sandbox,
-    `for %I in ("${escapedForCmd}") do @echo %~zI`,
-    undefined,
-    30_000,
-  ).catch(() => null);
-
-  const winSize = winResult
-    ? Number.parseInt(winResult.stdout.trim(), 10)
-    : NaN;
-  if (winResult?.exitCode === 0 && Number.isFinite(winSize)) {
-    return winSize;
+  try {
+    const payload = JSON.parse(result.stdout.trim()) as SandboxFileState;
+    if (
+      payload.kind === "file" &&
+      typeof payload.sizeBytes === "number" &&
+      Number.isFinite(payload.sizeBytes)
+    ) {
+      return { ...payload, path };
+    }
+    if (payload.kind === "missing" || payload.kind === "not_file") {
+      return { ...payload, path };
+    }
+  } catch {
+    // Fall through to unknown below.
   }
 
-  return null;
+  return {
+    kind: "unknown",
+    path,
+    error: result.stderr || result.stdout || "invalid file state response",
+  };
 }
 
 function buildNumberedFileContent(args: {
@@ -492,15 +636,20 @@ async function readSandboxTextFile(
   path: string,
   range?: number[],
 ): Promise<SandboxTextReadPayload> {
+  const pythonPath = getPythonPathForSandbox(sandbox, path);
   const envVars = {
-    HACKERAI_FILE_READ_PATH: path,
+    HACKERAI_FILE_READ_PATH: pythonPath,
     HACKERAI_FILE_READ_RANGE_START: String(range?.[0] ?? 0),
     HACKERAI_FILE_READ_RANGE_END: String(range?.[1] ?? -1),
     HACKERAI_FILE_READ_MAX_FULL_BYTES: String(MAX_TEXT_FILE_READ_BYTES),
     HACKERAI_FILE_READ_MAX_RESULT_BYTES: String(MAX_TEXT_READ_RESULT_BYTES),
   };
-  const command = `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" - <<'PY'\n${READ_TEXT_FILE_SCRIPT}\nPY`;
-  const result = await runSandboxCommand(sandbox, command, envVars, 120_000);
+  const result = await runPythonScript(
+    sandbox,
+    READ_TEXT_FILE_SCRIPT,
+    envVars,
+    120_000,
+  );
   const stdout = result.stdout.trim();
   let payload: SandboxTextReadPayload;
 
@@ -537,17 +686,28 @@ async function readSandboxTextFileWithFallback(
       throw error;
     }
 
-    const size = await getSandboxFileSize(sandbox, path);
-    if (size !== null && size > MAX_TEXT_FILE_READ_BYTES) {
+    const state = await getSandboxFileState(sandbox, path);
+    if (state.kind === "unknown") {
+      throw new Error(
+        `Unable to determine file size for ${path}; refusing to load the file into memory. ${state.error}`,
+      );
+    }
+    if (state.kind === "missing") {
+      throw new Error(`File not found or is not a regular file: ${path}`);
+    }
+    if (state.kind === "not_file") {
+      throw new Error(`File is not a regular file: ${path}`);
+    }
+    if (state.sizeBytes > MAX_TEXT_FILE_READ_BYTES) {
       if (range) {
         throw new Error(
-          `Unable to perform a bounded range read for ${path}, and the file is too large to load safely (${formatBytes(size)}). Use a targeted terminal command that writes a small result to a separate file.`,
+          `Unable to perform a bounded range read for ${path}, and the file is too large to load safely (${formatBytes(state.sizeBytes)}). Use a targeted terminal command that writes a small result to a separate file.`,
         );
       }
 
       return {
         path,
-        sizeBytes: size,
+        sizeBytes: state.sizeBytes,
         totalLines: 0,
         tooLarge: true,
       };
@@ -611,10 +771,16 @@ async function appendSandboxTextFile(
     user: "user" as const,
   });
 
-  const result = await runSandboxCommand(
+  const result = await runPythonScript(
     sandbox,
-    `cat ${shellQuote(tempPath)} >> ${shellQuote(path)} && rm -f ${shellQuote(tempPath)}`,
-    undefined,
+    APPEND_TEXT_FILE_SCRIPT,
+    {
+      HACKERAI_FILE_APPEND_TARGET_PATH: getPythonPathForSandbox(sandbox, path),
+      HACKERAI_FILE_APPEND_SOURCE_PATH: getPythonPathForSandbox(
+        sandbox,
+        tempPath,
+      ),
+    },
     60_000,
   );
   if (result.exitCode !== 0) {
@@ -997,14 +1163,24 @@ ${instructionsDescription}`,
               return { error: "text is required for append action" };
             }
 
-            const existingSize = await getSandboxFileSize(sandbox, path);
+            const existingState = await getSandboxFileState(sandbox, path);
+            if (existingState.kind === "unknown") {
+              return {
+                error: `Cannot append safely because the existing file size could not be determined for ${path}. ${existingState.error}`,
+              };
+            }
+            if (existingState.kind === "not_file") {
+              return {
+                error: `Cannot append to ${path} because it is not a file.`,
+              };
+            }
             if (
-              existingSize !== null &&
-              existingSize > MAX_TEXT_FILE_READ_BYTES
+              existingState.kind === "file" &&
+              existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES
             ) {
               await appendSandboxTextFile(sandbox, path, text);
               return {
-                content: `File appended: ${path}\nExisting file is ${formatBytes(existingSize)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
+                content: `File appended: ${path}\nExisting file is ${formatBytes(existingState.sizeBytes)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
               };
             }
 
@@ -1045,13 +1221,23 @@ ${instructionsDescription}`,
               return { error: "edits array is required for edit action" };
             }
 
-            const existingSize = await getSandboxFileSize(sandbox, path);
-            if (
-              existingSize !== null &&
-              existingSize > MAX_TEXT_FILE_READ_BYTES
-            ) {
+            const existingState = await getSandboxFileState(sandbox, path);
+            if (existingState.kind === "unknown") {
               return {
-                error: `File ${path} is too large for the edit action (${formatBytes(existingSize)}). Use a targeted shell command, restore the file from a clean source, or replace it with the write action instead of loading the whole file into memory.`,
+                error: `Cannot edit ${path} safely because the file size could not be determined. ${existingState.error}`,
+              };
+            }
+            if (existingState.kind === "missing") {
+              return {
+                error: `Cannot edit file ${path} - file is empty or does not exist`,
+              };
+            }
+            if (existingState.kind === "not_file") {
+              return { error: `Cannot edit ${path} because it is not a file.` };
+            }
+            if (existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES) {
+              return {
+                error: `File ${path} is too large for the edit action (${formatBytes(existingState.sizeBytes)}). Use a targeted shell command, restore the file from a clean source, or replace it with the write action instead of loading the whole file into memory.`,
               };
             }
 
