@@ -338,6 +338,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     return user.firstName || user.lastName || "User";
   };
 
+  const includedUsageRemainingPercentage =
+    tokenUsage && tokenUsage.monthly.limit > 0
+      ? Math.round(
+          (tokenUsage.monthly.remaining / tokenUsage.monthly.limit) * 100,
+        )
+      : 0;
+
   return (
     <div className="relative">
       <ReferralRewardDialog
@@ -511,11 +518,9 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   ) : tokenUsage ? (
                     <>
                       <div className="flex items-center justify-between py-1.5 text-sm">
-                        <span className="text-muted-foreground">Monthly</span>
+                        <span className="text-muted-foreground">Included</span>
                         <div className="flex items-center gap-3 tabular-nums text-muted-foreground">
-                          <span>
-                            {tokenUsage.monthly.usagePercentage}% used
-                          </span>
+                          <span>{includedUsageRemainingPercentage}% left</span>
                           {tokenUsage.monthly.resetTime && (
                             <span>
                               {new Date(
