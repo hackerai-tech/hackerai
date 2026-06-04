@@ -12,7 +12,6 @@ import {
   UIMessage,
 } from "ai";
 import type { Geo } from "@vercel/functions";
-import { countTokens } from "gpt-tokenizer";
 import PostHogClient from "@/app/posthog";
 
 import { systemPrompt } from "@/lib/system-prompt";
@@ -59,7 +58,10 @@ import {
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
+import {
+  getMaxTokensForSubscription,
+  safeCountTokens,
+} from "@/lib/token-utils";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   writeAutoContinue,
@@ -946,7 +948,7 @@ export const agentLongTask = task({
               temporary,
               sandboxContext,
             );
-            const systemPromptTokens = countTokens(currentSystemPrompt);
+            const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
             const contextUsageOn = isContextUsageEnabled(subscription, mode);
             const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;

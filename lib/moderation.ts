@@ -1,5 +1,6 @@
 import OpenAI from "openai";
-import { encode, decode } from "gpt-tokenizer";
+import { decode } from "gpt-tokenizer";
+import { safeEncode } from "@/lib/token-utils";
 
 const MODERATION_TOKEN_LIMIT = 512;
 
@@ -144,7 +145,7 @@ function prepareInput(message: any): string {
 }
 
 function truncateByTokens(content: string): string {
-  const tokens = encode(content);
+  const tokens = safeEncode(content);
   if (tokens.length <= MODERATION_TOKEN_LIMIT) {
     return content;
   }

@@ -35,8 +35,10 @@ import {
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
-import { countTokens } from "gpt-tokenizer";
+import {
+  getMaxTokensForSubscription,
+  safeCountTokens,
+} from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
@@ -538,7 +540,7 @@ export const createChatHandler = () => {
               sandboxContext,
             );
 
-            const systemPromptTokens = countTokens(currentSystemPrompt);
+            const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
             const contextUsageOn = isContextUsageEnabled(subscription, mode);
             const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
