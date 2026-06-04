@@ -3,7 +3,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 
 const AGENT_BROWSER_INVOCATION_RE =
-  /(?:^|[;&|()]\s*)(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()]+)\s+)*)?(?:npx\s+(?:--yes\s+|-y\s+)?)?agent-browser(?=$|\s|[;&|()])(?:\s+([^\s;&|()]+))?/g;
+  /(?:^|[;&|()]\s*)(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|()]+)\s+)*)?(?:npx\s+(?:--yes\s+|-y\s+)?)?agent-browser(?:@[^\s;&|()]+)?(?=$|\s|[;&|()])(?:\s+([^\s;&|()]+))?/g;
 
 const KNOWN_AGENT_BROWSER_ACTIONS = new Set([
   "open",
@@ -79,7 +79,11 @@ export function detectAgentBrowserUsage(
   ) {
     invocationCount++;
     const matchedCommand = match[0] ?? "";
-    if (/\bnpx\s+(?:--yes\s+|-y\s+)?agent-browser\b/.test(matchedCommand)) {
+    if (
+      /\bnpx\s+(?:--yes\s+|-y\s+)?agent-browser(?:@[^\s;&|()]+)?(?=$|\s|[;&|()])/.test(
+        matchedCommand,
+      )
+    ) {
       usedViaNpx = true;
     }
     const action = normalizeAgentBrowserAction(match[1]);

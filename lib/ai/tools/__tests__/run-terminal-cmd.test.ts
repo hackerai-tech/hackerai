@@ -237,7 +237,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("detectAgentBrowserUsage supports env prefixes and npx", () => {
     expect(
       detectAgentBrowserUsage(
-        "AGENT_BROWSER_SESSION_NAME=scan npx -y agent-browser click @e3",
+        "AGENT_BROWSER_SESSION_NAME=scan npx -y agent-browser@0.26.0 click @e3",
       ),
     ).toEqual({
       invocationCount: 1,
