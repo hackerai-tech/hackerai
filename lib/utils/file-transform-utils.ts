@@ -21,6 +21,7 @@ import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
+const MAX_CONVEX_FILE_URL_BATCH_SIZE = 50;
 
 type FileToProcess = {
   fileId?: string;
@@ -304,14 +305,38 @@ const fetchFileUrls = async (
   }
 
   try {
-    return await getConvexClient().action(
-      api.s3Actions.getFileUrlsByFileIdsAction,
-      {
-        serviceKey,
-        userId,
-        fileIds: fileIds as Id<"files">[],
-      },
+    const chunks: string[][] = [];
+    for (let i = 0; i < fileIds.length; i += MAX_CONVEX_FILE_URL_BATCH_SIZE) {
+      chunks.push(fileIds.slice(i, i + MAX_CONVEX_FILE_URL_BATCH_SIZE));
+    }
+
+    const chunkResults = await Promise.all(
+      chunks.map(async (chunk, index): Promise<(string | null)[]> => {
+        try {
+          return await getConvexClient().action(
+            api.s3Actions.getFileUrlsByFileIdsAction,
+            {
+              serviceKey,
+              userId,
+              fileIds: chunk as Id<"files">[],
+            },
+          );
+        } catch (error) {
+          logger.warn("file_url_fetch_chunk_failed", {
+            event: "file_url_fetch_chunk_failed",
+            service: "chat-handler",
+            error: stringifyRedactedError(error),
+            file_count: fileIds.length,
+            chunk_file_count: chunk.length,
+            chunk_index: index,
+            chunk_count: chunks.length,
+          });
+          return chunk.map(() => null);
+        }
+      }),
     );
+
+    return chunkResults.flat();
   } catch (error) {
     logger.warn("file_url_fetch_failed", {
       event: "file_url_fetch_failed",
