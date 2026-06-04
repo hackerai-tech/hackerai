@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { workos } from "@/app/api/workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isUnauthorizedError } from "@/lib/api/response";
+import { listUserMfaFactors } from "@/app/api/mfa/workos-factors";
 
 interface DeleteMfaFactorRequest {
   factorId?: string;
@@ -50,10 +51,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Ensure factor belongs to the authenticated user
-    const factors = await workos.multiFactorAuth.listUserAuthFactors({
-      userId,
-    });
-    const ownsFactor = factors.data.some((f) => f.id === factorId);
+    const factors = await listUserMfaFactors(userId);
+    const ownsFactor = factors.some((f) => f.id === factorId);
     if (!ownsFactor) {
       return NextResponse.json({ error: "Factor not found" }, { status: 404 });
     }

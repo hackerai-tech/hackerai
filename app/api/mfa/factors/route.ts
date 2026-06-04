@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserID } from "@/lib/auth/get-user-id";
-import { workos } from "@/app/api/workos";
 import { isUnauthorizedError } from "@/lib/api/response";
+import { listUserMfaFactors } from "@/app/api/mfa/workos-factors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -19,23 +19,10 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Get user's MFA factors from WorkOS
-    const factors = await workos.multiFactorAuth.listUserAuthFactors({
-      userId: userId,
-    });
-
-    // Transform factors for client response
-    const transformedFactors = factors.data.map((factor) => ({
-      id: factor.id,
-      type: factor.type,
-      issuer: factor.totp?.issuer,
-      user: factor.totp?.user,
-      createdAt: factor.createdAt,
-      updatedAt: factor.updatedAt,
-    }));
+    const factors = await listUserMfaFactors(userId);
 
     return NextResponse.json({
-      factors: transformedFactors,
+      factors,
     });
   } catch (error) {
     console.error("Get MFA factors error:", error);
