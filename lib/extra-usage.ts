@@ -1,9 +1,49 @@
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
+import { phLogger } from "@/lib/posthog/server";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 /** Extra usage pricing multiplier */
 export const EXTRA_USAGE_MULTIPLIER = 1.05;
+
+const errorName = (error: unknown) =>
+  error instanceof Error ? error.name : "UnknownError";
+
+const logExtraUsageConvexFailure = ({
+  event,
+  message,
+  userId,
+  organizationId,
+  amountPoints,
+  convexFunction,
+  operation,
+  startedAt,
+  error,
+}: {
+  event: string;
+  message: string;
+  userId?: string;
+  organizationId?: string;
+  amountPoints?: number;
+  convexFunction: string;
+  operation: string;
+  startedAt: number;
+  error: unknown;
+}) => {
+  phLogger.error(message, {
+    event,
+    userId,
+    organization_id: organizationId,
+    amount_points: amountPoints,
+    convex_function: convexFunction,
+    operation,
+    component: "extra_usage",
+    duration_ms: Date.now() - startedAt,
+    error_name: errorName(error),
+    error_message: stringifyRedactedError(error),
+  });
+};
 
 export interface ExtraUsageBalance {
   balanceDollars: number;
@@ -52,6 +92,7 @@ export function pointsToDollars(points: number): number {
 export async function getExtraUsageBalance(
   userId: string,
 ): Promise<ExtraUsageBalance | null> {
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
     const settings = await convex.query(
@@ -71,7 +112,15 @@ export async function getExtraUsageBalance(
       autoReloadAmountDollars: settings.autoReloadAmountDollars,
     };
   } catch (error) {
-    console.error("Error getting extra usage balance:", error);
+    logExtraUsageConvexFailure({
+      event: "extra_usage_balance_fetch_failed",
+      message: "Extra usage balance fetch failed",
+      userId,
+      convexFunction: "extraUsage.getExtraUsageBalanceForBackend",
+      operation: "get_extra_usage_balance",
+      startedAt,
+      error,
+    });
     return null;
   }
 }
@@ -113,6 +162,7 @@ export async function refundToBalance(
     };
   }
 
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
 
@@ -127,7 +177,16 @@ export async function refundToBalance(
       newBalanceDollars: result.newBalanceDollars,
     };
   } catch (error) {
-    console.error("Error refunding to balance:", error);
+    logExtraUsageConvexFailure({
+      event: "extra_usage_refund_failed",
+      message: "Extra usage refund failed",
+      userId,
+      amountPoints: pointsToRefund,
+      convexFunction: "extraUsage.refundPoints",
+      operation: "refund_extra_usage_balance",
+      startedAt,
+      error,
+    });
     return {
       success: false,
       newBalanceDollars: 0,
@@ -160,6 +219,7 @@ export async function deductFromBalance(
     };
   }
 
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
 
@@ -183,7 +243,16 @@ export async function deductFromBalance(
       autoReloadResult: result.autoReloadResult,
     };
   } catch (error) {
-    console.error("Error deducting from balance:", error);
+    logExtraUsageConvexFailure({
+      event: "extra_usage_deduction_failed",
+      message: "Extra usage deduction failed",
+      userId,
+      amountPoints: pointsUsed,
+      convexFunction: "extraUsageActions.deductWithAutoReload",
+      operation: "deduct_extra_usage_balance",
+      startedAt,
+      error,
+    });
     // Do NOT report as insufficientFunds — this was a service error, not an
     // empty balance. Returning insufficientFunds: false lets the caller
     // distinguish transient failures from actual balance exhaustion.
@@ -218,6 +287,7 @@ export async function getTeamExtraUsageState(
   organizationId: string,
   userId: string,
 ): Promise<TeamExtraUsageState | null> {
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
     const state = await convex.query(
@@ -236,7 +306,16 @@ export async function getTeamExtraUsageState(
       memberDisabled: state.memberDisabled,
     };
   } catch (error) {
-    console.error("Error getting team extra usage state:", error);
+    logExtraUsageConvexFailure({
+      event: "team_extra_usage_state_fetch_failed",
+      message: "Team extra usage state fetch failed",
+      userId,
+      organizationId,
+      convexFunction: "teamExtraUsage.getTeamExtraUsageStateForBackend",
+      operation: "get_team_extra_usage_state",
+      startedAt,
+      error,
+    });
     return null;
   }
 }
@@ -261,6 +340,7 @@ export async function deductFromTeamBalance(
     };
   }
 
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
     const result = await convex.action(
@@ -285,7 +365,17 @@ export async function deductFromTeamBalance(
       poolDisabled: result.poolDisabled,
     };
   } catch (error) {
-    console.error("Error deducting from team balance:", error);
+    logExtraUsageConvexFailure({
+      event: "team_extra_usage_deduction_failed",
+      message: "Team extra usage deduction failed",
+      userId,
+      organizationId,
+      amountPoints: pointsUsed,
+      convexFunction: "teamExtraUsageActions.deductWithAutoReloadForTeam",
+      operation: "deduct_team_extra_usage_balance",
+      startedAt,
+      error,
+    });
     return {
       success: false,
       newBalanceDollars: 0,
@@ -312,6 +402,7 @@ export async function refundToTeamBalance(
     };
   }
 
+  const startedAt = Date.now();
   try {
     const convex = getConvexClient();
     const result = await convex.mutation(api.teamExtraUsage.refundTeamPoints, {
@@ -325,7 +416,17 @@ export async function refundToTeamBalance(
       newBalanceDollars: result.newBalanceDollars,
     };
   } catch (error) {
-    console.error("Error refunding to team balance:", error);
+    logExtraUsageConvexFailure({
+      event: "team_extra_usage_refund_failed",
+      message: "Team extra usage refund failed",
+      userId,
+      organizationId,
+      amountPoints: pointsToRefund,
+      convexFunction: "teamExtraUsage.refundTeamPoints",
+      operation: "refund_team_extra_usage_balance",
+      startedAt,
+      error,
+    });
     return {
       success: false,
       newBalanceDollars: 0,

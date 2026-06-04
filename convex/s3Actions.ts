@@ -297,13 +297,16 @@ export const getFileUrlAction = action({
 export const getFileUrlsByFileIdsAction = action({
   args: {
     serviceKey: v.string(),
-    userId: v.string(),
+    userId: v.optional(v.string()),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
   handler: async (ctx, args): Promise<Array<string | null>> => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
+    if (!args.userId) {
+      throw new Error("Missing userId for service file URL fetch");
+    }
 
     // Enforce batch size limit
     const MAX_BATCH_SIZE = 50;

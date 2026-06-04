@@ -165,6 +165,42 @@ async function getDefaultPaymentMethodId(
   return typeof pm === "string" ? pm : pm?.id || null;
 }
 
+const REDACTED_VALUE = "[Redacted]";
+const SENSITIVE_FIELD_PATTERN =
+  /(["']?\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const ENV_SECRET_PATTERN =
+  /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
+
+const redactSensitiveErrorMessage = (message: string): string =>
+  message
+    .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
+      return `${key}${separator}"${REDACTED_VALUE}"`;
+    })
+    .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
+      return `${key}${separator}"${REDACTED_VALUE}"`;
+    });
+
+const serializeErrorForLog = (error: unknown) => {
+  const name = error instanceof Error ? error.name : "UnknownError";
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : (() => {
+            try {
+              return JSON.stringify(error);
+            } catch {
+              return String(error);
+            }
+          })();
+
+  return {
+    name,
+    message: redactSensitiveErrorMessage(message).slice(0, 1_000),
+  };
+};
+
 async function createAutoReloadPayment(
   customerId: string,
   paymentMethodId: string,
@@ -519,8 +555,10 @@ export const deductWithAutoReload = action({
       };
     }
 
+    const actionStartedAt = Date.now();
+
     // Get current settings (balance in both dollars and points)
-    const settings: {
+    let settings: {
       balanceDollars: number;
       balancePoints: number;
       enabled: boolean;
@@ -528,10 +566,27 @@ export const deductWithAutoReload = action({
       autoReloadThresholdDollars?: number;
       autoReloadThresholdPoints?: number;
       autoReloadAmountDollars?: number;
-    } = await ctx.runQuery(api.extraUsage.getExtraUsageBalanceForBackend, {
-      serviceKey: args.serviceKey,
-      userId: args.userId,
-    });
+    };
+    const balanceLookupStartedAt = Date.now();
+    try {
+      settings = await ctx.runQuery(
+        api.extraUsage.getExtraUsageBalanceForBackend,
+        {
+          serviceKey: args.serviceKey,
+          userId: args.userId,
+        },
+      );
+    } catch (error) {
+      convexLogger.error("extra_usage_balance_backend_query_failed", {
+        user_id: args.userId,
+        amount_points: args.amountPoints,
+        operation: "get_extra_usage_balance",
+        convex_function: "extraUsage.getExtraUsageBalanceForBackend",
+        duration_ms: Date.now() - balanceLookupStartedAt,
+        error: serializeErrorForLog(error),
+      });
+      throw error;
+    }
 
     // Use points for threshold comparison (more precise)
     const thresholdPoints: number = settings.autoReloadThresholdPoints ?? 0;
@@ -559,9 +614,25 @@ export const deductWithAutoReload = action({
       autoReloadTriggered = true;
 
       // Get Stripe customer ID
-      const stripeCustomerId = await getStripeCustomerId(args.userId);
+      const stripeLookupStartedAt = Date.now();
+      let stripeCustomerId: string | null = null;
+      try {
+        stripeCustomerId = await getStripeCustomerId(args.userId);
+      } catch (error) {
+        convexLogger.error("extra_usage_stripe_customer_lookup_failed", {
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          operation: "get_stripe_customer",
+          duration_ms: Date.now() - stripeLookupStartedAt,
+          error: serializeErrorForLog(error),
+        });
+        autoReloadResult = {
+          success: false,
+          reason: "stripe_lookup_failed",
+        };
+      }
       if (!stripeCustomerId) {
-        autoReloadResult = { success: false, reason: "no_stripe_customer" };
+        autoReloadResult ??= { success: false, reason: "no_stripe_customer" };
       } else {
         try {
           // Check if customer is blocked (fraud flagged) before attempting charge
@@ -633,7 +704,14 @@ export const deductWithAutoReload = action({
               }
             }
           }
-        } catch {
+        } catch (error) {
+          convexLogger.error("extra_usage_auto_reload_lookup_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            operation: "prepare_auto_reload_payment",
+            duration_ms: Date.now() - stripeLookupStartedAt,
+            error: serializeErrorForLog(error),
+          });
           autoReloadResult = {
             success: false,
             reason: "stripe_lookup_failed",
@@ -663,25 +741,56 @@ export const deductWithAutoReload = action({
       (autoReloadResult.success ||
         !PRE_CHARGE_REASONS.has(autoReloadResult.reason ?? ""))
     ) {
-      await ctx.runMutation(internal.extraUsage.recordAutoReloadOutcome, {
-        userId: args.userId,
-        success: autoReloadResult.success,
-        failureReason: autoReloadResult.reason,
-      });
+      const recordOutcomeStartedAt = Date.now();
+      try {
+        await ctx.runMutation(internal.extraUsage.recordAutoReloadOutcome, {
+          userId: args.userId,
+          success: autoReloadResult.success,
+          failureReason: autoReloadResult.reason,
+        });
+      } catch (error) {
+        convexLogger.error("extra_usage_auto_reload_outcome_record_failed", {
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          operation: "record_auto_reload_outcome",
+          auto_reload_success: autoReloadResult.success,
+          auto_reload_failure_reason: autoReloadResult.reason,
+          duration_ms: Date.now() - recordOutcomeStartedAt,
+          error: serializeErrorForLog(error),
+        });
+        throw error;
+      }
     }
 
     // Now deduct from balance using points directly (no precision loss)
-    const deductResult: {
+    let deductResult: {
       success: boolean;
       newBalancePoints: number;
       newBalanceDollars: number;
       insufficientFunds: boolean;
       monthlyCapExceeded: boolean;
-    } = await ctx.runMutation(api.extraUsage.deductPoints, {
-      serviceKey: args.serviceKey,
-      userId: args.userId,
-      amountPoints: args.amountPoints,
-    });
+    };
+    const deductPointsStartedAt = Date.now();
+    try {
+      deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+        amountPoints: args.amountPoints,
+      });
+    } catch (error) {
+      convexLogger.error("extra_usage_deduct_points_failed", {
+        user_id: args.userId,
+        amount_points: args.amountPoints,
+        operation: "deduct_points",
+        convex_function: "extraUsage.deductPoints",
+        auto_reload_triggered: autoReloadTriggered,
+        auto_reload_success: autoReloadResult?.success,
+        auto_reload_failure_reason: autoReloadResult?.reason,
+        duration_ms: Date.now() - deductPointsStartedAt,
+        error: serializeErrorForLog(error),
+      });
+      throw error;
+    }
 
     convexLogger.info("deduct_with_auto_reload", {
       user_id: args.userId,
@@ -694,6 +803,7 @@ export const deductWithAutoReload = action({
       auto_reload_success: autoReloadResult?.success,
       auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
       auto_reload_failure_reason: autoReloadResult?.reason,
+      duration_ms: Date.now() - actionStartedAt,
     });
 
     return {

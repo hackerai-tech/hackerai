@@ -26,4 +26,16 @@ describe("error redaction", () => {
     expect(redacted).not.toContain("service-secret");
     expect(redacted).not.toContain("token-secret");
   });
+
+  it("redacts known secret environment variable assignments", () => {
+    const message =
+      "Failed with CONVEX_SERVICE_ROLE_KEY=super-secret and STRIPE_SECRET_KEY='stripe-secret'";
+
+    const redacted = redactSensitiveErrorMessage(message);
+
+    expect(redacted).toContain('CONVEX_SERVICE_ROLE_KEY="[Redacted]"');
+    expect(redacted).toContain('STRIPE_SECRET_KEY="[Redacted]"');
+    expect(redacted).not.toContain("super-secret");
+    expect(redacted).not.toContain("stripe-secret");
+  });
 });
