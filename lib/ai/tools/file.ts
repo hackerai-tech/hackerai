@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext } from "@/types";
+import type { AnySandbox, ToolContext } from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
 import { supportsMultimodalToolResults } from "@/lib/ai/providers";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
@@ -11,6 +11,8 @@ import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
+const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
 const FILE_ACTIONS_WITH_VIEW = [
   "view",
   "read",
@@ -126,6 +128,102 @@ if include_data:
 emit(payload)
 `;
 
+const READ_TEXT_FILE_SCRIPT = String.raw`
+import json
+import os
+import sys
+
+path = os.environ["HACKERAI_FILE_READ_PATH"]
+range_start = int(os.environ.get("HACKERAI_FILE_READ_RANGE_START", "0"))
+range_end = int(os.environ.get("HACKERAI_FILE_READ_RANGE_END", "-1"))
+max_full_bytes = int(os.environ.get("HACKERAI_FILE_READ_MAX_FULL_BYTES", "1048576"))
+max_result_bytes = int(os.environ.get("HACKERAI_FILE_READ_MAX_RESULT_BYTES", "1048576"))
+
+def emit(payload, code=0):
+    print(json.dumps(payload, separators=(",", ":")))
+    sys.exit(code)
+
+if range_start < 0:
+    emit({"error": f"Invalid start_line: {range_start}. Line numbers are 1-indexed, must be >= 1."}, 2)
+if range_start > 0 and range_end != -1 and range_end < range_start:
+    emit({"error": f"Invalid range: start_line ({range_start}) cannot be greater than end_line ({range_end})."}, 2)
+
+if not os.path.isfile(path):
+    emit({"error": f"File not found or is not a regular file: {path}"}, 3)
+
+size = os.path.getsize(path)
+
+def count_lines(file_path, file_size):
+    if file_size == 0:
+        return 0
+    lines = 0
+    last_byte = b""
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            lines += chunk.count(b"\n")
+            last_byte = chunk[-1:]
+    if last_byte != b"\n":
+        lines += 1
+    return lines
+
+total_lines = count_lines(path, size)
+if range_start == 0 and size > max_full_bytes:
+    emit({
+        "path": path,
+        "sizeBytes": size,
+        "totalLines": total_lines,
+        "tooLarge": True,
+    })
+
+if range_start > 0:
+    if range_start > total_lines:
+        emit({"error": f"Invalid start_line: {range_start}. File has {total_lines} lines (1-indexed)."}, 2)
+    if range_end != -1 and range_end > total_lines:
+        emit({"error": f"Invalid end_line: {range_end}. File has {total_lines} lines (1-indexed)."}, 2)
+
+selected = []
+selected_bytes = 0
+truncated = False
+start_line = range_start if range_start > 0 else 1
+
+def add_text(text):
+    global selected_bytes, truncated
+    encoded = text.encode("utf-8", errors="replace")
+    remaining = max_result_bytes - selected_bytes
+    if remaining <= 0:
+        truncated = True
+        return False
+    if len(encoded) > remaining:
+        selected.append(encoded[:remaining].decode("utf-8", errors="replace"))
+        selected_bytes = max_result_bytes
+        truncated = True
+        return False
+    selected.append(text)
+    selected_bytes += len(encoded)
+    return True
+
+with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+    for line_no, line in enumerate(f, 1):
+        if range_start > 0 and line_no < range_start:
+            continue
+        if range_start > 0 and range_end != -1 and line_no > range_end:
+            break
+        if not add_text(line):
+            break
+
+emit({
+    "path": path,
+    "sizeBytes": size,
+    "totalLines": total_lines,
+    "content": "".join(selected),
+    "startLine": start_line,
+    "truncated": truncated,
+})
+`;
+
 const getFilename = (path: string) => path.split("/").pop() || path;
 
 const getFileExtension = (path: string): string | undefined => {
@@ -234,6 +332,294 @@ function errorToLog(error: unknown) {
   }
 
   return { message: String(error) };
+}
+
+type SandboxCommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  error?: string;
+};
+
+type SandboxTextReadPayload = {
+  path: string;
+  sizeBytes: number;
+  totalLines: number;
+  content?: string;
+  startLine?: number;
+  tooLarge?: boolean;
+  truncated?: boolean;
+  error?: string;
+};
+
+function commandErrorToResult(error: unknown): SandboxCommandResult | null {
+  if (!(error instanceof Error)) return null;
+
+  const commandError = error as Error & {
+    exitCode?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+  };
+
+  if (typeof commandError.exitCode !== "number") return null;
+
+  return {
+    stdout:
+      typeof commandError.stdout === "string"
+        ? commandError.stdout
+        : error.message,
+    stderr: typeof commandError.stderr === "string" ? commandError.stderr : "",
+    exitCode: commandError.exitCode,
+    error: error.message,
+  };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+async function runSandboxCommand(
+  sandbox: AnySandbox,
+  command: string,
+  envVars?: Record<string, string>,
+  timeoutMs = 60_000,
+): Promise<SandboxCommandResult> {
+  try {
+    const result = await sandbox.commands.run(command, {
+      ...buildSandboxCommandOptions(sandbox, undefined, envVars),
+      envs: envVars,
+      timeoutMs,
+    } as ReturnType<typeof buildSandboxCommandOptions> & {
+      envs?: Record<string, string>;
+    });
+    return {
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      exitCode: typeof result.exitCode === "number" ? result.exitCode : 0,
+    };
+  } catch (error) {
+    const commandResult = commandErrorToResult(error);
+    if (commandResult) return commandResult;
+    throw error;
+  }
+}
+
+async function getSandboxFileSize(
+  sandbox: AnySandbox,
+  path: string,
+): Promise<number | null> {
+  const quotedPath = shellQuote(path);
+  const statResult = await runSandboxCommand(
+    sandbox,
+    `stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath} 2>/dev/null`,
+    undefined,
+    30_000,
+  ).catch(() => null);
+
+  const statSize = statResult
+    ? Number.parseInt(statResult.stdout.trim(), 10)
+    : NaN;
+  if (statResult?.exitCode === 0 && Number.isFinite(statSize)) {
+    return statSize;
+  }
+
+  const escapedForCmd = path.replace(/"/g, '\\"');
+  const winResult = await runSandboxCommand(
+    sandbox,
+    `for %I in ("${escapedForCmd}") do @echo %~zI`,
+    undefined,
+    30_000,
+  ).catch(() => null);
+
+  const winSize = winResult
+    ? Number.parseInt(winResult.stdout.trim(), 10)
+    : NaN;
+  if (winResult?.exitCode === 0 && Number.isFinite(winSize)) {
+    return winSize;
+  }
+
+  return null;
+}
+
+function buildNumberedFileContent(args: {
+  filename: string;
+  content: string;
+  startLineNumber?: number;
+  truncated?: boolean;
+}): {
+  content: string;
+  originalContent: string;
+} {
+  const { filename, content, startLineNumber = 1, truncated } = args;
+  const lines = content.split("\n");
+  const numberedLines = lines.map((line, index) => {
+    const lineNumber = startLineNumber + index;
+    return `${lineNumber.toString().padStart(6)}|${line}`;
+  });
+
+  const truncatedNotice = truncated
+    ? `\n\n[Range output truncated at ${formatBytes(MAX_TEXT_READ_RESULT_BYTES)}. Request a narrower line range to continue.]`
+    : "";
+  const numberedContent = numberedLines.join("\n");
+  const result = `Text file: ${filename}\nLatest content with line numbers:\n${numberedContent}${truncatedNotice}`;
+
+  return {
+    content: truncateOutput({
+      content: result,
+      mode: "read-file",
+    }) as string,
+    originalContent: truncateOutput({
+      content,
+      mode: "read-file",
+    }),
+  };
+}
+
+async function readSandboxTextFile(
+  sandbox: AnySandbox,
+  path: string,
+  range?: number[],
+): Promise<SandboxTextReadPayload> {
+  const envVars = {
+    HACKERAI_FILE_READ_PATH: path,
+    HACKERAI_FILE_READ_RANGE_START: String(range?.[0] ?? 0),
+    HACKERAI_FILE_READ_RANGE_END: String(range?.[1] ?? -1),
+    HACKERAI_FILE_READ_MAX_FULL_BYTES: String(MAX_TEXT_FILE_READ_BYTES),
+    HACKERAI_FILE_READ_MAX_RESULT_BYTES: String(MAX_TEXT_READ_RESULT_BYTES),
+  };
+  const command = `PYTHON_BIN="$(command -v python3 || command -v python)" && "$PYTHON_BIN" - <<'PY'\n${READ_TEXT_FILE_SCRIPT}\nPY`;
+  const result = await runSandboxCommand(sandbox, command, envVars, 120_000);
+  const stdout = result.stdout.trim();
+  let payload: SandboxTextReadPayload;
+
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    throw new Error(
+      `Failed to inspect text file: ${
+        result.stderr || stdout || "No output returned"
+      }`,
+    );
+  }
+
+  if (result.exitCode !== 0 || payload.error) {
+    throw new Error(payload.error || result.stderr || "Failed to read file");
+  }
+
+  return payload;
+}
+
+async function readSandboxTextFileWithFallback(
+  sandbox: AnySandbox,
+  path: string,
+  range?: number[],
+): Promise<SandboxTextReadPayload> {
+  try {
+    return await readSandboxTextFile(sandbox, path, range);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (
+      errorMessage.startsWith("Invalid ") ||
+      errorMessage.includes("File not found")
+    ) {
+      throw error;
+    }
+
+    const size = await getSandboxFileSize(sandbox, path);
+    if (size !== null && size > MAX_TEXT_FILE_READ_BYTES) {
+      if (range) {
+        throw new Error(
+          `Unable to perform a bounded range read for ${path}, and the file is too large to load safely (${formatBytes(size)}). Use a targeted terminal command that writes a small result to a separate file.`,
+        );
+      }
+
+      return {
+        path,
+        sizeBytes: size,
+        totalLines: 0,
+        tooLarge: true,
+      };
+    }
+
+    const fileContent = await sandbox.files.read(path, {
+      user: "user" as const,
+    });
+    const lines = fileContent.split("\n");
+
+    if (range) {
+      const [start, end] = range;
+      if (start < 1) {
+        throw new Error(
+          `Invalid start_line: ${start}. Line numbers are 1-indexed, must be >= 1.`,
+        );
+      }
+      if (end !== -1 && end < start) {
+        throw new Error(
+          `Invalid range: start_line (${start}) cannot be greater than end_line (${end}).`,
+        );
+      }
+      if (start > lines.length) {
+        throw new Error(
+          `Invalid start_line: ${start}. File has ${lines.length} lines (1-indexed).`,
+        );
+      }
+      if (end !== -1 && end > lines.length) {
+        throw new Error(
+          `Invalid end_line: ${end}. File has ${lines.length} lines (1-indexed).`,
+        );
+      }
+      const startIndex = start - 1;
+      const endIndex = end === -1 ? lines.length : end;
+      return {
+        path,
+        sizeBytes: Buffer.byteLength(fileContent),
+        totalLines: lines.length,
+        content: lines.slice(startIndex, endIndex).join("\n"),
+        startLine: start,
+      };
+    }
+
+    return {
+      path,
+      sizeBytes: Buffer.byteLength(fileContent),
+      totalLines: lines.length,
+      content: fileContent,
+      startLine: 1,
+    };
+  }
+}
+
+async function appendSandboxTextFile(
+  sandbox: AnySandbox,
+  path: string,
+  text: string,
+): Promise<void> {
+  const tempPath = `/tmp/hackerai_append_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`;
+  await sandbox.files.write(tempPath, text, {
+    user: "user" as const,
+  });
+
+  const result = await runSandboxCommand(
+    sandbox,
+    `cat ${shellQuote(tempPath)} >> ${shellQuote(path)} && rm -f ${shellQuote(tempPath)}`,
+    undefined,
+    60_000,
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || "Failed to append file");
+  }
 }
 
 const getSandboxViewPath = (sandbox: unknown, path: string): string => {
@@ -420,6 +806,7 @@ export const createFile = (context: ToolContext) => {
     "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
     "If the range parameter is not specified, the entire file will be read by default.",
+    "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
     "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
     "write and append actions will automatically create files if they do not exist.",
     "When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.",
@@ -562,80 +949,35 @@ ${instructionsDescription}`,
           }
 
           case "read": {
-            const fileContent = await sandbox.files.read(path, {
-              user: "user" as const,
-            });
+            const filename = path.split("/").pop() || path;
+            const readPayload = await readSandboxTextFileWithFallback(
+              sandbox,
+              path,
+              range,
+            );
 
-            if (!fileContent || fileContent.trim() === "") {
+            if (readPayload.tooLarge) {
+              const totalLines =
+                readPayload.totalLines > 0
+                  ? `${readPayload.totalLines} lines`
+                  : "line count unavailable";
+              return {
+                content: `Text file: ${filename}\nFile is too large to read in full (${formatBytes(readPayload.sizeBytes)}, ${totalLines}). Use the range parameter to read a smaller slice, e.g. range [1, 200].`,
+                originalContent: "",
+              };
+            }
+
+            if (!readPayload.content || readPayload.content.trim() === "") {
               return { error: "File is empty." };
             }
 
-            const lines = fileContent.split("\n");
-            const filename = path.split("/").pop() || path;
-            const totalLines = lines.length;
-
-            // Validate range if provided
-            if (range) {
-              const [start, end] = range;
-
-              if (start < 1) {
-                return {
-                  error: `Invalid start_line: ${start}. Line numbers are 1-indexed, must be >= 1.`,
-                };
-              }
-
-              if (end !== -1 && end < start) {
-                return {
-                  error: `Invalid range: start_line (${start}) cannot be greater than end_line (${end}).`,
-                };
-              }
-
-              if (start > totalLines) {
-                return {
-                  error: `Invalid start_line: ${start}. File ${filename} has ${totalLines} lines (1-indexed).`,
-                };
-              }
-
-              if (end !== -1 && end > totalLines) {
-                return {
-                  error: `Invalid end_line: ${end}. File ${filename} has ${totalLines} lines (1-indexed).`,
-                };
-              }
-            }
-
-            // Apply range if provided
-            let processedLines = lines;
-            let startLineNumber = 1;
-
-            if (range) {
-              const [start, end] = range;
-              startLineNumber = start;
-              const startIndex = start - 1; // Convert to 0-based index
-              const endIndex = end === -1 ? lines.length : end;
-              processedLines = lines.slice(startIndex, endIndex);
-            }
-
-            // Add line numbers (padded format with pipe separator)
-            const numberedLines = processedLines.map((line, index) => {
-              const lineNumber = startLineNumber + index;
-              return `${lineNumber.toString().padStart(6)}|${line}`;
-            });
-
-            const numberedContent = numberedLines.join("\n");
-            const result = `Text file: ${filename}\nLatest content with line numbers:\n${numberedContent}`;
-            const truncatedResult = truncateOutput({
-              content: result,
-              mode: "read-file",
-            }) as string;
-
             // Return object with raw content for UI and formatted content for model
-            return {
-              content: truncatedResult,
-              originalContent: truncateOutput({
-                content: processedLines.join("\n"),
-                mode: "read-file",
-              }),
-            };
+            return buildNumberedFileContent({
+              filename,
+              content: readPayload.content,
+              startLineNumber: readPayload.startLine,
+              truncated: readPayload.truncated,
+            });
           }
 
           case "write": {
@@ -653,6 +995,17 @@ ${instructionsDescription}`,
           case "append": {
             if (text === undefined) {
               return { error: "text is required for append action" };
+            }
+
+            const existingSize = await getSandboxFileSize(sandbox, path);
+            if (
+              existingSize !== null &&
+              existingSize > MAX_TEXT_FILE_READ_BYTES
+            ) {
+              await appendSandboxTextFile(sandbox, path, text);
+              return {
+                content: `File appended: ${path}\nExisting file is ${formatBytes(existingSize)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
+              };
             }
 
             // Read existing content first
@@ -690,6 +1043,16 @@ ${instructionsDescription}`,
           case "edit": {
             if (!edits || edits.length === 0) {
               return { error: "edits array is required for edit action" };
+            }
+
+            const existingSize = await getSandboxFileSize(sandbox, path);
+            if (
+              existingSize !== null &&
+              existingSize > MAX_TEXT_FILE_READ_BYTES
+            ) {
+              return {
+                error: `File ${path} is too large for the edit action (${formatBytes(existingSize)}). Use a targeted shell command, restore the file from a clean source, or replace it with the write action instead of loading the whole file into memory.`,
+              };
             }
 
             // Read existing content
