@@ -212,7 +212,8 @@ const imageOmittedText = (
  * Replace image file parts whose declared size exceeds Anthropic's 5 MiB
  * per-image limit with a short text note. Without this, the model call fails
  * with `image exceeds 5 MB maximum` once OpenRouter re-encodes the URL as
- * base64. Older messages may not have a `size` field — those are left alone.
+ * base64. Older messages may not have a `size` field; those are checked
+ * against the resolved storage URL below.
  */
 const replaceOversizedImageParts = (messages: UIMessage[]) => {
   messages.forEach((msg) => {
@@ -364,17 +365,17 @@ const applyUrlsToFileParts = async (
         ] as any)
       : null;
     const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
+    // The storage URL is the provider-visible payload. Probe it even when the
+    // message has size metadata so stale or incorrect client/DB metadata can't
+    // leak an oversized image into OpenRouter and trigger a provider 413.
     const shouldProbeImageSize =
-      isSupportedImage &&
-      file.url &&
-      (!file.fileId || typeof firstPart?.size !== "number");
+      isSupportedImage && file.url && mode !== "agent";
     const probedImageSize = shouldProbeImageSize
       ? await probeImageSize(file.url, MAX_IMAGE_SIZE)
       : null;
-    const effectiveImageSize =
-      typeof firstPart?.size === "number"
-        ? firstPart.size
-        : (probedImageSize?.bytes ?? null);
+    const declaredImageSize =
+      typeof firstPart?.size === "number" ? firstPart.size : null;
+    const effectiveImageSize = probedImageSize?.bytes ?? declaredImageSize;
     const imageLimit =
       effectiveImageSize != null &&
       effectiveImageSize > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
@@ -396,9 +397,8 @@ const applyUrlsToFileParts = async (
         size_bytes: effectiveImageSize,
         limit_bytes: imageLimit,
         size_source:
-          typeof firstPart?.size === "number"
-            ? "message_part"
-            : probedImageSize?.source,
+          probedImageSize?.source ??
+          (declaredImageSize != null ? "message_part" : undefined),
         mode,
       });
     }
