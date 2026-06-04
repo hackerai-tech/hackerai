@@ -798,11 +798,12 @@ export const initProratedBucket = async (
       cycleTierMax: newTierMax,
       cycleStartedAt: Date.now(),
     };
+    const nowSeconds = Math.floor(bucketMetadata.cycleStartedAt / 1000);
 
     if (
       periodEndSeconds &&
       Number.isFinite(periodEndSeconds) &&
-      periodEndSeconds > 0
+      periodEndSeconds > nowSeconds
     ) {
       const targetRefilledAtMs =
         (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
@@ -810,7 +811,10 @@ export const initProratedBucket = async (
     }
 
     await redis.hset(monthlyKey, bucketMetadata);
-    await redis.expire(monthlyKey, getCycleExpireSeconds(periodEndSeconds));
+    await redis.expire(
+      monthlyKey,
+      getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+    );
   } catch (error) {
     console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
   }

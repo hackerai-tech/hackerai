@@ -556,6 +556,33 @@ describe("token-bucket async functions", () => {
       nowSpy.mockRestore();
     });
 
+    it("does not backdate reset metadata for a stale Stripe period end", async () => {
+      const nowSeconds = 1_700_000_000;
+      const stalePeriodEndSeconds = nowSeconds - 60;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      await resetRateLimitBuckets("user-123", "pro", stalePeriodEndSeconds);
+
+      const metadata = mockHsetFn.mock.calls.find(
+        ([key]) => key === "usage:monthly:user-123:pro",
+      )?.[1] as Record<string, number> | undefined;
+
+      expect(metadata).toEqual(
+        expect.objectContaining({
+          cycleAllocation: 250_000,
+          cycleTierMax: 250_000,
+        }),
+      );
+      expect(metadata).not.toHaveProperty("refilledAt");
+      expect(mockExpireFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro",
+        30 * 24 * 60 * 60,
+      );
+
+      nowSpy.mockRestore();
+    });
+
     it("should not throw when Redis delete fails", async () => {
       const { resetRateLimitBuckets } = getIsolatedModule();
 
