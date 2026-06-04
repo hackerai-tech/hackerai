@@ -260,7 +260,7 @@ describe("uploadSandboxFileToConvex", () => {
             exitCode: 1,
           };
         }
-        if (command.startsWith("for %I")) {
+        if (command.startsWith("setlocal EnableDelayedExpansion && for %I")) {
           return { stdout: "4321", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "unexpected command", exitCode: 1 };
@@ -270,13 +270,19 @@ describe("uploadSandboxFileToConvex", () => {
     await uploadSandboxFileToConvex({
       sandbox: sandbox as any,
       userId: "u1",
-      fullPath: "C:\\Users\\user\\report.zip",
+      fullPath: "C:\\Users\\user\\Research & Dev\\report.zip",
     });
 
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
       2,
-      'for %I in ("C:\\Users\\user\\report.zip") do @echo %~zI',
-      expect.objectContaining({ displayName: "" }),
+      'setlocal EnableDelayedExpansion && for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI',
+      expect.objectContaining({
+        displayName: "",
+        envVars: expect.objectContaining({
+          HACKERAI_FILE_SIZE_PATH:
+            "C:\\Users\\user\\Research & Dev\\report.zip",
+        }),
+      }),
     );
     expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
       "report.zip",
@@ -284,6 +290,34 @@ describe("uploadSandboxFileToConvex", () => {
       "u1",
       4321,
     );
+  });
+
+  test("rejects unsafe Windows size fallback paths before running cmd.exe fallback", async () => {
+    const sandbox = makeSandbox(0, false, true);
+    (sandbox.commands.run as jest.Mock).mockImplementation(
+      async (command: string) => {
+        if (command.includes("stat -c%s")) {
+          return {
+            stdout: "",
+            stderr: "'[' is not recognized as an internal or external command",
+            exitCode: 1,
+          };
+        }
+        return { stdout: "", stderr: "unexpected command", exitCode: 1 };
+      },
+    );
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath:
+          'C:\\Users\\user\\report" & whoami > C:\\Users\\user\\poc.txt & ".zip',
+      }),
+    ).rejects.toThrow(/unsupported character/);
+
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 
   test("derives the file name from Windows-style paths", async () => {
