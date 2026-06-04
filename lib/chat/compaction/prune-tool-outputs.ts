@@ -174,6 +174,11 @@ const isPrunableToolPart = (part: ToolPart): boolean => {
   return Boolean(toolName && !PROTECTED_TOOLS.has(toolName));
 };
 
+const isCompletedPrunableToolPart = (part: ToolPart): boolean =>
+  isPrunableToolPart(part) &&
+  (part.state === "output-available" || part.state === "output-error") &&
+  part.output != null;
+
 const truncateStorageString = (
   value: string,
   maxLength = STORAGE_TOOL_INPUT_STRING_LIMIT,
@@ -378,7 +383,7 @@ const compactToolPartsToByteLimit = (
     index++
   ) {
     const part = compactedParts[index] as ToolPart;
-    if (!part?.type?.startsWith(TOOL_TYPE_PREFIX)) continue;
+    if (!isCompletedPrunableToolPart(part)) continue;
 
     const compactedPart = compactToolPartForStorage(part);
     if (

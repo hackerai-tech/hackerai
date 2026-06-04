@@ -877,6 +877,30 @@ describe("compactMessageForStorage", () => {
     expect(newestSavedCommand).toBe(newestCommand);
   });
 
+  it("does not byte-compact unfinished tool calls", () => {
+    const command = "python -c \"print('still streaming')\" ".repeat(200);
+    const message = makeAssistantMessage([
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-streaming",
+        state: "input-streaming",
+        input: { command },
+      } as any,
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 100,
+      toolOutputTokenBudget: 0,
+    });
+    const part = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(false);
+    expect(result.afterSizeBytes).toBe(result.beforeSizeBytes);
+    expect(part.state).toBe("input-streaming");
+    expect(part.input.command).toBe(command);
+    expect(part.output).toBeUndefined();
+  });
+
   it("compacts oversized reasoning and storage-only status parts", () => {
     const message = makeAssistantMessage([
       { type: "step-start" },
