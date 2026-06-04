@@ -4,6 +4,7 @@ import { action } from "./_generated/server";
 import { v } from "convex/values";
 import {
   getBudgetLimits,
+  getMonthlyBucketKey,
   getSubscriptionPrice,
 } from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
@@ -20,6 +21,11 @@ async function getCachedModules() {
     };
   }
   return _cachedModules;
+}
+
+function finiteNonNegativeNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, value);
 }
 
 /**
@@ -120,19 +126,34 @@ export const getAgentRateLimitStatus = action({
       const monthlyResult = await monthlyRatelimit.limit(monthlyKey, {
         rate: 0,
       });
+      const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
+      const storedCycleAllocation = finiteNonNegativeNumber(
+        await redis.hget(monthlyStorageKey, "cycleAllocation"),
+      );
 
       const monthlyRemaining = Math.min(
         Math.max(0, monthlyResult.remaining),
         monthlyLimit,
       );
-      const monthlyUsed = monthlyLimit - monthlyRemaining;
+      const cycleAllocation =
+        storedCycleAllocation === null
+          ? monthlyLimit
+          : Math.min(storedCycleAllocation, monthlyLimit);
+      const effectiveMonthlyLimit = Math.min(
+        monthlyLimit,
+        Math.max(monthlyRemaining, cycleAllocation),
+      );
+      const monthlyUsed = Math.max(0, effectiveMonthlyLimit - monthlyRemaining);
 
       return {
         monthly: {
           remaining: monthlyRemaining,
-          limit: monthlyLimit,
+          limit: effectiveMonthlyLimit,
           used: monthlyUsed,
-          usagePercentage: Math.round((monthlyUsed / monthlyLimit) * 100),
+          usagePercentage:
+            effectiveMonthlyLimit > 0
+              ? Math.round((monthlyUsed / effectiveMonthlyLimit) * 100)
+              : 0,
           resetTime: new Date(monthlyResult.reset).toISOString(),
         },
         monthlyBudgetUsd,

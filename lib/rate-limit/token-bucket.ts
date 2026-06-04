@@ -115,8 +115,28 @@ export const getSubscriptionPrice = (
 // =============================================================================
 
 /** Build the Redis key used by the monthly token bucket. */
-const monthlyBucketKey = (userId: string, tier: SubscriptionTier) =>
+export const getMonthlyBucketKey = (userId: string, tier: SubscriptionTier) =>
   `usage:monthly:${userId}:${tier}`;
+
+export const getCycleExpireSeconds = (
+  periodEndSeconds?: number,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): number => {
+  if (
+    !periodEndSeconds ||
+    !Number.isFinite(periodEndSeconds) ||
+    periodEndSeconds <= nowSeconds
+  ) {
+    return THIRTY_DAYS_SECONDS;
+  }
+
+  // Keep display metadata alive through 31-day billing periods and webhook lag.
+  const oneDayBufferSeconds = 24 * 60 * 60;
+  return Math.max(
+    THIRTY_DAYS_SECONDS,
+    Math.ceil(periodEndSeconds - nowSeconds + oneDayBufferSeconds),
+  );
+};
 
 /**
  * Create rate limiter for a user (shared between agent and ask modes).
@@ -182,7 +202,7 @@ export const checkTokenBucketLimit = async (
     const isNewTeamBucket =
       subscription === "team" &&
       organizationId &&
-      !(await redis.exists(monthlyBucketKey(userId, "team")));
+      !(await redis.exists(getMonthlyBucketKey(userId, "team")));
 
     const { monthly, monthlyLimit } = createRateLimiter(
       redis,
@@ -545,7 +565,7 @@ const refundBucketTokens = async (
   if (!redis) return;
 
   const { monthly: monthlyLimit } = getBudgetLimits(subscription);
-  const monthlyKey = monthlyBucketKey(userId, subscription);
+  const monthlyKey = getMonthlyBucketKey(userId, subscription);
 
   try {
     const monthlyTokens = await redis.hincrby(
@@ -571,8 +591,9 @@ const refundBucketTokens = async (
 export const resetRateLimitBuckets = async (
   userId: string,
   subscription: SubscriptionTier,
+  periodEndSeconds?: number,
 ): Promise<void> => {
-  await initProratedBucket(userId, subscription, 1.0, 0);
+  await initProratedBucket(userId, subscription, 1.0, 0, periodEndSeconds);
 };
 
 /**
@@ -647,7 +668,7 @@ export const stashOldBucketRemaining = async (
   const redis = createRedisClient();
   if (!redis) return;
 
-  const monthlyKey = monthlyBucketKey(userId, oldTier);
+  const monthlyKey = getMonthlyBucketKey(userId, oldTier);
   const stashKey = `upgrade:carryover:${userId}`;
   const oldTierMax = MONTHLY_CREDITS[oldTier] ?? 0;
 
@@ -747,12 +768,12 @@ export const initProratedBucket = async (
   const newTierMax = MONTHLY_CREDITS[newTier] ?? 0;
   if (newTierMax === 0) return;
 
-  const { burnAmount } = calculateProratedCredits(
+  const { burnAmount, totalCredits } = calculateProratedCredits(
     newTierMax,
     proratedRatio,
     consumedCredits,
   );
-  const monthlyKey = monthlyBucketKey(userId, newTier);
+  const monthlyKey = getMonthlyBucketKey(userId, newTier);
 
   try {
     // Delete any existing bucket for the new tier
@@ -772,6 +793,12 @@ export const initProratedBucket = async (
     // hardcoded to 30 d, so setting `refilledAt = periodEnd - 30 d` makes the
     // reported reset land exactly on the next invoice date. `refilledAt` is
     // an internal field of @upstash/ratelimit — re-verify on SDK upgrades.
+    const bucketMetadata: Record<string, number> = {
+      cycleAllocation: totalCredits,
+      cycleTierMax: newTierMax,
+      cycleStartedAt: Date.now(),
+    };
+
     if (
       periodEndSeconds &&
       Number.isFinite(periodEndSeconds) &&
@@ -779,11 +806,11 @@ export const initProratedBucket = async (
     ) {
       const targetRefilledAtMs =
         (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
-      await redis.hset(monthlyKey, { refilledAt: targetRefilledAtMs });
+      bucketMetadata.refilledAt = targetRefilledAtMs;
     }
 
-    // Align TTL to 30 days from now
-    await redis.expire(monthlyKey, THIRTY_DAYS_SECONDS);
+    await redis.hset(monthlyKey, bucketMetadata);
+    await redis.expire(monthlyKey, getCycleExpireSeconds(periodEndSeconds));
   } catch (error) {
     console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
   }
@@ -814,7 +841,7 @@ export const getTeamMemberConsumed = async (
 
   try {
     const tokens = await redis.hget<number>(
-      monthlyBucketKey(userId, "team"),
+      getMonthlyBucketKey(userId, "team"),
       "tokens",
     );
     return Math.max(0, TEAM_CREDITS - (tokens ?? TEAM_CREDITS));

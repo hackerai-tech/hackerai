@@ -35,7 +35,7 @@ const formatPointsAsDollars = (points: number): string => {
 const formatResetDateShort = (resetTime: string | null): string => {
   if (!resetTime) return "";
   const date = new Date(resetTime);
-  return `Resets ${date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+  return `Renews ${date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
 };
 
 const formatResetDateFull = (resetTime: string | null): string => {
@@ -52,9 +52,9 @@ const formatResetDateFull = (resetTime: string | null): string => {
   });
 };
 
-const getUsageColorClass = (percentage: number): string => {
-  if (percentage >= 90) return "bg-red-500";
-  if (percentage >= 70) return "bg-orange-500";
+const getRemainingColorClass = (percentage: number): string => {
+  if (percentage <= 10) return "bg-red-500";
+  if (percentage <= 30) return "bg-orange-500";
   return "bg-blue-500";
 };
 
@@ -112,14 +112,21 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
     return calculateUsageProjection(remainingDollars, resetTime, dailyUsage);
   }, [tokenUsage, dailyUsage]);
 
+  const remainingPercentage =
+    tokenUsage && tokenUsage.monthly.limit > 0
+      ? Math.round(
+          (tokenUsage.monthly.remaining / tokenUsage.monthly.limit) * 100,
+        )
+      : 0;
+
   return (
     <div className="rounded-lg border bg-card p-4 space-y-3">
-      <p className="text-xs text-muted-foreground">Your included usage</p>
+      <p className="text-xs text-muted-foreground">Included usage remaining</p>
       {tokenUsage ? (
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-semibold tabular-nums">
-              {formatPointsAsDollars(tokenUsage.monthly.used)}
+              {formatPointsAsDollars(tokenUsage.monthly.remaining)}
             </span>
             <span className="text-sm text-muted-foreground">
               / {formatPointsAsDollars(tokenUsage.monthly.limit)}
@@ -127,9 +134,9 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
           </div>
           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.monthly.usagePercentage)}`}
+              className={`h-full transition-all duration-500 ${getRemainingColorClass(remainingPercentage)}`}
               style={{
-                width: `${Math.min(100, tokenUsage.monthly.usagePercentage)}%`,
+                width: `${Math.min(100, remainingPercentage)}%`,
               }}
             />
           </div>
@@ -148,6 +155,7 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
+                  Included usage renews{" "}
                   {formatResetDateFull(tokenUsage.monthly.resetTime)}
                 </TooltipContent>
               </Tooltip>

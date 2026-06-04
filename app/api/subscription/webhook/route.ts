@@ -89,6 +89,27 @@ const metadataString = (
   return typeof value === "string" && value.length > 0 ? value : undefined;
 };
 
+function subscriptionCurrentPeriodEndSeconds(
+  subscription: Stripe.Subscription,
+): number | undefined {
+  const periodEnd = (subscription as { current_period_end?: unknown })
+    .current_period_end;
+  return typeof periodEnd === "number" &&
+    Number.isFinite(periodEnd) &&
+    periodEnd > 0
+    ? periodEnd
+    : undefined;
+}
+
+function monthlyUsagePeriodEndSeconds(
+  subscription: Stripe.Subscription,
+): number | undefined {
+  const price = subscription.items?.data[0]?.price;
+  if (priceBillingInterval(price) !== "month") return undefined;
+  if ((price?.recurring?.interval_count ?? 1) !== 1) return undefined;
+  return subscriptionCurrentPeriodEndSeconds(subscription);
+}
+
 /** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
 function tierFromProductName(name: string): SubscriptionTier | null {
   const lower = name.toLowerCase();
@@ -548,8 +569,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
       // Any users without a stash (shouldn't happen, but safe fallback)
       const nonTierChangeUsers = stashResults.filter((r) => r.stash === null);
       if (nonTierChangeUsers.length > 0) {
+        const fallbackUsagePeriodEnd =
+          monthlyUsagePeriodEndSeconds(subscription);
         await Promise.all(
-          nonTierChangeUsers.map(({ uid }) => resetRateLimitBuckets(uid, tier)),
+          nonTierChangeUsers.map(({ uid }) =>
+            resetRateLimitBuckets(uid, tier, fallbackUsagePeriodEnd),
+          ),
         );
       }
 
@@ -566,7 +591,10 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   console.log(
     `[Subscription Webhook] invoice.paid (${resetMode.reason}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
-  await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
+  const usagePeriodEnd = monthlyUsagePeriodEndSeconds(subscription);
+  await Promise.all(
+    userIds.map((uid) => resetRateLimitBuckets(uid, tier, usagePeriodEnd)),
+  );
 
   if (resetMode.reason === "subscription_create") {
     const item = subscription.items?.data[0];

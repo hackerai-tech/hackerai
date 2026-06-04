@@ -272,6 +272,9 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                         Estimate; subject to changes to your account balance or
                         usage.
                       </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        Full included usage renews on this billing date.
+                      </div>
                     </div>
                     <div className="text-base font-semibold">
                       ${Number(details.nextInvoiceAmount).toFixed(2)}

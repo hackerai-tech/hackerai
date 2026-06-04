@@ -4,6 +4,7 @@ import {
   calculateTokenCost,
   calculateProratedCredits,
   getBudgetLimits,
+  getCycleExpireSeconds,
   getSubscriptionPrice,
   POINTS_PER_DOLLAR,
 } from "../token-bucket";
@@ -162,6 +163,20 @@ describe("token-bucket", () => {
   describe("POINTS_PER_DOLLAR", () => {
     it("should be 10000 (1 point = $0.0001)", () => {
       expect(POINTS_PER_DOLLAR).toBe(10_000);
+    });
+  });
+
+  describe("getCycleExpireSeconds", () => {
+    it("uses the default 30-day TTL without a future billing period end", () => {
+      expect(getCycleExpireSeconds(undefined, 1_000)).toBe(30 * 24 * 60 * 60);
+      expect(getCycleExpireSeconds(999, 1_000)).toBe(30 * 24 * 60 * 60);
+    });
+
+    it("keeps buckets alive through longer billing periods", () => {
+      const now = 1_000;
+      const periodEnd = now + 31 * 24 * 60 * 60;
+
+      expect(getCycleExpireSeconds(periodEnd, now)).toBe(32 * 24 * 60 * 60);
     });
   });
 

@@ -518,11 +518,42 @@ describe("token-bucket async functions", () => {
       await resetRateLimitBuckets("user-123", "pro");
 
       expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+      expect(mockHsetFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro",
+        expect.objectContaining({
+          cycleAllocation: 250_000,
+          cycleTierMax: 250_000,
+          cycleStartedAt: expect.any(Number),
+        }),
+      );
       // Verify explicit 30-day TTL is set
       expect(mockExpireFn).toHaveBeenCalledWith(
         "usage:monthly:user-123:pro",
         30 * 24 * 60 * 60,
       );
+    });
+
+    it("aligns monthly reset metadata to the Stripe period end", async () => {
+      const nowSeconds = 1_700_000_000;
+      const periodEndSeconds = nowSeconds + 31 * 24 * 60 * 60;
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      await resetRateLimitBuckets("user-123", "pro", periodEndSeconds);
+
+      expect(mockHsetFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro",
+        expect.objectContaining({
+          refilledAt: (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
+          cycleAllocation: 250_000,
+        }),
+      );
+      expect(mockExpireFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro",
+        32 * 24 * 60 * 60,
+      );
+
+      nowSpy.mockRestore();
     });
 
     it("should not throw when Redis delete fails", async () => {
