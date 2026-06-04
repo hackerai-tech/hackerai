@@ -16,6 +16,8 @@ const MAX_GENERATED_FILE_SIZE_MB =
   MAX_GENERATED_FILE_SIZE_BYTES / (1024 * 1024);
 const SANDBOX_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const SANDBOX_UPLOAD_STATUS_MARKER = "__HACKERAI_UPLOAD_EXIT_CODE__:";
+const WINDOWS_FILE_SIZE_PATH_ENV_VAR = "HACKERAI_FILE_SIZE_PATH";
+const UNSUPPORTED_WINDOWS_FILE_SIZE_PATH_CHARS = /[\0"!\r\n^]/;
 
 export type UploadedFileInfo = {
   url: string;
@@ -49,6 +51,30 @@ function shellQuote(value: string): string {
 
 function shouldTryWindowsFileSizeFallback(sandbox: AnySandbox): boolean {
   return isCentrifugoSandbox(sandbox) && sandbox.isWindows();
+}
+
+function formatUnsupportedWindowsPathCharacter(character: string): string {
+  switch (character) {
+    case "\0":
+      return "\\0";
+    case "\r":
+      return "\\r";
+    case "\n":
+      return "\\n";
+    default:
+      return character;
+  }
+}
+
+function assertWindowsFileSizeFallbackPathSafe(fullPath: string): void {
+  const unsupportedCharacter = fullPath.match(
+    UNSUPPORTED_WINDOWS_FILE_SIZE_PATH_CHARS,
+  )?.[0];
+  if (!unsupportedCharacter) return;
+
+  throw new Error(
+    `Cannot safely get file size for Windows path containing unsupported character ${formatUnsupportedWindowsPathCharacter(unsupportedCharacter)}.`,
+  );
 }
 
 function formatFileSizeFailure(
@@ -126,16 +152,23 @@ async function getSandboxFileSize(
     throw formatFileSizeFailure(fullPath, statResult);
   }
 
-  // Windows cmd.exe fallback: %~zI expands to the file size.
-  const escapedForCmd = fullPath.replace(/"/g, '\\"');
+  assertWindowsFileSizeFallbackPathSafe(fullPath);
+
+  // Windows cmd.exe fallback: delayed expansion avoids reparsing path
+  // metacharacters such as & after the command has been parsed.
+  const winCommand = `setlocal EnableDelayedExpansion && for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI`;
   let winResult: SandboxCommandResult;
   try {
-    winResult = await sandbox.commands.run(
-      `for %I in ("${escapedForCmd}") do @echo %~zI`,
-      { ...commandOptions, displayName: "" } as typeof commandOptions & {
-        displayName?: string;
+    winResult = await sandbox.commands.run(winCommand, {
+      ...commandOptions,
+      envVars: {
+        ...(commandOptions.envVars ?? {}),
+        [WINDOWS_FILE_SIZE_PATH_ENV_VAR]: fullPath,
       },
-    );
+      displayName: "",
+    } as typeof commandOptions & {
+      displayName?: string;
+    });
   } catch (error) {
     const commandResult = commandErrorToResult(error);
     if (!commandResult) {
