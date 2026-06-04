@@ -84,7 +84,10 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
     }
 
     // For free users: proceed to checkout
-    await handleUpgrade(planKey, undefined, seats, subscription);
+    await handleUpgrade(planKey, undefined, seats, subscription, {
+      source: "team_plan_seat_selection",
+      surface: "team_pricing_dialog",
+    });
   };
 
   const handleCloseConfirmation = () => {
@@ -154,6 +157,8 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
         }
         targetPlan={targetPlanForConfirmation}
         quantity={seats}
+        source="team_plan_seat_selection"
+        surface="team_pricing_dialog"
       />
       <Dialog open={isOpen} onOpenChange={onClose}>
         <DialogContent

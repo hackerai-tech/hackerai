@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -9,6 +9,16 @@ import {
   AutoReloadDialog,
   BuyExtraUsageDialog,
 } from "@/app/components/extra-usage";
+import {
+  captureAddCreditCtaClick,
+  captureAddCreditCtaImpression,
+  captureAuthenticatedEvent,
+  newCheckoutAttemptId,
+} from "@/lib/analytics/client";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
 type Member = {
   userId: string;
@@ -54,6 +64,7 @@ export const TeamExtraUsageSection = () => {
   const [showSpendingLimitDialog, setShowSpendingLimitDialog] = useState(false);
   const [showAutoReloadDialog, setShowAutoReloadDialog] = useState(false);
   const [memberDialog, setMemberDialog] = useState<Member | null>(null);
+  const capturedBuyCtaImpressionRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,6 +87,17 @@ export const TeamExtraUsageSection = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!pool?.enabled || capturedBuyCtaImpressionRef.current) return;
+
+    capturedBuyCtaImpressionRef.current = true;
+    captureAddCreditCtaImpression({
+      surface: "team_extra_usage_settings",
+      source: "current_team_balance_row",
+      cta_text: "Buy extra usage",
+    });
+  }, [pool?.enabled]);
 
   const updatePool = async (
     patch: Record<string, unknown>,
@@ -146,15 +168,27 @@ export const TeamExtraUsageSection = () => {
   const handlePurchase = async (amountDollars: number) => {
     setBusy(true);
     try {
+      const checkoutAttemptId = newCheckoutAttemptId();
       const res = await fetch("/api/team/extra-usage/purchase", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ amountDollars }),
+        body: JSON.stringify({ amountDollars, checkoutAttemptId }),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {
         throw new Error(data.error || "Failed to start checkout");
       }
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.addCreditCheckoutStarted,
+        paidFunnelProperties({
+          checkout_attempt_id: checkoutAttemptId,
+          checkout_type: "team_extra_usage_purchase",
+          surface: "team_extra_usage_settings",
+          source: "buy_team_extra_usage_dialog",
+          amount_dollars: amountDollars,
+          stripe_checkout_session_id: data.checkoutSessionId,
+        }),
+      );
       window.location.href = data.url;
     } catch (err) {
       console.error("Failed to start checkout:", err);
@@ -357,7 +391,14 @@ export const TeamExtraUsageSection = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowBuyDialog(true)}
+                onClick={() => {
+                  captureAddCreditCtaClick({
+                    surface: "team_extra_usage_settings",
+                    source: "current_team_balance_row",
+                    cta_text: "Buy extra usage",
+                  });
+                  setShowBuyDialog(true);
+                }}
                 disabled={busy}
                 className="min-w-[5rem]"
                 aria-label="Buy team extra usage"

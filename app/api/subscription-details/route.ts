@@ -1,9 +1,18 @@
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  PAID_FUNNEL_EVENTS,
+  createCheckoutAttemptId,
+  normalizeCheckoutAttemptId,
+  normalizePaidFunnelLabel,
+  paidFunnelProperties,
+  planLookupKeyToTier,
+} from "@/lib/analytics/paid-funnel";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -55,6 +64,12 @@ export const POST = async (req: NextRequest) => {
     const requestedPlan = body?.plan;
     const confirm: boolean = body?.confirm === true;
     const requestedQuantity: unknown = body?.quantity;
+    const checkoutAttemptId =
+      normalizeCheckoutAttemptId(body?.checkoutAttemptId) ??
+      createCheckoutAttemptId();
+    const checkoutSource = normalizePaidFunnelLabel(body?.source);
+    const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
+    const posthogSessionId = req.headers?.get("x-posthog-session-id");
 
     const allowedPlans = new Set([
       "pro-monthly-plan",
@@ -307,6 +322,35 @@ export const POST = async (req: NextRequest) => {
       // If confirm flag is true, actually update the subscription
       if (confirm) {
         try {
+          phLogger.event(
+            PAID_FUNNEL_EVENTS.checkoutStarted,
+            paidFunnelProperties({
+              userId,
+              org_id: organization.id,
+              checkout_attempt_id: checkoutAttemptId,
+              checkout_type: "subscription_change",
+              from_tier: planType,
+              to_tier: planLookupKeyToTier(targetPlan),
+              plan: targetPlan,
+              billing_interval: targetPrice.recurring?.interval,
+              billing_interval_count: targetPrice.recurring?.interval_count,
+              quantity,
+              surface: checkoutSurface,
+              source: checkoutSource,
+              checkout_amount_dollars: totalDue,
+              currency: targetPrice.currency,
+              stripe_customer_id: matchingCustomer.id,
+              stripe_subscription_id: subscription.id,
+              stripe_price_id: targetPrice.id,
+              $session_id: posthogSessionId ?? undefined,
+              $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+              $set: {
+                last_checkout_started_at: new Date().toISOString(),
+              },
+            }),
+          );
+          after(() => phLogger.flush());
+
           const updatedSubscription = await stripe.subscriptions.update(
             subscription.id,
             {
@@ -320,6 +364,13 @@ export const POST = async (req: NextRequest) => {
               proration_behavior: "always_invoice",
               proration_date: Math.floor(Date.now() / 1000),
               payment_behavior: "pending_if_incomplete",
+              metadata: {
+                ...subscription.metadata,
+                checkoutAttemptId,
+                ...(checkoutSource && { checkoutSource }),
+                ...(checkoutSurface && { checkoutSurface }),
+                checkoutType: "subscription_change",
+              },
             },
           );
 
@@ -368,6 +419,34 @@ export const POST = async (req: NextRequest) => {
               });
             }
           }
+
+          phLogger.event(
+            PAID_FUNNEL_EVENTS.checkoutSucceeded,
+            paidFunnelProperties({
+              userId,
+              org_id: organization.id,
+              checkout_attempt_id: checkoutAttemptId,
+              checkout_type: "subscription_change",
+              from_tier: planType,
+              to_tier: planLookupKeyToTier(targetPlan),
+              plan: targetPlan,
+              billing_interval: targetPrice.recurring?.interval,
+              billing_interval_count: targetPrice.recurring?.interval_count,
+              quantity,
+              surface: checkoutSurface,
+              source: checkoutSource,
+              checkout_amount_dollars: totalDue,
+              currency: targetPrice.currency,
+              stripe_customer_id: matchingCustomer.id,
+              stripe_subscription_id: updatedSubscription.id,
+              stripe_price_id: targetPrice.id,
+              $insert_id: `${PAID_FUNNEL_EVENTS.checkoutSucceeded}:${checkoutAttemptId}`,
+              $set: {
+                subscription_tier: planLookupKeyToTier(targetPlan),
+                last_checkout_succeeded_at: new Date().toISOString(),
+              },
+            }),
+          );
 
           return NextResponse.json({
             success: true,

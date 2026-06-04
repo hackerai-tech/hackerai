@@ -34,6 +34,7 @@ import type { ChatMode, SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
@@ -198,7 +199,16 @@ const ModelOptionList = ({
       <>
         <a
           href="#pricing"
-          onClick={() => onClose()}
+          onClick={(event) => {
+            event.preventDefault();
+            onClose();
+            redirectToPricing({
+              surface: mobile ? "model_selector_mobile" : "model_selector",
+              source: "model_gate",
+              from_tier: "free",
+              cta_text: "Get access to the top AI models",
+            });
+          }}
           className="flex items-center justify-between rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-2 transition-colors hover:bg-primary/20 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <span className="text-sm font-semibold text-foreground">
@@ -275,7 +285,18 @@ const ModelOptionList = ({
             <p className="text-xs text-muted-foreground leading-relaxed pt-1">
               <a
                 href="#pricing"
-                onClick={() => onClose()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onClose();
+                  redirectToPricing({
+                    surface: mobile
+                      ? "model_selector_mobile"
+                      : "model_selector",
+                    source: "locked_model_tooltip",
+                    from_tier: "free",
+                    cta_text: "Upgrade your plan",
+                  });
+                }}
                 className="text-foreground underline underline-offset-2 hover:text-foreground/80"
                 tabIndex={0}
               >
@@ -331,8 +352,13 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
 
   const handleModelSelect = (option: ModelOption) => {
     if (isFreeUser) {
-      window.location.hash = "pricing";
       setOpen(false);
+      redirectToPricing({
+        surface: isMobile ? "model_selector_mobile" : "model_selector",
+        source: "locked_model_option",
+        from_tier: "free",
+        cta_text: option.label,
+      });
       return;
     }
 

@@ -4,25 +4,27 @@ import { toast } from "sonner";
 import {
   captureAuthenticatedEvent,
   getPostHogRequestHeaders,
+  newCheckoutAttemptId,
 } from "@/lib/analytics/client";
+import {
+  planLookupKeyToBillingInterval,
+  planLookupKeyToTier,
+  type PaidFunnelPlan,
+} from "@/lib/analytics/paid-funnel";
 
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
 
   const handleUpgrade = async (
-    planKey?:
-      | "pro-monthly-plan"
-      | "pro-plus-monthly-plan"
-      | "ultra-monthly-plan"
-      | "pro-yearly-plan"
-      | "pro-plus-yearly-plan"
-      | "ultra-yearly-plan"
-      | "team-monthly-plan"
-      | "team-yearly-plan",
+    planKey?: PaidFunnelPlan,
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
     quantity?: number,
     currentSubscription?: "free" | "pro" | "pro-plus" | "ultra" | "team",
+    analyticsContext: {
+      source?: string;
+      surface?: string;
+    } = {},
   ) => {
     e?.preventDefault();
 
@@ -40,8 +42,22 @@ export const useUpgrade = () => {
 
     try {
       const selectedPlan = planKey || "pro-monthly-plan";
-      const requestBody: { plan: string; quantity?: number } = {
+      const checkoutAttemptId = newCheckoutAttemptId();
+      const toTier = planLookupKeyToTier(selectedPlan);
+      const billingInterval = planLookupKeyToBillingInterval(selectedPlan);
+      const requestBody: {
+        plan: string;
+        quantity?: number;
+        checkoutAttemptId: string;
+        source?: string;
+        surface?: string;
+        fromTier?: string;
+      } = {
         plan: selectedPlan,
+        checkoutAttemptId,
+        source: analyticsContext.source,
+        surface: analyticsContext.surface,
+        fromTier: currentSubscription ?? "free",
       };
 
       // Add quantity for team plans
@@ -52,9 +68,14 @@ export const useUpgrade = () => {
       // Use regular checkout for new subscriptions (free users)
       if (!currentSubscription || currentSubscription === "free") {
         captureAuthenticatedEvent("checkout_intent_clicked", {
+          checkout_attempt_id: checkoutAttemptId,
           plan: selectedPlan,
           quantity,
           from_tier: currentSubscription ?? "free",
+          to_tier: toTier,
+          billing_interval: billingInterval,
+          surface: analyticsContext.surface,
+          source: analyticsContext.source,
           checkout_type: "new_subscription",
         });
 
@@ -80,9 +101,14 @@ export const useUpgrade = () => {
 
         if (url) {
           captureAuthenticatedEvent("checkout_redirected", {
+            checkout_attempt_id: checkoutAttemptId,
             plan: selectedPlan,
             quantity,
             from_tier: currentSubscription ?? "free",
+            to_tier: toTier,
+            billing_interval: billingInterval,
+            surface: analyticsContext.surface,
+            source: analyticsContext.source,
             checkout_type: "new_subscription",
           });
           window.location.href = url;
@@ -98,9 +124,14 @@ export const useUpgrade = () => {
         // For existing subscribers, use immediate subscription update
         // This prevents the "free credit" exploit
         captureAuthenticatedEvent("subscription_change_intent_clicked", {
+          checkout_attempt_id: checkoutAttemptId,
           plan: selectedPlan,
           quantity,
           from_tier: currentSubscription,
+          to_tier: toTier,
+          billing_interval: billingInterval,
+          surface: analyticsContext.surface,
+          source: analyticsContext.source,
           checkout_type: "subscription_change",
         });
 
@@ -114,6 +145,10 @@ export const useUpgrade = () => {
             plan: planKey,
             confirm: true,
             quantity: quantity,
+            checkoutAttemptId,
+            source: analyticsContext.source,
+            surface: analyticsContext.surface,
+            fromTier: currentSubscription,
           }),
         });
 

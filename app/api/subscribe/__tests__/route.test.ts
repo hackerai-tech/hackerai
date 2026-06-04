@@ -173,7 +173,10 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ url: "https://stripe.example/checkout" });
+    expect(body).toEqual({
+      url: "https://stripe.example/checkout",
+      checkoutAttemptId: expect.stringMatching(/^ca_/),
+    });
     expect(mockRetrieveCustomer).toHaveBeenCalledWith("cus_existing_org");
     expect(mockListCustomers).not.toHaveBeenCalled();
     expect(mockCreateCustomer).not.toHaveBeenCalled();
@@ -183,6 +186,7 @@ describe("POST /api/subscribe", () => {
         customer: "cus_existing_org",
         metadata: expect.objectContaining({
           workOSOrganizationId: "org_team",
+          checkoutAttemptId: body.checkoutAttemptId,
         }),
       }),
     );
@@ -217,7 +221,10 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ url: "https://stripe.example/checkout" });
+    expect(body).toEqual({
+      url: "https://stripe.example/checkout",
+      checkoutAttemptId: expect.stringMatching(/^ca_/),
+    });
     expect(mockCreateCustomer).not.toHaveBeenCalled();
     expect(mockUpdateOrganization).toHaveBeenCalledWith({
       organization: "org_team",
@@ -226,6 +233,9 @@ describe("POST /api/subscribe", () => {
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         customer: "cus_matched",
+        metadata: expect.objectContaining({
+          checkoutAttemptId: body.checkoutAttemptId,
+        }),
       }),
     );
   });
@@ -261,19 +271,24 @@ describe("POST /api/subscribe", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ url: "https://stripe.example/checkout" });
+    expect(body).toEqual({
+      url: "https://stripe.example/checkout",
+      checkoutAttemptId: expect.stringMatching(/^ca_/),
+    });
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         metadata: expect.objectContaining({
           userId: "user_123",
           workOSOrganizationId: "org_new",
           requestedPlan: "pro-monthly-plan",
+          checkoutAttemptId: body.checkoutAttemptId,
         }),
         subscription_data: expect.objectContaining({
           metadata: expect.objectContaining({
             userId: "user_123",
             workOSOrganizationId: "org_new",
             requestedPlan: "pro-monthly-plan",
+            checkoutAttemptId: body.checkoutAttemptId,
           }),
         }),
       }),

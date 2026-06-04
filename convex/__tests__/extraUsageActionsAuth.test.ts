@@ -195,6 +195,9 @@ describe("extraUsageActions billing authorization", () => {
         }),
       }),
     );
-    expect(result).toEqual({ url: "https://checkout.stripe.test/session" });
+    expect(result).toEqual({
+      url: "https://checkout.stripe.test/session",
+      checkoutSessionId: "cs_test",
+    });
   });
 });

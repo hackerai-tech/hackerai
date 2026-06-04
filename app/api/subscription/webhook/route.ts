@@ -15,6 +15,10 @@ import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import type { SubscriptionTier } from "@/types";
 import { getReferralRewardConfig } from "@/lib/referrals/config";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -152,6 +156,7 @@ async function awardReferralConversion(args: {
   plan?: string;
   invoiceId?: string;
   checkoutSessionId?: string;
+  checkoutAttemptId?: string;
 }) {
   const config = getReferralRewardConfig();
   if (!config.enabled || config.referrerRewardDollars <= 0) {
@@ -192,6 +197,7 @@ async function awardReferralConversion(args: {
           stripe_subscription_id: args.subscription.id,
           stripe_invoice_id: args.invoiceId,
           stripe_checkout_session_id: args.checkoutSessionId,
+          checkout_attempt_id: args.checkoutAttemptId,
         });
       }
 
@@ -207,6 +213,7 @@ async function awardReferralConversion(args: {
           stripe_subscription_id: args.subscription.id,
           stripe_invoice_id: args.invoiceId,
           stripe_checkout_session_id: args.checkoutSessionId,
+          checkout_attempt_id: args.checkoutAttemptId,
         });
       }
     } else if (result.status === "withheld") {
@@ -222,6 +229,7 @@ async function awardReferralConversion(args: {
         stripe_subscription_id: args.subscription.id,
         stripe_invoice_id: args.invoiceId,
         stripe_checkout_session_id: args.checkoutSessionId,
+        checkout_attempt_id: args.checkoutAttemptId,
       });
     }
   } catch (error) {
@@ -231,6 +239,7 @@ async function awardReferralConversion(args: {
       stripe_subscription_id: args.subscription.id,
       stripe_invoice_id: args.invoiceId,
       stripe_checkout_session_id: args.checkoutSessionId,
+      checkout_attempt_id: args.checkoutAttemptId,
       error,
     });
   }
@@ -504,6 +513,22 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   if (resetMode.reason === "subscription_create") {
     const item = subscription.items?.data[0];
     const price = item?.price;
+    const checkoutAttemptId = metadataString(
+      subscription.metadata,
+      "checkoutAttemptId",
+    );
+    const checkoutSource = metadataString(
+      subscription.metadata,
+      "checkoutSource",
+    );
+    const checkoutSurface = metadataString(
+      subscription.metadata,
+      "checkoutSurface",
+    );
+    const checkoutSessionId = metadataString(
+      subscription.metadata,
+      "stripeCheckoutSessionId",
+    );
     const invoiceAmountPaidDollars = centsToDollars(
       (invoice as { amount_paid?: number }).amount_paid,
     );
@@ -522,6 +547,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         billing_interval: priceBillingInterval(price),
         billing_interval_count: price?.recurring?.interval_count,
         quantity: item?.quantity,
+        checkout_attempt_id: checkoutAttemptId,
+        checkout_type:
+          metadataString(subscription.metadata, "checkoutType") ??
+          "new_subscription",
+        surface: checkoutSurface,
+        source: checkoutSource,
         invoice_amount_paid_dollars: invoiceAmountPaidDollars,
         attributed_revenue_dollars: attributedRevenueDollars,
         revenue_dollars: attributedRevenueDollars,
@@ -529,6 +560,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         stripe_customer_id: customerId,
         stripe_subscription_id: subscription.id,
         stripe_invoice_id: invoice.id,
+        stripe_checkout_session_id: checkoutSessionId,
         stripe_price_id: price?.id,
         $set: {
           subscription_tier: tier,
@@ -547,6 +579,8 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
       customerId,
       plan: price?.lookup_key ?? undefined,
       invoiceId: invoice.id,
+      checkoutSessionId,
+      checkoutAttemptId,
     });
   }
 
@@ -576,6 +610,18 @@ async function handleCheckoutSessionCompleted(
   const referredUserId =
     metadataString(session.metadata, "userId") ??
     metadataString(session.metadata, "referral_referred_user_id");
+  const checkoutAttemptId = metadataString(
+    session.metadata,
+    "checkoutAttemptId",
+  );
+  const checkoutSource = metadataString(session.metadata, "checkoutSource");
+  const checkoutSurface = metadataString(session.metadata, "checkoutSurface");
+  const checkoutType =
+    metadataString(session.metadata, "checkoutType") ?? "new_subscription";
+  const organizationId = metadataString(
+    session.metadata,
+    "workOSOrganizationId",
+  );
 
   if (referredUserId) {
     try {
@@ -605,12 +651,70 @@ async function handleCheckoutSessionCompleted(
   if (!resolved) return;
 
   const price = resolved.subscription.items?.data[0]?.price;
+  const existingMetadata = resolved.subscription.metadata ?? {};
+  if (checkoutAttemptId || checkoutSource || checkoutSurface) {
+    try {
+      await stripe.subscriptions.update(subscriptionId, {
+        metadata: {
+          ...existingMetadata,
+          ...(checkoutAttemptId && { checkoutAttemptId }),
+          ...(checkoutSource && { checkoutSource }),
+          ...(checkoutSurface && { checkoutSurface }),
+          checkoutType,
+          stripeCheckoutSessionId: session.id,
+        },
+      });
+    } catch (error) {
+      phLogger.warn("subscription_checkout_metadata_update_failed", {
+        userId: referredUserId,
+        stripe_subscription_id: subscriptionId,
+        stripe_checkout_session_id: session.id,
+        checkout_attempt_id: checkoutAttemptId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (referredUserId) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.checkoutSucceeded,
+      paidFunnelProperties({
+        userId: referredUserId,
+        org_id: organizationId,
+        checkout_attempt_id: checkoutAttemptId,
+        checkout_type: checkoutType,
+        from_tier: "free",
+        to_tier: resolved.tier,
+        plan:
+          metadataString(session.metadata, "requestedPlan") ??
+          price?.lookup_key,
+        billing_interval: priceBillingInterval(price),
+        billing_interval_count: price?.recurring?.interval_count,
+        quantity: resolved.subscription.items?.data[0]?.quantity,
+        surface: checkoutSurface,
+        source: checkoutSource,
+        checkout_amount_dollars: centsToDollars(session.amount_total),
+        currency: session.currency,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        stripe_checkout_session_id: session.id,
+        stripe_price_id: price?.id,
+        payment_status: session.payment_status,
+        $insert_id: `${PAID_FUNNEL_EVENTS.checkoutSucceeded}:${session.id}`,
+        $set: {
+          last_checkout_succeeded_at: new Date().toISOString(),
+        },
+      }),
+    );
+  }
+
   await awardReferralConversion({
     tier: resolved.tier,
     subscription: resolved.subscription,
     customerId,
     plan: price?.lookup_key ?? undefined,
     checkoutSessionId: session.id,
+    checkoutAttemptId,
   });
 }
 
@@ -670,6 +774,18 @@ async function handleSubscriptionUpdated(
   );
 
   const direction = tierDirection(previousTier, currentTier);
+  const checkoutAttemptId = metadataString(
+    subscription.metadata,
+    "checkoutAttemptId",
+  );
+  const checkoutSource = metadataString(
+    subscription.metadata,
+    "checkoutSource",
+  );
+  const checkoutSurface = metadataString(
+    subscription.metadata,
+    "checkoutSurface",
+  );
   for (const uid of userIds) {
     phLogger.event("subscription_changed", {
       userId: uid,
@@ -677,6 +793,11 @@ async function handleSubscriptionUpdated(
       to_tier: currentTier,
       direction,
       org_id: orgId,
+      checkout_attempt_id: checkoutAttemptId,
+      surface: checkoutSurface,
+      source: checkoutSource,
+      plan: currentLookupKey,
+      billing_interval: priceBillingInterval(currentPrice),
       // Only update the person property when we resolved the new tier. A null
       // currentTier means Stripe's lookup_key + product fallbacks both failed,
       // and coercing to "free" would silently move possibly-paid users out of

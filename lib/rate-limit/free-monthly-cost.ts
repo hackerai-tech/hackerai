@@ -89,7 +89,11 @@ export async function checkFreeMonthlyCostLimit(
   const remainingPoints = Math.max(0, limitPoints - usedPoints);
 
   if (remainingPoints <= 0) {
-    throw new ChatSDKError("rate_limit:chat", getLimitMessage(reset));
+    throw new ChatSDKError("rate_limit:chat", getLimitMessage(reset), {
+      resetTimestamp: reset,
+      subscription: "free",
+      capReason: "free_monthly_exhausted",
+    });
   }
 
   return {

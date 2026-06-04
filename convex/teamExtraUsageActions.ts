@@ -157,10 +157,12 @@ export const createTeamPurchaseSession = action({
     organizationId: v.string(),
     amountDollars: v.number(),
     baseUrl: v.string(),
+    checkoutAttemptId: v.optional(v.string()),
   },
   returns: v.object({
     url: v.union(v.string(), v.null()),
     error: v.optional(v.string()),
+    checkoutSessionId: v.optional(v.string()),
   }),
   handler: async (_ctx, args) => {
     if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -220,6 +222,9 @@ export const createTeamPurchaseSession = action({
           type: "team_extra_usage_purchase",
           organizationId: args.organizationId,
           amountDollars: String(args.amountDollars),
+          ...(args.checkoutAttemptId && {
+            checkoutAttemptId: args.checkoutAttemptId,
+          }),
         },
         success_url: `${args.baseUrl}/api/team/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: args.baseUrl,
@@ -231,7 +236,7 @@ export const createTeamPurchaseSession = action({
         session_id: session.id,
       });
 
-      return { url: session.url };
+      return { url: session.url, checkoutSessionId: session.id };
     } catch (error) {
       convexLogger.error("team_purchase_session_failed", {
         organization_id: args.organizationId,

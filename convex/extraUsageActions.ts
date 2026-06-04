@@ -310,10 +310,12 @@ export const createPurchaseSession = action({
   args: {
     amountDollars: v.number(),
     baseUrl: v.string(),
+    checkoutAttemptId: v.optional(v.string()),
   },
   returns: v.object({
     url: v.union(v.string(), v.null()),
     error: v.optional(v.string()),
+    checkoutSessionId: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -376,6 +378,9 @@ export const createPurchaseSession = action({
           type: "extra_usage_purchase",
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
+          ...(args.checkoutAttemptId && {
+            checkoutAttemptId: args.checkoutAttemptId,
+          }),
         },
         success_url: `${args.baseUrl}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: args.baseUrl,
@@ -387,7 +392,7 @@ export const createPurchaseSession = action({
         session_id: session.id,
       });
 
-      return { url: session.url };
+      return { url: session.url, checkoutSessionId: session.id };
     } catch (error) {
       convexLogger.error("purchase_session_failed", {
         user_id: identity.subject,

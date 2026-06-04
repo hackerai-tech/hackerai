@@ -109,7 +109,16 @@ const AccountTab = () => {
                 <DropdownMenuContent align="end" className="w-56">
                   {(subscription === "pro" || subscription === "pro-plus") && (
                     <>
-                      <DropdownMenuItem onClick={redirectToPricing}>
+                      <DropdownMenuItem
+                        onClick={() =>
+                          redirectToPricing({
+                            surface: "account_tab_manage_menu",
+                            source: "account_settings",
+                            from_tier: subscription,
+                            cta_text: "Upgrade plan",
+                          })
+                        }
+                      >
                         <Sparkle className="h-4 w-4" />
                         <span>Upgrade plan</span>
                       </DropdownMenuItem>
@@ -131,7 +140,14 @@ const AccountTab = () => {
               type="button"
               variant="default"
               size="sm"
-              onClick={redirectToPricing}
+              onClick={() =>
+                redirectToPricing({
+                  surface: "account_tab",
+                  source: "account_settings",
+                  from_tier: subscription,
+                  cta_text: "Upgrade",
+                })
+              }
             >
               Upgrade
             </Button>
