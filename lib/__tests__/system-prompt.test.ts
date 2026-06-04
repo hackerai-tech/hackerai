@@ -49,6 +49,25 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("describes cloud sandbox browser automation tools", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("whois");
+    expect(prompt).toContain("Chromium and agent-browser");
+    expect(prompt).toContain("agent-browser snapshot -i");
+    expect(prompt).toContain("agent-browser set viewport 1920 1080");
+    expect(prompt).toContain("/home/user/agent-browser-screenshots");
+    expect(prompt).toContain("file tool's view action");
+  });
+
   it("does not describe a command sandbox in ask mode", async () => {
     const prompt = await systemPrompt(
       "user_123",

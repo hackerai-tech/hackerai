@@ -69,6 +69,7 @@ RUN apt-get update && \
     dnsutils \
     iproute2 \
     net-tools \
+    whois \
     traceroute \
     netcat-traditional \
     tcpdump \
@@ -125,6 +126,8 @@ RUN apt-get update && \
     nodejs \
     npm \
     tmux \
+    chromium \
+    fonts-liberation \
     # Forensics
     binwalk \
     foremost \
@@ -174,7 +177,12 @@ RUN pip3 install --break-system-packages \
     odfpy
 
 # Additional security-focused Python packages
-RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
+# Kali's python3-rich package may be newer than httpx[cli]'s rich<14
+# requirement, and pip cannot uninstall dpkg-owned packages without RECORD
+# metadata. Install a pip-managed compatible rich first so httpx[cli] resolves
+# against /usr/local without touching the distro package.
+RUN pip3 install --break-system-packages --ignore-installed 'rich<14,>=10' && \
+    pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
 # ============================================================================
 # Git-based Security Tools
@@ -240,6 +248,19 @@ RUN set -eux; \
     ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true
 
 # ============================================================================
+# Browser Automation
+# ============================================================================
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
+ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
+
+RUN npm install -g agent-browser@0.26.0 && \
+    mkdir -p /home/user/agent-browser-screenshots && \
+    chown -R user:user /home/user/agent-browser-screenshots && \
+    agent-browser doctor --offline --quick
+
+# ============================================================================
 # Go-based Security Tools
 # ============================================================================
 RUN set -eux; \
@@ -278,6 +299,7 @@ RUN set -eux; \
     which subfinder && echo "✓ subfinder" && \
     which dnsrecon && echo "✓ dnsrecon" && \
     which dnsenum && echo "✓ dnsenum" && \
+    which whois && echo "✓ whois" && \
     which ffuf && echo "✓ ffuf" && \
     which arjun && echo "✓ arjun" && \
     which gobuster && echo "✓ gobuster" && \
@@ -302,6 +324,8 @@ RUN set -eux; \
     which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
     which caido-cli && echo "✓ caido-cli" && \
+    which chromium && echo "✓ chromium" && \
+    which agent-browser && echo "✓ agent-browser" && \
     which rg && echo "✓ ripgrep" && \
     which go && echo "✓ go" && \
     which python3 && echo "✓ python3" && \
