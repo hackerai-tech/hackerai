@@ -39,7 +39,9 @@ export const safeCountTokens = (content: string): number => {
   }
 };
 
-const safeEncode = (content: string): ReturnType<typeof encodeGptTokens> => {
+export const safeEncode = (
+  content: string,
+): ReturnType<typeof encodeGptTokens> => {
   try {
     return encodeGptTokens(content);
   } catch (error) {

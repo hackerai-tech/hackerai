@@ -4,6 +4,7 @@ import {
   MAX_TOKENS_FREE,
   MAX_TOKENS_PAID,
   safeCountTokens,
+  safeEncode,
   sliceByTokens,
   truncateContent,
 } from "@/lib/token-utils";
@@ -28,6 +29,10 @@ describe("special token sentinels", () => {
     expect(() =>
       safeCountTokens("literal <|im_start|> sentinel"),
     ).not.toThrow();
+  });
+
+  it("encodes reserved tokenizer sentinels as plain text", () => {
+    expect(() => safeEncode("literal <|im_start|> sentinel")).not.toThrow();
   });
 
   it("preserves reserved tokenizer sentinel text when slicing", () => {

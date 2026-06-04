@@ -13,8 +13,7 @@ if (typeof (Promise as unknown as { try?: unknown }).try !== "function") {
 
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { countTokens } from "gpt-tokenizer";
-import { encode, decode } from "gpt-tokenizer";
+import { decode } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
 import mammoth from "mammoth";
@@ -35,7 +34,12 @@ import {
   isSupportedImageMediaType,
   validateUploadPolicy,
 } from "../lib/utils/upload-policy";
-import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
+import {
+  FILE_TOKEN_PERCENT,
+  MAX_TOKENS_PAID,
+  safeCountTokens,
+  safeEncode,
+} from "../lib/token-utils";
 import {
   MAX_GENERATED_FILE_SIZE_BYTES,
   S3_USER_FILES_PREFIX,
@@ -223,11 +227,11 @@ const truncateContentByTokens = (
   content: string,
   maxTokens: number,
 ): string => {
-  const tokens = encode(content);
+  const tokens = safeEncode(content);
   if (tokens.length <= maxTokens) return content;
 
   const truncationSuffix = "\n\n[Content truncated due to token limit]";
-  const suffixTokens = countTokens(truncationSuffix);
+  const suffixTokens = safeCountTokens(truncationSuffix);
   const budgetForContent = maxTokens - suffixTokens;
 
   if (budgetForContent <= 0) {
@@ -466,7 +470,7 @@ const processFileAuto = async (
         const fileBuffer = Buffer.from(await blob.arrayBuffer());
         const textDecoder = new TextDecoder("utf-8");
         const textContent = textDecoder.decode(fileBuffer);
-        const fallbackTokens = countTokens(textContent);
+        const fallbackTokens = safeCountTokens(textContent);
 
         // Check token limit for fallback processing
         if (!skipTokenValidation && fallbackTokens > maxTokens) {
@@ -538,7 +542,7 @@ const processPdfFile = async (pdf: Blob): Promise<FileItemChunk[]> => {
   return [
     {
       content: completeText,
-      tokens: countTokens(completeText),
+      tokens: safeCountTokens(completeText),
     },
   ];
 };
@@ -551,7 +555,7 @@ const processCsvFile = async (csv: Blob): Promise<FileItemChunk[]> => {
   return [
     {
       content: completeText,
-      tokens: countTokens(completeText),
+      tokens: safeCountTokens(completeText),
     },
   ];
 };
@@ -566,7 +570,7 @@ const processJsonFile = async (json: Blob): Promise<FileItemChunk[]> => {
   return [
     {
       content: completeText,
-      tokens: countTokens(completeText),
+      tokens: safeCountTokens(completeText),
     },
   ];
 };
@@ -579,7 +583,7 @@ const processTxtFile = async (txt: Blob): Promise<FileItemChunk[]> => {
   return [
     {
       content: textContent,
-      tokens: countTokens(textContent),
+      tokens: safeCountTokens(textContent),
     },
   ];
 };
@@ -598,7 +602,7 @@ const processMarkdownFile = async (
   return [
     {
       content: finalContent,
-      tokens: countTokens(finalContent),
+      tokens: safeCountTokens(finalContent),
     },
   ];
 };
@@ -628,7 +632,7 @@ const processDocxFile = async (
       completeText = result.value;
     }
 
-    const tokens = countTokens(completeText);
+    const tokens = safeCountTokens(completeText);
 
     return [
       {

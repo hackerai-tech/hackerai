@@ -1,9 +1,9 @@
-import { countTokens } from "gpt-tokenizer";
 import {
   STREAM_MAX_TOKENS,
   TOOL_DEFAULT_MAX_TOKENS,
   TRUNCATION_MESSAGE,
   TIMEOUT_MESSAGE,
+  safeCountTokens,
   truncateContent,
   sliceByTokens,
 } from "@/lib/token-utils";
@@ -67,13 +67,13 @@ export const createTerminalHandler = (
     // Don't stream if truncated or timed out
     if (truncated || timedOut) return;
 
-    const tokens = countTokens(output);
+    const tokens = safeCountTokens(output);
     if (totalTokens + tokens > maxTokens) {
       truncated = true;
 
       // Calculate how much content we can still fit
       const remainingTokens = maxTokens - totalTokens;
-      const truncationTokens = countTokens(TRUNCATION_MESSAGE);
+      const truncationTokens = safeCountTokens(TRUNCATION_MESSAGE);
 
       if (remainingTokens > truncationTokens) {
         // We can fit some content plus the truncation message
@@ -81,7 +81,7 @@ export const createTerminalHandler = (
         const truncatedOutput = sliceByTokens(output, contentBudget);
         if (truncatedOutput.trim()) {
           await onOutput(truncatedOutput);
-          totalTokens += countTokens(truncatedOutput);
+          totalTokens += safeCountTokens(truncatedOutput);
         }
       }
 
@@ -129,7 +129,7 @@ export const createTerminalHandler = (
  * Truncates terminal output to fit within token limits
  */
 export function truncateTerminalOutput(output: string): TerminalResult {
-  if (countTokens(output) <= TOOL_DEFAULT_MAX_TOKENS) {
+  if (safeCountTokens(output) <= TOOL_DEFAULT_MAX_TOKENS) {
     return { output };
   }
   return { output: truncateContent(output) };

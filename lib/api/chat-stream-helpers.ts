@@ -37,7 +37,7 @@ import {
   findSummarizationInsertIndex,
 } from "@/lib/utils/stream-writer-utils";
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
-import { countMessagesTokens } from "@/lib/token-utils";
+import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
@@ -53,7 +53,6 @@ import {
   getTeamExtraUsageState,
 } from "@/lib/extra-usage";
 import { systemPrompt } from "@/lib/system-prompt";
-import { countTokens } from "gpt-tokenizer";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 /**
@@ -1010,7 +1009,7 @@ export async function estimatePreflightInputTokens(args: {
     temporary,
     null,
   );
-  const systemTokens = countTokens(estimatedSystemPrompt);
+  const systemTokens = safeCountTokens(estimatedSystemPrompt);
   const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
   return messageTokens + systemTokens + toolSchemaOverhead;
 }
