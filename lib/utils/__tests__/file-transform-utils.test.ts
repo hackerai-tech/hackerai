@@ -99,6 +99,78 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
+  it("omits images when resolved storage size exceeds stale message metadata", async () => {
+    mockConvexAction.mockResolvedValue([
+      "https://storage.example/stale-metadata.png",
+    ]);
+    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({
+          headers: { "content-length": String(40 * 1024 * 1024) },
+        });
+      }
+
+      throw new Error("Range probe should not run when HEAD has a size");
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_stale",
+        name: "stale-metadata.png",
+        size: 1024,
+        url: "https://example.com/stale-metadata.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "stale-metadata.png" omitted: 40.0 MB exceeds the 30 MB per-image limit]',
+    });
+  });
+
+  it("keeps stored images when resolved storage size is within limit despite stale oversized metadata", async () => {
+    mockConvexAction.mockResolvedValue([
+      "https://storage.example/actually-small.png",
+    ]);
+    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({
+          headers: { "content-length": String(2 * 1024 * 1024) },
+        });
+      }
+
+      throw new Error("Range probe should not run when HEAD has a size");
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_actually_small",
+        name: "actually-small.png",
+        size: 40 * 1024 * 1024,
+        url: "https://example.com/actually-small.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toMatchObject({
+      type: "file",
+      mediaType: "image/png",
+      name: "actually-small.png",
+      url: "https://storage.example/actually-small.png",
+    });
+  });
+
   it("omits URL-backed images when headers are inconclusive but the range probe exceeds 5 MB", async () => {
     mockConvexAction.mockResolvedValue([
       "https://storage.example/unknown-size.png",
