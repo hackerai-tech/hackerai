@@ -209,11 +209,10 @@ const imageOmittedText = (
   `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: ${(sizeBytes / (1024 * 1024)).toFixed(1)} MB exceeds the ${limitBytes / (1024 * 1024)} MB per-image limit]`;
 
 /**
- * Replace image file parts whose declared size exceeds Anthropic's 5 MiB
- * per-image limit with a short text note. Without this, the model call fails
- * with `image exceeds 5 MB maximum` once OpenRouter re-encodes the URL as
- * base64. Older messages may not have a `size` field; those are checked
- * against the resolved storage URL below.
+ * Replace non-stored image file parts whose declared size exceeds Anthropic's
+ * 5 MiB per-image limit with a short text note. Stored `fileId` images are
+ * checked against their resolved storage URL below, so stale message metadata
+ * cannot omit an otherwise valid image.
  */
 const replaceOversizedImageParts = (messages: UIMessage[]) => {
   messages.forEach((msg) => {
@@ -222,6 +221,7 @@ const replaceOversizedImageParts = (messages: UIMessage[]) => {
       if (
         !isFilePart(part) ||
         !isSupportedImageMediaType(part.mediaType ?? "") ||
+        typeof (part as any).fileId === "string" ||
         typeof (part as any).size !== "number" ||
         (part as any).size <= MAX_IMAGE_SIZE
       ) {

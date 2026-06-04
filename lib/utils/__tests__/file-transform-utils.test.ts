@@ -134,6 +134,43 @@ describe("processMessageFiles image size guards", () => {
     });
   });
 
+  it("keeps stored images when resolved storage size is within limit despite stale oversized metadata", async () => {
+    mockConvexAction.mockResolvedValue([
+      "https://storage.example/actually-small.png",
+    ]);
+    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({
+          headers: { "content-length": String(2 * 1024 * 1024) },
+        });
+      }
+
+      throw new Error("Range probe should not run when HEAD has a size");
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_actually_small",
+        name: "actually-small.png",
+        size: 40 * 1024 * 1024,
+        url: "https://example.com/actually-small.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toMatchObject({
+      type: "file",
+      mediaType: "image/png",
+      name: "actually-small.png",
+      url: "https://storage.example/actually-small.png",
+    });
+  });
+
   it("omits URL-backed images when headers are inconclusive but the range probe exceeds 5 MB", async () => {
     mockConvexAction.mockResolvedValue([
       "https://storage.example/unknown-size.png",
