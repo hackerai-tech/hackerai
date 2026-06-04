@@ -501,6 +501,36 @@ describe("pruneToolOutputs", () => {
     expect(result.prunedCount).toBe(0);
   });
 
+  it("prunes natural string outputs while preserving compact placeholders", () => {
+    const messages: UIMessage[] = [
+      makeAssistantMessage([
+        makeToolPart("run_terminal_cmd", "line with data\n".repeat(2000), {
+          command: "old-string-output",
+        }),
+      ]),
+      makeAssistantMessage(
+        [
+          makeToolPart(
+            "run_terminal_cmd",
+            "[Terminal: ran 'already-pruned', exit code 0]",
+            { command: "already-pruned" },
+          ),
+        ],
+        "msg-new",
+      ),
+    ];
+
+    const result = pruneToolOutputs(messages, 0, NO_MIN);
+
+    expect(result.prunedCount).toBe(1);
+    expect((result.messages[0].parts[0] as any).output).toBe(
+      "[Terminal: ran 'old-string-output', exit code ?]",
+    );
+    expect((result.messages[1].parts[0] as any).output).toBe(
+      "[Terminal: ran 'already-pruned', exit code 0]",
+    );
+  });
+
   // --- Protected tools ---
 
   it("never prunes protected tools (todo_write)", () => {
@@ -785,6 +815,90 @@ describe("compactMessageForStorage", () => {
     expect(estimateSerializedSizeBytes(result.message.parts)).toBeLessThan(
       estimateSerializedSizeBytes(message.parts),
     );
+  });
+
+  it("compacts natural string outputs for oversized storage messages", () => {
+    const message = makeAssistantMessage(
+      Array.from({ length: 80 }, (_, index) =>
+        makeToolPart(
+          "run_terminal_cmd",
+          `command ${index} output\n${"finding detail ".repeat(120)}`,
+          { command: `run-check-${index}` },
+        ),
+      ),
+    );
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 50_000,
+      toolOutputTokenBudget: 0,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.prunedCount).toBeGreaterThan(0);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(50_000);
+    expect((result.message.parts[0] as any).output).toBe(
+      "[Terminal: ran 'run-check-0', exit code ?]",
+    );
+  });
+
+  it("compacts old tool inputs when outputs are already compact", () => {
+    const longCommand = (index: number) =>
+      [
+        "python - <<'PY'",
+        ...Array.from(
+          { length: 250 },
+          (_, line) => `print('command ${index} line ${line}')`,
+        ),
+        "PY",
+      ].join("\n");
+    const newestCommand = longCommand(59);
+    const message = makeAssistantMessage(
+      Array.from({ length: 60 }, (_, index) =>
+        makeToolPart(
+          "run_terminal_cmd",
+          `[Terminal: ran 'command-${index}', exit code 0]`,
+          { command: longCommand(index) },
+        ),
+      ),
+    );
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 95_000,
+      toolOutputTokenBudget: 0,
+    });
+    const oldestCommand = (result.message.parts[0] as any).input.command;
+    const newestSavedCommand = (result.message.parts.at(-1) as any).input
+      .command;
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(95_000);
+    expect(oldestCommand.length).toBeLessThanOrEqual(512);
+    expect(oldestCommand).toContain("[truncated for storage]");
+    expect(newestSavedCommand).toBe(newestCommand);
+  });
+
+  it("does not byte-compact unfinished tool calls", () => {
+    const command = "python -c \"print('still streaming')\" ".repeat(200);
+    const message = makeAssistantMessage([
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-streaming",
+        state: "input-streaming",
+        input: { command },
+      } as any,
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 100,
+      toolOutputTokenBudget: 0,
+    });
+    const part = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(false);
+    expect(result.afterSizeBytes).toBe(result.beforeSizeBytes);
+    expect(part.state).toBe("input-streaming");
+    expect(part.input.command).toBe(command);
+    expect(part.output).toBeUndefined();
   });
 
   it("compacts oversized reasoning and storage-only status parts", () => {

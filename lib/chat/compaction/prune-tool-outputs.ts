@@ -61,8 +61,14 @@ const STORAGE_MESSAGE_SOFT_LIMIT_BYTES = 850 * 1024;
 const STORAGE_TOOL_OUTPUT_TOKEN_BUDGET = 20_000;
 const STORAGE_REASONING_CHAR_BUDGET = 32_000;
 const STORAGE_REASONING_PART_CHAR_LIMIT = 8_000;
+const STORAGE_TOOL_INPUT_STRING_LIMIT = 512;
+const STORAGE_TOOL_INPUT_ARRAY_LIMIT = 20;
+const STORAGE_TOOL_INPUT_DEPTH_LIMIT = 3;
+const STORAGE_COMPACTED_STRING_SUFFIX = "... [truncated for storage]";
 const STORAGE_COMPACTED_REASONING_PREFIX =
   "[Earlier reasoning compacted for storage]\n\n";
+const COMPACT_PLACEHOLDER_PATTERN =
+  /^\[(Terminal|File|Match|Search|Files|URL|Tool): .+\]$/;
 
 // ---------------------------------------------------------------------------
 // Placeholder builders per tool type
@@ -89,7 +95,12 @@ const buildPlaceholderFromParts = (
     case "run_terminal_cmd": {
       const cmd = input?.command ?? "unknown";
       const shortCmd = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
-      const exitCode = output?.exitCode ?? output?.exit_code ?? "?";
+      const exitCode =
+        output?.exitCode ??
+        output?.exit_code ??
+        output?.result?.exitCode ??
+        output?.result?.exit_code ??
+        "?";
       return `[Terminal: ran '${shortCmd}', exit code ${exitCode}]`;
     }
 
@@ -150,6 +161,101 @@ const buildPlaceholderFromParts = (
 const buildPlaceholder = (part: ToolPart): string => {
   const toolName = part.type.slice(TOOL_TYPE_PREFIX.length);
   return buildPlaceholderFromParts(toolName, part.input, part.output);
+};
+
+const isCompactPlaceholderOutput = (output: unknown): output is string =>
+  typeof output === "string" && COMPACT_PLACEHOLDER_PATTERN.test(output);
+
+const isPrunableToolPart = (part: ToolPart): boolean => {
+  const toolName = part.type?.startsWith(TOOL_TYPE_PREFIX)
+    ? part.type.slice(TOOL_TYPE_PREFIX.length)
+    : null;
+
+  return Boolean(toolName && !PROTECTED_TOOLS.has(toolName));
+};
+
+const isCompletedPrunableToolPart = (part: ToolPart): boolean =>
+  isPrunableToolPart(part) &&
+  (part.state === "output-available" || part.state === "output-error") &&
+  part.output != null;
+
+const truncateStorageString = (
+  value: string,
+  maxLength = STORAGE_TOOL_INPUT_STRING_LIMIT,
+): string => {
+  if (value.length <= maxLength) return value;
+  if (maxLength <= STORAGE_COMPACTED_STRING_SUFFIX.length) {
+    return value.slice(0, maxLength);
+  }
+
+  const contentBudget = maxLength - STORAGE_COMPACTED_STRING_SUFFIX.length;
+  const headBudget = Math.ceil(contentBudget * 0.65);
+  const tailBudget = contentBudget - headBudget;
+
+  return `${value.slice(0, headBudget)}${STORAGE_COMPACTED_STRING_SUFFIX}${
+    tailBudget > 0 ? value.slice(-tailBudget) : ""
+  }`;
+};
+
+const compactToolInputForStorage = (value: unknown, depth = 0): unknown => {
+  if (value == null) return value;
+  if (typeof value === "string") return truncateStorageString(value);
+  if (typeof value !== "object") return value;
+
+  if (depth >= STORAGE_TOOL_INPUT_DEPTH_LIMIT) {
+    if (Array.isArray(value)) {
+      return value.length > STORAGE_TOOL_INPUT_ARRAY_LIMIT
+        ? {
+            type: "array",
+            length: value.length,
+            truncated: true,
+          }
+        : value;
+    }
+
+    return {
+      type: "object",
+      keys: Object.keys(value as Record<string, unknown>).slice(
+        0,
+        STORAGE_TOOL_INPUT_ARRAY_LIMIT,
+      ),
+      truncated: true,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    const compacted = value
+      .slice(0, STORAGE_TOOL_INPUT_ARRAY_LIMIT)
+      .map((item) => compactToolInputForStorage(item, depth + 1));
+    if (value.length > STORAGE_TOOL_INPUT_ARRAY_LIMIT) {
+      compacted.push({
+        truncated: true,
+        remaining: value.length - STORAGE_TOOL_INPUT_ARRAY_LIMIT,
+      });
+    }
+    return compacted;
+  }
+
+  const compacted: Record<string, unknown> = {};
+  for (const [key, childValue] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    compacted[key] = compactToolInputForStorage(childValue, depth + 1);
+  }
+
+  return compacted;
+};
+
+const compactToolPartForStorage = (part: ToolPart): ToolPart => {
+  if (!isPrunableToolPart(part)) return part;
+
+  return {
+    ...part,
+    input: compactToolInputForStorage(part.input),
+    output: isCompactPlaceholderOutput(part.output)
+      ? part.output
+      : buildPlaceholder(part),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -255,6 +361,54 @@ const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
       part?.type !== "step-start" && part?.type !== "data-summarization",
   );
 
+const compactToolPartsToByteLimit = (
+  parts: UIMessage["parts"],
+  softLimitBytes: number,
+): {
+  parts: UIMessage["parts"];
+  compactedCount: number;
+  afterSizeBytes: number;
+} => {
+  let afterSizeBytes = estimateSerializedSizeBytes(parts);
+  if (afterSizeBytes <= softLimitBytes) {
+    return { parts, compactedCount: 0, afterSizeBytes };
+  }
+
+  let compactedCount = 0;
+  let compactedParts = parts;
+
+  for (
+    let index = 0;
+    index < compactedParts.length && afterSizeBytes > softLimitBytes;
+    index++
+  ) {
+    const part = compactedParts[index] as ToolPart;
+    if (!isCompletedPrunableToolPart(part)) continue;
+
+    const compactedPart = compactToolPartForStorage(part);
+    if (
+      estimateSerializedSizeBytes(compactedPart) >=
+      estimateSerializedSizeBytes(part)
+    ) {
+      continue;
+    }
+
+    compactedParts = compactedParts.map((currentPart, partIndex) =>
+      partIndex === index
+        ? (compactedPart as UIMessage["parts"][number])
+        : currentPart,
+    );
+    compactedCount++;
+    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+  }
+
+  return {
+    parts: compactedParts,
+    compactedCount,
+    afterSizeBytes,
+  };
+};
+
 /**
  * Compacts a single assistant UIMessage before database storage.
  *
@@ -324,6 +478,16 @@ export function compactMessageForStorage<T extends UIMessage>(
     afterSizeBytes = estimateSerializedSizeBytes(parts);
   }
 
+  if (afterSizeBytes > softLimitBytes) {
+    const byteCompactionResult = compactToolPartsToByteLimit(
+      parts,
+      softLimitBytes,
+    );
+    parts = byteCompactionResult.parts;
+    prunedCount += byteCompactionResult.compactedCount;
+    afterSizeBytes = byteCompactionResult.afterSizeBytes;
+  }
+
   const compacted =
     strippedUiOnlyFields || prunedCount > 0 || afterSizeBytes < beforeSizeBytes;
 
@@ -382,7 +546,7 @@ export function pruneToolOutputs(
         !PROTECTED_TOOLS.has(toolName) &&
         (part.state === "output-available" || part.state === "output-error") &&
         part.output != null &&
-        typeof part.output !== "string" // skip already-pruned placeholders
+        !isCompactPlaceholderOutput(part.output)
       ) {
         toolEntries.push({
           msgIdx: mi,
@@ -556,8 +720,8 @@ export function pruneModelMessages(
       )
         continue;
 
-      // Skip already-pruned (string output = placeholder)
-      if (typeof part.output === "string") continue;
+      // Skip compact placeholders, but allow natural string outputs to prune.
+      if (isCompactPlaceholderOutput(part.output)) continue;
       if (part.output == null) continue;
 
       const tokens = countOutputTokens(part.output);
