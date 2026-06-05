@@ -61,6 +61,23 @@ const paidStartConversionTypeValidator = v.union(
   v.literal("paid_subscription_start"),
 );
 
+export const UNIT_ECONOMICS_REPORTING_START_DAY = "2026-05-31";
+const UNIT_ECONOMICS_REPORTING_START_TIME = Date.parse(
+  `${UNIT_ECONOMICS_REPORTING_START_DAY}T00:00:00.000Z`,
+);
+
+function reportingStartDay(startDay: string, includeHistorical?: boolean) {
+  if (includeHistorical) return startDay;
+  return startDay < UNIT_ECONOMICS_REPORTING_START_DAY
+    ? UNIT_ECONOMICS_REPORTING_START_DAY
+    : startDay;
+}
+
+function reportingStartTime(startTime: number, includeHistorical?: boolean) {
+  if (includeHistorical) return startTime;
+  return Math.max(startTime, UNIT_ECONOMICS_REPORTING_START_TIME);
+}
+
 function assertFiniteMoney(value: number, field: string) {
   if (!Number.isFinite(value)) {
     throw new Error(`${field} must be finite`);
@@ -266,12 +283,27 @@ export const getEntitySummary = query({
     entityId: v.string(),
     startDay: v.optional(v.string()),
     endDay: v.optional(v.string()),
+    includeHistorical: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const startDay = args.startDay ?? "0000-00-00";
+    const startDay = reportingStartDay(
+      args.startDay ?? UNIT_ECONOMICS_REPORTING_START_DAY,
+      args.includeHistorical,
+    );
     const endDay = args.endDay ?? "9999-99-99";
+    if (startDay > endDay) {
+      return {
+        entityType: args.entityType,
+        entityId: args.entityId,
+        startDay,
+        endDay,
+        totals: sumRows([]),
+        days: [],
+      };
+    }
+
     const rows = await ctx.db
       .query("unit_economics_daily")
       .withIndex("by_entity_day", (q) =>
@@ -302,6 +334,7 @@ export const rebuildEntityDailyRollups = mutation({
     startTime: v.optional(v.number()),
     endTime: v.optional(v.number()),
     maxRows: v.optional(v.number()),
+    includeHistorical: v.optional(v.boolean()),
   },
   returns: v.object({
     deletedRollups: v.number(),
@@ -312,7 +345,10 @@ export const rebuildEntityDailyRollups = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const startTime = args.startTime ?? 0;
+    const startTime = reportingStartTime(
+      args.startTime ?? UNIT_ECONOMICS_REPORTING_START_TIME,
+      args.includeHistorical,
+    );
     const endTime = args.endTime ?? Date.now();
     const maxRows = Math.min(
       Math.max(Math.round(args.maxRows ?? 5000), 1),
@@ -320,6 +356,15 @@ export const rebuildEntityDailyRollups = mutation({
     );
     const startDay = utcDay(startTime);
     const endDay = utcDay(endTime);
+
+    if (startTime > endTime) {
+      return {
+        deletedRollups: 0,
+        usageRowsApplied: 0,
+        revenueRowsApplied: 0,
+        truncated: false,
+      };
+    }
 
     const existingRollups = await ctx.db
       .query("unit_economics_daily")
@@ -501,15 +546,21 @@ export const listDailyRollupsForPostHog = query({
     endDay: v.string(),
     entityType: v.optional(entityTypeValidator),
     limit: v.optional(v.number()),
+    includeHistorical: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     const limit = Math.min(Math.max(Math.round(args.limit ?? 1000), 1), 5000);
+    const startDay = reportingStartDay(args.startDay, args.includeHistorical);
+    if (startDay > args.endDay) {
+      return [];
+    }
+
     const query = ctx.db
       .query("unit_economics_daily")
       .withIndex("by_day", (q) =>
-        q.gte("day", args.startDay).lte("day", args.endDay),
+        q.gte("day", startDay).lte("day", args.endDay),
       );
     const rows = args.entityType
       ? await query
