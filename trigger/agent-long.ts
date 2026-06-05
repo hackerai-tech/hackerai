@@ -192,6 +192,39 @@ const isChatNotFoundError = (error: ChatSDKError): boolean => {
   );
 };
 
+const TRIGGER_REALTIME_TRANSPORT_ERROR_PATTERNS = [
+  /@s2-dev\/streamstore/i,
+  /S2AppendSession/i,
+  /S2MetadataStream/i,
+  /StreamsWriterV2/i,
+  /sendBatchNonBlocking/i,
+  /Max attempts \(\d+\) exhausted: Request timeout after \d+ms \(\d+ records, \d+ bytes\)/i,
+  /Request timeout after \d+ms \(\d+ records, \d+ bytes\)/i,
+];
+
+const getErrorField = (error: unknown, field: string): string | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const value = (error as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
+};
+
+const isTriggerRealtimeTransportError = (error: unknown): boolean => {
+  const details = extractErrorDetails(error);
+  const candidates = [
+    getErrorField(error, "name"),
+    getErrorField(error, "code"),
+    typeof details.errorMessage === "string" ? details.errorMessage : undefined,
+    error instanceof Error ? error.stack : undefined,
+  ]
+    .filter((value): value is string => !!value)
+    .join("\n");
+
+  if (!candidates) return false;
+  return TRIGGER_REALTIME_TRANSPORT_ERROR_PATTERNS.some((pattern) =>
+    pattern.test(candidates),
+  );
+};
+
 const classifyProviderDashboardCategory = (
   error: unknown,
   details: Record<string, unknown>,
@@ -1656,7 +1689,42 @@ export const agentLongTask = task({
         .set("setupBeforeStreamMs", Date.now() - taskStartTime);
       const { waitUntilComplete } = agentUiStream.pipe(uiStream);
       streamPiped = true;
-      await waitUntilComplete();
+      try {
+        await waitUntilComplete();
+      } catch (error) {
+        if (!isTriggerRealtimeTransportError(error)) {
+          throw error;
+        }
+
+        const details = extractErrorDetails(error);
+        const errorMessage = truncateForTriggerMetadata(
+          typeof details.errorMessage === "string"
+            ? details.errorMessage
+            : "Trigger realtime stream transport failed",
+        );
+
+        metadata
+          .set("realtimeStreamStatus", "transport_error")
+          .set("realtimeStreamErrorMessage", errorMessage)
+          .set("realtimeStreamFailedAt", new Date().toISOString());
+        await tags.add("trigger_realtime_transport_error");
+        triggerLogger.warn("[agent-long] realtime stream transport failed", {
+          chatId,
+          userId,
+          runId: ctx.run.id,
+          errorName:
+            error instanceof Error ? error.name : getErrorField(error, "name"),
+          errorCode: getErrorField(error, "code"),
+          errorMessage,
+        });
+        phLogger.warn("Trigger realtime stream transport failed", {
+          event: "trigger_realtime_transport_error",
+          chatId,
+          userId,
+          runId: ctx.run.id,
+          error,
+        });
+      }
 
       const terminalStreamError =
         streamError ?? getTerminalProviderStreamError(terminalAgentState);
