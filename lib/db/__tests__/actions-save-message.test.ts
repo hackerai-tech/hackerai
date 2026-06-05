@@ -5,6 +5,7 @@ const loadSaveMessageWithMocks = async () => {
   process.env.NEXT_PUBLIC_CONVEX_URL = "https://example.convex.cloud";
 
   const mockMutation = jest.fn().mockResolvedValue({ id: "message-1" });
+  const mockQuery = jest.fn();
   const mockCompactMessageForStorage = jest.fn((message: any) => {
     const sizeBytes = JSON.stringify(message.parts).length;
     return {
@@ -21,7 +22,7 @@ const loadSaveMessageWithMocks = async () => {
   jest.doMock("convex/browser", () => ({
     ConvexHttpClient: class {
       mutation = mockMutation;
-      query = jest.fn();
+      query = mockQuery;
       action = jest.fn();
     },
   }));
@@ -29,8 +30,13 @@ const loadSaveMessageWithMocks = async () => {
     compactMessageForStorage: mockCompactMessageForStorage,
   }));
 
-  const { saveMessage } = await import("../actions");
-  return { saveMessage, mockCompactMessageForStorage };
+  const { getMessagesByChatId, saveMessage } = await import("../actions");
+  return {
+    getMessagesByChatId,
+    mockCompactMessageForStorage,
+    mockQuery,
+    saveMessage,
+  };
 };
 
 describe("saveMessage", () => {
@@ -69,5 +75,60 @@ describe("saveMessage", () => {
       self: "[Circular]",
     });
     expect(() => JSON.stringify(compactedMessage.parts)).not.toThrow();
+  });
+});
+
+describe("getMessagesByChatId", () => {
+  it("treats chat history authorization denials as warnings and forbidden chat errors", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "CHAT_UNAUTHORIZED",
+      message: "You don't have permission to access this chat",
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockRejectedValueOnce(convexError);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "free",
+          newMessages: [],
+          regenerate: true,
+          isTemporary: false,
+          mode: "ask",
+        }),
+      ).rejects.toMatchObject({
+        type: "forbidden",
+        surface: "chat",
+        statusCode: 403,
+        metadata: expect.objectContaining({
+          db_operation: "messages.getMessagesPageForBackend",
+          db_error_code: "CHAT_UNAUTHORIZED",
+        }),
+      });
+
+      const warnEvents = warnSpy.mock.calls.map(([line]) => {
+        const payload = JSON.parse(String(line));
+        return payload.event;
+      });
+
+      expect(warnEvents).toContain("chat_history_fetch_failed");
+      expect(warnEvents).toContain("chat_access_denied");
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

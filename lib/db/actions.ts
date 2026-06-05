@@ -205,12 +205,17 @@ const getDatabaseErrorCode = (data: unknown): string | undefined =>
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
 
+const CHAT_UNAUTHORIZED_ERROR_CODE = "CHAT_UNAUTHORIZED";
+
 const isChatNotFoundMessageSaveError = (
   operation: string,
   dbErrorData: unknown,
 ): boolean =>
   operation === "messages.saveMessage" &&
   getDatabaseErrorCode(dbErrorData) === "CHAT_NOT_FOUND";
+
+const isChatUnauthorizedError = (dbErrorData: unknown): boolean =>
+  getDatabaseErrorCode(dbErrorData) === CHAT_UNAUTHORIZED_ERROR_CODE;
 
 const logChatMessagePreparationFailure = (
   event: string,
@@ -241,6 +246,23 @@ const databaseError = (
   const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
   const dbErrorData = getErrorData(error);
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
+  const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
+  const logLevel = isChatNotFound || isChatUnauthorized ? "warn" : "error";
+  const event = isChatNotFound
+    ? "database_operation_skipped_chat_not_found"
+    : isChatUnauthorized
+      ? "chat_access_denied"
+      : "database_operation_failed";
+  const errorCode = isChatNotFound
+    ? "not_found:chat"
+    : isChatUnauthorized
+      ? "forbidden:chat"
+      : "bad_request:database";
+  const errorMessage = isChatNotFound
+    ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
+    : isChatUnauthorized
+      ? `Chat access denied while executing database operation: ${operation}: ${dbErrorMessage}`
+      : `Database operation failed: ${operation}: ${dbErrorMessage}`;
   const diagnosticMetadata = {
     db_operation: operation,
     db_error_name: dbErrorName,
@@ -252,29 +274,21 @@ const databaseError = (
   };
 
   const logPayload = {
-    level: isChatNotFound ? "warn" : "error",
-    event: isChatNotFound
-      ? "database_operation_skipped_chat_not_found"
-      : "database_operation_failed",
+    level: logLevel,
+    event,
     service: "chat-handler",
     timestamp: new Date().toISOString(),
     ...diagnosticMetadata,
   };
 
   const logLine = JSON.stringify(logPayload);
-  if (isChatNotFound) {
+  if (logLevel === "warn") {
     console.warn(logLine);
   } else {
     console.error(logLine);
   }
 
-  return new ChatSDKError(
-    isChatNotFound ? "not_found:chat" : "bad_request:database",
-    isChatNotFound
-      ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
-      : `Database operation failed: ${operation}: ${dbErrorMessage}`,
-    diagnosticMetadata,
-  );
+  return new ChatSDKError(errorCode, errorMessage, diagnosticMetadata);
 };
 
 export async function getChatById({ id }: { id: string }) {
