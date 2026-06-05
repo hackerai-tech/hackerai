@@ -47,8 +47,14 @@ const MIN_LETTER_COUNT = 25;
 // fallback and most users write in it.
 const MIN_CONFIDENCE_MARGIN = 0.05;
 
+const SHORT_LATIN_AMBIGUOUS_LETTER_LIMIT = 40;
+const SHORT_LATIN_ENGLISH_MARGIN = 0.3;
+
 export function detectLang(text: string): SupportedLang {
   const letterCount = (text.match(/\p{L}/gu) ?? []).length;
+  const scriptLang = detectByDominantScript(text, letterCount);
+  if (scriptLang) return scriptLang;
+
   if (letterCount < MIN_LETTER_COUNT) return "en";
 
   const scores = francAll(text, { only: FRANC_ALLOWLIST });
@@ -57,6 +63,59 @@ export function detectLang(text: string): SupportedLang {
 
   const eng = scores.find(([code]) => code === "eng");
   if (eng && 1 - eng[1] < MIN_CONFIDENCE_MARGIN) return "en";
+  if (
+    eng &&
+    shouldPreferEnglishForAmbiguousLatinText(text, letterCount, eng[1], top[1])
+  ) {
+    return "en";
+  }
 
   return ISO_639_3_TO_1[top[0]] ?? "en";
+}
+
+function detectByDominantScript(
+  text: string,
+  letterCount: number,
+): SupportedLang | null {
+  if (letterCount === 0) return null;
+
+  const hanCount = countMatches(text, /\p{Script=Han}/gu);
+  if (hanCount / letterCount > 0.5) return "zh";
+
+  const arabicCount = countMatches(text, /\p{Script=Arabic}/gu);
+  if (arabicCount / letterCount > 0.5) return "ar";
+
+  const cyrillicCount = countMatches(text, /\p{Script=Cyrillic}/gu);
+  if (cyrillicCount / letterCount > 0.5) return "ru";
+
+  return null;
+}
+
+function countMatches(text: string, pattern: RegExp): number {
+  return (text.match(pattern) ?? []).length;
+}
+
+function shouldPreferEnglishForAmbiguousLatinText(
+  text: string,
+  letterCount: number,
+  englishScore: number,
+  topScore: number,
+): boolean {
+  if (letterCount > SHORT_LATIN_AMBIGUOUS_LETTER_LIMIT) return false;
+
+  const letters = text.match(/\p{L}/gu) ?? [];
+  const hasLatinLetters = letters.some((letter) =>
+    /\p{Script=Latin}/u.test(letter),
+  );
+  const hasNonLatinLetters = letters.some(
+    (letter) => !/\p{Script=Latin}/u.test(letter),
+  );
+  const hasDiacritics = /\p{Diacritic}/u.test(text.normalize("NFD"));
+
+  return (
+    hasLatinLetters &&
+    !hasNonLatinLetters &&
+    !hasDiacritics &&
+    topScore - englishScore <= SHORT_LATIN_ENGLISH_MARGIN
+  );
 }

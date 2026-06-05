@@ -12,7 +12,10 @@ import {
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
-import { AUTH_DISCLAIMER, detectLang } from "@/lib/chat/auth-disclaimer";
+import {
+  AUTH_DISCLAIMER,
+  type SupportedLang,
+} from "@/lib/chat/auth-disclaimer";
 import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
@@ -94,11 +97,13 @@ function hasImageOrPdfAttachment(messages: UIMessage[]): boolean {
 
 /**
  * Adds authorization message to the last user message.
- * Language is detected from `moderationText` — the same combined text scored
- * by moderation — rather than the last message alone, since a short reply
- * like "yes its mine" doesn't carry enough signal for reliable detection.
+ * Language is detected by moderation from the same combined text it scored,
+ * since a short reply like "yes its mine" doesn't carry enough signal.
  */
-export function addAuthMessage(messages: UIMessage[], moderationText: string) {
+export function addAuthMessage(
+  messages: UIMessage[],
+  moderationLanguage: SupportedLang,
+) {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
       const message = messages[i];
@@ -111,8 +116,7 @@ export function addAuthMessage(messages: UIMessage[], moderationText: string) {
         (part: any) => part.type === "text",
       ) as Array<{ type: "text"; text: string }>;
 
-      const lang = detectLang(moderationText);
-      const disclaimer = AUTH_DISCLAIMER[lang];
+      const disclaimer = AUTH_DISCLAIMER[moderationLanguage];
 
       const firstTextPart = textParts[0];
       if (firstTextPart) {
@@ -727,7 +731,7 @@ export async function processChatMessages({
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages, moderationResult.moderationText);
+    addAuthMessage(cleanedMessages, moderationResult.language);
   }
 
   return {
