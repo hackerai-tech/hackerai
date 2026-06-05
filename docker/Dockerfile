@@ -152,11 +152,16 @@ RUN set -eux; \
 # ============================================================================
 # User Setup
 # ============================================================================
-RUN useradd --create-home --shell /bin/bash user && \
-    usermod -aG sudo user && \
-    echo 'user ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && \
-    mkdir -p /home/user/upload /home/user/go && \
-    chown -R user:user /home/user
+RUN set -eux; \
+    if ! id -u user >/dev/null 2>&1; then \
+      useradd --create-home --shell /bin/bash user; \
+    fi; \
+    usermod -aG sudo user; \
+    install -d -m 0755 /etc/sudoers.d /home/user/upload /home/user/go; \
+    printf 'user ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/hackerai-user; \
+    chmod 0440 /etc/sudoers.d/hackerai-user; \
+    user_group="$(id -gn user)"; \
+    chown -R "user:${user_group}" /home/user
 
 WORKDIR /home/user
 
