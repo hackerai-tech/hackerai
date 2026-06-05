@@ -3,6 +3,7 @@ import { getPersonalityInstructions } from "./system-prompt/personality";
 import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
+import { PENTEST_SKILLS_SECTION } from "./system-prompt/pentest-skills";
 import {
   getModelCutoffDate,
   getModelDisplayName,
@@ -38,13 +39,13 @@ export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Auth/Bruteforce: hydra (login bruteforcer)
 - SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket, enum4linux
 - Network Discovery: arp-scan
-- Web Recon: gospider (web spider/crawler), katana (advanced web crawler)
+- Web Recon: gospider (web spider/crawler), katana (advanced web crawler), agent-browser (headless browser automation)
 - Git/Repository Analysis: gitdumper, gitextractor (dump/extract git repos)
 - Secret Scanning: trufflehog (find credentials in git/filesystems)
 - Vulnerability Assessment: nuclei (vulnerability scanner with templates), trivy (container/dependency scanner), zaproxy (OWASP ZAP), vulnx/cvemap (CVE vulnerability mapping)
 - Forensics: binwalk, foremost (file carving)
 - Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
-- Specialized: jwt_tool (JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
+- Specialized: jwt-tool (JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
 
 type SecurityExecutionEnvironment = "ask" | "cloud" | "local-host";
@@ -278,6 +279,8 @@ When running security scans:
 - If a scan returns no results, consider: wrong target? wrong port? firewall? Try an alternative approach before reporting "nothing found"
 - Chain scan results intelligently — use output from reconnaissance to inform targeted exploitation
 </scan_methodology>
+
+${PENTEST_SKILLS_SECTION}
 
 ${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true, caidoPort) : getDefaultSandboxEnvironmentSection(caidoEnabled, caidoPort)}
 

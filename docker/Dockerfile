@@ -13,6 +13,10 @@ ENV HOME=/home/user
 ENV GOPATH=/home/user/go
 ENV GOCACHE=/home/user/go/.cache
 ENV PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--lang=en-US,--no-sandbox,--disable-dev-shm-usage"
+ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/.agent-browser-screenshots
 
 # ============================================================================
 # Base System Setup (use default Kali CDN mirror - auto-routes to healthy mirrors)
@@ -125,6 +129,9 @@ RUN apt-get update && \
     nodejs \
     npm \
     tmux \
+    # Browser automation
+    chromium \
+    fonts-liberation \
     # Forensics
     binwalk \
     foremost \
@@ -152,7 +159,7 @@ RUN set -eux; \
 RUN useradd --create-home --shell /bin/bash user && \
     usermod -aG sudo user && \
     echo 'user ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && \
-    mkdir -p /home/user/upload /home/user/go && \
+    mkdir -p /home/user/upload /home/user/go /home/user/.agent-browser-screenshots && \
     chown -R user:user /home/user
 
 WORKDIR /home/user
@@ -175,6 +182,12 @@ RUN pip3 install --break-system-packages \
 
 # Additional security-focused Python packages
 RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
+
+# ============================================================================
+# Browser Automation CLI
+# ============================================================================
+RUN npm install -g agent-browser@0.26.0 && \
+    agent-browser doctor --offline --quick
 
 # ============================================================================
 # Git-based Security Tools
@@ -301,6 +314,9 @@ RUN set -eux; \
     which trivy && echo "✓ trivy" && \
     which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
+    which chromium && echo "✓ chromium" && \
+    which agent-browser && echo "✓ agent-browser" && \
+    agent-browser doctor --offline --quick && \
     which caido-cli && echo "✓ caido-cli" && \
     which rg && echo "✓ ripgrep" && \
     which go && echo "✓ go" && \

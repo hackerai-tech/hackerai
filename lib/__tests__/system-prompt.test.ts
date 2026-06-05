@@ -65,4 +65,40 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "For the default cloud sandbox, commands run in an isolated container",
     );
   });
+
+  it("includes curated pentest playbooks in agent mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<curated_pentest_playbook>");
+    expect(prompt).toContain("agent-browser open <url>");
+    expect(prompt).toContain("httpx -l hosts.txt");
+    expect(prompt).toContain("-noninteractive");
+    expect(prompt).toContain("JWT/OIDC");
+    expect(prompt).toContain("IDOR/BOLA");
+    expect(prompt).toContain("SSRF");
+    expect(prompt).toContain("XXE");
+  });
+
+  it("keeps terminal-only pentest playbooks out of ask mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).not.toContain("<curated_pentest_playbook>");
+    expect(prompt).not.toContain("agent-browser open <url>");
+  });
 });
