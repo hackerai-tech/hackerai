@@ -1,17 +1,32 @@
 import OpenAI from "openai";
 import { decode } from "gpt-tokenizer";
 import { safeEncode } from "@/lib/token-utils";
+import { detectLang, type SupportedLang } from "@/lib/chat/auth-disclaimer";
 
 const MODERATION_TOKEN_LIMIT = 512;
+
+export type ModerationResult = {
+  shouldUncensorResponse: boolean;
+  moderationText: string;
+  language: SupportedLang;
+};
+
+const emptyModerationResult = (
+  language: SupportedLang = "en",
+): ModerationResult => ({
+  shouldUncensorResponse: false,
+  moderationText: "",
+  language,
+});
 
 export async function getModerationResult(
   messages: any[],
   isPaidUser: boolean,
-): Promise<{ shouldUncensorResponse: boolean; moderationText: string }> {
+): Promise<ModerationResult> {
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
   if (!openaiApiKey) {
-    return { shouldUncensorResponse: false, moderationText: "" };
+    return emptyModerationResult();
   }
 
   const openai = new OpenAI({ apiKey: openaiApiKey });
@@ -20,10 +35,11 @@ export async function getModerationResult(
   const targetMessage = findTargetMessage(messages, 30);
 
   if (!targetMessage) {
-    return { shouldUncensorResponse: false, moderationText: "" };
+    return emptyModerationResult();
   }
 
   const input = prepareInput(targetMessage);
+  const language = detectLang(input);
 
   try {
     const moderation = await openai.moderations.create({
@@ -34,7 +50,7 @@ export async function getModerationResult(
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
       console.error("Moderation API returned no results");
-      return { shouldUncensorResponse: false, moderationText: input };
+      return { shouldUncensorResponse: false, moderationText: input, language };
     }
 
     const result = moderation.results[0];
@@ -49,17 +65,9 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    // console.log(
-    //   JSON.stringify(moderation, null, 2),
-    //   moderationLevel,
-    //   hazardCategories,
-    //   shouldUncensorResponse,
-    // );
-
-    return { shouldUncensorResponse, moderationText: input };
+    return { shouldUncensorResponse, moderationText: input, language };
   } catch (_error: any) {
-    // console.error('Error in getModerationResult:', error);
-    return { shouldUncensorResponse: false, moderationText: "" };
+    return emptyModerationResult(language);
   }
 }
 

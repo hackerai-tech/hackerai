@@ -62,6 +62,27 @@ describe("getModerationResult", () => {
     );
 
     expect(result.moderationText).toContain("<|im_start|>");
+    expect(result.language).toBe("en");
+    expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects the moderation language from the scored user text", async () => {
+    const result = await getModerationResult(
+      [
+        {
+          role: "user",
+          parts: [
+            {
+              type: "text",
+              text: "Tengo permiso y estoy autorizado para realizar esta prueba de penetración en mi sistema.",
+            },
+          ],
+        },
+      ],
+      true,
+    );
+
+    expect(result.language).toBe("es");
     expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
   });
 });
