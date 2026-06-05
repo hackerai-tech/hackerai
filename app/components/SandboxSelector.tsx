@@ -1,7 +1,5 @@
 "use client";
 
-import { useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
 import {
   Check,
   Cloud,
@@ -47,7 +45,7 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
   const { isTauri } = useTauri();
-  const { subscription } = useGlobalState();
+  const { subscription, localConnections: connections } = useGlobalState();
   const isFreeUser = subscription === "free";
 
   const detectedPlatform = useMemo(() => {
@@ -55,7 +53,6 @@ export function SandboxSelector({
     return detectPlatform();
   }, []);
 
-  const connections = useQuery(api.localSandbox.listConnections);
   const cloudOption: ConnectionOption = {
     id: "e2b",
     label: "Cloud",

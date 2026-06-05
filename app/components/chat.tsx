@@ -225,6 +225,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     selectedModel,
     setSelectedModel,
     subscription,
+    localConnections,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -304,19 +305,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldFetchMessages ? { id: chatId } : "skip",
   );
 
-  // Query local sandbox connections only when we need to validate a non-E2B sandbox_type
+  // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
   const storedSandboxType = (chatData as any)?.sandbox_type as
     | string
     | undefined;
-  const needsConnectionValidation =
-    !!storedSandboxType &&
-    storedSandboxType !== "e2b" &&
-    storedSandboxType !== "tauri" &&
-    !hasInitializedSandboxRef.current;
-  const localConnections = useQuery(
-    api.localSandbox.listConnections,
-    needsConnectionValidation ? undefined : "skip",
-  );
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise

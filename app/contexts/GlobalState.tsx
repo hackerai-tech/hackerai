@@ -121,6 +121,9 @@ interface GlobalStateType {
   // Whether a local sandbox (desktop or remote) is available
   hasLocalSandbox: boolean;
 
+  // Active local sandbox connections, shared to avoid duplicate Convex subscriptions
+  localConnections: LocalSandboxConnection[] | undefined;
+
   // The sandbox preference to use for free agent mode (desktop or first remote connection ID)
   defaultLocalSandboxPreference: SandboxPreference | null;
 
@@ -164,6 +167,23 @@ const GlobalStateContext = createContext<GlobalStateType | undefined>(
 
 interface GlobalStateProviderProps {
   children: ReactNode;
+}
+
+interface LocalSandboxConnection {
+  connectionId: string;
+  name: string;
+  osInfo?: {
+    platform: string;
+    arch: string;
+    release: string;
+    hostname: string;
+  };
+  lastSeen: number;
+  isDesktop: boolean;
+  capabilities: {
+    commands: boolean;
+    pty: boolean;
+  };
 }
 
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
@@ -325,7 +345,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     useSandboxPreference(!!user);
 
   // Check for available local sandbox connections
-  const localConnections = useQuery(api.localSandbox.listConnections);
+  const localConnections = useQuery(
+    api.localSandbox.listConnections,
+    user ? undefined : "skip",
+  );
   const hasLocalSandbox = useMemo(
     () => desktopBridgeActive || (localConnections?.length ?? 0) > 0,
     [desktopBridgeActive, localConnections],
@@ -846,6 +869,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSandboxPreference,
     desktopBridgeActive,
     hasLocalSandbox,
+    localConnections,
     defaultLocalSandboxPreference,
 
     selectedModel,

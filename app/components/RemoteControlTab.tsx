@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -178,9 +178,9 @@ const RemoteControlTab = () => {
     selectedModel,
     setSelectedModel,
     temporaryChatsEnabled,
+    localConnections: connections,
   } = useGlobalState();
 
-  const connections = useQuery(api.localSandbox.listConnections);
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
 
