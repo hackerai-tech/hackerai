@@ -1,10 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ChatSDKError, isNetworkStreamError } from "@/lib/errors";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import {
+  captureAddCreditCtaClick,
+  captureAddCreditCtaImpression,
+  captureUpgradeCtaImpression,
+} from "@/lib/analytics/client";
 
 interface MessageErrorStateProps {
   error: Error;
@@ -38,6 +43,9 @@ export const MessageErrorState = ({
 
   const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
+  const capReason = metadata?.capReason as string | undefined;
+  const upgradeImpressionRef = useRef(false);
+  const addCreditImpressionRef = useRef(false);
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
 
@@ -68,6 +76,35 @@ export const MessageErrorState = ({
     subscription === "pro" ||
     subscription === "pro-plus";
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
+
+  useEffect(() => {
+    if (!isRateLimitError || !canUpgrade || upgradeImpressionRef.current)
+      return;
+
+    upgradeImpressionRef.current = true;
+    captureUpgradeCtaImpression({
+      surface: "message_error_state",
+      source: "rate_limit_error",
+      from_tier: subscription,
+      cap_reason: capReason,
+      cta_text: "Upgrade Plan",
+    });
+  }, [canUpgrade, capReason, isRateLimitError, subscription]);
+
+  useEffect(() => {
+    if (!isRateLimitError || !isPaidUser || addCreditImpressionRef.current) {
+      return;
+    }
+
+    addCreditImpressionRef.current = true;
+    captureAddCreditCtaImpression({
+      surface: "message_error_state",
+      source: "rate_limit_error",
+      from_tier: subscription,
+      cap_reason: capReason,
+      cta_text: "Add Credits",
+    });
+  }, [capReason, isPaidUser, isRateLimitError, subscription]);
 
   return (
     <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
@@ -107,13 +144,34 @@ export const MessageErrorState = ({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => openSettingsDialog("Extra Usage")}
+                onClick={() => {
+                  captureAddCreditCtaClick({
+                    surface: "message_error_state",
+                    source: "rate_limit_error",
+                    from_tier: subscription,
+                    cap_reason: capReason,
+                    cta_text: "Add Credits",
+                  });
+                  openSettingsDialog("Extra Usage");
+                }}
               >
                 Add Credits
               </Button>
             )}
             {canUpgrade && (
-              <Button variant="default" size="sm" onClick={redirectToPricing}>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() =>
+                  redirectToPricing({
+                    surface: "message_error_state",
+                    source: "rate_limit_error",
+                    from_tier: subscription,
+                    reason: capReason,
+                    cta_text: "Upgrade Plan",
+                  })
+                }
+              >
                 Upgrade Plan
               </Button>
             )}

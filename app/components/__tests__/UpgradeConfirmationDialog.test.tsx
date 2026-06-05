@@ -145,17 +145,21 @@ describe("UpgradeConfirmationDialog", () => {
       render(<UpgradeConfirmationDialog {...defaultProps} quantity={5} />);
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith(
-          "/api/subscription-details",
-          expect.objectContaining({
-            method: "POST",
-            body: JSON.stringify({
-              plan: "team-monthly-plan",
-              confirm: false,
-              quantity: 5,
-            }),
-          }),
-        );
+        expect(mockFetch).toHaveBeenCalled();
+      });
+
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/subscription-details");
+      expect(init).toEqual(
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+      expect(JSON.parse(init.body as string)).toEqual({
+        plan: "team-monthly-plan",
+        confirm: false,
+        quantity: 5,
+        checkoutAttemptId: expect.stringMatching(/^ca_/),
       });
     });
 
@@ -192,17 +196,22 @@ describe("UpgradeConfirmationDialog", () => {
       fireEvent.click(confirmButton);
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenLastCalledWith(
-          "/api/subscription-details",
-          expect.objectContaining({
-            method: "POST",
-            body: JSON.stringify({
-              plan: "team-monthly-plan",
-              confirm: true,
-              quantity: 2,
-            }),
-          }),
-        );
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      const [url, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("/api/subscription-details");
+      expect(init).toEqual(
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+      expect(JSON.parse(init.body as string)).toEqual({
+        plan: "team-monthly-plan",
+        confirm: true,
+        quantity: 2,
+        checkoutAttemptId: expect.stringMatching(/^ca_/),
+        fromTier: "pro",
       });
     });
   });

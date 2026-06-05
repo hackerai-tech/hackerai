@@ -5,6 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { X } from "lucide-react";
 import { Loader2 } from "lucide-react";
+import {
+  getPostHogRequestHeaders,
+  newCheckoutAttemptId,
+} from "@/lib/analytics/client";
 
 interface UpgradeConfirmationDialogProps {
   isOpen: boolean;
@@ -13,6 +17,8 @@ interface UpgradeConfirmationDialogProps {
   price: number;
   targetPlan: string;
   quantity?: number;
+  source?: string;
+  surface?: string;
 }
 
 // Safely validate and format unix seconds into a display date
@@ -42,15 +48,29 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   price,
   targetPlan,
   quantity,
+  source,
+  surface,
 }) => {
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string>("");
+  const [checkoutAttemptId, setCheckoutAttemptId] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!isOpen) {
+      setCheckoutAttemptId(null);
+      return;
+    }
+
+    setCheckoutAttemptId(newCheckoutAttemptId());
+  }, [isOpen, targetPlan]);
 
   useEffect(() => {
     const fetchDetails = async () => {
-      if (!isOpen) return;
+      if (!isOpen || !checkoutAttemptId) return;
 
       setLoadingDetails(true);
       setError("");
@@ -60,11 +80,15 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...getPostHogRequestHeaders(),
           },
           body: JSON.stringify({
             plan: targetPlan,
             confirm: false,
             quantity: quantity,
+            checkoutAttemptId,
+            source,
+            surface,
           }),
         });
 
@@ -104,9 +128,19 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     };
 
     fetchDetails();
-  }, [isOpen, targetPlan, price, quantity]);
+  }, [isOpen, targetPlan, price, quantity, checkoutAttemptId, source, surface]);
+
+  const proratedCredit = details?.proratedCredit || 0;
+  const additionalCredit = (details as any)?.additionalCredit || 0;
+  const totalDue = details?.totalDue ?? price;
+  const canConfirm = Boolean(checkoutAttemptId && details);
 
   const handleConfirmPayment = async () => {
+    if (!checkoutAttemptId || !details) {
+      setError("Still preparing checkout details. Please wait a moment.");
+      return;
+    }
+
     setConfirming(true);
     setError("");
     try {
@@ -114,11 +148,16 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...getPostHogRequestHeaders(),
         },
         body: JSON.stringify({
           plan: targetPlan,
           confirm: true,
           quantity: quantity,
+          checkoutAttemptId,
+          source,
+          surface,
+          fromTier: details.currentPlan,
         }),
       });
 
@@ -159,10 +198,6 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
       setConfirming(false);
     }
   };
-
-  const proratedCredit = details?.proratedCredit || 0;
-  const additionalCredit = (details as any)?.additionalCredit || 0;
-  const totalDue = details?.totalDue ?? price;
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -314,7 +349,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
               variant="default"
               size="lg"
               onClick={handleConfirmPayment}
-              disabled={confirming || loadingDetails}
+              disabled={confirming || loadingDetails || !canConfirm}
               className="px-8"
             >
               {confirming ? (

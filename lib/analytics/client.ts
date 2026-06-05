@@ -1,6 +1,11 @@
 "use client";
 
 import posthog from "posthog-js";
+import {
+  PAID_FUNNEL_EVENTS,
+  createCheckoutAttemptId,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
 
@@ -24,6 +29,47 @@ export function captureAuthenticatedEvent(
   } catch {
     return false;
   }
+}
+
+type CtaAnalyticsProperties = ClientAnalyticsProperties & {
+  surface: string;
+  source?: string;
+};
+
+export function captureUpgradeCtaImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function captureUpgradeCtaClick(properties: CtaAnalyticsProperties) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.upgradeCtaClicked,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function captureAddCreditCtaImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.addCreditCtaImpressed,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function captureAddCreditCtaClick(properties: CtaAnalyticsProperties) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.addCreditCtaClicked,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function newCheckoutAttemptId() {
+  return createCheckoutAttemptId();
 }
 
 export function getPostHogRequestHeaders(): HeadersInit {

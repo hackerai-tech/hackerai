@@ -8,8 +8,9 @@ import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { Paperclip } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { redirectToPricing } from "../hooks/usePricingDialog";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 
 interface AttachmentButtonProps {
   onAttachClick: () => void;
@@ -22,6 +23,19 @@ export const AttachmentButton = ({
 }: AttachmentButtonProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const capturedImpressionRef = useRef(false);
+
+  useEffect(() => {
+    if (!popoverOpen || capturedImpressionRef.current) return;
+
+    capturedImpressionRef.current = true;
+    captureUpgradeCtaImpression({
+      surface: "file_attachment_popover",
+      source: "file_attachment_gate",
+      from_tier: subscription,
+      cta_text: "Upgrade now",
+    });
+  }, [popoverOpen, subscription]);
 
   const handleClick = () => {
     if (subscription !== "free") {
@@ -35,7 +49,12 @@ export const AttachmentButton = ({
     // Close the popover first
     setPopoverOpen(false);
     // Navigate to pricing page
-    redirectToPricing();
+    redirectToPricing({
+      surface: "file_attachment_popover",
+      source: "file_attachment_gate",
+      from_tier: subscription,
+      cta_text: "Upgrade now",
+    });
   };
 
   // If user has pro plan or we're checking, show normal tooltip behavior

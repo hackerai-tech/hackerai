@@ -12,18 +12,17 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
+import {
+  PAID_FUNNEL_EVENTS,
+  createCheckoutAttemptId,
+  normalizePaidFunnelLabel,
+  normalizeCheckoutAttemptId,
+  paidFunnelTierFromUnknown,
+  paidFunnelProperties,
+  planLookupKeyToTier,
+} from "@/lib/analytics/paid-funnel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
-function planLookupKeyToTier(
-  lookupKey: string,
-): "pro" | "pro-plus" | "ultra" | "team" | null {
-  if (lookupKey.startsWith("ultra")) return "ultra";
-  if (lookupKey.startsWith("pro-plus")) return "pro-plus";
-  if (lookupKey.startsWith("team")) return "team";
-  if (lookupKey.startsWith("pro")) return "pro";
-  return null;
-}
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -44,7 +43,12 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
     const requestedQuantity: number | undefined = body?.quantity;
-    const posthogDistinctId = req.headers.get("x-posthog-distinct-id");
+    const checkoutAttemptId =
+      normalizeCheckoutAttemptId(body?.checkoutAttemptId) ??
+      createCheckoutAttemptId();
+    const checkoutSource = normalizePaidFunnelLabel(body?.source);
+    const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
+    const fromTier = paidFunnelTierFromUnknown(body?.fromTier);
     const posthogSessionId = req.headers.get("x-posthog-session-id");
     // Get user ID from authenticated session
     const userId = await getUserID(req);
@@ -294,12 +298,20 @@ export const POST = async (req: NextRequest) => {
         userId,
         workOSOrganizationId: organization.id,
         requestedPlan: subscriptionLevel,
+        checkoutAttemptId,
+        ...(checkoutSource && { checkoutSource }),
+        ...(checkoutSurface && { checkoutSurface }),
+        checkoutType: "new_subscription",
       },
       subscription_data: {
         metadata: {
           userId,
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
+          checkoutAttemptId,
+          ...(checkoutSource && { checkoutSource }),
+          ...(checkoutSurface && { checkoutSurface }),
+          checkoutType: "new_subscription",
         },
       },
       custom_text: {
@@ -328,6 +340,7 @@ export const POST = async (req: NextRequest) => {
             userId,
             referrer_user_id: referralSession.referrerUserId,
             referral_code: referralSession.referralCode,
+            checkout_attempt_id: checkoutAttemptId,
             stripe_customer_id: customer.id,
             stripe_checkout_session_id: session.id,
             requested_plan: subscriptionLevel,
@@ -345,32 +358,39 @@ export const POST = async (req: NextRequest) => {
     }
 
     const selectedPrice = price.data[0];
-    phLogger.event("checkout_started", {
-      userId,
-      org_id: organization.id,
-      from_tier: "free",
-      to_tier: planLookupKeyToTier(subscriptionLevel),
-      plan: subscriptionLevel,
-      billing_interval: selectedPrice.recurring?.interval,
-      billing_interval_count: selectedPrice.recurring?.interval_count,
-      quantity,
-      checkout_amount_dollars:
-        selectedPrice.unit_amount != null
-          ? (selectedPrice.unit_amount * quantity) / 100
-          : undefined,
-      currency: selectedPrice.currency,
-      stripe_customer_id: customer.id,
-      stripe_checkout_session_id: session.id,
-      stripe_price_id: selectedPrice.id,
-      client_distinct_id: posthogDistinctId ?? undefined,
-      $session_id: posthogSessionId ?? undefined,
-      $set: {
-        last_checkout_started_at: new Date().toISOString(),
-      },
-    });
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.checkoutStarted,
+      paidFunnelProperties({
+        userId,
+        org_id: organization.id,
+        checkout_attempt_id: checkoutAttemptId,
+        checkout_type: "new_subscription",
+        from_tier: fromTier,
+        to_tier: planLookupKeyToTier(subscriptionLevel),
+        plan: subscriptionLevel,
+        billing_interval: selectedPrice.recurring?.interval,
+        billing_interval_count: selectedPrice.recurring?.interval_count,
+        quantity,
+        surface: checkoutSurface,
+        source: checkoutSource,
+        checkout_amount_dollars:
+          selectedPrice.unit_amount != null
+            ? (selectedPrice.unit_amount * quantity) / 100
+            : undefined,
+        currency: selectedPrice.currency,
+        stripe_customer_id: customer.id,
+        stripe_checkout_session_id: session.id,
+        stripe_price_id: selectedPrice.id,
+        $session_id: posthogSessionId ?? undefined,
+        $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
+        $set: {
+          last_checkout_started_at: new Date().toISOString(),
+        },
+      }),
+    );
     after(() => phLogger.flush());
 
-    return NextResponse.json({ url: session.url });
+    return NextResponse.json({ url: session.url, checkoutAttemptId });
   } catch (error: unknown) {
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";

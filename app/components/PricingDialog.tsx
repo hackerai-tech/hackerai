@@ -21,6 +21,7 @@ import {
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -206,6 +207,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const [isYearly, setIsYearly] = React.useState(false);
   const [selectedPremiumPlan, setSelectedPremiumPlan] =
     React.useState<PremiumPlan>("pro-plus");
+  const capturedPricingCtaImpressionRef = React.useRef(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
     plan: string;
@@ -228,6 +230,22 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen, subscription]);
 
+  React.useEffect(() => {
+    if (!isOpen) {
+      capturedPricingCtaImpressionRef.current = false;
+      return;
+    }
+
+    if (capturedPricingCtaImpressionRef.current) return;
+    capturedPricingCtaImpressionRef.current = true;
+    captureUpgradeCtaImpression({
+      surface: "pricing_dialog",
+      source: "plan_cards",
+      from_tier: subscription,
+      cta_text: "plan_card_buttons",
+    });
+  }, [isOpen, subscription]);
+
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
   };
@@ -246,7 +264,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     // If user is free, upgrade directly using checkout
     if (subscription === "free") {
       try {
-        await handleUpgrade(plan, undefined, undefined, subscription);
+        await handleUpgrade(plan, undefined, undefined, subscription, {
+          source: "plan_card",
+          surface: "pricing_dialog",
+        });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
         console.error("Upgrade failed:", error);
@@ -473,6 +494,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         planName={pendingUpgrade?.planName || ""}
         price={pendingUpgrade?.price || 0}
         targetPlan={pendingUpgrade?.plan || ""}
+        source="plan_card"
+        surface="pricing_dialog"
       />
 
       <Dialog open={isOpen} onOpenChange={onClose}>

@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { SubscriptionTier } from "@/types";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureUpgradeCtaClick,
+} from "@/lib/analytics/client";
+
+type PricingRedirectAnalytics = {
+  surface?: string;
+  source?: string;
+  from_tier?: SubscriptionTier;
+  reason?: string;
+  limit_type?: string;
+  cta_text?: string;
+};
 
 export const usePricingDialog = (subscription?: SubscriptionTier) => {
   const [showPricing, setShowPricing] = useState(false);
@@ -81,6 +93,14 @@ export const usePricingDialog = (subscription?: SubscriptionTier) => {
 // Utility function to redirect to pricing (can be used without the hook)
 // Note: This doesn't check subscription tier, so use sparingly
 // Consider using openPricing from the hook instead when possible
-export const redirectToPricing = () => {
+export const redirectToPricing = (analytics: PricingRedirectAnalytics = {}) => {
+  captureUpgradeCtaClick({
+    surface: analytics.surface ?? "unknown",
+    source: analytics.source ?? "redirect_to_pricing",
+    ...(analytics.from_tier && { from_tier: analytics.from_tier }),
+    ...(analytics.reason && { reason: analytics.reason }),
+    ...(analytics.limit_type && { limit_type: analytics.limit_type }),
+    ...(analytics.cta_text && { cta_text: analytics.cta_text }),
+  });
   window.location.hash = "pricing";
 };

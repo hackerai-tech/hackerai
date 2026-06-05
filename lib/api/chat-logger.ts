@@ -22,6 +22,10 @@ import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
@@ -448,6 +452,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
         metadata: compactChatErrorMetadata(error.metadata),
       });
       logger.info(builder.build());
+
+      if (error.type === "rate_limit" && subscription) {
+        const capReason =
+          (error.metadata?.capReason as string | undefined) ?? "unknown";
+        const resetTimestamp = error.metadata?.resetTimestamp as
+          | number
+          | undefined;
+        const limitType = capReason.includes("daily")
+          ? "daily_requests"
+          : "monthly";
+
+        phLogger.event(
+          PAID_FUNNEL_EVENTS.limitHit,
+          paidFunnelProperties({
+            userId,
+            subscription_tier: subscription,
+            mode,
+            limit_type: limitType,
+            cap_reason: capReason,
+            monthly_remaining_percent: monthlyRemainingPercent,
+            reset_timestamp: resetTimestamp,
+            $set: {
+              subscription_tier: subscription,
+              last_limit_hit_at: new Date().toISOString(),
+            },
+          }),
+        );
+      }
 
       // Fire a discrete PostHog event when a paid user is blocked at the
       // monthly cap. Used to size the cap-hit cohort and correlate against

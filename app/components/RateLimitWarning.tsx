@@ -1,8 +1,14 @@
 import { X } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import {
+  captureAddCreditCtaClick,
+  captureAddCreditCtaImpression,
+  captureUpgradeCtaImpression,
+} from "@/lib/analytics/client";
 
 // Discriminated union for warning data
 export type RateLimitWarningData =
@@ -106,6 +112,8 @@ export const RateLimitWarning = ({
   data,
   onDismiss,
 }: RateLimitWarningProps) => {
+  const capturedUpgradeImpressionRef = useRef(false);
+  const capturedAddCreditImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
   const showUpgrade =
@@ -115,6 +123,42 @@ export const RateLimitWarning = ({
       data.subscription === "pro-plus");
   const showAddCredits =
     data.warningType === "token-bucket" && data.subscription !== "free";
+  const limitType =
+    data.warningType === "sliding-window"
+      ? "daily_requests"
+      : data.warningType === "token-bucket"
+        ? data.bucketType
+        : "extra_usage_active";
+  const limitSeverity =
+    data.warningType === "token-bucket" && data.remainingPercent === 0
+      ? "hit"
+      : "warning";
+
+  useEffect(() => {
+    if (!showUpgrade || capturedUpgradeImpressionRef.current) return;
+    capturedUpgradeImpressionRef.current = true;
+    captureUpgradeCtaImpression({
+      surface: "rate_limit_warning",
+      source: "limit_pressure",
+      from_tier: data.subscription,
+      limit_type: limitType,
+      limit_severity: limitSeverity,
+      cta_text: "Upgrade plan",
+    });
+  }, [data.subscription, limitSeverity, limitType, showUpgrade]);
+
+  useEffect(() => {
+    if (!showAddCredits || capturedAddCreditImpressionRef.current) return;
+    capturedAddCreditImpressionRef.current = true;
+    captureAddCreditCtaImpression({
+      surface: "rate_limit_warning",
+      source: "limit_pressure",
+      from_tier: data.subscription,
+      limit_type: limitType,
+      limit_severity: limitSeverity,
+      cta_text: "Add credits",
+    });
+  }, [data.subscription, limitSeverity, limitType, showAddCredits]);
 
   return (
     <div
@@ -125,7 +169,17 @@ export const RateLimitWarning = ({
         <span className="text-foreground text-sm">{message}</span>
         {showAddCredits && (
           <Button
-            onClick={() => openSettingsDialog("Extra Usage")}
+            onClick={() => {
+              captureAddCreditCtaClick({
+                surface: "rate_limit_warning",
+                source: "limit_pressure",
+                from_tier: data.subscription,
+                limit_type: limitType,
+                limit_severity: limitSeverity,
+                cta_text: "Add credits",
+              });
+              openSettingsDialog("Extra Usage");
+            }}
             size="sm"
             variant="outline"
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
@@ -135,7 +189,15 @@ export const RateLimitWarning = ({
         )}
         {showUpgrade && (
           <Button
-            onClick={redirectToPricing}
+            onClick={() =>
+              redirectToPricing({
+                surface: "rate_limit_warning",
+                source: "limit_pressure",
+                from_tier: data.subscription,
+                limit_type: limitType,
+                cta_text: "Upgrade plan",
+              })
+            }
             size="sm"
             variant="outline"
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"

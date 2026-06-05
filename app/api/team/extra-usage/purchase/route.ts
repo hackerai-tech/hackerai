@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../../team-auth";
+import { normalizeCheckoutAttemptId } from "@/lib/analytics/paid-funnel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -23,6 +24,9 @@ export const POST = async (req: NextRequest) => {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
     const amountDollars = (body as { amountDollars?: unknown })?.amountDollars;
+    const checkoutAttemptId = normalizeCheckoutAttemptId(
+      (body as { checkoutAttemptId?: unknown })?.checkoutAttemptId,
+    );
 
     if (
       typeof amountDollars !== "number" ||
@@ -44,6 +48,7 @@ export const POST = async (req: NextRequest) => {
         organizationId: guard.organizationId,
         amountDollars,
         baseUrl,
+        checkoutAttemptId,
       },
     );
 
@@ -54,7 +59,10 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
-    return NextResponse.json({ url: result.url });
+    return NextResponse.json({
+      url: result.url,
+      checkoutSessionId: result.checkoutSessionId,
+    });
   } catch (error: unknown) {
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";

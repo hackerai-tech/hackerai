@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +11,7 @@ import {
 import { Download, Laptop, Cloud } from "lucide-react";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 
 export interface AgentUpgradeDialogProps {
   open: boolean;
@@ -20,6 +22,20 @@ export function AgentUpgradeDialog({
   open,
   onOpenChange,
 }: AgentUpgradeDialogProps) {
+  const capturedImpressionRef = useRef(false);
+
+  useEffect(() => {
+    if (!open || capturedImpressionRef.current) return;
+
+    capturedImpressionRef.current = true;
+    captureUpgradeCtaImpression({
+      surface: "agent_upgrade_dialog",
+      source: "agent_mode_gate",
+      from_tier: "free",
+      cta_text: "Upgrade",
+    });
+  }, [open]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -89,7 +105,12 @@ export function AgentUpgradeDialog({
           <button
             onClick={() => {
               onOpenChange(false);
-              redirectToPricing();
+              redirectToPricing({
+                surface: "agent_upgrade_dialog",
+                source: "agent_mode_gate",
+                from_tier: "free",
+                cta_text: "Upgrade",
+              });
             }}
             className="w-full flex items-center gap-3 p-3 rounded-lg border text-left hover:bg-muted/50 transition-colors"
             data-testid="agent-upgrade-button"

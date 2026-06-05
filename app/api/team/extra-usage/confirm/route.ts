@@ -1,7 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -66,6 +71,27 @@ export async function GET(req: NextRequest) {
           ? session.payment_intent
           : session.payment_intent?.id,
     });
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+      paidFunnelProperties({
+        org_id: organizationId,
+        checkout_attempt_id: session.metadata.checkoutAttemptId,
+        checkout_type: "team_extra_usage_purchase",
+        amount_dollars: amountDollars,
+        stripe_customer_id:
+          typeof session.customer === "string"
+            ? session.customer
+            : session.customer?.id,
+        stripe_checkout_session_id: session.id,
+        stripe_payment_intent_id:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id,
+        payment_status: session.payment_status,
+        $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+      }),
+    );
+    after(() => phLogger.flush());
 
     return NextResponse.redirect(redirectUrl, { status: 303 });
   } catch (err) {

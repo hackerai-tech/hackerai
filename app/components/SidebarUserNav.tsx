@@ -166,7 +166,12 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
   }
 
   const handleUpgrade = () => {
-    redirectToPricing();
+    redirectToPricing({
+      surface: "sidebar_upgrade_banner",
+      source: "sidebar",
+      from_tier: subscription,
+      cta_text: "Upgrade now",
+    });
   };
 
   return (
@@ -374,7 +379,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   variant="secondary"
                   size="sm"
                   className="w-full h-8 px-2 bg-premium-bg text-premium-text hover:bg-premium-hover border-0"
-                  onClick={redirectToPricing}
+                  onClick={() =>
+                    redirectToPricing({
+                      surface: "sidebar_collapsed_upgrade_button",
+                      source: "sidebar",
+                      from_tier: subscription,
+                      cta_text: "Upgrade Plan",
+                    })
+                  }
                 >
                   <Sparkle className="h-4 w-4 fill-current" />
                 </Button>
@@ -474,7 +486,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {(subscription === "pro" || subscription === "pro-plus") && (
             <DropdownMenuItem
               data-testid="upgrade-menu-item"
-              onClick={redirectToPricing}
+              onClick={() =>
+                redirectToPricing({
+                  surface: "sidebar_user_menu",
+                  source: "account_menu",
+                  from_tier: subscription,
+                  cta_text: "Upgrade Plan",
+                })
+              }
               className="py-1.5"
             >
               <Sparkle className="mr-2 h-4 w-4 text-foreground" />

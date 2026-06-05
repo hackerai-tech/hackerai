@@ -216,6 +216,11 @@ export const checkFreeUserRateLimit = async (
       throw new ChatSDKError(
         "rate_limit:chat",
         `You've used all your daily requests. Daily requests reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,
+        {
+          resetTimestamp: reset,
+          subscription: "free",
+          capReason: "daily_requests_exhausted",
+        },
       );
     }
 
