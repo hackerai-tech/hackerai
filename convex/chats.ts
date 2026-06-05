@@ -505,25 +505,30 @@ export const getUserChats = query({
     try {
       const MAX_PINNED_CHATS = 100;
 
-      // Step 1: Fetch pinned chats only, ordered by pinned_at asc (first pinned = first in list)
-      const pinnedChats = await ctx.db
-        .query("chats")
-        .withIndex("by_user_and_pinned", (q) =>
-          q.eq("user_id", identity.subject).gt("pinned_at", 0),
-        )
-        .order("asc")
-        .take(MAX_PINNED_CHATS);
+      const isFirstPage =
+        args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
 
-      if (pinnedChats.length === MAX_PINNED_CHATS) {
+      // Step 1: Fetch pinned chats only for the first page. Later pages can
+      // filter pinned rows directly from their own page payload, which avoids
+      // rereading every pinned chat on each pagination request.
+      const pinnedChats = isFirstPage
+        ? await ctx.db
+            .query("chats")
+            .withIndex("by_user_and_pinned", (q) =>
+              q.eq("user_id", identity.subject).gt("pinned_at", 0),
+            )
+            .order("asc")
+            .take(MAX_PINNED_CHATS)
+        : [];
+
+      if (isFirstPage && pinnedChats.length === MAX_PINNED_CHATS) {
         convexLogger.warn("chat_sidebar_pinned_cap_reached", {
           user_id: identity.subject,
           pinned_cap: MAX_PINNED_CHATS,
           requested_page_size: args.paginationOpts.numItems,
-          has_cursor: Boolean(args.paginationOpts.cursor),
+          has_cursor: false,
         });
       }
-
-      const pinnedIds = new Set(pinnedChats.map((c) => c.id));
 
       // Step 2: Fetch one page (no over-fetch: slicing would lose items permanently
       // because the cursor advances past all fetched items)
@@ -535,9 +540,7 @@ export const getUserChats = query({
         .order("desc")
         .paginate(args.paginationOpts);
 
-      const unpinnedPage = result.page.filter((c) => !pinnedIds.has(c.id));
-      const isFirstPage =
-        args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
+      const unpinnedPage = result.page.filter((c) => c.pinned_at == null);
       const combinedPage = isFirstPage
         ? [...pinnedChats, ...unpinnedPage]
         : unpinnedPage;
