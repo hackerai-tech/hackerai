@@ -105,6 +105,12 @@ unitEconomics.rebuildEntityDailyRollups({
 
 Run the same mutation with `entityType: "organization"` for team reporting.
 
+By default, reporting backfills and PostHog export queries start at
+`2026-05-31`, because revenue tracking was introduced from that date and older
+AI costs would otherwise be compared against missing revenue. Use
+`includeHistorical: true` only for one-off audits that intentionally inspect
+pre-reporting-window rows.
+
 The mutation rebuilds only one user or one organization at a time and returns
 `truncated: true` if the row cap was hit. Re-run with a narrower time range when
 that happens.
