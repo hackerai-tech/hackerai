@@ -35,7 +35,6 @@ const mockSetSelectedModel = jest.fn(
 );
 
 jest.mock("convex/react", () => ({
-  useQuery: jest.fn(() => mockConnections),
   useMutation: jest.fn(() => jest.fn()),
 }));
 
@@ -49,6 +48,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     selectedModel: mockSelectedModel,
     setSelectedModel: mockSetSelectedModel,
     temporaryChatsEnabled: mockTemporaryChatsEnabled,
+    localConnections: mockConnections,
   }),
 }));
 
