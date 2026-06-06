@@ -267,7 +267,7 @@ export async function createAgentStream(
     maxOutputTokens,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
     messages: prepareProviderMessages(
-      await convertToModelMessages(state.finalMessages),
+      await convertToModelMessages(state.finalMessages, { tools: ctx.tools }),
     ),
     tools: ctx.tools,
     activeTools: initialActiveTools,
@@ -329,7 +329,9 @@ export async function createAgentStream(
               activeTools: await getActiveTools(),
               providerOptions: getStepProviderOptions(),
               messages: prepareProviderMessages(
-                await convertToModelMessages(result.summarizedMessages),
+                await convertToModelMessages(result.summarizedMessages, {
+                  tools: ctx.tools,
+                }),
               ),
             };
           }

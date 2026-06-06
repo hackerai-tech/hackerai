@@ -649,6 +649,24 @@ interface ToolResultPart {
   providerOptions?: unknown;
 }
 
+const isModelToolOutput = (
+  output: unknown,
+): output is { type: string; value?: unknown } =>
+  typeof output === "object" &&
+  output !== null &&
+  !Array.isArray(output) &&
+  typeof (output as { type?: unknown }).type === "string";
+
+const unwrapModelToolOutput = (output: unknown): unknown =>
+  isModelToolOutput(output) && Object.hasOwn(output, "value")
+    ? output.value
+    : output;
+
+const toTextModelToolOutput = (value: string) => ({
+  type: "text" as const,
+  value,
+});
+
 export interface ModelPruneResult {
   messages: Array<Record<string, unknown>>;
   prunedCount: number;
@@ -669,10 +687,10 @@ export interface ModelPruneResult {
  * during the agentic loop (up to 100 tool calls per streamText invocation).
  *
  * ModelMessage format:
- *   assistant: { role: "assistant", content: [{ type: "tool-call", toolCallId, toolName, args }] }
+ *   assistant: { role: "assistant", content: [{ type: "tool-call", toolCallId, toolName, input }] }
  *   tool:      { role: "tool", content: [{ type: "tool-result", toolCallId, toolName, output }] }
  *
- * To build rich placeholders, we first index tool-call args by toolCallId
+ * To build rich placeholders, we first index tool-call input by toolCallId
  * from assistant messages, then correlate with tool-result outputs.
  */
 export function pruneModelMessages(
@@ -689,7 +707,7 @@ export function pruneModelMessages(
     for (const part of content) {
       const p = part as Record<string, unknown>;
       if (p.type === "tool-call" && typeof p.toolCallId === "string") {
-        argsById.set(p.toolCallId, p.args);
+        argsById.set(p.toolCallId, p.input ?? p.args);
       }
     }
   }
@@ -720,17 +738,19 @@ export function pruneModelMessages(
       )
         continue;
 
+      const modelOutputValue = unwrapModelToolOutput(part.output);
+
       // Skip compact placeholders, but allow natural string outputs to prune.
-      if (isCompactPlaceholderOutput(part.output)) continue;
+      if (isCompactPlaceholderOutput(modelOutputValue)) continue;
       if (part.output == null) continue;
 
-      const tokens = countOutputTokens(part.output);
+      const tokens = countOutputTokens(modelOutputValue);
       toolEntries.push({
         msgIdx: mi,
         partIdx: pi,
         toolName: part.toolName,
         toolCallId: part.toolCallId,
-        output: part.output,
+        output: modelOutputValue,
         tokens,
       });
     }
@@ -798,10 +818,10 @@ export function pruneModelMessages(
       const placeholder = buildPlaceholderFromParts(
         resultPart.toolName,
         args,
-        resultPart.output,
+        unwrapModelToolOutput(resultPart.output),
       );
 
-      return { ...resultPart, output: placeholder };
+      return { ...resultPart, output: toTextModelToolOutput(placeholder) };
     });
 
     return { ...msg, content: newContent };
