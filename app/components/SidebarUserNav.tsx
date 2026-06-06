@@ -352,8 +352,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
         onOpenChange={setReferralDialogOpen}
       />
 
-      {/* Referral card for paid users */}
-      {isPaidUser && !isCheckingProPlan && (
+      {/* Referral card */}
+      {!isCheckingProPlan && (
         <ReferralSidebarCard
           isCollapsed={isCollapsed}
           onOpen={() => setReferralDialogOpen(true)}
@@ -482,17 +482,17 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuItem>
           )}
 
+          <DropdownMenuItem
+            data-testid="referral-menu-item"
+            onSelect={() => setReferralDialogOpen(true)}
+            className="py-1.5"
+          >
+            <Gift className="mr-2 h-4 w-4 text-foreground" />
+            <span>Refer a friend</span>
+          </DropdownMenuItem>
+
           {isPaidUser && (
             <div>
-              <DropdownMenuItem
-                data-testid="referral-menu-item"
-                onSelect={() => setReferralDialogOpen(true)}
-                className="py-1.5"
-              >
-                <Gift className="mr-2 h-4 w-4 text-foreground" />
-                <span>Refer a friend</span>
-              </DropdownMenuItem>
-
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();

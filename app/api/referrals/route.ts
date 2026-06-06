@@ -30,12 +30,6 @@ export async function GET(req: NextRequest) {
   }
 
   const { userId, subscription, organizationId } = await getUserIDAndPro(req);
-  if (subscription === "free") {
-    return NextResponse.json(
-      { error: "Paid subscription required" },
-      { status: 403 },
-    );
-  }
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
   if (!baseUrl) {
@@ -48,6 +42,7 @@ export async function GET(req: NextRequest) {
   let result: {
     code: string;
     active: boolean;
+    referrerSubscriptionTier: string;
     attributedSignups: number;
     paidConversions: number;
     awardedDollars: number;
@@ -93,6 +88,7 @@ export async function GET(req: NextRequest) {
     code: result.code,
     active: result.active,
     referralUrl: referralUrl.toString(),
+    referrerSubscriptionTier: result.referrerSubscriptionTier,
     referrerRewardDollars: config.referrerRewardDollars,
     referredSignupBonusUnits: config.referredSignupBonusUnits,
     stats: {

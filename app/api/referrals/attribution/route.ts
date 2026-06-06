@@ -64,6 +64,9 @@ export async function POST(req: NextRequest) {
     maxUserAgeDays: config.attributionMaxUserAgeDays,
     source: "referral_cookie",
   });
+  const referrerSubscriptionTier = (
+    result as { referrerSubscriptionTier?: string }
+  ).referrerSubscriptionTier;
 
   let starterBonusUnitsAwarded = false;
   let starterBonusUnits = 0;
@@ -102,6 +105,7 @@ export async function POST(req: NextRequest) {
         phLogger.warn("referral_signup_bonus_grant_failed", {
           userId,
           referrer_user_id: result.referrerUserId,
+          referrer_subscription_tier: referrerSubscriptionTier,
           referral_code: referralCode,
           starter_bonus_units: result.starterBonusUnits,
         });
@@ -110,6 +114,7 @@ export async function POST(req: NextRequest) {
       phLogger.warn("referral_signup_bonus_grant_failed", {
         userId,
         referrer_user_id: result.referrerUserId,
+        referrer_subscription_tier: referrerSubscriptionTier,
         referral_code: referralCode,
         starter_bonus_units: result.starterBonusUnits,
         error: error instanceof Error ? error.message : String(error),
@@ -121,6 +126,7 @@ export async function POST(req: NextRequest) {
     phLogger.event("referred_signup_attributed", {
       userId,
       referrer_user_id: result.referrerUserId,
+      referrer_subscription_tier: referrerSubscriptionTier,
       referral_code: referralCode,
       starter_bonus_awarded: starterBonusUnitsAwarded,
       starter_bonus_units: starterBonusUnits,
@@ -129,6 +135,7 @@ export async function POST(req: NextRequest) {
     phLogger.event("referral_reward_withheld", {
       userId,
       referrer_user_id: result.referrerUserId,
+      referrer_subscription_tier: referrerSubscriptionTier,
       referral_code: referralCode,
       reason: result.reason,
       reward_type: "referred_signup",

@@ -210,6 +210,7 @@ export default defineSchema({
     status: v.union(v.literal("active"), v.literal("deactivated")),
     referrer_subscription_tier: v.optional(
       v.union(
+        v.literal("free"),
         v.literal("pro"),
         v.literal("pro-plus"),
         v.literal("ultra"),
@@ -231,6 +232,7 @@ export default defineSchema({
     referral_code: v.string(),
     referrer_subscription_tier: v.optional(
       v.union(
+        v.literal("free"),
         v.literal("pro"),
         v.literal("pro-plus"),
         v.literal("ultra"),
