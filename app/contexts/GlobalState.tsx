@@ -204,6 +204,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
+  const [subscription, setSubscription] = useState<SubscriptionTier>("free");
+  const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
+    setSubscription(tier);
+  }, []);
+  const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
 
   // Persist chat mode preference to localStorage on change
   useEffect(() => {
@@ -284,14 +289,18 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       (notification) => notification.rewardId,
     );
 
-    toast.success("Referral reward added", {
-      description: `You earned ${amountLabel} in extra usage credits.`,
-    });
+    const description =
+      subscription === "free"
+        ? `You earned ${amountLabel} in usage credits. They apply after you upgrade.`
+        : `You earned ${amountLabel} in extra usage credits.`;
+
+    toast.success("Referral reward added", { description });
     void markReferralRewardNotificationsSeen({ rewardIds }).catch(() => {
       // The toast is non-critical; the next app load can retry marking it seen.
     });
   }, [
     markReferralRewardNotificationsSeen,
+    subscription,
     unreadReferralRewardNotifications,
     user,
   ]);
@@ -313,11 +322,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
-  const [subscription, setSubscription] = useState<SubscriptionTier>("free");
-  const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
-    setSubscription(tier);
-  }, []);
-  const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
   const desktopEntitlementRefreshUserRef = useRef<string | null>(null);
 

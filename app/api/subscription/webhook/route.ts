@@ -208,12 +208,16 @@ async function awardReferralConversion(args: {
       plan: args.plan,
       tier: args.tier,
     });
+    const referrerSubscriptionTier = (
+      result as { referrerSubscriptionTier?: string }
+    ).referrerSubscriptionTier;
 
     if (result.status === "awarded" || result.status === "already_awarded") {
       if (result.referredUserId ?? referredUserId) {
         phLogger.event("referred_user_paid_conversion", {
           userId: result.referredUserId ?? referredUserId,
           referrer_user_id: result.referrerUserId,
+          referrer_subscription_tier: referrerSubscriptionTier,
           referral_code: result.referralCode,
           reward_status: result.status,
           plan: args.plan,
@@ -230,6 +234,7 @@ async function awardReferralConversion(args: {
         phLogger.event("referrer_credits_awarded", {
           userId: result.referrerUserId,
           referred_user_id: result.referredUserId ?? referredUserId,
+          referrer_subscription_tier: referrerSubscriptionTier,
           referral_code: result.referralCode,
           reward_dollars: config.referrerRewardDollars,
           plan: args.plan,
@@ -245,6 +250,7 @@ async function awardReferralConversion(args: {
       phLogger.event("referral_reward_withheld", {
         userId: result.referredUserId ?? referredUserId,
         referrer_user_id: result.referrerUserId,
+        referrer_subscription_tier: referrerSubscriptionTier,
         referral_code: result.referralCode,
         reward_type: "referrer_conversion",
         reason: result.reason,
@@ -282,7 +288,7 @@ async function setReferralCodesPaidEligibility(args: {
   }
 
   const subscriptionTier =
-    args.active && args.tier && args.tier !== "free" ? args.tier : undefined;
+    args.tier && args.tier !== "free" ? args.tier : "free";
 
   try {
     await convex.mutation(api.referrals.setReferralCodesPaidEligibility, {

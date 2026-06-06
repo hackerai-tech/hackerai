@@ -79,9 +79,14 @@ export const POST = async (req: NextRequest) => {
         );
 
         if (attribution.status === "attributed") {
+          const referrerSubscriptionTier = (
+            attribution as { referrerSubscriptionTier?: string }
+          ).referrerSubscriptionTier;
+
           phLogger.event("referred_signup_attributed", {
             userId,
             referrer_user_id: attribution.referrerUserId,
+            referrer_subscription_tier: referrerSubscriptionTier,
             referral_code: referralCode,
             starter_bonus_awarded: attribution.starterBonusAwarded,
             starter_bonus_units: 0,
@@ -336,9 +341,14 @@ export const POST = async (req: NextRequest) => {
         );
 
         if (referralSession?.recorded) {
+          const referrerSubscriptionTier = (
+            referralSession as { referrerSubscriptionTier?: string }
+          ).referrerSubscriptionTier;
+
           phLogger.event("referral_stripe_checkout_session_created", {
             userId,
             referrer_user_id: referralSession.referrerUserId,
+            referrer_subscription_tier: referrerSubscriptionTier,
             referral_code: referralSession.referralCode,
             checkout_attempt_id: checkoutAttemptId,
             stripe_customer_id: customer.id,

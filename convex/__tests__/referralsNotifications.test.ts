@@ -266,4 +266,123 @@ describe("referral reward notifications", () => {
     expect(tables.user_customization[0].extra_usage_enabled).toBe(false);
     expect(queryCalls).not.toContain("user_customization");
   });
+
+  it("awards personal credits to free referrers after referred users convert", async () => {
+    const { awardConversionReward } = await import("../referrals");
+    const { ctx, tables } = makeMockCtx({
+      referral_attributions: [
+        {
+          _id: "attribution_1",
+          referred_user_id: REFERRED_USER_ID,
+          referrer_user_id: USER_ID,
+          referral_code: "FREE123",
+          referrer_subscription_tier: "free",
+          status: "attributed",
+          sign_up_reward_status: "awarded",
+          conversion_reward_status: "pending",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      referral_codes: [
+        {
+          _id: "code_1",
+          user_id: USER_ID,
+          code: "FREE123",
+          status: "active",
+          referrer_subscription_tier: "free",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    const result = await awardConversionReward.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      referrerRewardDollars: 10,
+      referredUserId: REFERRED_USER_ID,
+      stripeCustomerId: "cus_123",
+      stripeSubscriptionId: "sub_123",
+      stripeInvoiceId: "in_123",
+      plan: "pro-monthly-plan",
+      tier: "pro",
+    });
+
+    expect(result.status).toBe("awarded");
+    expect(tables.extra_usage).toMatchObject([
+      {
+        user_id: USER_ID,
+        balance_points: 100_000,
+        auto_reload_enabled: false,
+      },
+    ]);
+    expect(tables.user_customization).toMatchObject([
+      {
+        user_id: USER_ID,
+        extra_usage_enabled: true,
+      },
+    ]);
+    expect(tables.team_extra_usage).toEqual([]);
+  });
+
+  it("activates earned personal credits when an originally free referrer upgrades before conversion", async () => {
+    const { awardConversionReward } = await import("../referrals");
+    const { ctx, tables } = makeMockCtx({
+      referral_attributions: [
+        {
+          _id: "attribution_1",
+          referred_user_id: REFERRED_USER_ID,
+          referrer_user_id: USER_ID,
+          referral_code: "UPGRADE",
+          referrer_subscription_tier: "free",
+          status: "attributed",
+          sign_up_reward_status: "awarded",
+          conversion_reward_status: "pending",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      referral_codes: [
+        {
+          _id: "code_1",
+          user_id: USER_ID,
+          code: "UPGRADE",
+          status: "active",
+          referrer_subscription_tier: "pro",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      user_customization: [
+        {
+          _id: "customization_1",
+          user_id: USER_ID,
+          extra_usage_enabled: false,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    const result = await awardConversionReward.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      referrerRewardDollars: 10,
+      referredUserId: REFERRED_USER_ID,
+      stripeCustomerId: "cus_123",
+      stripeSubscriptionId: "sub_123",
+      stripeInvoiceId: "in_123",
+      plan: "pro-monthly-plan",
+      tier: "pro",
+    });
+
+    expect(result.status).toBe("awarded");
+    expect(result.referrerSubscriptionTier).toBe("pro");
+    expect(tables.extra_usage).toMatchObject([
+      {
+        user_id: USER_ID,
+        balance_points: 100_000,
+        auto_reload_enabled: false,
+      },
+    ]);
+    expect(tables.user_customization[0].extra_usage_enabled).toBe(true);
+  });
 });

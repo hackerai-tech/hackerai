@@ -28,6 +28,7 @@ type ReferralProgram = {
   code: string;
   active: boolean;
   referralUrl: string;
+  referrerSubscriptionTier: string;
   referrerRewardDollars: number;
   referredSignupBonusUnits: number;
   stats: {
@@ -76,6 +77,7 @@ export function ReferralRewardDialog({
         setProgram(body);
         captureAuthenticatedEvent("referral_modal_opened", {
           referral_code: body.code,
+          referrer_subscription_tier: body.referrerSubscriptionTier,
           referrer_reward_dollars: body.referrerRewardDollars,
           referred_signup_bonus_units: body.referredSignupBonusUnits,
         });
@@ -104,6 +106,7 @@ export function ReferralRewardDialog({
       toast.success("Referral link copied");
       captureAuthenticatedEvent("referral_link_copied", {
         referral_code: program.code,
+        referrer_subscription_tier: program.referrerSubscriptionTier,
       });
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
@@ -112,6 +115,20 @@ export function ReferralRewardDialog({
   };
 
   const referrerReward = program?.referrerRewardDollars ?? 0;
+  const isFreeReferrer = program?.referrerSubscriptionTier === "free";
+  const referrerRewardTitle = isFreeReferrer
+    ? `Earn $${referrerReward} in usage credits`
+    : `Earn $${referrerReward} in extra usage credits`;
+  const referrerRewardCopy = isFreeReferrer ? (
+    <>
+      You get <b>${referrerReward} in usage credits</b> when they upgrade. Use
+      them after you upgrade to a paid plan.
+    </>
+  ) : (
+    <>
+      You get <b>${referrerReward} in extra usage credits</b> when they upgrade
+    </>
+  );
   const referredSignupBonusUnits = program?.referredSignupBonusUnits ?? 0;
   const referredSignupBonusCopy =
     referredSignupBonusUnits > 0
@@ -157,6 +174,12 @@ export function ReferralRewardDialog({
                     Rewards are earned once your invitee creates a new account
                     and subscribes to any paid HackerAI plan. No credit is
                     granted for inactive or incomplete referrals.
+                  </span>
+                </li>
+                <li>
+                  <span className="text-muted-foreground text-sm">
+                    If you are on the Free plan, earned usage credits are saved
+                    to your account and become usable after you upgrade.
                   </span>
                 </li>
                 <li>
@@ -215,7 +238,7 @@ export function ReferralRewardDialog({
                 <Gift className="size-7" />
               </div>
               <DialogTitle className="text-2xl font-semibold">
-                Earn ${referrerReward} in credits
+                {referrerRewardTitle}
               </DialogTitle>
               <DialogDescription className="text-muted-foreground max-w-xs text-sm">
                 Invite friends. When they upgrade, you both win.
@@ -291,8 +314,7 @@ export function ReferralRewardDialog({
                         <Coins className="size-5" />
                       </span>
                       <span className="text-foreground text-base font-normal">
-                        You get <b>${referrerReward} in extra usage credits</b>{" "}
-                        once they subscribe to any paid plan
+                        {referrerRewardCopy}
                       </span>
                     </li>
                   </ul>
