@@ -120,17 +120,11 @@ export function captureAgentBrowserUsage(args: {
   const usage = detectAgentBrowserUsage(args.command);
   if (!usage) return;
 
-  const activeModel = args.context.getCurrentModelName?.();
-
   phLogger.event("agent_browser_terminal_command_used", {
     userId: args.context.userID,
-    user_id: args.context.userID,
     chat_id: args.context.chatId,
     mode: args.context.mode,
-    subscription: args.context.subscription,
     subscription_tier: args.context.subscription,
-    configured_model: args.context.modelName,
-    active_model: activeModel ?? args.context.modelName,
     sandbox_type: getAgentBrowserSandboxType(args.context, args.sandbox),
     primary_action: usage.primaryAction,
     actions: usage.actions,
@@ -138,5 +132,6 @@ export function captureAgentBrowserUsage(args: {
     used_via_npx: usage.usedViaNpx,
     interactive: args.interactive,
     is_background: args.isBackground,
+    agent_browser_usage_event_version: 1,
   });
 }

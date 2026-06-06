@@ -333,13 +333,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       "agent_browser_terminal_command_used",
       expect.objectContaining({
         userId: "u1",
-        user_id: "u1",
         chat_id: "chat-1",
         mode: "agent",
-        subscription: "pro",
         subscription_tier: "pro",
-        configured_model: "configured-model",
-        active_model: "active-model",
         sandbox_type: "remote-connection",
         primary_action: "open",
         actions: ["open", "screenshot"],
@@ -347,8 +343,15 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         used_via_npx: false,
         interactive: false,
         is_background: false,
+        agent_browser_usage_event_version: 1,
       }),
     );
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+      "configured_model",
+    );
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
     expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
       "secret.example",
     );
