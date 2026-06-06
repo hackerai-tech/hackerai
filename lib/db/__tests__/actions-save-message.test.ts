@@ -34,6 +34,7 @@ const loadSaveMessageWithMocks = async () => {
   return {
     getMessagesByChatId,
     mockCompactMessageForStorage,
+    mockMutation,
     mockQuery,
     saveMessage,
   };
@@ -75,6 +76,57 @@ describe("saveMessage", () => {
       self: "[Circular]",
     });
     expect(() => JSON.stringify(compactedMessage.parts)).not.toThrow();
+  });
+
+  it("maps Convex message-size rejections to a user-facing bad request", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "MESSAGE_TOO_LARGE",
+      message: "Message is too large to save",
+      failureStage: "prepare_insert_message",
+    };
+    mockMutation.mockRejectedValueOnce(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "x".repeat(990 * 1024) }],
+          },
+        }),
+      ).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "api",
+        statusCode: 400,
+        cause:
+          "Your message is too large to save. Please shorten it or attach the content as a file instead.",
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_error_code: "MESSAGE_TOO_LARGE",
+        }),
+      });
+
+      const warnEvents = warnSpy.mock.calls.map(([line]) => {
+        const payload = JSON.parse(String(line));
+        return payload.event;
+      });
+      expect(warnEvents).toContain("message_save_rejected_too_large");
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });
 

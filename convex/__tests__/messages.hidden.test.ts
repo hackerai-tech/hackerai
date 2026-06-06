@@ -30,6 +30,7 @@ jest.mock("convex/values", () => ({
       this.name = "ConvexError";
     }
   },
+  getDocumentSize: jest.fn((value: unknown) => JSON.stringify(value).length),
 }));
 jest.mock("../_generated/api", () => ({
   internal: {
@@ -204,6 +205,59 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.db.insert).not.toHaveBeenCalledWith(
       "messages",
       expect.objectContaining({ is_hidden: true }),
+    );
+  });
+
+  it("truncates oversized search content while preserving the canonical parts", async () => {
+    setupExistingMessage(null);
+    const largeText = "x".repeat(557_726);
+
+    const { saveMessage } = await import("../messages");
+
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-large-search-content",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: largeText }],
+    });
+
+    const inserted = mockCtx.db.insert.mock.calls[0][1];
+    expect(inserted.parts).toEqual([{ type: "text", text: largeText }]);
+    expect(inserted.content.length).toBeGreaterThan(256);
+    expect(inserted.content.length).toBeLessThan(largeText.length);
+    expect(JSON.stringify(inserted).length).toBeLessThanOrEqual(960 * 1024);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("message_search_content_truncated_for_storage"),
+    );
+  });
+
+  it("rejects messages that are too large even without indexed content", async () => {
+    setupExistingMessage(null);
+    const tooLargeText = "x".repeat(990 * 1024);
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-too-large",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: tooLargeText }],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_TOO_LARGE",
+        failureStage: "prepare_insert_message",
+      }),
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("convex_message_save_rejected_too_large"),
     );
   });
 

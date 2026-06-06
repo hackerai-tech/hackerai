@@ -1,5 +1,5 @@
 import { query, mutation, internalQuery } from "./_generated/server";
-import { v, ConvexError, type Value } from "convex/values";
+import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
@@ -83,6 +83,65 @@ const getJsonSize = (value: unknown): number => {
   } catch {
     return 0;
   }
+};
+
+const CONVEX_DOCUMENT_MAX_BYTES = 1024 * 1024;
+const MESSAGE_DOCUMENT_TARGET_BYTES = 960 * 1024;
+const MIN_SEARCH_CONTENT_CHARS = 256;
+
+const getMessageDocumentSize = (document: Record<string, unknown>): number =>
+  getDocumentSize(document as Record<string, Value>);
+
+const sliceValidUnicodePrefix = (value: string, end: number): string => {
+  const sliced = value.slice(0, end);
+  const lastCodeUnit = sliced.charCodeAt(sliced.length - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+    return sliced.slice(0, -1);
+  }
+  return sliced;
+};
+
+const fitSearchContentToDocument = (
+  baseDocument: Record<string, unknown>,
+  content: string,
+): { content?: string; fullSizeBytes: number; indexedSizeBytes?: number } => {
+  const fullDocument = { ...baseDocument, content };
+  const fullSizeBytes = getMessageDocumentSize(fullDocument);
+  if (fullSizeBytes <= MESSAGE_DOCUMENT_TARGET_BYTES) {
+    return { content, fullSizeBytes, indexedSizeBytes: fullSizeBytes };
+  }
+
+  let low = 0;
+  let high = content.length;
+  let best = "";
+  let bestSize: number | undefined;
+
+  while (low <= high) {
+    const midpoint = Math.floor((low + high) / 2);
+    const candidate = sliceValidUnicodePrefix(content, midpoint);
+    const candidateSize = getMessageDocumentSize({
+      ...baseDocument,
+      content: candidate,
+    });
+
+    if (candidateSize <= MESSAGE_DOCUMENT_TARGET_BYTES) {
+      best = candidate;
+      bestSize = candidateSize;
+      low = midpoint + 1;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+
+  if (best.length < MIN_SEARCH_CONTENT_CHARS) {
+    return { fullSizeBytes };
+  }
+
+  return {
+    content: best,
+    fullSizeBytes,
+    indexedSizeBytes: bestSize,
+  };
 };
 
 const getMessageSaveDiagnostics = (parts: any[]) => {
@@ -487,14 +546,12 @@ export const saveMessage = mutation({
       failureStage = "extract_content";
       const content = extractTextFromParts(partsForSave);
 
-      failureStage = "insert_message";
-      await ctx.db.insert("messages", {
+      const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
         user_id: args.userId,
         role: args.role,
         parts: partsForSave,
-        content: content || undefined,
         file_ids: fileIdsForSave,
         update_time: Date.now(),
         model: args.model,
@@ -504,6 +561,77 @@ export const saveMessage = mutation({
         finish_reason: args.finishReason,
         usage: args.usage,
         is_hidden: args.isHidden,
+      };
+      failureStage = "prepare_insert_message";
+      const baseDocumentSizeBytes = getMessageDocumentSize(messageDocumentBase);
+      if (baseDocumentSizeBytes > MESSAGE_DOCUMENT_TARGET_BYTES) {
+        throw new ConvexError({
+          code: "MESSAGE_TOO_LARGE",
+          message: "Message is too large to save",
+          failureStage: "prepare_insert_message",
+          baseDocumentSizeBytes,
+          maxDocumentSizeBytes: CONVEX_DOCUMENT_MAX_BYTES,
+          targetDocumentSizeBytes: MESSAGE_DOCUMENT_TARGET_BYTES,
+          operation: "messages.saveMessage",
+          chatId: args.chatId,
+          messageId: args.id,
+          role: args.role,
+          fileCount: args.fileIds?.length ?? 0,
+          ...getMessageSaveDiagnostics(args.parts),
+        });
+      }
+
+      const indexedContent =
+        content.length > 0
+          ? fitSearchContentToDocument(messageDocumentBase, content)
+          : null;
+
+      if (
+        indexedContent &&
+        indexedContent.content !== undefined &&
+        indexedContent.content.length < content.length
+      ) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "message_search_content_truncated_for_storage",
+            service: "convex",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            chat_id: args.chatId,
+            user_id: args.userId,
+            message_id: args.id,
+            message_role: args.role,
+            full_content_chars: content.length,
+            indexed_content_chars: indexedContent.content.length,
+            base_document_size_bytes: baseDocumentSizeBytes,
+            full_document_size_bytes: indexedContent.fullSizeBytes,
+            indexed_document_size_bytes: indexedContent.indexedSizeBytes,
+          }),
+        );
+      } else if (indexedContent && indexedContent.content === undefined) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "message_search_content_omitted_for_storage",
+            service: "convex",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            chat_id: args.chatId,
+            user_id: args.userId,
+            message_id: args.id,
+            message_role: args.role,
+            full_content_chars: content.length,
+            base_document_size_bytes: baseDocumentSizeBytes,
+            full_document_size_bytes: indexedContent.fullSizeBytes,
+          }),
+        );
+      }
+
+      failureStage = "insert_message";
+      await ctx.db.insert("messages", {
+        ...messageDocumentBase,
+        content: indexedContent?.content,
       });
 
       // Mark attached files as linked so purge won't remove them.
@@ -518,6 +646,30 @@ export const saveMessage = mutation({
       return null;
     } catch (error) {
       const causeData = getConvexErrorData(error);
+      if (getConvexErrorCode(causeData) === "MESSAGE_TOO_LARGE") {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "convex_message_save_rejected_too_large",
+            service: "convex",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            failure_stage: failureStage,
+            chat_id: args.chatId,
+            user_id: args.userId,
+            message_id: args.id,
+            message_role: args.role,
+            mode: args.mode,
+            update_only: args.updateOnly === true,
+            hidden: args.isHidden === true,
+            file_count: args.fileIds?.length ?? 0,
+            convex_error_data: causeData,
+            ...getMessageSaveDiagnostics(args.parts),
+          }),
+        );
+        throw error;
+      }
+
       if (
         failureStage === "verify_chat_ownership" &&
         args.role === "assistant" &&
