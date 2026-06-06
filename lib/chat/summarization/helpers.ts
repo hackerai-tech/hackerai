@@ -149,7 +149,8 @@ export const generateSummaryText = async (
 
     providerOptions: providerOptions as any,
     messages: [
-      ...(modelMessages ?? (await convertToModelMessages(messagesToSummarize))),
+      ...(modelMessages ??
+        (await convertToModelMessages(messagesToSummarize, { tools }))),
       {
         role: "user" as const,
         content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,

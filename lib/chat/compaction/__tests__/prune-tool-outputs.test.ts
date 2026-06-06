@@ -1069,9 +1069,10 @@ describe("pruneModelMessages", () => {
 
     // Old tool result should be placeholder
     const oldToolMsg = result.messages[2] as any;
-    expect(oldToolMsg.content[0].output).toMatch(
-      /\[Terminal: ran 'old-cmd', exit code 0\]/,
-    );
+    expect(oldToolMsg.content[0].output).toEqual({
+      type: "text",
+      value: "[Terminal: ran 'old-cmd', exit code 0]",
+    });
 
     // New tool result should be intact
     const newToolMsg = result.messages[4] as any;
@@ -1116,9 +1117,62 @@ describe("pruneModelMessages", () => {
 
     const result = pruneModelMessages(messages, 5, NO_MIN);
     const filePart = (result.messages[1] as any).content[0];
-    expect(filePart.output).toMatch(
+    expect(filePart.output.value).toMatch(
       /\[File: read \/src\/index\.ts \(50 lines\)\]/,
     );
+    expect(filePart.output.type).toBe("text");
+  });
+
+  it("keeps pruned AI SDK model tool outputs provider-serializable", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "run_terminal_cmd",
+            input: { command: "old-cmd" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c1",
+            toolName: "run_terminal_cmd",
+            output: {
+              type: "json",
+              value: { stdout: "x".repeat(5000), exitCode: 0 },
+            },
+          },
+        ],
+      },
+      makeAssistantModelMsg([
+        {
+          toolCallId: "c2",
+          toolName: "run_terminal_cmd",
+          args: { command: "new-cmd" },
+        },
+      ]),
+      makeToolModelMsg([
+        {
+          toolCallId: "c2",
+          toolName: "run_terminal_cmd",
+          output: { type: "text", value: "newer output ".repeat(100) },
+        },
+      ]),
+    ];
+
+    const result = pruneModelMessages(messages, 5, NO_MIN);
+    const prunedOutput = (result.messages[1] as any).content[0].output;
+
+    expect(prunedOutput).toEqual({
+      type: "text",
+      value: "[Terminal: ran 'old-cmd', exit code 0]",
+    });
   });
 
   it("does not prune protected tools", () => {

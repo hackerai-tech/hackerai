@@ -1,4 +1,7 @@
-import { sanitizeOpenRouterRequestForXai } from "@/lib/ai/providers";
+import {
+  sanitizeOpenRouterRequestForGeminiFunctionResponses,
+  sanitizeOpenRouterRequestForXai,
+} from "@/lib/ai/providers";
 
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
@@ -126,5 +129,91 @@ describe("sanitizeOpenRouterRequestForXai", () => {
     expect(result.body).toBe(body);
     expect(JSON.stringify(result.body)).toContain("user-owned-data");
     expect(JSON.stringify(result.body)).toContain("tool-owned-data");
+  });
+});
+
+describe("sanitizeOpenRouterRequestForGeminiFunctionResponses", () => {
+  it("wraps JSON tool responses with OpenAPI $ref keys when a fallback can route to Gemini", () => {
+    const openApiResponse = JSON.stringify({
+      openapi: "3.0.0",
+      paths: {
+        "/auth": {
+          post: {
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/AuthRequest" },
+                },
+              },
+            },
+            responses: {
+              "200": {
+                content: {
+                  "application/json": {
+                    schema: {
+                      $ref: "#/components/schemas/CoreAuthenticationResult",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    const body = {
+      model: "deepseek/deepseek-v4-flash",
+      models: ["google/gemini-3-flash-preview"],
+      messages: [
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "open_url",
+          content: openApiResponse,
+        },
+      ],
+    };
+
+    const result = sanitizeOpenRouterRequestForGeminiFunctionResponses(body);
+
+    expect(result.changed).toBe(true);
+    expect((result.body as any).messages[0].content).toBe(
+      JSON.stringify({ result: openApiResponse }),
+    );
+    expect(JSON.parse((result.body as any).messages[0].content)).toEqual({
+      result: openApiResponse,
+    });
+  });
+
+  it("leaves non-Gemini routes and non-ref JSON tool responses unchanged", () => {
+    const nonGeminiBody = {
+      model: "deepseek/deepseek-v4-flash",
+      messages: [
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "open_url",
+          content: JSON.stringify({ $ref: "#/components/schemas/AuthRequest" }),
+        },
+      ],
+    };
+    const geminiBodyWithoutRef = {
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "web_search",
+          content: JSON.stringify({ result: "ok" }),
+        },
+      ],
+    };
+
+    expect(
+      sanitizeOpenRouterRequestForGeminiFunctionResponses(nonGeminiBody),
+    ).toEqual({ body: nonGeminiBody, changed: false });
+    expect(
+      sanitizeOpenRouterRequestForGeminiFunctionResponses(geminiBodyWithoutRef),
+    ).toEqual({ body: geminiBodyWithoutRef, changed: false });
   });
 });
