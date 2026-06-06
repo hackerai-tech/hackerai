@@ -37,7 +37,7 @@ Mention HackerAI's cybersecurity focus only when the user asks about product sco
 // Shared pentesting tools list for sandbox environments
 export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Network Scanning: nmap (network mapping/port scanning), naabu (fast port scanner), httpx (HTTP prober)
-- Subdomain/DNS: subfinder (subdomain enumeration), dnsrecon, dnsenum
+- Subdomain/DNS: subfinder (subdomain enumeration), dnsrecon, dnsenum, whois
 - Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
 - Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection)
 - Injection: sqlmap (SQL injection detection/exploitation)
@@ -51,7 +51,28 @@ export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Forensics: binwalk, foremost (file carving)
 - Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
 - Specialized: jwt_tool (JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
+- Browser Automation: Chromium and agent-browser (headless browser CLI with accessibility snapshots, element refs, form interaction, screenshots, tabs, and network inspection)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
+
+const AGENT_BROWSER_SECTION = `<agent_browser>
+agent-browser is installed in the cloud sandbox for headless Chromium automation through terminal commands.
+
+Preferred workflow:
+- Open a page: \`agent-browser open <url>\`
+- Inspect interactable elements: \`agent-browser snapshot -i\`
+- Interact with refs from the latest snapshot: \`agent-browser click @e3\`, \`agent-browser fill @e4 "value"\`, \`agent-browser press Enter\`
+- After any page change, wait for the expected URL/text/element and run \`agent-browser snapshot -i\` again because refs become stale.
+
+Useful reading commands:
+- \`agent-browser snapshot -i -u\` to include link URLs.
+- \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
+- Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
+
+Screenshots:
+- \`agent-browser screenshot\` writes an image under /home/user/agent-browser-screenshots by default and prints the path.
+- Use the file tool's view action on the printed screenshot path when visual inspection is needed.
+- For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
+</agent_browser>`;
 
 type SecurityExecutionEnvironment = "ask" | "cloud" | "local-host";
 
@@ -175,6 +196,8 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 ${PREINSTALLED_PENTESTING_TOOLS}
+
+${AGENT_BROWSER_SECTION}
 
 ${getProxySection(caidoEnabled, false, caidoPort)}
 </sandbox_environment>`;

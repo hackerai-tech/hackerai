@@ -39,6 +39,7 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
+import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -242,6 +243,14 @@ In using these tools, adhere to the following guidelines:
             };
           }
 
+          captureAgentBrowserUsage({
+            context,
+            command,
+            sandbox,
+            interactive: true,
+            isBackground: false,
+          });
+
           // Set up Caido proxy env vars before spawning the PTY so the session
           // launches with proxy env pointing at a running Caido. Mirrors the
           // non-interactive `executeCommand` flow: only eager on E2B; on
@@ -442,6 +451,14 @@ In using these tools, adhere to the following guidelines:
         return executeCommand(sandbox);
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
+          captureAgentBrowserUsage({
+            context,
+            command,
+            sandbox: sandboxInstance,
+            interactive: false,
+            isBackground: is_background,
+          });
+
           // Ensure Caido proxy is running + authenticated before commands route through it.
           // Only eager on E2B; local sandboxes defer setup to proxy tool invocations.
           // This is a no-op after the first successful call (cached per session).

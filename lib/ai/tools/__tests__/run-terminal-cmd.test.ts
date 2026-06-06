@@ -36,7 +36,19 @@ jest.mock("../utils/proxy-manager", () => ({
   ensureCaido: async () => undefined,
 }));
 
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: {
+    event: jest.fn(),
+    error: jest.fn(),
+    warn: jest.fn(),
+    info: jest.fn(),
+    flush: jest.fn(),
+  },
+}));
+
+import { phLogger } from "@/lib/posthog/server";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
   PtySessionManager,
@@ -163,6 +175,9 @@ function makeContext(opts: {
     backgroundProcessTracker: {} as never,
     ptySessionManager,
     mode: "agent",
+    modelName: "configured-model",
+    getCurrentModelName: () => "active-model",
+    subscription: "pro",
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -176,6 +191,10 @@ function makeContext(opts: {
 
   return { context, writerWrites, sandboxManager, ptySessionManager };
 }
+
+const mockPhEvent = phLogger.event as jest.MockedFunction<
+  typeof phLogger.event
+>;
 
 // Helper: invoke the tool.execute with given args/options.
 async function runTool(
@@ -198,6 +217,39 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
+    mockPhEvent.mockClear();
+  });
+
+  test("detectAgentBrowserUsage extracts sanitized actions", () => {
+    const usage = detectAgentBrowserUsage(
+      "agent-browser open https://secret.example/login && agent-browser snapshot -i",
+    );
+
+    expect(usage).toEqual({
+      invocationCount: 2,
+      primaryAction: "open",
+      actions: ["open", "snapshot"],
+      usedViaNpx: false,
+    });
+    expect(JSON.stringify(usage)).not.toContain("secret.example");
+  });
+
+  test("detectAgentBrowserUsage supports env prefixes and npx", () => {
+    expect(
+      detectAgentBrowserUsage(
+        "AGENT_BROWSER_SESSION_NAME=scan npx -y agent-browser@0.26.0 click @e3",
+      ),
+    ).toEqual({
+      invocationCount: 1,
+      primaryAction: "click",
+      actions: ["click"],
+      usedViaNpx: true,
+    });
+  });
+
+  test("detectAgentBrowserUsage ignores whitespace-only mentions", () => {
+    expect(detectAgentBrowserUsage("echo agent-browser open")).toBeNull();
+    expect(detectAgentBrowserUsage("agent-browser-next open")).toBeNull();
   });
 
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
@@ -250,6 +302,59 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(
       (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
     ).toContain("echo hi");
+  });
+
+  test("logs sanitized agent-browser terminal usage to PostHog", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("opened\n");
+            return { stdout: "opened\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const tool = createRunTerminalCmd(context);
+
+    await runTool(tool, {
+      command:
+        "agent-browser open https://secret.example/login && agent-browser screenshot",
+      brief: "open a browser page",
+      is_background: false,
+      timeout: 5,
+    });
+
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "agent_browser_terminal_command_used",
+      expect.objectContaining({
+        userId: "u1",
+        chat_id: "chat-1",
+        mode: "agent",
+        subscription_tier: "pro",
+        sandbox_type: "remote-connection",
+        primary_action: "open",
+        actions: ["open", "screenshot"],
+        invocation_count: 2,
+        used_via_npx: false,
+        interactive: false,
+        is_background: false,
+        agent_browser_usage_event_version: 1,
+      }),
+    );
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+      "configured_model",
+    );
+    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
+    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+      "secret.example",
+    );
   });
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {

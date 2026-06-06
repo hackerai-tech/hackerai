@@ -69,6 +69,7 @@ RUN apt-get update && \
     dnsutils \
     iproute2 \
     net-tools \
+    whois \
     traceroute \
     netcat-traditional \
     tcpdump \
@@ -125,6 +126,8 @@ RUN apt-get update && \
     nodejs \
     npm \
     tmux \
+    chromium \
+    fonts-liberation \
     # Forensics
     binwalk \
     foremost \
@@ -149,16 +152,22 @@ RUN set -eux; \
 # ============================================================================
 # User Setup
 # ============================================================================
-RUN useradd --create-home --shell /bin/bash user && \
-    usermod -aG sudo user && \
-    echo 'user ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && \
-    mkdir -p /home/user/upload /home/user/go && \
-    chown -R user:user /home/user
+RUN set -eux; \
+    if ! id -u user >/dev/null 2>&1; then \
+      useradd --create-home --shell /bin/bash user; \
+    fi; \
+    usermod -aG sudo user; \
+    install -d -m 0755 /etc/sudoers.d /home/user/upload /home/user/go; \
+    printf 'user ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/hackerai-user; \
+    chmod 0440 /etc/sudoers.d/hackerai-user; \
+    user_group="$(id -gn user)"; \
+    chown -R "user:${user_group}" /home/user
 
 WORKDIR /home/user
 
-# Ensure Go bin paths are in PATH for login shells (su - user, bash -l)
-RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:$PATH\n' \
+# Ensure login shells, including E2B's Dockerfile builder shell, keep system
+# binary directories after adding user-local and Go bin paths.
+RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     > /etc/profile.d/00-hackerai-path.sh && chmod 644 /etc/profile.d/00-hackerai-path.sh
 
 # ============================================================================
@@ -174,7 +183,12 @@ RUN pip3 install --break-system-packages \
     odfpy
 
 # Additional security-focused Python packages
-RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
+# Kali's python3-rich package may be newer than httpx[cli]'s rich<14
+# requirement, and pip cannot uninstall dpkg-owned packages without RECORD
+# metadata. Install a pip-managed compatible rich first so httpx[cli] resolves
+# against /usr/local without touching the distro package.
+RUN pip3 install --break-system-packages --ignore-installed 'rich<14,>=10' && \
+    pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
 # ============================================================================
 # Git-based Security Tools
@@ -203,34 +217,18 @@ RUN set -eux; \
     elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then platform="linux_arm64"; \
     else platform="linux_amd64"; fi; \
     HTTPX_URL=$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest \
-      | grep -Eo '"browser_download_url"\s*:\s*"[^"]*' | cut -d '"' -f4 \
-      | grep -E "${platform}\\.zip$" | head -n1); \
+      | grep "browser_download_url" | cut -d '"' -f4 \
+      | grep "${platform}.zip$" | head -n1); \
+    test -n "$HTTPX_URL"; \
     echo "Fetching httpx: $HTTPX_URL"; \
-    wget -qO /tmp/httpx.zip "$HTTPX_URL" && \
-    mkdir -p /tmp/httpx_extracted && \
-    unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted || true && \
-    find /tmp/httpx_extracted -type f -name httpx -exec mv {} /usr/local/bin/httpx \; || true && \
-    chmod +x /usr/local/bin/httpx || true && \
+    wget -qO /tmp/httpx.zip "$HTTPX_URL"; \
+    mkdir -p /tmp/httpx_extracted; \
+    unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted; \
+    httpx_bin=$(find /tmp/httpx_extracted -type f -name httpx | head -n1); \
+    test -n "$httpx_bin"; \
+    mv "$httpx_bin" /usr/local/bin/httpx; \
+    chmod +x /usr/local/bin/httpx; \
     rm -rf /tmp/httpx_extracted /tmp/httpx.zip
-
-# ============================================================================
-# Caido CLI — Web Security Proxy (free, headless, GraphQL API)
-# ============================================================================
-RUN set -eux; \
-    arch=$(uname -m); \
-    if [ "$arch" = "x86_64" ]; then CAIDO_ARCH="x86_64"; \
-    elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then CAIDO_ARCH="aarch64"; \
-    else echo "Unsupported architecture: $arch" && exit 1; fi; \
-    CAIDO_VERSION=$(curl -s https://api.github.com/repos/caido/caido/releases/latest \
-      | grep '"tag_name"' | cut -d'"' -f4); \
-    echo "Installing caido-cli ${CAIDO_VERSION} for ${CAIDO_ARCH}"; \
-    wget -qO /tmp/caido-cli.tar.gz \
-      "https://caido.download/releases/${CAIDO_VERSION}/caido-cli-${CAIDO_VERSION}-linux-${CAIDO_ARCH}.tar.gz" && \
-    tar -xzf /tmp/caido-cli.tar.gz -C /tmp && \
-    chmod +x /tmp/caido-cli && \
-    mv /tmp/caido-cli /usr/local/bin/caido-cli && \
-    rm /tmp/caido-cli.tar.gz && \
-    mkdir -p /app/certs
 
 # ============================================================================
 # Create Wrapper Scripts for Python Tools
@@ -238,6 +236,19 @@ RUN set -eux; \
 RUN set -eux; \
     # JWT Tool wrapper
     ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true
+
+# ============================================================================
+# Browser Automation
+# ============================================================================
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first-run,--no-default-browser-check,--disable-dev-shm-usage,--no-sandbox,--lang=en-US"
+ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
+
+RUN npm install -g agent-browser@0.26.0 && \
+    mkdir -p /home/user/agent-browser-screenshots && \
+    chown -R user:user /home/user/agent-browser-screenshots && \
+    agent-browser doctor --offline --quick
 
 # ============================================================================
 # Go-based Security Tools
@@ -278,6 +289,7 @@ RUN set -eux; \
     which subfinder && echo "✓ subfinder" && \
     which dnsrecon && echo "✓ dnsrecon" && \
     which dnsenum && echo "✓ dnsenum" && \
+    which whois && echo "✓ whois" && \
     which ffuf && echo "✓ ffuf" && \
     which arjun && echo "✓ arjun" && \
     which gobuster && echo "✓ gobuster" && \
@@ -301,7 +313,8 @@ RUN set -eux; \
     which trivy && echo "✓ trivy" && \
     which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
-    which caido-cli && echo "✓ caido-cli" && \
+    which chromium && echo "✓ chromium" && \
+    which agent-browser && echo "✓ agent-browser" && \
     which rg && echo "✓ ripgrep" && \
     which go && echo "✓ go" && \
     which python3 && echo "✓ python3" && \
