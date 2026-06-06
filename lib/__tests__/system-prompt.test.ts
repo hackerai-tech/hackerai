@@ -2,6 +2,55 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it("answers general questions directly without cybersecurity scope disclaimers", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "Answer general questions, everyday tech support, education, writing, and factual requests directly in the user's language.",
+    );
+    expect(prompt).toContain("Do not say the request is outside cybersecurity");
+    expect(prompt).toContain(
+      'do not start with "as an AI penetration testing assistant."',
+    );
+  });
+
+  it("applies the working-language instruction in ask and agent modes", async () => {
+    const askPrompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+    const agentPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    for (const prompt of [askPrompt, agentPrompt]) {
+      expect(prompt).toContain("<language>");
+      expect(prompt).toContain(
+        "Use the language of the user's first message as the working language.",
+      );
+      expect(prompt.match(/<language>/g)).toHaveLength(1);
+    }
+  });
+
   it("does not claim isolated container execution for dangerous local hosts", async () => {
     const localHostContext = `You are executing commands on macOS 15.0 (arm64) in DANGEROUS MODE.
 Commands are invoked via /bin/bash -c.
