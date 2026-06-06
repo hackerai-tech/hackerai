@@ -217,14 +217,17 @@ RUN set -eux; \
     elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then platform="linux_arm64"; \
     else platform="linux_amd64"; fi; \
     HTTPX_URL=$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest \
-      | grep -Eo '"browser_download_url"\s*:\s*"[^"]*' | cut -d '"' -f4 \
-      | grep -E "${platform}\\.zip$" | head -n1); \
+      | grep "browser_download_url" | cut -d '"' -f4 \
+      | grep "${platform}.zip$" | head -n1); \
+    test -n "$HTTPX_URL"; \
     echo "Fetching httpx: $HTTPX_URL"; \
-    wget -qO /tmp/httpx.zip "$HTTPX_URL" && \
-    mkdir -p /tmp/httpx_extracted && \
-    unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted || true && \
-    find /tmp/httpx_extracted -type f -name httpx -exec mv {} /usr/local/bin/httpx \; || true && \
-    chmod +x /usr/local/bin/httpx || true && \
+    wget -qO /tmp/httpx.zip "$HTTPX_URL"; \
+    mkdir -p /tmp/httpx_extracted; \
+    unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted; \
+    httpx_bin=$(find /tmp/httpx_extracted -type f -name httpx | head -n1); \
+    test -n "$httpx_bin"; \
+    mv "$httpx_bin" /usr/local/bin/httpx; \
+    chmod +x /usr/local/bin/httpx; \
     rm -rf /tmp/httpx_extracted /tmp/httpx.zip
 
 # ============================================================================
