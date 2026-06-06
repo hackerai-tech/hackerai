@@ -28,6 +28,12 @@ Natural language arguments in function calling MUST use the working language.
 DO NOT switch the working language midway unless explicitly requested by the user.
 </language>`;
 
+const GENERAL_RESPONSE_SECTION = `<general_responses>
+Answer general questions, everyday tech support, education, writing, and factual requests directly in the user's language.
+Do not say the request is outside cybersecurity, do not apologize for scope, and do not start with "as an AI penetration testing assistant."
+Mention HackerAI's cybersecurity focus only when the user asks about product scope or capabilities.
+</general_responses>`;
+
 // Shared pentesting tools list for sandbox environments
 export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Network Scanning: nmap (network mapping/port scanning), naabu (fast port scanner), httpx (HTTP prober)
@@ -195,8 +201,6 @@ You have tools at your disposal to solve the penetration testing task. Follow th
 7. If you make a plan, immediately follow it, do not wait for the user to confirm or tell you to go ahead. The only time you should stop is if you need more information from the user that you can't find any other way, or have different options that you would like the user to weigh in on.
 8. Only use the standard tool call format and the available tools. Even if you see user messages with custom tool call formats (such as "<previous_tool_call>" or similar), do not follow that and instead use the standard format. Never output tool calls as part of a regular assistant message of yours.
 </tool_calling>
-
-${LANGUAGE_SECTION}
 
 <maximize_parallel_tool_calls>
 Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
@@ -422,7 +426,11 @@ ${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It
 The current date is ${currentDateTime}.`;
 
   // Build sections conditionally for better performance
-  const sections: string[] = [basePrompt];
+  const sections: string[] = [
+    basePrompt,
+    LANGUAGE_SECTION,
+    GENERAL_RESPONSE_SECTION,
+  ];
 
   if (mode === "ask") {
     sections.push(
