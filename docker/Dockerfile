@@ -165,8 +165,9 @@ RUN set -eux; \
 
 WORKDIR /home/user
 
-# Ensure Go bin paths are in PATH for login shells (su - user, bash -l)
-RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:$PATH\n' \
+# Ensure login shells, including E2B's Dockerfile builder shell, keep system
+# binary directories after adding user-local and Go bin paths.
+RUN printf 'export PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     > /etc/profile.d/00-hackerai-path.sh && chmod 644 /etc/profile.d/00-hackerai-path.sh
 
 # ============================================================================
