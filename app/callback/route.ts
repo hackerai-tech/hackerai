@@ -1,6 +1,8 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
 import {
+  isAuthVerifierMissingError,
   isAuthCookieMissingError,
+  isMissingRequiredAuthParameterError,
   isOauthCodeAlreadyExchangedError,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
@@ -19,6 +21,7 @@ const hasPkceCookie = (request: NextRequest): boolean =>
   request.cookies.getAll().some((c) => c.name.startsWith(PKCE_COOKIE_PREFIX));
 
 type RecoveryBucket =
+  | "missing_auth_parameter"
   | "state_mismatch"
   | "verifier_missing"
   | "cookie_missing"
@@ -29,22 +32,17 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   if (isOauthCodeAlreadyExchangedError(error)) {
     return "code_already_exchanged";
   }
+  if (isMissingRequiredAuthParameterError(error)) {
+    return "missing_auth_parameter";
+  }
   if (isAuthCookieMissingError(error)) {
     return "cookie_missing";
   }
+  if (isAuthVerifierMissingError(error)) {
+    return "verifier_missing";
+  }
   if (!(error instanceof Error)) return "unknown";
   if (error.message.includes("OAuth state mismatch")) return "state_mismatch";
-  if (error.name === "ValiError") {
-    const issues = (error as Error & { issues?: Array<{ expected?: string }> })
-      .issues;
-    if (
-      issues?.some((i) =>
-        ['"nonce"', '"codeVerifier"'].includes(i.expected ?? ""),
-      )
-    ) {
-      return "verifier_missing";
-    }
-  }
   return "unknown";
 };
 
@@ -70,6 +68,7 @@ const buildRecoveryResponse = async (
     }
   }
   const logPayload = {
+    event: "auth.callback_invalid",
     bucket,
     hasVerifierCookie,
     userAgent: request.headers.get("user-agent"),
@@ -80,11 +79,18 @@ const buildRecoveryResponse = async (
   // Distinct prefix from authkit's own `[AuthKit callback error]` so log
   // aggregators don't double-count and so we can grep this wrapper separately.
   if (bucket === "unknown") {
-    console.error("[callback] unrecoverable", error, logPayload);
+    console.error("[callback] unrecoverable", error, {
+      ...logPayload,
+      event: "auth.callback_failed",
+    });
     return NextResponse.redirect(new URL("/auth-error?code=500", request.url));
   }
 
-  console.warn("[callback] recovering", logPayload);
+  if (bucket === "missing_auth_parameter") {
+    console.info("[callback] invalid_request", logPayload);
+  } else {
+    console.warn("[callback] recovering", logPayload);
+  }
 
   // Only verifier_missing with the cookie still present indicates genuine
   // corruption/tampering worth surfacing as an error. Everything else →

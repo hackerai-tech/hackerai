@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach, jest } from "@jest/globals";
 
 import {
+  isAuthVerifierMissingError,
   isAuthCookieMissingError,
+  isMissingRequiredAuthParameterError,
   isOauthCodeAlreadyExchangedError,
   isRecoverableAuthkitCallbackErrorLog,
   withRecoverableAuthkitCallbackErrorSuppressed,
@@ -32,6 +34,35 @@ describe("authkit callback logging", () => {
       isAuthCookieMissingError({
         message: "Auth cookie missing - cannot verify OAuth state.",
       }),
+    ).toBe(true);
+  });
+
+  it("matches missing auth parameter callback errors", () => {
+    const error = new Error("Missing required auth parameter");
+
+    expect(isMissingRequiredAuthParameterError(error)).toBe(true);
+    expect(
+      isRecoverableAuthkitCallbackErrorLog(["[AuthKit callback error]", error]),
+    ).toBe(true);
+  });
+
+  it("matches missing verifier schema callback errors", () => {
+    const error = Object.assign(
+      new Error('Invalid key: Expected "nonce" but received undefined'),
+      {
+        name: "ValiError",
+        issues: [
+          {
+            expected: '"nonce"',
+            received: "undefined",
+          },
+        ],
+      },
+    );
+
+    expect(isAuthVerifierMissingError(error)).toBe(true);
+    expect(
+      isRecoverableAuthkitCallbackErrorLog(["[AuthKit callback error]", error]),
     ).toBe(true);
   });
 
@@ -91,6 +122,25 @@ describe("authkit callback logging", () => {
         "[AuthKit callback error]",
         new Error(
           "Error: invalid_grant\nError Description: The code 'abc123' has already been exchanged.",
+        ),
+      );
+      console.error(
+        "[AuthKit callback error]",
+        new Error("Missing required auth parameter"),
+      );
+      console.error(
+        "[AuthKit callback error]",
+        Object.assign(
+          new Error('Invalid key: Expected "nonce" but received undefined'),
+          {
+            name: "ValiError",
+            issues: [
+              {
+                expected: '"nonce"',
+                received: "undefined",
+              },
+            ],
+          },
         ),
       );
       console.error("other error", new Error("boom"));
