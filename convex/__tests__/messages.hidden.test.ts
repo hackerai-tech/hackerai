@@ -8,30 +8,35 @@ jest.mock("../_generated/server", () => ({
   query: jest.fn((config: any) => config),
   internalQuery: jest.fn((config: any) => config),
 }));
-jest.mock("convex/values", () => ({
-  v: {
-    id: jest.fn(() => "id"),
-    null: jest.fn(() => "null"),
-    string: jest.fn(() => "string"),
-    number: jest.fn(() => "number"),
-    optional: jest.fn(() => "optional"),
-    object: jest.fn(() => "object"),
-    union: jest.fn(() => "union"),
-    array: jest.fn(() => "array"),
-    boolean: jest.fn(() => "boolean"),
-    literal: jest.fn(() => "literal"),
-    any: jest.fn(() => "any"),
-  },
-  ConvexError: class ConvexError extends Error {
-    data: any;
-    constructor(data: any) {
-      super(typeof data === "string" ? data : data.message);
-      this.data = data;
-      this.name = "ConvexError";
-    }
-  },
-  getDocumentSize: jest.fn((value: unknown) => JSON.stringify(value).length),
-}));
+jest.mock("convex/values", () => {
+  const actualValues =
+    jest.requireActual<typeof import("convex/values")>("convex/values");
+
+  return {
+    v: {
+      id: jest.fn(() => "id"),
+      null: jest.fn(() => "null"),
+      string: jest.fn(() => "string"),
+      number: jest.fn(() => "number"),
+      optional: jest.fn(() => "optional"),
+      object: jest.fn(() => "object"),
+      union: jest.fn(() => "union"),
+      array: jest.fn(() => "array"),
+      boolean: jest.fn(() => "boolean"),
+      literal: jest.fn(() => "literal"),
+      any: jest.fn(() => "any"),
+    },
+    ConvexError: class ConvexError extends Error {
+      data: any;
+      constructor(data: any) {
+        super(typeof data === "string" ? data : data.message);
+        this.data = data;
+        this.name = "ConvexError";
+      }
+    },
+    getDocumentSize: actualValues.getDocumentSize,
+  };
+});
 jest.mock("../_generated/api", () => ({
   internal: {
     messages: {
