@@ -3,6 +3,7 @@ import {
   isAuthVerifierMissingError,
   isAuthCookieMissingError,
   isMissingRequiredAuthParameterError,
+  isOAuthStateMismatchError,
   isOauthCodeAlreadyExchangedError,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
@@ -41,8 +42,9 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   if (isAuthVerifierMissingError(error)) {
     return "verifier_missing";
   }
-  if (!(error instanceof Error)) return "unknown";
-  if (error.message.includes("OAuth state mismatch")) return "state_mismatch";
+  if (isOAuthStateMismatchError(error)) {
+    return "state_mismatch";
+  }
   return "unknown";
 };
 

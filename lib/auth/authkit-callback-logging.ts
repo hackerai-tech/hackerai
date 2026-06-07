@@ -2,6 +2,7 @@ const AUTHKIT_CALLBACK_ERROR_PREFIX = "[AuthKit callback error]";
 const AUTH_COOKIE_MISSING_MESSAGE = "Auth cookie missing";
 const MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE =
   "Missing required auth parameter";
+const OAUTH_STATE_MISMATCH_MESSAGE = "OAuth state mismatch";
 const INVALID_GRANT_ERROR = "invalid_grant";
 const CODE_ALREADY_EXCHANGED_MESSAGE = "already been exchanged";
 const VERIFIER_SCHEMA_KEYS = ['"nonce"', '"codeVerifier"'];
@@ -75,6 +76,12 @@ export const isMissingRequiredAuthParameterError = (
     .includes(MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE.toLowerCase());
 };
 
+export const isOAuthStateMismatchError = (value: unknown): boolean => {
+  return collectErrorText(value)
+    .toLowerCase()
+    .includes(OAUTH_STATE_MISMATCH_MESSAGE.toLowerCase());
+};
+
 export const isAuthVerifierMissingError = (value: unknown): boolean => {
   if (value && typeof value === "object") {
     const error = value as {
@@ -104,6 +111,7 @@ export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
     isAuthCookieMissingError(value) ||
     isOauthCodeAlreadyExchangedError(value) ||
     isMissingRequiredAuthParameterError(value) ||
+    isOAuthStateMismatchError(value) ||
     isAuthVerifierMissingError(value)
   );
 };
