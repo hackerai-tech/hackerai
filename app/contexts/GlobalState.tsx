@@ -47,6 +47,8 @@ import {
   cleanupExpiredDrafts,
   markHasAuthenticatedBefore,
 } from "@/lib/utils/client-storage";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { shouldDefaultFreeUserToAgent } from "@/lib/activation/agent-first-default";
 
 interface GlobalStateType {
   // Input state
@@ -193,13 +195,21 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
   const shownReferralRewardNotificationsRef = useRef(new Set<string>());
+  const initialSavedChatModeRef = useRef<ChatMode | null>(null);
+  const hasUserSelectedModeThisSessionRef = useRef(false);
+  const agentFirstDefaultAppliedRef = useRef(false);
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
-  const [chatMode, setChatMode] = useState<ChatMode>(() => {
+  const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
+    initialSavedChatModeRef.current = saved;
     return saved;
   });
+  const setChatMode = useCallback((mode: ChatMode) => {
+    hasUserSelectedModeThisSessionRef.current = true;
+    setChatModeState(mode);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -212,6 +222,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Persist chat mode preference to localStorage on change
   useEffect(() => {
+    if (
+      initialSavedChatModeRef.current === null &&
+      !agentFirstDefaultAppliedRef.current &&
+      !hasUserSelectedModeThisSessionRef.current
+    ) {
+      return;
+    }
+
     writeChatMode(chatMode);
   }, [chatMode]);
 
@@ -397,6 +415,63 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("temporary-chat") === "true";
   });
+
+  useEffect(() => {
+    if (agentFirstDefaultAppliedRef.current) return;
+
+    if (
+      !shouldDefaultFreeUserToAgent({
+        chatMode,
+        defaultLocalSandboxPreference,
+        hasLocalSandbox,
+        hasSavedChatMode: initialSavedChatModeRef.current !== null,
+        hasUserSelectedModeThisSession:
+          hasUserSelectedModeThisSessionRef.current,
+        isCheckingProPlan,
+        isMobile,
+        subscription,
+        temporaryChatsEnabled,
+        userPresent: Boolean(user),
+      })
+    ) {
+      return;
+    }
+
+    agentFirstDefaultAppliedRef.current = true;
+    setChatModeState("agent");
+    setSandboxPreference(defaultLocalSandboxPreference!);
+    if (selectedModel !== "auto") {
+      setSelectedModelRaw("auto");
+    }
+
+    const now = new Date().toISOString();
+    captureAuthenticatedEvent("first_experience_exposed", {
+      experiment_key: "free_agent_first_v1",
+      variant: "agent_first",
+      subscription,
+      has_local_sandbox: hasLocalSandbox,
+      sandbox_preference: defaultLocalSandboxPreference,
+      surface: "new_chat",
+      previous_saved_mode: false,
+      current_mode_before: chatMode,
+      $set_once: {
+        first_experience_variant: "agent_first",
+        first_experience_exposed_at: now,
+      },
+    });
+  }, [
+    chatMode,
+    defaultLocalSandboxPreference,
+    hasLocalSandbox,
+    isCheckingProPlan,
+    isMobile,
+    selectedModel,
+    setSandboxPreference,
+    subscription,
+    temporaryChatsEnabled,
+    user,
+  ]);
+
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
     if (typeof window === "undefined") return false;
