@@ -76,6 +76,9 @@ const isMediaFile = (mediaType?: string) =>
   mediaType &&
   (isSupportedImageMediaType(mediaType) || mediaType === "application/pdf");
 
+const isImageMediaType = (mediaType?: string) =>
+  typeof mediaType === "string" && mediaType.toLowerCase().startsWith("image/");
+
 const convertUrlToBase64DataUrl = async (
   url: string,
   mediaType: string,
@@ -209,6 +212,9 @@ const imageOmittedText = (
 ) =>
   `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: ${(sizeBytes / (1024 * 1024)).toFixed(1)} MB exceeds the ${limitBytes / (1024 * 1024)} MB per-image limit]`;
 
+const untrustedImageUrlOmittedText = (name: unknown) =>
+  `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: URL-backed image attachments must be reattached before they can be sent to the model]`;
+
 /**
  * Replace non-stored image file parts whose declared size exceeds Anthropic's
  * 5 MiB per-image limit with a short text note. Stored `fileId` images are
@@ -235,6 +241,39 @@ const replaceOversizedImageParts = (messages: UIMessage[]) => {
           (part as any).size,
           MAX_IMAGE_SIZE,
         ),
+      };
+    });
+  });
+};
+
+/**
+ * Legacy URL-only image parts are provider-visible but cannot be owner-checked
+ * or safely size-probed server-side. Replace them before OpenRouter can
+ * download an oversized image and fail the request with a provider 413.
+ */
+const replaceUntrustedImageUrlParts = (messages: UIMessage[]) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = (msg.parts as any[]).map((part) => {
+      if (
+        !isFilePart(part) ||
+        !isImageMediaType(part.mediaType) ||
+        typeof (part as any).fileId === "string" ||
+        typeof (part as any).url !== "string"
+      ) {
+        return part;
+      }
+
+      logger.warn("untrusted_image_url_attachment_omitted", {
+        event: "untrusted_image_url_attachment_omitted",
+        service: "chat-handler",
+        media_type: part.mediaType,
+        mode: "provider-prep",
+      });
+
+      return {
+        type: "text",
+        text: untrustedImageUrlOmittedText((part as any).name),
       };
     });
   });
@@ -542,6 +581,7 @@ export const processMessageFiles = async (
   if (mode !== "agent") {
     replaceOversizedImageParts(updatedMessages);
   }
+  replaceUntrustedImageUrlParts(updatedMessages);
 
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
