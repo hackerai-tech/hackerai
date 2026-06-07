@@ -4,6 +4,7 @@ import {
   isAuthVerifierMissingError,
   isAuthCookieMissingError,
   isMissingRequiredAuthParameterError,
+  isOAuthStateMismatchError,
   isOauthCodeAlreadyExchangedError,
   isRecoverableAuthkitCallbackErrorLog,
   withRecoverableAuthkitCallbackErrorSuppressed,
@@ -66,11 +67,20 @@ describe("authkit callback logging", () => {
     ).toBe(true);
   });
 
-  it("does not match other AuthKit callback errors", () => {
+  it("matches OAuth state mismatch callback errors", () => {
+    const error = new Error("OAuth state mismatch");
+
+    expect(isOAuthStateMismatchError(error)).toBe(true);
+    expect(
+      isRecoverableAuthkitCallbackErrorLog(["[AuthKit callback error]", error]),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated AuthKit callback errors", () => {
     expect(
       isRecoverableAuthkitCallbackErrorLog([
         "[AuthKit callback error]",
-        new Error("OAuth state mismatch"),
+        new Error("OAuth provider unavailable"),
       ]),
     ).toBe(false);
   });
@@ -127,6 +137,10 @@ describe("authkit callback logging", () => {
       console.error(
         "[AuthKit callback error]",
         new Error("Missing required auth parameter"),
+      );
+      console.error(
+        "[AuthKit callback error]",
+        new Error("OAuth state mismatch"),
       );
       console.error(
         "[AuthKit callback error]",
