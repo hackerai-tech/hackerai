@@ -261,6 +261,33 @@ describe("processMessageFiles image size guards", () => {
     });
   });
 
+  it("omits inline URL image file parts without fileId before provider use", async () => {
+    const fetchSpy = jest.fn();
+    global.fetch = fetchSpy as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        name: "legacy-huge.png",
+        url: "https://example.com/legacy-huge.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(result.messages)).not.toContain(
+      "https://example.com/legacy-huge.png",
+    );
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "legacy-huge.png" omitted: URL-backed image attachments must be reattached before they can be sent to the model]',
+    });
+  });
+
   it("stages oversized Agent images into the sandbox instead of sending them inline", async () => {
     mockConvexAction.mockResolvedValue(["https://storage.example/large.png"]);
     global.fetch = jest.fn(async () => {
