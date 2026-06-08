@@ -2,8 +2,19 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {},
 }));
 
+const mockConvexQuery = jest.fn();
+const mockConvexMutation = jest.fn();
+
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({
+    query: mockConvexQuery,
+    mutation: mockConvexMutation,
+  }),
+}));
+
 import {
   filterConnectionsByPresence,
+  HybridSandboxManager,
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
 import {
@@ -124,5 +135,49 @@ describe("presenceHasConnectionId", () => {
         info: { connectionId: "conn-legacy" },
       }),
     ).toBe("conn-legacy");
+  });
+});
+
+describe("HybridSandboxManager browser automation prompt", () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    mockConvexQuery.mockReset();
+    mockConvexMutation.mockReset();
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("uses a cmd-compatible browser probe for Windows local contexts", async () => {
+    mockConvexQuery.mockResolvedValue([
+      makeConnection({
+        connectionId: "desktop-conn",
+        name: "Desktop",
+        isDesktop: true,
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "11",
+          hostname: "windows-box",
+        },
+      }),
+    ]);
+
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    const context = await manager.getSandboxContextForPrompt();
+
+    expect(context).toContain("where agent-browser && agent-browser --version");
+    expect(context).not.toContain("command -v agent-browser");
   });
 });

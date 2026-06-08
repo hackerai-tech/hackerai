@@ -77,6 +77,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain(
       "All operations execute in isolated sandbox containers",
     );
+    expect(prompt).not.toContain(
+      "agent-browser is installed in the cloud sandbox",
+    );
   });
 
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {

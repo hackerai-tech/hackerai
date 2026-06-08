@@ -622,6 +622,10 @@ export class HybridSandboxManager implements SandboxManager {
         platform === "win32"
           ? "C:\\temp\\hackerai-upload"
           : "/tmp/hackerai-upload";
+      const agentBrowserProbe =
+        platform === "win32"
+          ? "where agent-browser && agent-browser --version"
+          : "command -v agent-browser && agent-browser --version";
 
       return `<sandbox_environment>
 IMPORTANT: You are connected to a LOCAL machine in DANGEROUS MODE. Commands run directly on the host OS without Docker isolation.
@@ -640,6 +644,12 @@ Security Warning:
 - Be careful with destructive commands
 
 Available tools depend on what's installed on the host system.
+
+Browser Automation:
+- Chromium and agent-browser are preinstalled only in the Cloud sandbox.
+- On this host, browser automation is host-dependent. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
+- Use agent-browser only if it is already installed. Do not install browser automation packages on the host unless the user explicitly asks.
+- If agent-browser is unavailable, continue with other installed tools when possible or tell the user they can switch to the Cloud sandbox for the preinstalled browser workflow.
 </sandbox_environment>`;
     }
 

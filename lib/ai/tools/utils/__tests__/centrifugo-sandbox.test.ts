@@ -645,6 +645,31 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain("DANGEROUS MODE");
       expect(context).toContain("Linux");
       expect(context).toContain("pentest-box");
+      expect(context).toContain("Browser automation is host-dependent");
+      expect(context).toContain(
+        "command -v agent-browser && agent-browser --version",
+      );
+      expect(context).toContain(
+        "do not install browser automation packages on the host unless the user explicitly asks",
+      );
+    });
+
+    it("uses a cmd-compatible browser probe on Windows", () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "11",
+          hostname: "windows-box",
+        },
+      });
+
+      const context = sandbox.getSandboxContext();
+
+      expect(context).toContain(
+        "where agent-browser && agent-browser --version",
+      );
+      expect(context).not.toContain("command -v agent-browser");
     });
 
     it("returns null without osInfo", () => {

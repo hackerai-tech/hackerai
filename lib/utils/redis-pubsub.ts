@@ -1,12 +1,10 @@
-import { createClient, type RedisClientType } from "redis";
-
-type RedisClient = RedisClientType;
+import { createClient } from "redis";
 
 /**
  * Create a dedicated subscriber client for a specific channel.
  * Each subscription needs its own client in Redis pub/sub.
  */
-export const createRedisSubscriber = async (): Promise<RedisClient | null> => {
+export async function createRedisSubscriber() {
   const redisUrl = process.env.REDIS_URL;
 
   if (!redisUrl) {
@@ -24,7 +22,7 @@ export const createRedisSubscriber = async (): Promise<RedisClient | null> => {
     console.warn("Failed to connect Redis subscriber:", error);
     return null;
   }
-};
+}
 
 /**
  * Get the cancellation channel name for a chat.

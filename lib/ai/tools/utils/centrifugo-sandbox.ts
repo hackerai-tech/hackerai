@@ -158,12 +158,18 @@ export class CentrifugoSandbox extends EventEmitter {
         platform === "win32"
           ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
           : `Commands are invoked via /bin/bash -c.`;
+      const agentBrowserProbe =
+        platform === "win32"
+          ? "where agent-browser && agent-browser --version"
+          : "command -v agent-browser && agent-browser --version";
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 ${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
-- Process management (can affect host system)${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+- Process management (can affect host system)
+
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;
