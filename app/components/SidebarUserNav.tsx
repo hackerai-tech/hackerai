@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Gift,
   X,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -116,12 +117,9 @@ const ReferralSidebarCard = ({
         type="button"
         onClick={onOpen}
         aria-label="Refer a friend and earn credits per paid referral"
-        className="bg-muted/50 hover:bg-muted/80 border-sidebar-border flex w-full cursor-pointer items-center gap-3 rounded-xl border p-3 pr-9 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="bg-muted/50 hover:bg-muted/80 border-sidebar-border hover:border-sidebar-ring flex w-full cursor-pointer items-center gap-3 rounded-xl border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        <div className="bg-background/70 border-sidebar-border flex size-8 shrink-0 items-center justify-center rounded-full border">
-          <Gift className="size-4" />
-        </div>
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <p className="text-foreground truncate text-sm font-medium leading-none">
             Refer a friend
           </p>
@@ -129,13 +127,16 @@ const ReferralSidebarCard = ({
             Earn credits per paid referral
           </p>
         </div>
+        <div className="bg-background/70 border-sidebar-border flex size-8 shrink-0 items-center justify-center rounded-full border">
+          <Gift className="size-4" />
+        </div>
       </button>
       <button
         type="button"
         onClick={handleDismiss}
         aria-label="Dismiss referral card"
         title="Dismiss"
-        className="bg-background/80 text-muted-foreground hover:bg-background hover:text-foreground border-sidebar-border absolute top-2 right-2 flex size-6 items-center justify-center rounded-full border opacity-100 shadow-sm transition-[opacity,colors] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/referral-card:opacity-100"
+        className="bg-background/80 text-muted-foreground hover:bg-background hover:text-foreground border-sidebar-border absolute -top-2 -right-2 z-10 flex size-6 items-center justify-center rounded-full border opacity-100 shadow-sm transition-[opacity,colors] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/referral-card:opacity-100"
       >
         <X className="size-3.5" />
       </button>
@@ -170,36 +171,56 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
       surface: "sidebar_upgrade_banner",
       source: "sidebar",
       from_tier: subscription,
-      cta_text: "Upgrade now",
+      cta_text: "Upgrade to Pro",
     });
   };
 
+  if (isCollapsed) {
+    return (
+      <div className="mb-1">
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-testid="upgrade-button-collapsed"
+                variant="secondary"
+                size="sm"
+                className="h-8 w-full border-0 bg-premium-bg px-2 text-premium-text hover:bg-premium-hover"
+                onClick={handleUpgrade}
+                aria-label="Upgrade to Pro"
+              >
+                <Zap className="size-4 fill-current" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Upgrade to Pro</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+    );
+  }
+
   return (
-    <div className="relative">
-      {!isCollapsed && (
-        <div className="relative rounded-t-2xl bg-premium-bg backdrop-blur-sm transition-all duration-200">
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={handleUpgrade}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleUpgrade();
-              }
-            }}
-            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-premium-hover transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
-            aria-label="Upgrade your plan"
-          >
-            <span className="flex items-center gap-2.5">
-              <Sparkle className="h-4 w-4 text-premium-text fill-current" />
-              <span className="text-xs font-medium text-premium-text">
-                Upgrade your plan
-              </span>
-            </span>
-          </div>
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={handleUpgrade}
+        aria-label="Upgrade to Pro and unlock more features"
+        className="bg-muted/50 hover:bg-muted/80 border-sidebar-border hover:border-violet-500/70 dark:hover:border-violet-400/70 flex w-full cursor-pointer items-center gap-3 rounded-xl border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <p className="text-foreground truncate text-sm font-medium leading-none">
+            Upgrade to Pro
+          </p>
+          <p className="text-muted-foreground truncate text-xs">
+            Unlock more features
+          </p>
         </div>
-      )}
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-premium-bg text-premium-text">
+          <Zap className="size-4 fill-current" />
+        </div>
+      </button>
     </div>
   );
 };
@@ -280,9 +301,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   ]);
 
   if (!user) return null;
-
-  // Determine if user has pro subscription
-  const isProUser = subscription !== "free";
 
   const handleLogOut = () => {
     clientLogout();
@@ -367,37 +385,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
       {/* Upgrade banner above user nav */}
       <UpgradeBanner isCollapsed={isCollapsed} />
-
-      {/* Upgrade button for collapsed state */}
-      {isCollapsed && !isCheckingProPlan && !isProUser && (
-        <div className="mb-1">
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  data-testid="upgrade-button-collapsed"
-                  variant="secondary"
-                  size="sm"
-                  className="w-full h-8 px-2 bg-premium-bg text-premium-text hover:bg-premium-hover border-0"
-                  onClick={() =>
-                    redirectToPricing({
-                      surface: "sidebar_collapsed_upgrade_button",
-                      source: "sidebar",
-                      from_tier: subscription,
-                      cta_text: "Upgrade Plan",
-                    })
-                  }
-                >
-                  <Sparkle className="h-4 w-4 fill-current" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                <p>Upgrade Plan</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </div>
-      )}
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
