@@ -28,12 +28,71 @@ type SandboxUploadResult = {
   pathRewrites: SandboxFilePathRewrite[];
 };
 
+type SandboxCommandResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  error?: string;
+};
+
 const logLocalAttachmentDebug = (
   event: string,
   data: Record<string, unknown>,
 ) => {
   if (process.env.NODE_ENV !== "development") return;
   console.info(`[local-attachments] ${event}`, data);
+};
+
+const extractCommandExitCode = (error: unknown): number | null => {
+  if (typeof error === "object" && error !== null) {
+    const maybeExitCode = (error as { exitCode?: unknown }).exitCode;
+    if (typeof maybeExitCode === "number") return maybeExitCode;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/\bexit status (\d+)\b/i);
+  if (!match) return null;
+
+  return Number.parseInt(match[1], 10);
+};
+
+const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
+  const exitCode = extractCommandExitCode(error);
+  if (exitCode === null) return null;
+
+  const commandError =
+    typeof error === "object" && error !== null
+      ? (error as { stdout?: unknown; stderr?: unknown })
+      : {};
+  const message = error instanceof Error ? error.message : String(error);
+
+  return {
+    stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
+    stderr:
+      typeof commandError.stderr === "string" && commandError.stderr
+        ? commandError.stderr
+        : message,
+    exitCode,
+    error: message,
+  };
+};
+
+const runSandboxCommand = async (
+  sandbox: any,
+  command: string,
+): Promise<SandboxCommandResult> => {
+  try {
+    const result = await sandbox.commands.run(command);
+    return {
+      stdout: result?.stdout ?? "",
+      stderr: result?.stderr ?? "",
+      exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
+    };
+  } catch (error) {
+    const commandResult = commandErrorToResult(error);
+    if (commandResult) return commandResult;
+    throw error;
+  }
 };
 
 /**
@@ -302,7 +361,7 @@ const downloadFileToSandbox = async (
     `curl -fsSL --retry 3 --retry-all-errors --retry-delay 1 --create-dirs ` +
     `-o '${escapedLocalPath}' '${escapedUrl}'`;
 
-  let result = await sandbox.commands.run(curlCmd);
+  let result = await runSandboxCommand(sandbox, curlCmd);
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (result.exitCode === 0) return;
     if (
@@ -315,14 +374,15 @@ const downloadFileToSandbox = async (
       `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${localPath}, retrying`,
     );
     await new Promise((r) => setTimeout(r, 500 * attempt));
-    result = await sandbox.commands.run(curlCmd);
+    result = await runSandboxCommand(sandbox, curlCmd);
   }
 
   // Best-effort diagnostics probe — never let this mask the original error.
   let diagnostics = "";
   try {
-    const probe = await sandbox.commands.run(
-      `df -h /home/user; ls -la /home/user/upload 2>/dev/null; id`,
+    const probe = await runSandboxCommand(
+      sandbox,
+      `df -h /home/user 2>&1 || true; ls -la /home/user/upload 2>&1 || true; id 2>&1 || true`,
     );
     diagnostics = (probe.stdout || "").slice(0, 1024);
   } catch {
@@ -364,15 +424,27 @@ const copyLocalFileToSandbox = async (
 const shellQuote = (value: string): string =>
   `'${value.replace(/'/g, "'\\''")}'`;
 
+const UPLOAD_PATH_FALLBACK_PREFIXES = [
+  "/tmp/hackerai-upload/",
+  "/home/user/upload/",
+];
+
+const UPLOAD_PATH_FALLBACK_ERROR_PATTERN =
+  /permission denied|read-only file system|cannot create directory|failed to create directory|exitCode:\s*23|exit status 23|curl:\s*\(23\)|write error|failed writing body|failure writing output|no space left on device/i;
+
 const shouldTryUploadPathFallback = (
   localPath: string,
   error: unknown,
 ): boolean => {
-  if (!localPath.startsWith("/tmp/hackerai-upload/")) return false;
+  if (
+    !UPLOAD_PATH_FALLBACK_PREFIXES.some((prefix) =>
+      localPath.startsWith(prefix),
+    )
+  ) {
+    return false;
+  }
   const message = error instanceof Error ? error.message : String(error);
-  return /permission denied|read-only file system|cannot create directory|failed to create directory/i.test(
-    message,
-  );
+  return UPLOAD_PATH_FALLBACK_ERROR_PATTERN.test(message);
 };
 
 const resolveWritableUploadFallbackPath = async (
