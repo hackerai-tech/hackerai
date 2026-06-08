@@ -6,10 +6,7 @@ import {
   createRedisSubscriber,
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
-import type { RedisClientType } from "redis";
 import { phLogger } from "@/lib/posthog/server";
-
-type RedisClient = RedisClientType;
 
 type PollOptions = {
   chatId: string;
@@ -121,7 +118,7 @@ export const createCancellationSubscriber = async ({
   onStop,
   pollIntervalMs = 1000,
 }: PollOptions): Promise<CancellationSubscriberResult> => {
-  let subscriber: RedisClient | null = null;
+  let subscriber: Awaited<ReturnType<typeof createRedisSubscriber>> = null;
   let stopped = false;
   let onStopCalled = false;
   const channel = getCancelChannel(chatId);
