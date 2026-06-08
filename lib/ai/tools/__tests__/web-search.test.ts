@@ -96,6 +96,83 @@ describe("web_search", () => {
     expect(summary).not.toContain("a0611dc9caa93928");
   });
 
+  it("returns a validation message for blank queries without calling Perplexity or logging", async () => {
+    const onToolCost = jest.fn();
+    global.fetch = jest.fn();
+
+    const result = await runTool(createWebSearch(makeContext(onToolCost)), {
+      queries: ["", "   ", "\n"],
+      brief: "search with blank input",
+    });
+
+    expect(result).toBe(
+      "Error performing web search: Provide at least one non-empty query.",
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onToolCost).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("trims and drops blank query variants before calling Perplexity", async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      response(
+        JSON.stringify({
+          id: "search-1",
+          results: [
+            {
+              title: "Perplexity status",
+              url: "https://status.perplexity.ai",
+              snippet: "Service status page",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    const result = await runTool(createWebSearch(makeContext()), {
+      queries: [" ", " perplexity status ", "\n"],
+      brief: "check provider status",
+    });
+
+    const requestInit = (global.fetch as jest.Mock).mock
+      .calls[0][1] as RequestInit;
+    expect(JSON.parse(requestInit.body as string)).toMatchObject({
+      query: "perplexity status",
+    });
+    expect(result).toEqual([
+      {
+        title: "Perplexity status",
+        url: "https://status.perplexity.ai",
+        content: "Service status page",
+        date: null,
+        lastUpdated: null,
+      },
+    ]);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("rejects overlong queries without calling Perplexity or logging", async () => {
+    const onToolCost = jest.fn();
+    global.fetch = jest.fn();
+
+    const result = await runTool(createWebSearch(makeContext(onToolCost)), {
+      queries: ["x".repeat(8193)],
+      brief: "search with overlong input",
+    });
+
+    expect(result).toBe(
+      "Error performing web search: Each query must be 8192 characters or fewer.",
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onToolCost).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
   it("retries a transient 504 and returns results when a later attempt succeeds", async () => {
     jest.useFakeTimers();
 
