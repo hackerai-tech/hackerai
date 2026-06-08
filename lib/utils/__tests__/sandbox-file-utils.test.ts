@@ -182,6 +182,86 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("normalizes thrown E2B curl write errors and retries in a writable directory", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const run = jest.fn(async (command: string) => {
+      if (command.includes("curl") && command.includes("/home/user/upload")) {
+        const error = new Error("exit status 23") as Error & {
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+        };
+        error.exitCode = 23;
+        error.stdout = "";
+        error.stderr = "curl: (23) Failure writing output to destination";
+        throw error;
+      }
+
+      if (command.includes("for base in")) {
+        return {
+          exitCode: 0,
+          stdout: "/tmp/hackerai-upload/report.pdf",
+          stderr: "",
+        };
+      }
+
+      if (
+        command.includes("curl") &&
+        command.includes("/tmp/hackerai-upload")
+      ) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+
+      if (command.includes("df -h /home/user")) {
+        return {
+          exitCode: 0,
+          stdout: "Filesystem Size Used Avail Use% Mounted on\n",
+          stderr: "",
+        };
+      }
+
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/report.pdf",
+            localPath: "/home/user/upload/report.pdf",
+          },
+        ],
+        async () => ({
+          commands: { run },
+        }),
+      );
+
+      expect(result).toEqual({
+        failedCount: 0,
+        pathRewrites: [
+          {
+            from: "/home/user/upload/report.pdf",
+            to: "/tmp/hackerai-upload/report.pdf",
+          },
+        ],
+      });
+
+      const homeCurlAttempts = run.mock.calls.filter(([command]) =>
+        String(command).includes("-o '/home/user/upload/report.pdf'"),
+      );
+      const fallbackCurlAttempts = run.mock.calls.filter(([command]) =>
+        String(command).includes("-o '/tmp/hackerai-upload/report.pdf'"),
+      );
+      expect(homeCurlAttempts).toHaveLength(3);
+      expect(fallbackCurlAttempts).toHaveLength(1);
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
   it("blocks internal URL downloads before invoking the sandbox", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, "error")
