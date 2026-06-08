@@ -23,6 +23,16 @@ const PERPLEXITY_SEARCH_URL = "https://api.perplexity.ai/search";
 const WEB_SEARCH_MAX_ATTEMPTS = 3;
 const WEB_SEARCH_RETRY_BASE_DELAY_MS = 300;
 const WEB_SEARCH_RETRY_JITTER_MS = 75;
+const PERPLEXITY_QUERY_MAX_LENGTH = 8192;
+const EMPTY_QUERY_TOOL_ERROR =
+  "Error performing web search: Provide at least one non-empty query.";
+const QUERY_TOO_LONG_TOOL_ERROR = `Error performing web search: Each query must be ${PERPLEXITY_QUERY_MAX_LENGTH} characters or fewer.`;
+
+const webSearchQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PERPLEXITY_QUERY_MAX_LENGTH);
 
 const sleep = (delayMs: number, signal?: AbortSignal): Promise<void> => {
   if (delayMs <= 0) return Promise.resolve();
@@ -157,6 +167,22 @@ const fetchPerplexitySearch = async (
   throw new Error("Web search failed before any Perplexity response was read");
 };
 
+const normalizeSearchQueries = (
+  rawQueries: string[],
+): { queries: string[]; error?: string } => {
+  const queries = rawQueries.map((query) => query.trim()).filter(Boolean);
+
+  if (queries.length === 0) {
+    return { queries, error: EMPTY_QUERY_TOOL_ERROR };
+  }
+
+  if (queries.some((query) => query.length > PERPLEXITY_QUERY_MAX_LENGTH)) {
+    return { queries, error: QUERY_TOO_LONG_TOOL_ERROR };
+  }
+
+  return { queries: queries.slice(0, 3) };
+};
+
 export const createWebSearch = (context: ToolContext) => {
   const { userLocation, onToolCost } = context;
 
@@ -177,11 +203,11 @@ export const createWebSearch = (context: ToolContext) => {
 </instructions>`,
     inputSchema: z.object({
       queries: z
-        .array(z.string())
+        .array(webSearchQuerySchema)
         .min(1)
         .max(3)
         .describe(
-          "MAXIMUM 3 query variants (1-3 items only). Express the same search intent with different wording.",
+          "MAXIMUM 3 non-empty query variants (1-3 items only). Express the same search intent with different wording.",
         ),
       time: z
         .enum(["all", "past_day", "past_week", "past_month", "past_year"])
@@ -207,8 +233,10 @@ export const createWebSearch = (context: ToolContext) => {
       { abortSignal },
     ) => {
       try {
-        // Defensively cap at 3 queries in case the model sends more
-        const queries = rawQueries.slice(0, 3);
+        const { queries, error } = normalizeSearchQueries(rawQueries);
+        if (error) {
+          return error;
+        }
 
         const searchBody = buildPerplexitySearchBody(
           queries.length === 1 ? queries[0] : queries,
