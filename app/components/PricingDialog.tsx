@@ -545,6 +545,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   buttonClassName={freeButtonConfig.className}
                   onButtonClick={freeButtonConfig.onClick}
                   isButtonDisabled={freeButtonConfig.disabled}
+                  customClassName="order-2 md:order-none"
                   featureHeader={PLAN_HEADERS.free}
                 />
               )}
@@ -560,6 +561,9 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                 onButtonClick={proButtonConfig.onClick}
                 isButtonDisabled={proButtonConfig.disabled}
                 isButtonLoading={proButtonConfig.loading}
+                customClassName={
+                  !hasSubscription ? "order-1 md:order-none" : ""
+                }
                 featureHeader={PLAN_HEADERS.pro}
               />
 
@@ -574,7 +578,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                 onButtonClick={premiumButtonConfig.onClick}
                 isButtonDisabled={premiumButtonConfig.disabled}
                 isButtonLoading={premiumButtonConfig.loading}
-                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                customClassName="order-3 border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777] md:order-none"
                 badgeText="RECOMMENDED"
                 featureHeader={premiumFeatureHeader}
                 headerAction={
@@ -594,6 +598,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                 buttonVariant="default"
                 onButtonClick={handleTeamClick}
                 isButtonDisabled={false}
+                customClassName="order-4 md:order-none"
                 featureHeader={PLAN_HEADERS.team}
               />
             </div>
