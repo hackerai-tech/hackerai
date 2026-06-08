@@ -9,6 +9,7 @@ import {
   createWideEventBuilder,
   logger,
   type ChatWideEvent,
+  type ProviderRequestDiagnostics,
   type WideEventBuilder,
 } from "@/lib/logger";
 import type {
@@ -333,6 +334,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Record sanitized provider request shape for later error diagnosis.
+     */
+    recordProviderRequestDiagnostics(diagnostics: ProviderRequestDiagnostics) {
+      builder.setProviderRequestDiagnostics(diagnostics);
+    },
+
+    /**
      * Set cache metrics for the wide event
      */
     setCacheMetrics(metrics: {
@@ -361,8 +369,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
         userId?: string;
         subscription?: string;
         isTemporary?: boolean;
+        providerRequest?: ProviderRequestDiagnostics;
       },
     ) {
+      const { providerRequest, ...providerContext } = context;
       const details = extractErrorDetails(error);
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
@@ -375,9 +385,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
         chat_id: config.chatId,
         endpoint: config.endpoint,
         provider_error_category: category,
-        ...context,
+        ...providerContext,
         ...details,
         ...(attempts && { provider_attempts: attempts }),
+        ...(providerRequest && { provider_request: providerRequest }),
       };
 
       if (category === "stream_terminated" || category === "timeout") {
@@ -395,9 +406,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
         chatId: config.chatId,
         endpoint: config.endpoint,
         providerErrorCategory: category,
-        ...context,
+        ...providerContext,
         ...details,
         ...(attempts && { provider_attempts: attempts }),
+        ...(providerRequest && { provider_request: providerRequest }),
       };
 
       if (category === "stream_terminated" || category === "timeout") {

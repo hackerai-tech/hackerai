@@ -30,7 +30,6 @@ import {
   runSummarizationStep,
   writeContextUsage,
   getFallbackSlugs,
-  logOpenRouterFallbackIfFired,
   isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -72,6 +71,7 @@ import type { UsageRefundTracker } from "@/lib/rate-limit";
 import type { SummarizationTracker } from "@/lib/api/chat-stream-helpers";
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { createTrackedProvider } from "@/lib/ai/providers";
+import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -144,6 +144,151 @@ const toolResultsContainImageViewResult = (toolResults: unknown[]): boolean =>
     if (!isRecord(toolResult) || toolResult.toolName !== "file") return false;
     return isImageViewOutput(toolResult.output);
   });
+
+const ESTIMATED_BYTES_PER_TOKEN = 4;
+
+const incrementCount = (counts: Record<string, number>, key: string): void => {
+  counts[key] = (counts[key] ?? 0) + 1;
+};
+
+const getSerializedBytes = (value: unknown): number | undefined => {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  } catch {
+    return undefined;
+  }
+};
+
+const getContentType = (part: unknown): string => {
+  if (isRecord(part) && typeof part.type === "string") return part.type;
+  if (part == null) return "empty";
+  if (Array.isArray(part)) return "array";
+  return typeof part;
+};
+
+const summarizeContentTypes = (content: unknown): string[] => {
+  if (typeof content === "string") return content.trim() ? ["text"] : ["empty"];
+  if (!Array.isArray(content)) return [getContentType(content)];
+  if (content.length === 0) return ["empty"];
+  return content.map(getContentType);
+};
+
+const addContentPartCounts = (
+  content: unknown,
+  counts: Record<string, number>,
+): void => {
+  for (const type of summarizeContentTypes(content)) {
+    incrementCount(counts, type);
+  }
+};
+
+const contentHasToolCall = (content: unknown): boolean =>
+  Array.isArray(content) &&
+  content.some((part) => isRecord(part) && part.type === "tool-call");
+
+const summarizeProviderOptions = (
+  providerOptions: unknown,
+): Pick<
+  ProviderRequestDiagnostics,
+  | "reasoning_enabled"
+  | "reasoning_effort"
+  | "fallback_model_count"
+  | "fallback_model_slugs"
+  | "has_user_attribution"
+> => {
+  const openrouter =
+    isRecord(providerOptions) && isRecord(providerOptions.openrouter)
+      ? providerOptions.openrouter
+      : undefined;
+  const reasoning = isRecord(openrouter?.reasoning)
+    ? openrouter.reasoning
+    : undefined;
+  const fallbackModelSlugs = Array.isArray(openrouter?.models)
+    ? openrouter.models.filter(
+        (model): model is string => typeof model === "string",
+      )
+    : [];
+
+  return {
+    reasoning_enabled:
+      typeof reasoning?.enabled === "boolean" ? reasoning.enabled : undefined,
+    reasoning_effort:
+      typeof reasoning?.effort === "string" ? reasoning.effort : undefined,
+    fallback_model_count: fallbackModelSlugs.length,
+    fallback_model_slugs:
+      fallbackModelSlugs.length > 0 ? fallbackModelSlugs : undefined,
+    has_user_attribution: typeof openrouter?.user === "string",
+  };
+};
+
+const buildProviderRequestDiagnostics = (args: {
+  modelName: string;
+  requestedSlug?: string;
+  stepIndex: number;
+  source: ProviderRequestDiagnostics["source"];
+  messages: ModelMessage[];
+  providerOptions: unknown;
+  activeTools: readonly unknown[] | undefined;
+  availableToolCount: number;
+  contextUsage: { usedTokens: number; maxTokens: number };
+  systemTokens: number;
+  maxOutputTokens: number;
+  hasMultimodalToolResults: boolean;
+}): ProviderRequestDiagnostics => {
+  const roleCounts: Record<string, number> = {};
+  const contentPartCounts: Record<string, number> = {};
+
+  for (const message of args.messages) {
+    const messageRecord = message as Record<string, unknown>;
+    const role =
+      typeof messageRecord.role === "string" ? messageRecord.role : "unknown";
+    incrementCount(roleCounts, role);
+    addContentPartCounts(messageRecord.content, contentPartCounts);
+  }
+
+  const lastMessage = args.messages.at(-1) as
+    | Record<string, unknown>
+    | undefined;
+  const serializedBytes = getSerializedBytes(args.messages);
+  const contextUsedPercent =
+    args.contextUsage.maxTokens > 0
+      ? Math.round(
+          (args.contextUsage.usedTokens / args.contextUsage.maxTokens) * 1000,
+        ) / 10
+      : 0;
+
+  return {
+    model: args.modelName,
+    requested_model_slug: args.requestedSlug,
+    step_index: args.stepIndex,
+    source: args.source,
+    message_count: args.messages.length,
+    role_counts: roleCounts,
+    content_part_counts: contentPartCounts,
+    last_message_role:
+      typeof lastMessage?.role === "string" ? lastMessage.role : undefined,
+    last_message_content_types: summarizeContentTypes(lastMessage?.content),
+    trailing_assistant_has_tool_call:
+      lastMessage?.role === "assistant"
+        ? contentHasToolCall(lastMessage.content)
+        : undefined,
+    serialized_message_bytes: serializedBytes,
+    estimated_serialized_message_tokens:
+      serializedBytes != null
+        ? Math.ceil(serializedBytes / ESTIMATED_BYTES_PER_TOKEN)
+        : undefined,
+    context_used_tokens: args.contextUsage.usedTokens,
+    context_max_tokens: args.contextUsage.maxTokens,
+    context_used_percent: contextUsedPercent,
+    system_tokens: args.systemTokens,
+    max_output_tokens: args.maxOutputTokens,
+    tool_count: args.availableToolCount,
+    active_tool_count: args.activeTools?.length ?? args.availableToolCount,
+    active_tools_mode: args.activeTools ? "subset" : "all",
+    ...summarizeProviderOptions(args.providerOptions),
+    has_multimodal_tool_results: args.hasMultimodalToolResults,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Immutable context — everything the runner needs besides mutable state.
@@ -261,18 +406,54 @@ export async function createAgentStream(
     }
     return repair.messages as ModelMessage[];
   };
+  let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
+  const recordProviderRequestDiagnostics = (args: {
+    stepIndex: number;
+    source: ProviderRequestDiagnostics["source"];
+    messages: ModelMessage[];
+    providerOptions: unknown;
+    activeTools: Array<keyof typeof ctx.tools> | undefined;
+  }) => {
+    latestProviderRequestDiagnostics = buildProviderRequestDiagnostics({
+      modelName,
+      requestedSlug,
+      stepIndex: args.stepIndex,
+      source: args.source,
+      messages: args.messages,
+      providerOptions: args.providerOptions,
+      activeTools: args.activeTools,
+      availableToolCount: Object.keys(ctx.tools).length,
+      contextUsage: state.ctxUsage,
+      systemTokens: ctx.systemPromptTokens,
+      maxOutputTokens,
+      hasMultimodalToolResults: streamHasImageViewResults,
+    });
+    ctx.chatLogger?.recordProviderRequestDiagnostics(
+      latestProviderRequestDiagnostics,
+    );
+    return latestProviderRequestDiagnostics;
+  };
+  const initialProviderOptions = getStepProviderOptions();
+  const initialModelMessages = prepareProviderMessages(
+    await convertToModelMessages(state.finalMessages, { tools: ctx.tools }),
+  );
+  recordProviderRequestDiagnostics({
+    stepIndex: 0,
+    source: "initial",
+    messages: initialModelMessages,
+    providerOptions: initialProviderOptions,
+    activeTools: initialActiveTools,
+  });
 
   return streamText({
     model: requestedLanguageModel,
     maxOutputTokens,
     system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
-    messages: prepareProviderMessages(
-      await convertToModelMessages(state.finalMessages, { tools: ctx.tools }),
-    ),
+    messages: initialModelMessages,
     tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal: ctx.abortController.signal,
-    providerOptions: getStepProviderOptions(),
+    providerOptions: initialProviderOptions,
 
     prepareStep: async ({ steps, messages }) => {
       try {
@@ -325,14 +506,24 @@ export async function createAgentStream(
             if (result.contextUsage) {
               state.ctxUsage = result.contextUsage;
             }
+            const activeTools = await getActiveTools();
+            const providerOptions = getStepProviderOptions();
+            const preparedMessages = prepareProviderMessages(
+              await convertToModelMessages(result.summarizedMessages, {
+                tools: ctx.tools,
+              }),
+            );
+            recordProviderRequestDiagnostics({
+              stepIndex: steps.length + 1,
+              source: "summarized_prepare_step",
+              messages: preparedMessages,
+              providerOptions,
+              activeTools,
+            });
             return {
-              activeTools: await getActiveTools(),
-              providerOptions: getStepProviderOptions(),
-              messages: prepareProviderMessages(
-                await convertToModelMessages(result.summarizedMessages, {
-                  tools: ctx.tools,
-                }),
-              ),
+              activeTools,
+              providerOptions,
+              messages: preparedMessages,
             };
           }
         }
@@ -365,15 +556,25 @@ export async function createAgentStream(
           }
         }
 
+        const activeTools = await getActiveTools();
+        const providerOptions = getStepProviderOptions();
+        const preparedMessages = prepareProviderMessages(
+          addCacheBreakpointToLastUserMessage(
+            updatedMessages,
+            modelName,
+          ) as ModelMessage[],
+        ) as typeof messages;
+        recordProviderRequestDiagnostics({
+          stepIndex: steps.length + 1,
+          source: "prepare_step",
+          messages: preparedMessages as ModelMessage[],
+          providerOptions,
+          activeTools,
+        });
         return {
-          activeTools: await getActiveTools(),
-          providerOptions: getStepProviderOptions(),
-          messages: prepareProviderMessages(
-            addCacheBreakpointToLastUserMessage(
-              updatedMessages,
-              modelName,
-            ) as ModelMessage[],
-          ) as typeof messages,
+          activeTools,
+          providerOptions,
+          messages: preparedMessages,
         };
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -505,12 +706,6 @@ export async function createAgentStream(
       const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
       });
-      logOpenRouterFallbackIfFired({
-        fallbackSlugs,
-        requestedSlug,
-        responseModel: state.responseModel,
-        chatId: ctx.chatId,
-      });
       if (state.responseModel && fallbackSlugs.includes(state.responseModel)) {
         ctx.chatLogger?.recordModelFallback({
           requested: requestedSlug,
@@ -547,6 +742,7 @@ export async function createAgentStream(
           userId: ctx.userId,
           subscription: ctx.subscription,
           isTemporary: ctx.temporary,
+          providerRequest: latestProviderRequestDiagnostics,
         });
       }
       if (!ctx.usageTracker.hasUsage) {
