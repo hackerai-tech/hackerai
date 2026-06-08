@@ -10,6 +10,35 @@
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 
+export interface ProviderRequestDiagnostics {
+  model: string;
+  requested_model_slug?: string;
+  step_index: number;
+  source: "initial" | "prepare_step" | "summarized_prepare_step";
+  message_count: number;
+  role_counts: Record<string, number>;
+  content_part_counts: Record<string, number>;
+  last_message_role?: string;
+  last_message_content_types?: string[];
+  trailing_assistant_has_tool_call?: boolean;
+  serialized_message_bytes?: number;
+  estimated_serialized_message_tokens?: number;
+  context_used_tokens: number;
+  context_max_tokens: number;
+  context_used_percent: number;
+  system_tokens: number;
+  max_output_tokens: number;
+  tool_count: number;
+  active_tool_count: number;
+  active_tools_mode: "all" | "subset";
+  reasoning_enabled?: boolean;
+  reasoning_effort?: string;
+  fallback_model_count: number;
+  fallback_model_slugs?: string[];
+  has_user_attribution: boolean;
+  has_multimodal_tool_results: boolean;
+}
+
 /**
  * Wide event structure for chat/agent API requests
  */
@@ -164,6 +193,10 @@ export interface ChatWideEvent {
 
   // Tool execution
   tool_call_count?: number;
+
+  // Sanitized shape of the most recent model request prepared for the provider.
+  // Never contains prompt text, tool arguments, file contents, or user ids.
+  provider_request?: ProviderRequestDiagnostics;
 
   // Outcome. `partial` means the request returned 200 but the provider stream
   // errored — either we recovered via fallback or we sent an error chunk to
@@ -362,6 +395,14 @@ export class WideEventBuilder {
     this.event.model.actual = fallback.served;
     this.event.model.fallback_triggered = true;
     this.event.model.fallback_chain = fallback.chain;
+    return this;
+  }
+
+  /**
+   * Record the sanitized shape of the latest provider request.
+   */
+  setProviderRequestDiagnostics(diagnostics: ProviderRequestDiagnostics): this {
+    this.event.provider_request = diagnostics;
     return this;
   }
 

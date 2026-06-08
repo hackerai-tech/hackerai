@@ -573,28 +573,6 @@ export function buildProviderOptions(
   } as const;
 }
 
-/**
- * Logs `[fallback-fired]` when the served model is one of the slugs we
- * explicitly listed in the OpenRouter `models` chain. We can't use a naive
- * `served !== requested` check because OpenRouter sometimes returns the
- * requested model under a different label (dated snapshots, reordered tokens)
- * — that's not a fallback. Membership in our chain is the authoritative
- * signal.
- */
-export function logOpenRouterFallbackIfFired(args: {
-  fallbackSlugs: readonly string[];
-  responseModel: string | undefined;
-  requestedSlug: string | undefined;
-  chatId: string;
-}) {
-  const { fallbackSlugs, responseModel, requestedSlug, chatId } = args;
-  if (!responseModel) return;
-  if (!fallbackSlugs.includes(responseModel)) return;
-  console.log(
-    `[fallback-fired] requested=${requestedSlug ?? "?"} served=${responseModel} chat=${chatId}`,
-  );
-}
-
 const ANTHROPIC_CACHE_BREAKPOINT = {
   openrouter: { cacheControl: { type: "ephemeral" as const } },
 };

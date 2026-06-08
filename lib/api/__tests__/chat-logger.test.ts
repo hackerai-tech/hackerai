@@ -356,6 +356,81 @@ describe("createChatLogger provider stream termination", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("attaches sanitized provider request diagnostics to provider errors", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_shape",
+        endpoint: "/api/agent-long",
+      });
+      const providerRequest = {
+        model: "model-opus-4.6",
+        requested_model_slug: "anthropic/claude-opus-4.6",
+        step_index: 4,
+        source: "prepare_step",
+        message_count: 9,
+        role_counts: { user: 5, assistant: 4 },
+        content_part_counts: { text: 6, "tool-result": 3 },
+        last_message_role: "user",
+        last_message_content_types: ["tool-result"],
+        serialized_message_bytes: 680000,
+        estimated_serialized_message_tokens: 170000,
+        context_used_tokens: 171844,
+        context_max_tokens: 200000,
+        context_used_percent: 85.9,
+        system_tokens: 12000,
+        max_output_tokens: 64000,
+        tool_count: 12,
+        active_tool_count: 12,
+        active_tools_mode: "all",
+        reasoning_enabled: true,
+        fallback_model_count: 2,
+        fallback_model_slugs: ["google/gemini-3.5-flash", "x-ai/grok-4.3"],
+        has_user_attribution: true,
+        has_multimodal_tool_results: true,
+      };
+      const err = {
+        message: "Provider request failed",
+        responseBody: JSON.stringify({
+          error: {
+            code: 502,
+            message: "Invalid arguments passed to the model.",
+          },
+        }),
+        requestBodyValues: {
+          messages: [{ role: "user", content: "SECRET_PROMPT_TEXT" }],
+        },
+      };
+
+      chatLogger.recordProviderRequestDiagnostics(providerRequest);
+      chatLogger.recordProviderError(err, {
+        mode: "agent",
+        model: "model-opus-4.6",
+        requestedModelSlug: "anthropic/claude-opus-4.6",
+        providerRequest,
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.provider_request).toMatchObject({
+        step_index: 4,
+        message_count: 9,
+        estimated_serialized_message_tokens: 170000,
+        content_part_counts: { text: 6, "tool-result": 3 },
+      });
+      expect(wideEvent.provider_error).not.toHaveProperty("request");
+      expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
+      expect(errorSpy.mock.calls.flat().map(String).join("\n")).not.toContain(
+        "SECRET_PROMPT_TEXT",
+      );
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger ChatSDKError metadata", () => {
