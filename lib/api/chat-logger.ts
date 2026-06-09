@@ -82,9 +82,16 @@ function posthogProviderException(
   error: unknown,
   details: Record<string, unknown>,
 ): Error {
-  if (error instanceof Error) return error;
   const message = getProviderDiagnosticMessage(details);
-  return new Error(message);
+  if (!(error instanceof Error)) return new Error(message);
+  if (message === "Provider streaming error" || message === error.message) {
+    return error;
+  }
+
+  const enriched = new Error(message);
+  enriched.name = error.name;
+  (enriched as Error & { cause?: unknown }).cause = error;
+  return enriched;
 }
 
 const truncateLogString = (value: string, maxLength = 500): string =>

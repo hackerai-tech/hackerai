@@ -501,6 +501,61 @@ describe("createChatLogger provider stream termination", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("enriches PostHog exception messages for Error provider failures", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_error_instance",
+        endpoint: "/api/chat",
+      });
+      const providerError = Object.assign(
+        new Error("Provider request failed"),
+        {
+          name: "AI_APICallError",
+          statusCode: 400,
+          responseBody: JSON.stringify({
+            id: "gen-error-instance",
+            error: {
+              code: 400,
+              message: "Provider returned error",
+              metadata: {
+                provider_name: "Anthropic",
+                raw: "tool_result without corresponding tool_use",
+              },
+            },
+          }),
+        },
+      );
+
+      chatLogger.recordProviderError(providerError, {
+        mode: "ask",
+        model: "model-opus-4.6",
+        requestedModelSlug: "anthropic/claude-opus-4.6",
+      });
+
+      const posthogErrorCall = errorSpy.mock.calls.find(
+        (call) =>
+          call[0] === "Provider streaming error" &&
+          typeof call[1] === "object" &&
+          call[1] !== null,
+      );
+      const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
+      const capturedError = fields?.error as
+        | (Error & { cause?: unknown })
+        | undefined;
+
+      expect(capturedError).toBeInstanceOf(Error);
+      expect(capturedError?.name).toBe("AI_APICallError");
+      expect(capturedError?.message).toBe(
+        "tool_result without corresponding tool_use",
+      );
+      expect(capturedError?.cause).toBe(providerError);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger ChatSDKError metadata", () => {
