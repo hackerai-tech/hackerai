@@ -427,12 +427,12 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     >
       <AlertDialogContent
         data-testid="high-cost-model-warning"
-        className="sm:max-w-[460px] border-amber-500/70 shadow-2xl ring-4 ring-amber-500/20 dark:border-amber-400/60"
+        className="sm:max-w-[460px]"
       >
-        <AlertDialogHeader className="gap-3">
-          <AlertDialogTitle className="flex items-center gap-3 text-xl">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300">
-              <AlertTriangle className="h-5 w-5" />
+        <AlertDialogHeader className="gap-2">
+          <AlertDialogTitle className="flex items-center gap-2 text-lg">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <AlertTriangle className="h-4 w-4" />
             </span>
             <span>High-cost model</span>
           </AlertDialogTitle>
@@ -440,7 +440,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
             can burn through {includedUsageLabel} much faster than Standard.
           </AlertDialogDescription>
-          <div className="rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-left text-sm font-medium leading-relaxed text-amber-950 shadow-sm dark:border-amber-400/40 dark:bg-amber-950/40 dark:text-amber-100">
+          <div className="rounded-md border border-border bg-muted px-3 py-2 text-left text-sm leading-relaxed text-muted-foreground">
             Some long requests can cost around $10 once {extraUsageCreditsLabel}{" "}
             are being used.
           </div>
@@ -449,10 +449,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
           <AlertDialogCancel onClick={handleDismissHighCostNotice}>
             Pick another model
           </AlertDialogCancel>
-          <AlertDialogAction
-            onClick={handleConfirmHighCostModel}
-            className="bg-amber-600 text-white hover:bg-amber-700 focus-visible:ring-amber-500/50 dark:bg-amber-500 dark:text-black dark:hover:bg-amber-400"
-          >
+          <AlertDialogAction onClick={handleConfirmHighCostModel}>
             Use {pendingHighCostNotice?.label ?? "model"}
           </AlertDialogAction>
         </AlertDialogFooter>
