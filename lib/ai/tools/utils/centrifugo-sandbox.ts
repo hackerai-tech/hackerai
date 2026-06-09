@@ -31,6 +31,8 @@ const IGNORED_MESSAGE_TYPES = new Set([
   "pty_error",
 ]);
 
+const FILE_DOWNLOAD_TIMEOUT_MS = 120000;
+
 export function parseSandboxMessage(
   data: unknown,
 ): CommandResponseMessage | null {
@@ -949,11 +951,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
       //   56 = failure receiving network data
       //   92 = HTTP/2 stream error
-      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92]);
+      //   124 = local command wrapper timeout
+      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92, 124]);
       const MAX_ATTEMPTS = 3;
 
       let result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
+        timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
       });
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (result.exitCode === 0) break;
@@ -969,6 +973,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         await new Promise((r) => setTimeout(r, 500 * attempt));
         result = await this.commands.run(command, {
           displayName: `Downloading: ${fileName} (retry ${attempt})`,
+          timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
         });
       }
       if (result.exitCode !== 0) {
