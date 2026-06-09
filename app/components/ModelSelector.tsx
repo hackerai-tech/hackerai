@@ -1,6 +1,13 @@
 "use client";
 
-import { Brain, Check, ChevronDown, ChevronRight, Lock } from "lucide-react";
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Lock,
+} from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -30,7 +37,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useState } from "react";
-import type { ChatMode, SelectedModel } from "@/types/chat";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -44,8 +51,8 @@ import {
   type ModelOption,
 } from "./ModelSelector/constants";
 import {
-  dismissProMaxUsageNotice,
-  isProMaxUsageNoticeDismissed,
+  dismissHighCostModelUsageNotice,
+  isHighCostModelUsageNoticeDismissed,
 } from "@/lib/utils/pro-max-notice-cookie";
 
 // ── Shared sub-components ──────────────────────────────────────────
@@ -58,6 +65,13 @@ interface ModelSelectorProps {
 
 const AUTO_MODEL_DESCRIPTION =
   "Balanced quality and speed, recommended for most tasks";
+
+const shouldWarnForPaidHighCostModel = (
+  subscription: SubscriptionTier,
+  model: SelectedModel,
+): boolean =>
+  subscription !== "free" &&
+  (model === "hackerai-pro" || model === "hackerai-max");
 
 const AutoOptionButton = ({
   isSelected,
@@ -315,15 +329,13 @@ const ModelOptionList = ({
 
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
-  const [pendingProMaxNotice, setPendingProMaxNotice] =
+  const [pendingHighCostNotice, setPendingHighCostNotice] =
     useState<ModelOption | null>(null);
   const { subscription } = useGlobalState();
   const isMobile = useIsMobile();
 
   const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
-  /** Base Pro tier: Max is flagged as unusually heavy usage vs higher plans. */
-  const isBaseProTier = subscription === "pro";
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
 
@@ -363,26 +375,26 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     }
 
     if (
-      isBaseProTier &&
-      option.id === "hackerai-max" &&
-      !isProMaxUsageNoticeDismissed()
+      shouldWarnForPaidHighCostModel(subscription, option.id) &&
+      !isHighCostModelUsageNoticeDismissed()
     ) {
-      setPendingProMaxNotice(option);
+      setOpen(false);
+      setPendingHighCostNotice(option);
       return;
     }
 
     applyModelChoice(option);
   };
 
-  const handleDismissProMaxNotice = () => {
-    setPendingProMaxNotice(null);
+  const handleDismissHighCostNotice = () => {
+    setPendingHighCostNotice(null);
   };
 
-  const handleConfirmProMax = () => {
-    if (!pendingProMaxNotice) return;
-    dismissProMaxUsageNotice();
-    applyModelChoice(pendingProMaxNotice);
-    setPendingProMaxNotice(null);
+  const handleConfirmHighCostModel = () => {
+    if (!pendingHighCostNotice) return;
+    dismissHighCostModelUsageNotice();
+    applyModelChoice(pendingHighCostNotice);
+    setPendingHighCostNotice(null);
   };
 
   const trigger = (
@@ -399,27 +411,39 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     </Button>
   );
 
-  const maxUsageNoticeDialog = (
+  const usageLabel =
+    subscription === "team" ? "your team's usage" : "your usage";
+
+  const highCostUsageNoticeDialog = (
     <AlertDialog
-      open={pendingProMaxNotice !== null}
+      open={pendingHighCostNotice !== null}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) handleDismissProMaxNotice();
+        if (!nextOpen) handleDismissHighCostNotice();
       }}
     >
-      <AlertDialogContent className="sm:max-w-md">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Higher usage</AlertDialogTitle>
-          <AlertDialogDescription className="text-left">
-            HackerAI Max uses quota much faster than Standard or Pro. One long
-            task can use much of what&apos;s included on Pro.
+      <AlertDialogContent
+        data-testid="high-cost-model-warning"
+        className="sm:max-w-[460px]"
+      >
+        <AlertDialogHeader className="gap-2">
+          <AlertDialogTitle className="flex items-center gap-2 text-lg">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <AlertTriangle className="h-4 w-4" />
+            </span>
+            <span>High-cost model</span>
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-left text-sm leading-relaxed text-foreground/80">
+            {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
+            can use a lot more of {usageLabel} than Standard, and long requests
+            can use around $10 of usage.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={handleDismissProMaxNotice}>
-            Cancel
+          <AlertDialogCancel onClick={handleDismissHighCostNotice}>
+            Pick another model
           </AlertDialogCancel>
-          <AlertDialogAction onClick={handleConfirmProMax}>
-            Continue
+          <AlertDialogAction onClick={handleConfirmHighCostModel}>
+            Use {pendingHighCostNotice?.label ?? "model"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -430,7 +454,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     return (
       <>
         {trigger}
-        {maxUsageNoticeDialog}
+        {highCostUsageNoticeDialog}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             side="bottom"
@@ -461,7 +485,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
 
   return (
     <>
-      {maxUsageNoticeDialog}
+      {highCostUsageNoticeDialog}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
         <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
