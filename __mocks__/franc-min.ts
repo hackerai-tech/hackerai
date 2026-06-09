@@ -2,6 +2,7 @@ export const franc = (_text: string, _opts?: { only?: string[] }) => "eng";
 
 const detectCode = (text: string) => {
   const normalized = text.toLowerCase();
+  if (/login workflow|fails on staging/.test(normalized)) return "fra";
   if (/hotspot password|router password/.test(normalized)) return "fra";
   if (/wifi password/.test(normalized)) return "por";
   if (/comment|accéder|mot de passe|quelqu/.test(normalized)) return "fra";
@@ -23,6 +24,9 @@ export const francAll = (
   const detected = detectCode(text);
   const isMisrankedEnglishQuery =
     /hotspot password|router password|wifi password/.test(normalized);
+  const isClosePlainLatinEnglishQuery = /login workflow|fails on staging/.test(
+    normalized,
+  );
   const codes = opts?.only ?? [
     "eng",
     "rus",
@@ -41,9 +45,13 @@ export const francAll = (
           code,
           code === detected
             ? 1
-            : code === "eng" && isMisrankedEnglishQuery
-              ? 0.74
-              : 0.1,
+            : code === "eng" && isClosePlainLatinEnglishQuery
+              ? 0.933
+              : code === "deu" && isClosePlainLatinEnglishQuery
+                ? 0.955
+                : code === "eng" && isMisrankedEnglishQuery
+                  ? 0.74
+                  : 0.1,
         ] as [string, number],
     )
     .sort((a, b) => b[1] - a[1]);
