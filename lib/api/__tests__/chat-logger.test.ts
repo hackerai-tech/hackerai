@@ -431,6 +431,131 @@ describe("createChatLogger provider stream termination", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("logs nested provider raw errors for generic 400 provider wrappers", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_wrapper",
+        endpoint: "/api/chat",
+      });
+      const nestedProviderError = Object.assign(
+        new Error("Provider request failed"),
+        {
+          name: "AI_APICallError",
+          statusCode: 400,
+          responseBody: JSON.stringify({
+            id: "gen-400-wrapper",
+            error: {
+              code: 400,
+              message: "Provider returned error",
+              metadata: {
+                provider_name: "Anthropic",
+                raw: "tool_result without corresponding tool_use",
+              },
+            },
+          }),
+          requestBodyValues: {
+            messages: [{ role: "user", content: "SECRET_PROMPT_TEXT" }],
+          },
+          isRetryable: false,
+        },
+      );
+      const err = {
+        message: "Provider returned error",
+        code: 400,
+        error: nestedProviderError,
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "ask",
+        model: "model-opus-4.6",
+        requestedModelSlug: "anthropic/claude-opus-4.6",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const providerErrorOutput = errorSpy.mock.calls
+        .flat()
+        .map(String)
+        .join("\n");
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+
+      expect(providerErrorOutput).toContain(
+        '"provider_error_category":"provider_4xx"',
+      );
+      expect(providerErrorOutput).toContain(
+        '"providerRawError":"tool_result without corresponding tool_use"',
+      );
+      expect(providerErrorOutput).not.toContain("SECRET_PROMPT_TEXT");
+      expect(wideEvent.provider_error).toMatchObject({
+        category: "provider_4xx",
+        status_code: 400,
+        message: "tool_result without corresponding tool_use",
+        retriable: false,
+      });
+      expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("enriches PostHog exception messages for Error provider failures", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_error_instance",
+        endpoint: "/api/chat",
+      });
+      const providerError = Object.assign(
+        new Error("Provider request failed"),
+        {
+          name: "AI_APICallError",
+          statusCode: 400,
+          responseBody: JSON.stringify({
+            id: "gen-error-instance",
+            error: {
+              code: 400,
+              message: "Provider returned error",
+              metadata: {
+                provider_name: "Anthropic",
+                raw: "tool_result without corresponding tool_use",
+              },
+            },
+          }),
+        },
+      );
+
+      chatLogger.recordProviderError(providerError, {
+        mode: "ask",
+        model: "model-opus-4.6",
+        requestedModelSlug: "anthropic/claude-opus-4.6",
+      });
+
+      const posthogErrorCall = errorSpy.mock.calls.find(
+        (call) =>
+          call[0] === "Provider streaming error" &&
+          typeof call[1] === "object" &&
+          call[1] !== null,
+      );
+      const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
+      const capturedError = fields?.error as
+        | (Error & { cause?: unknown })
+        | undefined;
+
+      expect(capturedError).toBeInstanceOf(Error);
+      expect(capturedError?.name).toBe("AI_APICallError");
+      expect(capturedError?.message).toBe(
+        "tool_result without corresponding tool_use",
+      );
+      expect(capturedError?.cause).toBe(providerError);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger ChatSDKError metadata", () => {
@@ -595,6 +720,7 @@ describe("createChatLogger provider stream timeout", () => {
 
   it("uses nested provider status codes in wide events", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
     try {
@@ -623,6 +749,7 @@ describe("createChatLogger provider stream timeout", () => {
       expect(wideEvent.provider_error.status_code).toBe(502);
     } finally {
       warnSpy.mockRestore();
+      errorSpy.mockRestore();
       logSpy.mockRestore();
     }
   });

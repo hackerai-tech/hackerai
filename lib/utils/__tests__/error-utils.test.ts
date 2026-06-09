@@ -67,6 +67,30 @@ describe("extractRetryAttempts -> request_id", () => {
     });
   });
 
+  it("extracts OpenRouter provider metadata from a direct parsed error body", () => {
+    const err = {
+      message: "Provider returned error",
+      code: 400,
+      id: "gen-direct-400",
+      error: {
+        code: 400,
+        message: "Provider returned error",
+        metadata: {
+          provider_name: "Anthropic",
+          raw: "tool_result without corresponding tool_use",
+        },
+      },
+    };
+
+    expect(extractErrorDetails(err)).toMatchObject({
+      providerName: "Anthropic",
+      providerErrorCode: 400,
+      providerErrorMessage: "Provider returned error",
+      providerRawError: "tool_result without corresponding tool_use",
+      openrouterGenerationId: "gen-direct-400",
+    });
+  });
+
   it("prefers OpenRouter gen-id from error.data over cf-ray header", () => {
     const err = retryError([
       apiCallError({
@@ -206,6 +230,50 @@ describe("extractRetryAttempts -> request_id", () => {
   });
 });
 
+describe("extractErrorDetails -> wrapped provider errors", () => {
+  it("extracts nested OpenRouter details from generic provider wrappers", () => {
+    const nested = apiCallError({
+      statusCode: 400,
+      responseBody: JSON.stringify({
+        id: "gen-400-wrapper",
+        error: {
+          code: 400,
+          message: "Provider returned error",
+          metadata: {
+            provider_name: "Anthropic",
+            raw: "tool_result without corresponding tool_use",
+          },
+        },
+      }),
+      requestBodyValues: {
+        messages: [{ role: "user", content: "SECRET_PROMPT_TEXT" }],
+      },
+    });
+    const err = {
+      message: "Provider returned error",
+      code: 400,
+      error: nested,
+    };
+
+    const details = extractErrorDetails(err);
+
+    expect(details).toMatchObject({
+      errorName: "AI_APICallError",
+      errorMessage: "Provider returned error",
+      errorCode: 400,
+      statusCode: 400,
+      providerName: "Anthropic",
+      providerErrorCode: 400,
+      providerErrorMessage: "Provider returned error",
+      providerRawError: "tool_result without corresponding tool_use",
+      openrouterGenerationId: "gen-400-wrapper",
+    });
+    expect(getProviderStatusCode(details)).toBe(400);
+    expect(getProviderErrorCategory(details)).toBe("provider_4xx");
+    expect(JSON.stringify(details)).not.toContain("SECRET_PROMPT_TEXT");
+  });
+});
+
 describe("provider error classification", () => {
   it("classifies undici terminated errors as provider stream termination", () => {
     const err = Object.assign(new TypeError("terminated"), {
@@ -236,6 +304,17 @@ describe("provider error classification", () => {
     expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
       "provider_5xx",
     );
+  });
+
+  it("uses top-level numeric provider error codes as status codes", () => {
+    const err = {
+      code: 400,
+      message: "Provider returned error",
+    };
+
+    const details = extractErrorDetails(err);
+    expect(getProviderStatusCode(details)).toBe(400);
+    expect(getProviderErrorCategory(details)).toBe("provider_4xx");
   });
 
   it("classifies upstream idle timeouts without an HTTP status as provider timeouts", () => {

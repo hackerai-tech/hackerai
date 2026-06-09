@@ -46,14 +46,50 @@ const parseJsonObject = (
   }
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const collectErrorSources = (
+  source: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+): unknown[] => {
+  if (!isRecord(source) || depth > 3 || seen.has(source)) return [source];
+  seen.add(source);
+
+  const sources: unknown[] = [source];
+  for (const key of ["error", "cause"] as const) {
+    const nested = source[key];
+    if (nested !== undefined) {
+      sources.push(...collectErrorSources(nested, seen, depth + 1));
+    }
+  }
+
+  const errors = source.errors;
+  if (Array.isArray(errors)) {
+    for (const nested of errors.slice(0, 5)) {
+      sources.push(...collectErrorSources(nested, seen, depth + 1));
+    }
+  }
+
+  return sources;
+};
+
 const getOpenRouterPayload = (
   source: unknown,
 ): Record<string, unknown> | null => {
-  if (!source || typeof source !== "object") return null;
-  const anySource = source as Record<string, unknown>;
+  if (!isRecord(source)) return null;
+  const anySource = source;
 
   if (anySource.data && typeof anySource.data === "object") {
     return anySource.data as Record<string, unknown>;
+  }
+
+  if (
+    isRecord(anySource.error) &&
+    ("code" in anySource.error || "metadata" in anySource.error)
+  ) {
+    return anySource;
   }
 
   if (typeof anySource.responseBody === "string") {
@@ -66,43 +102,57 @@ const getOpenRouterPayload = (
 const getOpenRouterProviderInfo = (
   source: unknown,
 ): Record<string, unknown> => {
-  const payload = getOpenRouterPayload(source);
-  if (!payload) return {};
+  const payloads = collectErrorSources(source)
+    .map(getOpenRouterPayload)
+    .filter((payload): payload is Record<string, unknown> => payload !== null);
+  if (payloads.length === 0) return {};
 
   const details: Record<string, unknown> = {};
-  const id = pickBodyId(payload);
-  if (id) details.openrouterGenerationId = id;
+  for (const payload of payloads) {
+    const id = pickBodyId(payload);
+    if (id && details.openrouterGenerationId === undefined) {
+      details.openrouterGenerationId = id;
+    }
 
-  const nested =
-    payload.error && typeof payload.error === "object"
-      ? (payload.error as Record<string, unknown>)
-      : undefined;
-  if (!nested) return details;
+    const nested = isRecord(payload.error) ? payload.error : undefined;
+    if (!nested) continue;
 
-  if (typeof nested.code === "number" || typeof nested.code === "string") {
-    details.providerErrorCode = nested.code;
-  }
-  if (typeof nested.message === "string" && nested.message.length > 0) {
-    details.providerErrorMessage = truncate(
-      nested.message,
-      OPENROUTER_DETAIL_MAX_LENGTH,
-    );
-  }
+    if (
+      details.providerErrorCode === undefined &&
+      (typeof nested.code === "number" || typeof nested.code === "string")
+    ) {
+      details.providerErrorCode = nested.code;
+    }
+    if (
+      details.providerErrorMessage === undefined &&
+      typeof nested.message === "string" &&
+      nested.message.length > 0
+    ) {
+      details.providerErrorMessage = truncate(
+        nested.message,
+        OPENROUTER_DETAIL_MAX_LENGTH,
+      );
+    }
 
-  const metadata =
-    nested.metadata && typeof nested.metadata === "object"
-      ? (nested.metadata as Record<string, unknown>)
-      : undefined;
-  if (!metadata) return details;
+    const metadata = isRecord(nested.metadata) ? nested.metadata : undefined;
+    if (!metadata) continue;
 
-  if (typeof metadata.provider_name === "string") {
-    details.providerName = metadata.provider_name;
-  }
-  if (typeof metadata.raw === "string" && metadata.raw.length > 0) {
-    details.providerRawError = truncate(
-      metadata.raw,
-      OPENROUTER_DETAIL_MAX_LENGTH,
-    );
+    if (
+      details.providerName === undefined &&
+      typeof metadata.provider_name === "string"
+    ) {
+      details.providerName = metadata.provider_name;
+    }
+    if (
+      details.providerRawError === undefined &&
+      typeof metadata.raw === "string" &&
+      metadata.raw.length > 0
+    ) {
+      details.providerRawError = truncate(
+        metadata.raw,
+        OPENROUTER_DETAIL_MAX_LENGTH,
+      );
+    }
   }
 
   return details;
@@ -155,11 +205,19 @@ const removeSensitiveData = (data: unknown): unknown => {
 export const extractErrorDetails = (
   error: unknown,
 ): Record<string, unknown> => {
-  const err = error instanceof Error ? error : null;
-  const anyError = error as Record<string, unknown>;
+  const sources = collectErrorSources(error);
+  const err = sources.find((source) => source instanceof Error) as
+    | Error
+    | undefined;
+  const records = sources.filter(isRecord);
+  const primaryRecord = records[0];
 
   const details: Record<string, unknown> = {
-    errorName: err?.name || "UnknownError",
+    errorName:
+      err?.name ||
+      (typeof primaryRecord?.name === "string"
+        ? primaryRecord.name
+        : "UnknownError"),
     errorMessage: getErrorMessage(error),
   };
 
@@ -168,27 +226,30 @@ export const extractErrorDetails = (
     details.errorStack = err.stack;
   }
 
-  // Extract provider-specific error details (AI SDK format)
-  if ("statusCode" in anyError) {
-    details.statusCode = anyError.statusCode;
-  }
-  if ("url" in anyError) {
-    details.providerUrl = anyError.url;
-  }
-  if ("responseBody" in anyError) {
-    details.responseBody = removeSensitiveData(anyError.responseBody);
-  }
-  if ("isRetryable" in anyError) {
-    details.isRetryable = anyError.isRetryable;
-  }
-  if ("data" in anyError) {
-    details.providerData = removeSensitiveData(anyError.data);
-  }
-  if ("cause" in anyError && anyError.cause) {
-    details.cause = getErrorMessage(anyError.cause);
-  }
-  if ("code" in anyError) {
-    details.errorCode = anyError.code;
+  // Extract provider-specific error details (AI SDK format). Walk common
+  // wrapper fields so stream/UI wrappers do not hide APICallError diagnostics.
+  for (const source of records) {
+    if (details.statusCode === undefined && "statusCode" in source) {
+      details.statusCode = source.statusCode;
+    }
+    if (details.providerUrl === undefined && "url" in source) {
+      details.providerUrl = source.url;
+    }
+    if (details.responseBody === undefined && "responseBody" in source) {
+      details.responseBody = removeSensitiveData(source.responseBody);
+    }
+    if (details.isRetryable === undefined && "isRetryable" in source) {
+      details.isRetryable = source.isRetryable;
+    }
+    if (details.providerData === undefined && "data" in source) {
+      details.providerData = removeSensitiveData(source.data);
+    }
+    if (details.cause === undefined && "cause" in source && source.cause) {
+      details.cause = getErrorMessage(source.cause);
+    }
+    if (details.errorCode === undefined && "code" in source) {
+      details.errorCode = source.code;
+    }
   }
 
   Object.assign(details, getOpenRouterProviderInfo(error));
@@ -204,32 +265,39 @@ export type ProviderErrorCategory =
   | "timeout"
   | "unknown";
 
+const parseHttpStatus = (value: unknown): number | undefined => {
+  const code =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : undefined;
+
+  return code != null && Number.isInteger(code) && code >= 400 && code <= 599
+    ? code
+    : undefined;
+};
+
 export const getProviderStatusCode = (
   details: Record<string, unknown>,
 ): number | undefined => {
-  const statusCode =
-    typeof details.statusCode === "number" ? details.statusCode : undefined;
+  const statusCode = parseHttpStatus(details.statusCode);
   if (statusCode != null) return statusCode;
 
-  const rawProviderErrorCode = details.providerErrorCode;
-  const providerErrorCode =
-    typeof rawProviderErrorCode === "number"
-      ? rawProviderErrorCode
-      : typeof rawProviderErrorCode === "string"
-        ? Number(rawProviderErrorCode)
-        : undefined;
-  return providerErrorCode != null &&
-    Number.isInteger(providerErrorCode) &&
-    providerErrorCode >= 400 &&
-    providerErrorCode <= 599
-    ? providerErrorCode
-    : undefined;
+  for (const key of ["providerErrorCode", "errorCode"] as const) {
+    const code = parseHttpStatus(details[key]);
+    if (code != null) return code;
+  }
+
+  return undefined;
 };
 
 export const getProviderErrorCategory = (
   details: Record<string, unknown>,
 ): ProviderErrorCategory => {
-  const statusCode = getProviderStatusCode(details);
+  const statusCode =
+    parseHttpStatus(details.statusCode) ??
+    parseHttpStatus(details.providerErrorCode);
   if (statusCode === 429) return "rate_limited";
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
@@ -250,6 +318,14 @@ export const getProviderErrorCategory = (
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
+
+  const fallbackStatusCode = parseHttpStatus(details.errorCode);
+  if (fallbackStatusCode === 429) return "rate_limited";
+  if (fallbackStatusCode != null && fallbackStatusCode >= 500)
+    return "provider_5xx";
+  if (fallbackStatusCode != null && fallbackStatusCode >= 400)
+    return "provider_4xx";
+
   return "unknown";
 };
 
@@ -289,7 +365,7 @@ const pickBodyId = (body: unknown): string | undefined => {
 };
 
 const extractRequestId = (error: unknown): string | undefined => {
-  if (!error || typeof error !== "object") return undefined;
+  if (!isRecord(error)) return undefined;
   const e = error as {
     responseHeaders?: Record<string, unknown>;
     data?: unknown;
@@ -322,7 +398,7 @@ const extractRequestId = (error: unknown): string | undefined => {
 };
 
 const toAttempt = (error: unknown): ProviderAttempt => {
-  const anyError = (error ?? {}) as Record<string, unknown>;
+  const anyError = isRecord(error) ? error : {};
   const providerInfo = getOpenRouterProviderInfo(error);
   const statusCode =
     typeof anyError.statusCode === "number"
