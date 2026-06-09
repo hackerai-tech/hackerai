@@ -83,10 +83,7 @@ function posthogProviderException(
   details: Record<string, unknown>,
 ): Error {
   if (error instanceof Error) return error;
-  const message =
-    typeof details.errorMessage === "string" && details.errorMessage.length > 0
-      ? details.errorMessage
-      : "Provider streaming error";
+  const message = getProviderDiagnosticMessage(details);
   return new Error(message);
 }
 
@@ -155,6 +152,22 @@ const providerWideErrorType = (
   if (category === "timeout") return "ProviderTimeout";
   if (category) return "ProviderError";
   return "UnexpectedError";
+};
+
+const getProviderDiagnosticMessage = (
+  details: Record<string, unknown>,
+): string => {
+  for (const key of [
+    "providerRawError",
+    "providerErrorMessage",
+    "errorMessage",
+  ] as const) {
+    const value = details[key];
+    if (typeof value === "string" && value.length > 0 && value !== "undefined")
+      return value;
+  }
+
+  return "Provider streaming error";
 };
 
 const isRetriableProviderCategory = (
@@ -426,7 +439,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         statusCode: providerStatusCode,
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
-        message: details.errorMessage as string | undefined,
+        message: getProviderDiagnosticMessage(details),
         retriable: details.isRetryable as boolean | undefined,
         attempts,
       });
@@ -531,14 +544,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
         (inferredProviderCategory !== "unknown"
           ? inferredProviderCategory
           : undefined);
+      const diagnosticMessage = getProviderDiagnosticMessage(details);
       const message =
-        (typeof details.errorMessage === "string" &&
-          details.errorMessage !== "undefined" &&
-          details.errorMessage) ||
-        (typeof details.providerErrorMessage === "string"
-          ? details.providerErrorMessage
-          : undefined) ||
-        "Unknown error occurred";
+        diagnosticMessage !== "Provider streaming error"
+          ? diagnosticMessage
+          : "Unknown error occurred";
 
       if (!providerCategory) {
         logger.error(
