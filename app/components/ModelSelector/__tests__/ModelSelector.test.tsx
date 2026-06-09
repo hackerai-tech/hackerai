@@ -80,7 +80,7 @@ describe("ModelSelector", () => {
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
     expect(screen.getByText("High-cost model")).toBeVisible();
     expect(
-      screen.getByText(/Some long requests can cost around \$10/i),
+      screen.getByText(/long requests can use around \$10 of usage/i),
     ).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
@@ -111,7 +111,9 @@ describe("ModelSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
 
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByText(/your team's included usage/i)).toBeVisible();
-    expect(screen.getByText(/team extra usage credits/i)).toBeVisible();
+    expect(screen.getByText(/your team's usage/i)).toBeVisible();
+    expect(
+      screen.getByText(/long requests can use around \$10 of usage/i),
+    ).toBeVisible();
   });
 });

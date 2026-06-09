@@ -411,12 +411,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     </Button>
   );
 
-  const includedUsageLabel =
-    subscription === "team" ? "your team's included usage" : "included usage";
-  const extraUsageCreditsLabel =
-    subscription === "team"
-      ? "team extra usage credits"
-      : "extra usage credits";
+  const usageLabel =
+    subscription === "team" ? "your team's usage" : "your usage";
 
   const highCostUsageNoticeDialog = (
     <AlertDialog
@@ -438,9 +434,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
           </AlertDialogTitle>
           <AlertDialogDescription className="text-left text-sm leading-relaxed text-foreground/80">
             {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
-            can burn through {includedUsageLabel} much faster than Standard.
-            Some long requests can cost around $10 once {extraUsageCreditsLabel}{" "}
-            are being used.
+            can use a lot more of {usageLabel} than Standard, and long requests
+            can use around $10 of usage.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
