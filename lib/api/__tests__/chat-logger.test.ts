@@ -13,6 +13,7 @@ const {
   captureUsageCost,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
+const { phLogger } = require("../../posthog/server");
 
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
@@ -413,6 +414,104 @@ describe("createChatLogger ChatSDKError metadata", () => {
       expect(wideEvent.error.metadata).not.toHaveProperty("usage_keys");
       expect(wideEvent.error.metadata).not.toHaveProperty("parts_size_bytes");
     } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits limit pressure funnel properties for paid monthly exhaustion", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_limit",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({
+        mode: "agent",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setRateLimit(
+        {
+          subscription: "pro",
+          monthly: { remaining: 0, limit: 250_000 },
+        },
+        undefined,
+      );
+
+      chatLogger.emitChatError(
+        new ChatSDKError("rate_limit:chat", "Monthly limit hit", {
+          capReason: "monthly_exhausted",
+          resetTimestamp: 1_800_000_000_000,
+        }),
+      );
+
+      expect(eventSpy).toHaveBeenCalledWith(
+        "limit_hit",
+        expect.objectContaining({
+          subscription_tier: "pro",
+          limit_type: "monthly",
+          cap_reason: "monthly_exhausted",
+          paid_monthly_exhaustion: true,
+          add_credit_available: true,
+          primary_cta: "add_credits",
+          eligible_ctas: ["add_credits", "upgrade_plan"],
+          chat_id: "chat_limit",
+        }),
+      );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "monthly_cap_hit",
+        expect.objectContaining({
+          subscription: "pro",
+          cap_reason: "monthly_exhausted",
+          primary_cta: "add_credits",
+          eligible_ctas: ["add_credits", "upgrade_plan"],
+        }),
+      );
+    } finally {
+      eventSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("does not emit monthly_cap_hit for paid billing service outages", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_billing_unavailable",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({
+        mode: "agent",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+
+      chatLogger.emitChatError(
+        new ChatSDKError("rate_limit:chat", "Billing unavailable", {
+          capReason: "billing_unavailable",
+          resetTimestamp: 1_800_000_000_000,
+        }),
+      );
+
+      expect(eventSpy).toHaveBeenCalledWith(
+        "limit_hit",
+        expect.objectContaining({
+          cap_reason: "billing_unavailable",
+          limit_type: "billing",
+        }),
+      );
+      expect(eventSpy).not.toHaveBeenCalledWith(
+        "monthly_cap_hit",
+        expect.anything(),
+      );
+    } finally {
+      eventSpy.mockRestore();
       logSpy.mockRestore();
     }
   });

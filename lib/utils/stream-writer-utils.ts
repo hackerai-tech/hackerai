@@ -2,6 +2,7 @@ import "server-only";
 
 import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import type { LimitCapReason } from "@/lib/limit-pressure";
 
 // Upload status notifications
 export const writeUploadStartStatus = (
@@ -112,6 +113,7 @@ export type RateLimitWarningData =
       severity?: "info" | "warning";
       usedDollars?: number;
       limitDollars?: number;
+      capReason?: LimitCapReason;
       // Mid-stream emits bypass localStorage dedup so threshold escalations
       // (50→80→95→100) within a single stream always reach the client.
       midStream?: boolean;
@@ -124,6 +126,7 @@ export type RateLimitWarningData =
       bucketType: "monthly";
       resetTime: string;
       subscription: SubscriptionTier;
+      capReason?: LimitCapReason;
       midStream?: boolean;
     };
 

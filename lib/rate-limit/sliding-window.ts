@@ -7,6 +7,7 @@
 
 import { ChatSDKError } from "@/lib/errors";
 import type { RateLimitInfo } from "@/types";
+import { getLimitPressureContext } from "@/lib/limit-pressure";
 import {
   FREE_AGENT_REQUEST_COST,
   FREE_ASK_REQUEST_COST,
@@ -220,6 +221,10 @@ export const checkFreeUserRateLimit = async (
           resetTimestamp: reset,
           subscription: "free",
           capReason: "daily_requests_exhausted",
+          ...getLimitPressureContext({
+            subscription: "free",
+            capReason: "daily_requests_exhausted",
+          }),
         },
       );
     }

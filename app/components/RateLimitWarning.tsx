@@ -4,6 +4,12 @@ import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import type { LimitCapReason } from "@/lib/limit-pressure";
+import {
+  getExtraUsageLimitCta,
+  getLimitTypeForCapReason,
+  shouldShowUpgradeCta,
+} from "@/lib/limit-pressure";
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
@@ -28,6 +34,7 @@ export type RateLimitWarningData =
       severity?: "info" | "warning";
       usedDollars?: number;
       limitDollars?: number;
+      capReason?: LimitCapReason;
       midStream?: boolean;
       cutOff?: boolean;
     }
@@ -36,6 +43,7 @@ export type RateLimitWarningData =
       bucketType: "monthly";
       resetTime: Date;
       subscription: SubscriptionTier;
+      capReason?: LimitCapReason;
       midStream?: boolean;
     };
 
@@ -93,6 +101,9 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       if (data.subscription === "free") {
         return `You've reached your free monthly usage limit and this response was cut off. Upgrade to continue. Resets ${timeString}.`;
       }
+      if (data.capReason === "extra_usage_cap") {
+        return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
+      }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
@@ -116,19 +127,27 @@ export const RateLimitWarning = ({
   const capturedAddCreditImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
+  const capReason =
+    data.warningType === "sliding-window" ? undefined : data.capReason;
+  const extraUsageCta =
+    data.warningType === "token-bucket"
+      ? getExtraUsageLimitCta({
+          subscription: data.subscription,
+          capReason,
+        })
+      : null;
   const showUpgrade =
     data.warningType !== "extra-usage-active" &&
-    (data.subscription === "free" ||
-      data.subscription === "pro" ||
-      data.subscription === "pro-plus");
-  const showAddCredits =
-    data.warningType === "token-bucket" && data.subscription !== "free";
+    shouldShowUpgradeCta({
+      subscription: data.subscription,
+      capReason,
+    });
   const limitType =
     data.warningType === "sliding-window"
       ? "daily_requests"
       : data.warningType === "token-bucket"
-        ? data.bucketType
-        : "extra_usage_active";
+        ? getLimitTypeForCapReason(capReason)
+        : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
   const limitSeverity =
     data.warningType === "token-bucket" && data.remainingPercent === 0
       ? "hit"
@@ -143,12 +162,13 @@ export const RateLimitWarning = ({
       from_tier: data.subscription,
       limit_type: limitType,
       limit_severity: limitSeverity,
+      cap_reason: capReason,
       cta_text: "Upgrade plan",
     });
-  }, [data.subscription, limitSeverity, limitType, showUpgrade]);
+  }, [capReason, data.subscription, limitSeverity, limitType, showUpgrade]);
 
   useEffect(() => {
-    if (!showAddCredits || capturedAddCreditImpressionRef.current) return;
+    if (!extraUsageCta || capturedAddCreditImpressionRef.current) return;
     capturedAddCreditImpressionRef.current = true;
     captureAddCreditCtaImpression({
       surface: "rate_limit_warning",
@@ -156,9 +176,10 @@ export const RateLimitWarning = ({
       from_tier: data.subscription,
       limit_type: limitType,
       limit_severity: limitSeverity,
-      cta_text: "Add credits",
+      cap_reason: capReason,
+      cta_text: extraUsageCta.analyticsText,
     });
-  }, [data.subscription, limitSeverity, limitType, showAddCredits]);
+  }, [capReason, data.subscription, extraUsageCta, limitSeverity, limitType]);
 
   return (
     <div
@@ -167,7 +188,7 @@ export const RateLimitWarning = ({
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
         <span className="text-foreground text-sm">{message}</span>
-        {showAddCredits && (
+        {extraUsageCta && (
           <Button
             onClick={() => {
               captureAddCreditCtaClick({
@@ -176,15 +197,16 @@ export const RateLimitWarning = ({
                 from_tier: data.subscription,
                 limit_type: limitType,
                 limit_severity: limitSeverity,
-                cta_text: "Add credits",
+                cap_reason: capReason,
+                cta_text: extraUsageCta.analyticsText,
               });
-              openSettingsDialog("Extra Usage");
+              openSettingsDialog(extraUsageCta.settingsTab);
             }}
             size="sm"
             variant="outline"
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
-            Add credits
+            {extraUsageCta.label}
           </Button>
         )}
         {showUpgrade && (
@@ -195,6 +217,7 @@ export const RateLimitWarning = ({
                 source: "limit_pressure",
                 from_tier: data.subscription,
                 limit_type: limitType,
+                reason: capReason,
                 cta_text: "Upgrade plan",
               })
             }

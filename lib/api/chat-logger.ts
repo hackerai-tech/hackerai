@@ -18,6 +18,7 @@ import type {
   SandboxInfo,
   SandboxBootInfo,
 } from "@/types";
+import { isSubscriptionTier } from "@/types";
 import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
@@ -35,6 +36,12 @@ import {
   getProviderStatusCode,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
+import {
+  getLimitPressureContext,
+  getLimitTypeForCapReason,
+  isPaidMonthlyCapHitReason,
+  type LimitCapReason,
+} from "@/lib/limit-pressure";
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -119,6 +126,15 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "max_tokens",
   "file_ids_count",
   "largest_file_token",
+  "capReason",
+  "limitType",
+  "costGuardrail",
+  "paidMonthlyExhaustion",
+  "upgradeAvailable",
+  "addCreditAvailable",
+  "primaryCta",
+  "eligibleCtas",
+  "resetTimestamp",
 ] as const;
 
 const compactChatErrorMetadata = (
@@ -455,13 +471,28 @@ export function createChatLogger(config: ChatLoggerConfig) {
 
       if (error.type === "rate_limit" && subscription) {
         const capReason =
-          (error.metadata?.capReason as string | undefined) ?? "unknown";
+          (error.metadata?.capReason as LimitCapReason | undefined) ??
+          "unknown";
         const resetTimestamp = error.metadata?.resetTimestamp as
           | number
           | undefined;
-        const limitType = capReason.includes("daily")
-          ? "daily_requests"
-          : "monthly";
+        const subscriptionTier = isSubscriptionTier(subscription)
+          ? subscription
+          : undefined;
+        const pressure = subscriptionTier
+          ? getLimitPressureContext({
+              subscription: subscriptionTier,
+              capReason,
+            })
+          : {
+              limitType: getLimitTypeForCapReason(capReason),
+              costGuardrail: false,
+              paidMonthlyExhaustion: false,
+              upgradeAvailable: false,
+              addCreditAvailable: false,
+              primaryCta: undefined,
+              eligibleCtas: [],
+            };
 
         phLogger.event(
           PAID_FUNNEL_EVENTS.limitHit,
@@ -469,10 +500,18 @@ export function createChatLogger(config: ChatLoggerConfig) {
             userId,
             subscription_tier: subscription,
             mode,
-            limit_type: limitType,
+            limit_type: pressure.limitType,
             cap_reason: capReason,
             monthly_remaining_percent: monthlyRemainingPercent,
             reset_timestamp: resetTimestamp,
+            cost_guardrail: pressure.costGuardrail,
+            paid_monthly_exhaustion: pressure.paidMonthlyExhaustion,
+            upgrade_available: pressure.upgradeAvailable,
+            add_credit_available: pressure.addCreditAvailable,
+            primary_cta: pressure.primaryCta,
+            eligible_ctas: pressure.eligibleCtas,
+            chat_id: config.chatId,
+            endpoint: config.endpoint,
             $set: {
               subscription_tier: subscription,
               last_limit_hit_at: new Date().toISOString(),
@@ -487,16 +526,26 @@ export function createChatLogger(config: ChatLoggerConfig) {
       if (
         error.type === "rate_limit" &&
         subscription &&
+        isSubscriptionTier(subscription) &&
         subscription !== "free"
       ) {
         const capReason =
-          (error.metadata?.capReason as string | undefined) ?? "unknown";
+          (error.metadata?.capReason as LimitCapReason | undefined) ??
+          "unknown";
+        if (!isPaidMonthlyCapHitReason(capReason)) return;
+        const pressure = getLimitPressureContext({
+          subscription,
+          capReason,
+        });
         phLogger.event("monthly_cap_hit", {
           userId,
           subscription,
           mode,
           cap_reason: capReason,
           monthly_remaining_percent: monthlyRemainingPercent,
+          cost_guardrail: pressure.costGuardrail,
+          primary_cta: pressure.primaryCta,
+          eligible_ctas: pressure.eligibleCtas,
           chat_id: config.chatId,
           endpoint: config.endpoint,
           $set: {

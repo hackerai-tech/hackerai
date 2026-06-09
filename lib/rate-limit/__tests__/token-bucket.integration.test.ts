@@ -173,6 +173,13 @@ describe("token-bucket async functions", () => {
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("usage limit");
+        expect(error.metadata).toMatchObject({
+          capReason: "monthly_exhausted",
+          paidMonthlyExhaustion: true,
+          addCreditAvailable: true,
+          primaryCta: "add_credits",
+          eligibleCtas: ["add_credits", "upgrade_plan"],
+        });
       }
     });
 
@@ -258,6 +265,13 @@ describe("token-bucket async functions", () => {
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("monthly extra usage spending limit");
+        expect(error.metadata).toMatchObject({
+          capReason: "extra_usage_cap",
+          costGuardrail: true,
+          addCreditAvailable: false,
+          primaryCta: "increase_spending_limit",
+          eligibleCtas: ["increase_spending_limit"],
+        });
       }
     });
 

@@ -49,6 +49,13 @@ Paid funnel events use stable snake_case event names. Most events include
 - `amount_dollars`, `checkout_amount_dollars`, `revenue_dollars`: money fields
   in USD unless `currency` says otherwise.
 - `cap_reason`, `limit_type`, `reset_timestamp`: limit-pressure context.
+- `primary_cta`, `eligible_ctas`, `upgrade_available`,
+  `add_credit_available`: monetization paths shown or available for that
+  limit pressure moment.
+- `cost_guardrail`: true when the blocker is an extra-usage/team spending cap
+  or payment guardrail rather than the included monthly bucket alone.
+- `paid_monthly_exhaustion`: true for paid users whose included monthly bucket
+  is exhausted and can be resolved through add-credit/upgrade flow.
 
 ## Data Minimization
 
@@ -69,7 +76,8 @@ Paid funnel events use stable snake_case event names. Most events include
 - Checkout start to subscription: `checkout_started -> subscription_started`,
   joined or filtered by `checkout_attempt_id`.
 - Limit pressure to paid/add-credit: `limit_hit -> upgrade_cta_clicked` and
-  `limit_hit -> add_credit_checkout_succeeded`.
+  `limit_hit -> add_credit_checkout_succeeded`, grouped by `primary_cta`,
+  `eligible_ctas`, and `cap_reason`.
 - Referral revenue:
   `referred_signup_attributed -> referred_user_paid_conversion`, grouped by
   `referral_code`.

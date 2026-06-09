@@ -12,6 +12,7 @@ import {
   type TokenBucketEmitContext,
 } from "@/lib/api/chat-stream-helpers";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+import type { LimitCapReason } from "@/lib/limit-pressure";
 
 // 50% is intentionally omitted: at the halfway mark there's no actionable
 // signal for the user, so an in-product banner is noise. The ladder matches
@@ -26,6 +27,7 @@ export interface BudgetSnapshot {
   monthlyResetTime: Date;
   extraUsageBalanceAtStart: number;
   extraUsageAutoReload: boolean;
+  extraUsageMonthlyRemainingAtStart?: number;
 }
 
 /**
@@ -55,6 +57,8 @@ export function captureBudgetSnapshot(args: {
     monthlyResetTime: monthlyResetTime!,
     extraUsageBalanceAtStart: extraUsageConfig?.balanceDollars ?? 0,
     extraUsageAutoReload: extraUsageConfig?.autoReloadEnabled ?? false,
+    extraUsageMonthlyRemainingAtStart:
+      extraUsageConfig?.monthlyRemainingDollars,
   };
 }
 
@@ -105,9 +109,15 @@ export class BudgetMonitor {
         const overflowDollars =
           Math.max(0, projectedUsedPoints - snapshot.monthlyLimitPoints) /
           POINTS_PER_DOLLAR;
-        const hasExtraCushion =
+        const guardrailRemaining = snapshot.extraUsageMonthlyRemainingAtStart;
+        const guardrailAllowsOverflow =
+          guardrailRemaining === undefined ||
+          overflowDollars <= guardrailRemaining;
+        const balanceAllowsOverflow =
           snapshot.extraUsageAutoReload ||
-          snapshot.extraUsageBalanceAtStart - overflowDollars > 0;
+          snapshot.extraUsageBalanceAtStart >= overflowDollars;
+        const hasExtraCushion =
+          guardrailAllowsOverflow && balanceAllowsOverflow;
 
         if (hasExtraCushion) {
           if (threshold <= this.highestThresholdEmitted) {
@@ -119,13 +129,21 @@ export class BudgetMonitor {
             bucketType: "monthly",
             resetTime: snapshot.monthlyResetTime.toISOString(),
             subscription: this.subscription,
+            capReason: "extra_usage_active",
             midStream: true,
           });
         } else {
+          const capReason: LimitCapReason =
+            this.subscription === "free"
+              ? "free_monthly_exhausted"
+              : !guardrailAllowsOverflow
+                ? "extra_usage_cap"
+                : "monthly_exhausted";
           this.emit({
             usedPercent: 100,
             projectedUsedPoints: snapshot.monthlyLimitPoints,
             cutOff: true,
+            capReason,
           });
           decision = "abort";
         }
@@ -145,6 +163,7 @@ export class BudgetMonitor {
     usedPercent: number;
     projectedUsedPoints: number;
     cutOff?: boolean;
+    capReason?: LimitCapReason;
   }): void {
     const ctx: TokenBucketEmitContext = {
       usedPercent: args.usedPercent,
@@ -154,6 +173,7 @@ export class BudgetMonitor {
       subscription: this.subscription,
       midStream: true,
       cutOff: args.cutOff,
+      capReason: args.capReason,
     };
     emitTokenBucketThresholdWarning(this.writer, ctx);
   }

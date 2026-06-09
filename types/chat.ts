@@ -339,6 +339,12 @@ export interface ExtraUsageConfig {
   hasBalance?: boolean;
   /** Current balance in dollars (for UI display) */
   balanceDollars?: number;
+  /** Optional monthly extra-usage spending cap in dollars */
+  monthlyCapDollars?: number;
+  /** Extra-usage spend already consumed in the current month */
+  monthlySpentDollars?: number;
+  /** Remaining extra-usage spend allowed by the monthly cap */
+  monthlyRemainingDollars?: number;
   /** Whether auto-reload is enabled (can use extra usage even with $0 balance) */
   autoReloadEnabled?: boolean;
 }
