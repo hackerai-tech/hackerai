@@ -13,6 +13,10 @@ import {
   refundToTeamBalance,
 } from "@/lib/extra-usage";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
+import {
+  getLimitPressureContext,
+  type LimitCapReason,
+} from "@/lib/limit-pressure";
 
 // =============================================================================
 // Configuration
@@ -229,17 +233,32 @@ export const checkTokenBucketLimit = async (
         : subscription === "pro-plus"
           ? " or upgrade to Ultra for higher limits"
           : "";
+    const continueWithCreditsHint =
+      subscription === "team"
+        ? "Ask your team admin to add team extra usage credits to keep going now."
+        : `To keep going now, add extra usage credits in Settings${upgradeHint}.`;
+    const emptyCreditsHint =
+      subscription === "team"
+        ? "your team's extra usage balance is empty"
+        : "your extra usage balance is empty";
+    const limitMetadata = (
+      reset: number,
+      capReason: LimitCapReason,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      resetTimestamp: reset,
+      subscription,
+      capReason,
+      ...getLimitPressureContext({ subscription, capReason }),
+      ...extra,
+    });
 
     const monthlyLimitError = (reset: number) => {
       const resetTime = formatTimeRemaining(new Date(reset));
       return new ChatSDKError(
         "rate_limit:chat",
-        `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`,
-        {
-          resetTimestamp: reset,
-          subscription,
-          capReason: "monthly_exhausted",
-        },
+        `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`,
+        limitMetadata(reset, "monthly_exhausted"),
       );
     };
 
@@ -323,40 +342,40 @@ export const checkTokenBucketLimit = async (
           // Team-pool specific: admin disabled this member's pool access.
           if (deductResult.memberDisabled) {
             const msg = `Your team admin has paused your access to team extra usage. Ask them to re-enable it to continue beyond your subscription limit.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              capReason: "team_member_disabled",
-            });
+            throw new ChatSDKError(
+              "rate_limit:chat",
+              msg,
+              limitMetadata(monthlyCheck.reset, "team_member_disabled"),
+            );
           }
 
           // Team-pool specific: admin disabled the pool entirely.
           if (deductResult.poolDisabled) {
             const msg = `Your team's extra usage pool is disabled.\n\nYour subscription limit resets ${resetTime}. Ask your team admin to enable team extra usage to continue.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              capReason: "team_pool_disabled",
-            });
+            throw new ChatSDKError(
+              "rate_limit:chat",
+              msg,
+              limitMetadata(monthlyCheck.reset, "team_pool_disabled"),
+            );
           }
 
           // Team-pool specific: this member hit their per-member monthly cap.
           if (deductResult.memberCapExceeded) {
             const msg = `You've hit your team-set monthly spending limit.\n\nYour limit resets ${resetTime}. Ask your team admin to raise your limit to continue.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              capReason: "team_member_cap",
-            });
+            throw new ChatSDKError(
+              "rate_limit:chat",
+              msg,
+              limitMetadata(monthlyCheck.reset, "team_member_cap"),
+            );
           }
 
           if (deductResult.monthlyCapExceeded) {
             const msg = `You've hit your monthly extra usage spending limit.\n\nYour limit resets ${resetTime}. To keep going now, increase your spending limit in Settings.`;
-            throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              capReason: "extra_usage_cap",
-            });
+            throw new ChatSDKError(
+              "rate_limit:chat",
+              msg,
+              limitMetadata(monthlyCheck.reset, "extra_usage_cap"),
+            );
           }
 
           // If we tried auto-reload and Stripe declined the card, give the
@@ -379,20 +398,19 @@ export const checkTokenBucketLimit = async (
                 ? getSuspensionMessage(null)
                 : `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
-              resetTimestamp: monthlyCheck.reset,
-              subscription,
-              autoReloadFailed: true,
-              autoReloadFailureReason: reason,
-              capReason: "auto_reload_failed",
+              ...limitMetadata(monthlyCheck.reset, "auto_reload_failed", {
+                autoReloadFailed: true,
+                autoReloadFailureReason: reason,
+              }),
             });
           }
 
-          const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour limit resets ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
-          throw new ChatSDKError("rate_limit:chat", msg, {
-            resetTimestamp: monthlyCheck.reset,
-            subscription,
-            capReason: "monthly_exhausted",
-          });
+          const msg = `You've hit your usage limit and ${emptyCreditsHint}.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`;
+          throw new ChatSDKError(
+            "rate_limit:chat",
+            msg,
+            limitMetadata(monthlyCheck.reset, "monthly_exhausted"),
+          );
         }
 
         // Deduction failed for a service reason (not insufficient funds) —
@@ -400,22 +418,18 @@ export const checkTokenBucketLimit = async (
         throw new ChatSDKError(
           "rate_limit:chat",
           "Extra usage billing is temporarily unavailable. Please try again in a few moments.",
-          {
-            resetTimestamp: monthlyCheck.reset,
-            subscription,
-            capReason: "billing_unavailable",
-          },
+          limitMetadata(monthlyCheck.reset, "billing_unavailable"),
         );
       }
 
       // No extra usage enabled - throw standard rate limit error
       const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
-      const msg = `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
-      throw new ChatSDKError("rate_limit:chat", msg, {
-        resetTimestamp: monthlyCheck.reset,
-        subscription,
-        capReason: "monthly_exhausted",
-      });
+      const msg = `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`;
+      throw new ChatSDKError(
+        "rate_limit:chat",
+        msg,
+        limitMetadata(monthlyCheck.reset, "monthly_exhausted"),
+      );
     }
 
     // Step 3: Have capacity, deduct from monthly bucket

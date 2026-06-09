@@ -81,6 +81,9 @@ export interface ChatWideEvent {
     enabled?: boolean;
     has_balance?: boolean;
     balance_dollars?: number;
+    monthly_cap_dollars?: number;
+    monthly_spent_dollars?: number;
+    monthly_remaining_dollars?: number;
     auto_reload_enabled?: boolean;
   };
 
@@ -323,6 +326,9 @@ export class WideEventBuilder {
         enabled: config.enabled,
         has_balance: config.hasBalance,
         balance_dollars: config.balanceDollars,
+        monthly_cap_dollars: config.monthlyCapDollars,
+        monthly_spent_dollars: config.monthlySpentDollars,
+        monthly_remaining_dollars: config.monthlyRemainingDollars,
         auto_reload_enabled: config.autoReloadEnabled,
       };
     }

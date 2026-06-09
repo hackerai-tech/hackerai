@@ -10,6 +10,11 @@ import {
   captureAddCreditCtaImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
+import type { LimitCapReason } from "@/lib/limit-pressure";
+import {
+  getExtraUsageLimitCta,
+  shouldShowUpgradeCta,
+} from "@/lib/limit-pressure";
 
 interface MessageErrorStateProps {
   error: Error;
@@ -43,7 +48,7 @@ export const MessageErrorState = ({
 
   const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
-  const capReason = metadata?.capReason as string | undefined;
+  const capReason = metadata?.capReason as LimitCapReason | undefined;
   const upgradeImpressionRef = useRef(false);
   const addCreditImpressionRef = useRef(false);
 
@@ -71,10 +76,8 @@ export const MessageErrorState = ({
   })();
 
   const isPaidUser = subscription !== "free";
-  const canUpgrade =
-    subscription === "free" ||
-    subscription === "pro" ||
-    subscription === "pro-plus";
+  const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
+  const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
 
   useEffect(() => {
@@ -92,7 +95,12 @@ export const MessageErrorState = ({
   }, [canUpgrade, capReason, isRateLimitError, subscription]);
 
   useEffect(() => {
-    if (!isRateLimitError || !isPaidUser || addCreditImpressionRef.current) {
+    if (
+      !isRateLimitError ||
+      !isPaidUser ||
+      !extraUsageCta ||
+      addCreditImpressionRef.current
+    ) {
       return;
     }
 
@@ -102,9 +110,9 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: "Add Credits",
+      cta_text: extraUsageCta.analyticsText,
     });
-  }, [capReason, isPaidUser, isRateLimitError, subscription]);
+  }, [capReason, extraUsageCta, isPaidUser, isRateLimitError, subscription]);
 
   return (
     <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
@@ -140,7 +148,7 @@ export const MessageErrorState = ({
             >
               View Usage
             </Button>
-            {isPaidUser && (
+            {extraUsageCta && (
               <Button
                 variant="outline"
                 size="sm"
@@ -150,12 +158,12 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     cap_reason: capReason,
-                    cta_text: "Add Credits",
+                    cta_text: extraUsageCta.analyticsText,
                   });
-                  openSettingsDialog("Extra Usage");
+                  openSettingsDialog(extraUsageCta.settingsTab);
                 }}
               >
-                Add Credits
+                {extraUsageCta.label}
               </Button>
             )}
             {canUpgrade && (

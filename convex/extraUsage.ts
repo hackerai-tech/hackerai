@@ -584,6 +584,9 @@ export const getExtraUsageBalanceForBackend = query({
     autoReloadThresholdDollars: v.optional(v.number()),
     autoReloadThresholdPoints: v.optional(v.number()),
     autoReloadAmountDollars: v.optional(v.number()),
+    monthlyCapDollars: v.optional(v.number()),
+    monthlySpentDollars: v.number(),
+    monthlyRemainingDollars: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -602,6 +605,17 @@ export const getExtraUsageBalanceForBackend = query({
 
     const balancePoints = settings?.balance_points ?? 0;
     const thresholdPoints = settings?.auto_reload_threshold_points;
+    const now = new Date();
+    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const monthlySpentPoints =
+      settings?.monthly_reset_date === currentMonth
+        ? (settings?.monthly_spent_points ?? 0)
+        : 0;
+    const monthlyCapPoints = settings?.monthly_cap_points;
+    const monthlyRemainingPoints =
+      monthlyCapPoints === undefined
+        ? undefined
+        : Math.max(0, monthlyCapPoints - monthlySpentPoints);
 
     return {
       balanceDollars: pointsToDollars(balancePoints),
@@ -613,6 +627,15 @@ export const getExtraUsageBalanceForBackend = query({
         : undefined,
       autoReloadThresholdPoints: thresholdPoints,
       autoReloadAmountDollars: settings?.auto_reload_amount_dollars,
+      monthlyCapDollars:
+        monthlyCapPoints === undefined
+          ? undefined
+          : pointsToDollars(monthlyCapPoints),
+      monthlySpentDollars: pointsToDollars(monthlySpentPoints),
+      monthlyRemainingDollars:
+        monthlyRemainingPoints === undefined
+          ? undefined
+          : pointsToDollars(monthlyRemainingPoints),
     };
   },
 });

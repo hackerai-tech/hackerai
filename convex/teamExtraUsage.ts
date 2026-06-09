@@ -505,6 +505,11 @@ export const getTeamExtraUsageStateForBackend = query({
     autoReloadThresholdPoints: v.optional(v.number()),
     autoReloadAmountDollars: v.optional(v.number()),
     memberDisabled: v.boolean(),
+    monthlyCapDollars: v.optional(v.number()),
+    monthlySpentDollars: v.number(),
+    memberMonthlyLimitDollars: v.optional(v.number()),
+    memberMonthlySpentDollars: v.number(),
+    monthlyRemainingDollars: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -522,6 +527,32 @@ export const getTeamExtraUsageStateForBackend = query({
       .first();
 
     const thresholdPoints = team?.auto_reload_threshold_points;
+    const currentMonth = currentMonthString();
+    const teamMonthlySpent =
+      team?.monthly_reset_date === currentMonth
+        ? (team?.monthly_spent_points ?? 0)
+        : 0;
+    const memberMonthlySpent =
+      member?.monthly_reset_date === currentMonth
+        ? (member?.monthly_spent_points ?? 0)
+        : 0;
+    const teamCapPoints = team?.monthly_cap_points;
+    const memberCapPoints = member?.monthly_limit_points;
+    const teamRemainingPoints =
+      teamCapPoints === undefined
+        ? undefined
+        : Math.max(0, teamCapPoints - teamMonthlySpent);
+    const memberRemainingPoints =
+      memberCapPoints === undefined
+        ? undefined
+        : Math.max(0, memberCapPoints - memberMonthlySpent);
+    const monthlyRemainingPoints =
+      teamRemainingPoints === undefined && memberRemainingPoints === undefined
+        ? undefined
+        : Math.min(
+            teamRemainingPoints ?? Number.POSITIVE_INFINITY,
+            memberRemainingPoints ?? Number.POSITIVE_INFINITY,
+          );
 
     return {
       enabled: team?.enabled ?? false,
@@ -534,6 +565,20 @@ export const getTeamExtraUsageStateForBackend = query({
       autoReloadThresholdPoints: thresholdPoints,
       autoReloadAmountDollars: team?.auto_reload_amount_dollars,
       memberDisabled: member?.disabled ?? false,
+      monthlyCapDollars:
+        teamCapPoints === undefined
+          ? undefined
+          : pointsToDollars(teamCapPoints),
+      monthlySpentDollars: pointsToDollars(teamMonthlySpent),
+      memberMonthlyLimitDollars:
+        memberCapPoints === undefined
+          ? undefined
+          : pointsToDollars(memberCapPoints),
+      memberMonthlySpentDollars: pointsToDollars(memberMonthlySpent),
+      monthlyRemainingDollars:
+        monthlyRemainingPoints === undefined
+          ? undefined
+          : pointsToDollars(monthlyRemainingPoints),
     };
   },
 });

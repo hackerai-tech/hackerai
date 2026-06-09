@@ -53,6 +53,9 @@ export interface ExtraUsageBalance {
   autoReloadThresholdDollars?: number;
   autoReloadThresholdPoints?: number;
   autoReloadAmountDollars?: number;
+  monthlyCapDollars?: number;
+  monthlySpentDollars?: number;
+  monthlyRemainingDollars?: number;
 }
 
 export interface DeductBalanceResult {
@@ -110,6 +113,9 @@ export async function getExtraUsageBalance(
       autoReloadThresholdDollars: settings.autoReloadThresholdDollars,
       autoReloadThresholdPoints: settings.autoReloadThresholdPoints,
       autoReloadAmountDollars: settings.autoReloadAmountDollars,
+      monthlyCapDollars: settings.monthlyCapDollars,
+      monthlySpentDollars: settings.monthlySpentDollars,
+      monthlyRemainingDollars: settings.monthlyRemainingDollars,
     };
   } catch (error) {
     logExtraUsageConvexFailure({
@@ -277,6 +283,11 @@ export interface TeamExtraUsageState {
   balancePoints: number;
   autoReloadEnabled: boolean;
   memberDisabled: boolean;
+  monthlyCapDollars?: number;
+  monthlySpentDollars?: number;
+  memberMonthlyLimitDollars?: number;
+  memberMonthlySpentDollars?: number;
+  monthlyRemainingDollars?: number;
 }
 
 /**
@@ -304,6 +315,11 @@ export async function getTeamExtraUsageState(
       balancePoints: state.balancePoints,
       autoReloadEnabled: state.autoReloadEnabled,
       memberDisabled: state.memberDisabled,
+      monthlyCapDollars: state.monthlyCapDollars,
+      monthlySpentDollars: state.monthlySpentDollars,
+      memberMonthlyLimitDollars: state.memberMonthlyLimitDollars,
+      memberMonthlySpentDollars: state.memberMonthlySpentDollars,
+      monthlyRemainingDollars: state.monthlyRemainingDollars,
     };
   } catch (error) {
     logExtraUsageConvexFailure({

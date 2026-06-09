@@ -1,5 +1,6 @@
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
 import { isChatMode, isSubscriptionTier } from "@/types/chat";
+import type { LimitCapReason } from "@/lib/limit-pressure";
 
 const WARNING_TYPES = [
   "sliding-window",
@@ -83,6 +84,10 @@ export function parseRateLimitWarning(
   }
 
   const midStream = rawData.midStream === true;
+  const capReason =
+    isString(rawData.capReason) && rawData.capReason.length > 0
+      ? (rawData.capReason as LimitCapReason)
+      : undefined;
 
   if (warningType === "extra-usage-active") {
     const bucketType = rawData.bucketType as RawBucketType | undefined;
@@ -98,6 +103,7 @@ export function parseRateLimitWarning(
         bucketType,
         resetTime,
         subscription,
+        ...(capReason && { capReason }),
         midStream: true,
       };
     }
@@ -107,6 +113,7 @@ export function parseRateLimitWarning(
         bucketType,
         resetTime,
         subscription,
+        ...(capReason && { capReason }),
       };
     }
     const storageKey = `${EXTRA_USAGE_STORAGE_KEY_PREFIX}${bucketType}`;
@@ -120,6 +127,7 @@ export function parseRateLimitWarning(
       bucketType,
       resetTime,
       subscription,
+      ...(capReason && { capReason }),
     };
   }
 
@@ -183,6 +191,7 @@ export function parseRateLimitWarning(
     ...(severity && { severity }),
     ...(usedDollars !== undefined && { usedDollars }),
     ...(limitDollars !== undefined && { limitDollars }),
+    ...(capReason && { capReason }),
     ...(midStream && { midStream: true }),
     ...(cutOff && { cutOff: true }),
   };

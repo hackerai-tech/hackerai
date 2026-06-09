@@ -222,6 +222,34 @@ describe("buildExtraUsageConfig — individual paid users (pro / pro-plus / ultr
     });
   });
 
+  it("includes personal monthly cap remaining for mid-stream guardrails", async () => {
+    mockGetUserBalance.mockResolvedValue({
+      balanceDollars: 30,
+      balancePoints: 300_000,
+      enabled: true,
+      autoReloadEnabled: true,
+      monthlyCapDollars: 50,
+      monthlySpentDollars: 45,
+      monthlyRemainingDollars: 5,
+    });
+
+    const config = await buildExtraUsageConfig({
+      userId: USER_ID,
+      subscription: "pro-plus",
+      userCustomization: { extra_usage_enabled: true } as any,
+    });
+
+    expect(config).toMatchObject({
+      enabled: true,
+      hasBalance: true,
+      balanceDollars: 30,
+      autoReloadEnabled: true,
+      monthlyCapDollars: 50,
+      monthlySpentDollars: 45,
+      monthlyRemainingDollars: 5,
+    });
+  });
+
   it("returns optimistic config when personal balance query fails", async () => {
     mockGetUserBalance.mockResolvedValue(null);
 

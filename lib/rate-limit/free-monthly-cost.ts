@@ -2,6 +2,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { getFreeMonthlyCostLimitDollars } from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
+import { getLimitPressureContext } from "@/lib/limit-pressure";
 
 const RECORD_FREE_MONTHLY_COST_SCRIPT = `
 local key = KEYS[1]
@@ -93,6 +94,10 @@ export async function checkFreeMonthlyCostLimit(
       resetTimestamp: reset,
       subscription: "free",
       capReason: "free_monthly_exhausted",
+      ...getLimitPressureContext({
+        subscription: "free",
+        capReason: "free_monthly_exhausted",
+      }),
     });
   }
 

@@ -48,6 +48,7 @@ import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { ChatSDKError } from "@/lib/errors";
+import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
   getExtraUsageBalance,
   getTeamExtraUsageState,
@@ -179,6 +180,7 @@ export function sendRateLimitWarnings(
           monthlyLimitPoints: rateLimitInfo.monthly.limit,
           resetTime: rateLimitInfo.monthly.resetTime,
           subscription,
+          capReason: "monthly_near_limit",
         });
       }
     }
@@ -204,6 +206,8 @@ export interface TokenBucketEmitContext {
   midStream?: boolean;
   /** Set when the response was cut off because the bucket hit 0. */
   cutOff?: boolean;
+  /** Monetization/guardrail reason that should drive the client CTA. */
+  capReason?: LimitCapReason;
 }
 
 export function emitTokenBucketThresholdWarning(
@@ -223,6 +227,7 @@ export function emitTokenBucketThresholdWarning(
     usedDollars:
       Math.round((ctx.projectedUsedPoints / POINTS_PER_DOLLAR) * 100) / 100,
     limitDollars: ctx.monthlyLimitPoints / POINTS_PER_DOLLAR,
+    ...(ctx.capReason ? { capReason: ctx.capReason } : {}),
     ...(ctx.midStream ? { midStream: true } : {}),
     ...(ctx.cutOff ? { cutOff: true } : {}),
   });
@@ -923,6 +928,15 @@ export async function buildExtraUsageConfig(args: {
         hasBalance: state.balanceDollars > 0,
         balanceDollars: state.balanceDollars,
         autoReloadEnabled: state.autoReloadEnabled,
+        ...(state.monthlyCapDollars !== undefined && {
+          monthlyCapDollars: state.monthlyCapDollars,
+        }),
+        ...(state.monthlySpentDollars !== undefined && {
+          monthlySpentDollars: state.monthlySpentDollars,
+        }),
+        ...(state.monthlyRemainingDollars !== undefined && {
+          monthlyRemainingDollars: state.monthlyRemainingDollars,
+        }),
       };
     }
     return undefined;
@@ -945,6 +959,15 @@ export async function buildExtraUsageConfig(args: {
       hasBalance: balanceInfo.balanceDollars > 0,
       balanceDollars: balanceInfo.balanceDollars,
       autoReloadEnabled: balanceInfo.autoReloadEnabled,
+      ...(balanceInfo.monthlyCapDollars !== undefined && {
+        monthlyCapDollars: balanceInfo.monthlyCapDollars,
+      }),
+      ...(balanceInfo.monthlySpentDollars !== undefined && {
+        monthlySpentDollars: balanceInfo.monthlySpentDollars,
+      }),
+      ...(balanceInfo.monthlyRemainingDollars !== undefined && {
+        monthlyRemainingDollars: balanceInfo.monthlyRemainingDollars,
+      }),
     };
   }
   return undefined;
