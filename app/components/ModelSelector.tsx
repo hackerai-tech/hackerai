@@ -439,11 +439,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
           <AlertDialogDescription className="text-left text-sm leading-relaxed text-foreground/80">
             {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
             can burn through {includedUsageLabel} much faster than Standard.
-          </AlertDialogDescription>
-          <div className="rounded-md border border-border bg-muted px-3 py-2 text-left text-sm leading-relaxed text-muted-foreground">
             Some long requests can cost around $10 once {extraUsageCreditsLabel}{" "}
             are being used.
-          </div>
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={handleDismissHighCostNotice}>
