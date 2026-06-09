@@ -101,4 +101,17 @@ describe("ModelSelector", () => {
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
     expect(screen.getByText(/HackerAI Max is powerful/i)).toBeVisible();
   });
+
+  it("uses team-specific warning copy for team users", () => {
+    mockSubscription = "team";
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/your team's included usage/i)).toBeVisible();
+    expect(screen.getByText(/team extra usage credits/i)).toBeVisible();
+  });
 });
