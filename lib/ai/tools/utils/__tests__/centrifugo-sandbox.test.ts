@@ -565,15 +565,19 @@ describe("CentrifugoSandbox", () => {
         retryConnrefused: true,
       };
       const runs: string[] = [];
-      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
-        runs.push(cmd);
-        return { stdout: "", stderr: "", exitCode: 0 };
-      });
-      return { sandbox, runs };
+      const runOptions: unknown[] = [];
+      (sandbox as any).commands.run = jest.fn(
+        async (cmd: string, opts?: unknown) => {
+          runOptions.push(opts);
+          runs.push(cmd);
+          return { stdout: "", stderr: "", exitCode: 0 };
+        },
+      );
+      return { sandbox, runs, runOptions };
     }
 
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
-      const { sandbox, runs } = createWindowsBashSandbox();
+      const { sandbox, runs, runOptions } = createWindowsBashSandbox();
       // Mock validateDownloadUrl is real; use an https URL it accepts.
       await sandbox.files.downloadFromUrl(
         "https://example.com/image.png",
@@ -589,6 +593,48 @@ describe("CentrifugoSandbox", () => {
       expect(cmd).toContain("-o '/c/temp/hackerai-upload/image.png'");
       expect(cmd).not.toContain("if not exist");
       expect(cmd).not.toContain("\\");
+      expect(runOptions[0]).toMatchObject({
+        displayName: "Downloading: image.png",
+        timeoutMs: 120000,
+      });
+    });
+
+    it("downloadFromUrl retries local command wrapper timeouts", async () => {
+      const { sandbox } = createWindowsBashSandbox();
+      (sandbox as any).commands.run = jest
+        .fn()
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "\n[Command timed out and was terminated]",
+          exitCode: 124,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+      const promise = sandbox.files.downloadFromUrl(
+        "https://example.com/large.har",
+        "/tmp/hackerai-upload/large.har",
+      );
+
+      await jest.advanceTimersByTimeAsync(500);
+      await promise;
+
+      expect((sandbox as any).commands.run).toHaveBeenCalledTimes(2);
+      expect((sandbox as any).commands.run).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("curl -fsSL"),
+        expect.objectContaining({
+          displayName: "Downloading: large.har",
+          timeoutMs: 120000,
+        }),
+      );
+      expect((sandbox as any).commands.run).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining("curl -fsSL"),
+        expect.objectContaining({
+          displayName: "Downloading: large.har (retry 1)",
+          timeoutMs: 120000,
+        }),
+      );
     });
 
     it("ensureDirectory emits mkdir -p with MSYS path", async () => {
