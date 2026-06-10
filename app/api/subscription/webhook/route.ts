@@ -1016,18 +1016,23 @@ async function recordCancellationCompleted(args: {
   const completedAt =
     args.completionType === "deleted" ? (canceledAt ?? Date.now()) : Date.now();
 
+  let updatedCount = 0;
   try {
-    await convex.mutation(api.cancellationReasons.markCancellationCompleted, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      stripeSubscriptionId: args.subscription.id,
-      stripeCustomerId: args.customerId,
-      userIds: args.userIds,
-      organizationId: args.orgId,
-      subscriptionTier: args.tier ?? undefined,
-      stripeCancellationReason,
-      cancelAtPeriodEnd: args.subscription.cancel_at_period_end,
-      completedAt,
-    });
+    const result = await convex.mutation(
+      api.cancellationReasons.markCancellationCompleted,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeSubscriptionId: args.subscription.id,
+        stripeCustomerId: args.customerId,
+        userIds: args.userIds,
+        organizationId: args.orgId,
+        subscriptionTier: args.tier ?? undefined,
+        stripeCancellationReason,
+        cancelAtPeriodEnd: args.subscription.cancel_at_period_end,
+        completedAt,
+      },
+    );
+    updatedCount = result.updatedCount;
   } catch (error) {
     phLogger.warn("cancellation_reason_completion_update_failed", {
       stripe_customer_id: args.customerId,
@@ -1037,12 +1042,16 @@ async function recordCancellationCompleted(args: {
     });
   }
 
+  if (updatedCount === 0) {
+    return;
+  }
+
   for (const uid of args.userIds) {
     phLogger.event(
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       paidFunnelProperties({
         userId: uid,
-        tier: args.tier,
+        subscription_tier: args.tier,
         org_id: args.orgId,
         plan: args.price?.lookup_key,
         billing_interval: priceBillingInterval(args.price),

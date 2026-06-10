@@ -162,6 +162,7 @@ export default async function cancelSubscriptionAction(
           accountCreatedAt,
           accountAgeDays,
           startedAt: now,
+          source: "in_app",
         },
       );
     } catch (error) {

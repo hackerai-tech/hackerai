@@ -5,6 +5,9 @@ import { validateServiceKey } from "./lib/utils";
 const RECENT_USAGE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MAX_REASON_DETAILS_LENGTH = 2_000;
+const MAX_RECENT_USAGE_LOGS = 5_000;
+const MAX_COMPLETION_CANDIDATES = 100;
+const MAX_REPORT_ROWS = 10_000;
 
 const subscriptionTierValidator = v.union(
   v.literal("free"),
@@ -31,6 +34,11 @@ const usageSegmentValidator = v.union(
   v.literal("light"),
   v.literal("moderate"),
   v.literal("heavy"),
+);
+
+const sourceValidator = v.union(
+  v.literal("in_app"),
+  v.literal("billing_portal"),
 );
 
 type RecentUsageSegment = "none" | "light" | "moderate" | "heavy";
@@ -71,7 +79,8 @@ async function recentUsageSummary(
     .withIndex("by_user", (q) =>
       q.eq("user_id", userId).gte("_creationTime", startTime),
     )
-    .collect();
+    .order("desc")
+    .take(MAX_RECENT_USAGE_LOGS);
 
   const requestCount = logs.length;
   const costDollars = logs.reduce(
@@ -106,6 +115,7 @@ export const recordCancellationStarted = mutation({
     accountCreatedAt: v.optional(v.number()),
     accountAgeDays: v.optional(v.number()),
     startedAt: v.optional(v.number()),
+    source: v.optional(sourceValidator),
   },
   returns: v.id("cancellation_reasons"),
   handler: async (ctx, args) => {
@@ -115,7 +125,7 @@ export const recordCancellationStarted = mutation({
     const recentUsage = await recentUsageSummary(ctx, args.userId, now);
     const reasonDetails = normalizeReasonDetails(args.reasonDetails);
 
-    return await ctx.db.insert("cancellation_reasons", {
+    const cancellationReasonId = await ctx.db.insert("cancellation_reasons", {
       user_id: args.userId,
       organization_id: args.organizationId,
       stripe_customer_id: args.stripeCustomerId,
@@ -124,9 +134,8 @@ export const recordCancellationStarted = mutation({
       plan: args.plan,
       subscription_tier: args.subscriptionTier,
       reason_category: args.reasonCategory,
-      reason_details: reasonDetails,
       status: "started",
-      source: "billing_portal",
+      source: args.source ?? "in_app",
       started_at: now,
       account_created_at: args.accountCreatedAt,
       account_age_days: args.accountAgeDays,
@@ -137,6 +146,21 @@ export const recordCancellationStarted = mutation({
       recent_usage_segment: recentUsage.segment,
       updated_at: now,
     });
+
+    const reasonDetailsId = await ctx.db.insert("cancellation_reason_details", {
+      cancellation_reason_id: cancellationReasonId,
+      user_id: args.userId,
+      organization_id: args.organizationId,
+      stripe_subscription_id: args.stripeSubscriptionId,
+      reason_details: reasonDetails,
+      created_at: now,
+    });
+
+    await ctx.db.patch(cancellationReasonId, {
+      reason_details_id: reasonDetailsId,
+    });
+
+    return cancellationReasonId;
   },
 });
 
@@ -164,7 +188,8 @@ export const markCancellationCompleted = mutation({
       .withIndex("by_stripe_subscription_id", (q) =>
         q.eq("stripe_subscription_id", args.stripeSubscriptionId),
       )
-      .collect();
+      .order("desc")
+      .take(MAX_COMPLETION_CANDIDATES);
 
     const userIdSet = args.userIds ? new Set(args.userIds) : null;
     const candidates = rows
@@ -230,7 +255,8 @@ export const getCancellationReasonReport = query({
         }
         return q;
       })
-      .collect();
+      .order("desc")
+      .take(MAX_REPORT_ROWS);
 
     const groups = new Map<
       string,

@@ -149,9 +149,9 @@ export default defineSchema({
       v.literal("temporary_pause"),
       v.literal("other"),
     ),
-    reason_details: v.string(),
+    reason_details_id: v.optional(v.id("cancellation_reason_details")),
     status: v.union(v.literal("started"), v.literal("completed")),
-    source: v.literal("billing_portal"),
+    source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),
     account_created_at: v.optional(v.number()),
@@ -177,6 +177,18 @@ export default defineSchema({
     .index("by_tier_started", ["subscription_tier", "started_at"])
     .index("by_started_at", ["started_at"])
     .index("by_status_started", ["status", "started_at"]),
+
+  cancellation_reason_details: defineTable({
+    cancellation_reason_id: v.id("cancellation_reasons"),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    reason_details: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_cancellation_reason_id", ["cancellation_reason_id"])
+    .index("by_user_created", ["user_id", "created_at"])
+    .index("by_subscription_created", ["stripe_subscription_id", "created_at"]),
 
   user_customization: defineTable({
     user_id: v.string(),

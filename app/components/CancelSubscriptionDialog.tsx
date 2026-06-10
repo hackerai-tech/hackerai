@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -96,9 +96,25 @@ export const CancelSubscriptionDialog = ({
   const [showValidation, setShowValidation] = useState(false);
   const [cancellationResult, setCancellationResult] =
     useState<CancellationResult | null>(null);
+  const openRef = useRef(open);
+  const requestIdRef = useRef(0);
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      openRef.current = nextOpen;
+      if (!nextOpen) {
+        requestIdRef.current += 1;
+      }
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange],
+  );
 
   useEffect(() => {
+    openRef.current = open;
+
     if (!open) {
+      requestIdRef.current += 1;
       setReasonCategory("");
       setReasonDetails("");
       setShowValidation(false);
@@ -125,6 +141,8 @@ export const CancelSubscriptionDialog = ({
     }
 
     setIsProcessing(true);
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     try {
       const result = await cancelSubscriptionAction({
         cancellationReason: {
@@ -132,18 +150,26 @@ export const CancelSubscriptionDialog = ({
           reasonDetails: trimmedReasonDetails,
         },
       });
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       setCancellationResult({
         currentPeriodEnd: result.currentPeriodEnd,
       });
       toast.success("Subscription scheduled to cancel");
     } catch (error) {
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to cancel subscription",
       );
     } finally {
-      setIsProcessing(false);
+      if (openRef.current && requestIdRef.current === requestId) {
+        setIsProcessing(false);
+      }
     }
   }, [reasonCategory, reasonDetails]);
 
@@ -178,7 +204,7 @@ export const CancelSubscriptionDialog = ({
     : null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         {cancellationResult ? (
           <>
@@ -194,7 +220,10 @@ export const CancelSubscriptionDialog = ({
               </DialogDescription>
             </DialogHeader>
             <DialogFooter className="mt-4">
-              <Button className="w-full" onClick={() => onOpenChange(false)}>
+              <Button
+                className="w-full"
+                onClick={() => handleOpenChange(false)}
+              >
                 Done
               </Button>
             </DialogFooter>
@@ -282,7 +311,7 @@ export const CancelSubscriptionDialog = ({
             <DialogFooter className="mt-4 flex flex-col gap-2 sm:flex-col">
               <Button
                 variant="outline"
-                onClick={() => onOpenChange(false)}
+                onClick={() => handleOpenChange(false)}
                 disabled={isProcessing}
                 className="w-full"
               >
