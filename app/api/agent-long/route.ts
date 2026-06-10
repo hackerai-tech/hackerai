@@ -218,7 +218,7 @@ export async function POST(req: NextRequest) {
     const [publicAccessToken] = await Promise.all([
       auth.createPublicToken({
         scopes: { read: { runs: [handle.id] } },
-        // 6h is enough to cover the 1h max task duration plus reconnect grace.
+        // 6h is enough to cover the max task duration plus reconnect grace.
         expirationTime: "6h",
       }),
       temporary

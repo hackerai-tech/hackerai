@@ -131,6 +131,25 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 });
 
 describe("agent-long task — Trigger.dev dashboard error visibility", () => {
+  test("uses a paid two-hour task cap with a separate free-plan runtime cap", () => {
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*60\s*\*\s*60/,
+    );
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*2\s*\*\s*60\s*\*\s*60/,
+    );
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS\s*=\s*AGENT_LONG_PAID_MAX_DURATION_SECONDS/,
+    );
+    expect(taskSrc).toMatch(
+      /subscription\s*===\s*"free"[\s\S]*AGENT_LONG_FREE_MAX_DURATION_SECONDS[\s\S]*AGENT_LONG_PAID_MAX_DURATION_SECONDS/,
+    );
+    expect(taskSrc).toMatch(
+      /maxDuration:\s*AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS/,
+    );
+    expect(taskSrc).toMatch(/maxDurationMs:\s*agentLongMaxDurationMs/);
+  });
+
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(/metadata:\s*{/);
