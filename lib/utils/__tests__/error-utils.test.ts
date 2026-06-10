@@ -387,6 +387,30 @@ describe("provider error classification", () => {
     expect(isProviderContentBlockedError(err)).toBe(false);
   });
 
+  it("classifies explicit content policy block messages", () => {
+    const err = apiCallError({
+      statusCode: 403,
+      message: "Request was rejected for a safety policy violation.",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "content_blocked",
+    );
+    expect(isProviderContentBlockedError(err)).toBe(true);
+  });
+
+  it("does not classify moderation service failures as content blocks", () => {
+    const err = apiCallError({
+      statusCode: 503,
+      message: "moderation service unavailable",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "provider_5xx",
+    );
+    expect(isProviderContentBlockedError(err)).toBe(false);
+  });
+
   it("classifies provider-specific messages when the top-level message is generic", () => {
     const err = apiCallError({
       statusCode: undefined,

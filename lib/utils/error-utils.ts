@@ -291,13 +291,14 @@ const getProviderMessageText = (details: Record<string, unknown>): string => {
     .join(" ");
 };
 
+const PROVIDER_CONTENT_BLOCK_PATTERN =
+  /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
+
 export const isProviderContentBlockedDetails = (
   details: Record<string, unknown>,
 ): boolean => {
   const message = getProviderMessageText(details);
-  return /PROHIBITED_CONTENT|content[_ -]?filter|content[_ -]?policy|policy violation|blocked by (?:the )?(?:provider )?(?:safety|moderation)|safety system|safety policy|unsafe content|harmful content|moderation/i.test(
-    message,
-  );
+  return PROVIDER_CONTENT_BLOCK_PATTERN.test(message);
 };
 
 export const isProviderContentBlockedError = (error: unknown): boolean =>
