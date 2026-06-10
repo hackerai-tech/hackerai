@@ -187,8 +187,11 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_cancellation_reason_id", ["cancellation_reason_id"])
-    .index("by_user_created", ["user_id", "created_at"])
-    .index("by_subscription_created", ["stripe_subscription_id", "created_at"]),
+    .index("by_user_id_and_created_at", ["user_id", "created_at"])
+    .index("by_stripe_subscription_id_and_created_at", [
+      "stripe_subscription_id",
+      "created_at",
+    ]),
 
   user_customization: defineTable({
     user_id: v.string(),
