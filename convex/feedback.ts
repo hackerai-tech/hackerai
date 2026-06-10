@@ -1,4 +1,4 @@
-import { mutation } from "./_generated/server";
+import { internalMutation, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { convexLogger } from "./lib/logger";
 
@@ -64,5 +64,43 @@ export const createFeedback = mutation({
 
       return feedbackId;
     }
+  },
+});
+
+/**
+ * Delete feedback older than the provided cutoff and clear any message pointers
+ * first so messages never retain dangling feedback_id references.
+ */
+export const purgeOldFeedback = internalMutation({
+  args: {
+    cutoffTimeMs: v.number(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+
+    const candidates = await ctx.db
+      .query("feedback")
+      .withIndex("by_creation_time", (q) =>
+        q.lt("_creationTime", args.cutoffTimeMs),
+      )
+      .order("asc")
+      .take(limit);
+
+    for (const feedback of candidates) {
+      const linkedMessages = await ctx.db
+        .query("messages")
+        .withIndex("by_feedback_id", (q) => q.eq("feedback_id", feedback._id))
+        .collect();
+
+      for (const message of linkedMessages) {
+        await ctx.db.patch(message._id, { feedback_id: undefined });
+      }
+
+      await ctx.db.delete(feedback._id);
+    }
+
+    return { deletedCount: candidates.length };
   },
 });

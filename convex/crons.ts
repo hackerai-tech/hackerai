@@ -3,6 +3,8 @@ import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 
+const FEEDBACK_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+
 export const runPurge = internalAction({
   args: {},
   returns: v.null(),
@@ -85,6 +87,35 @@ export const runStaleConnectionsPurge = internalAction({
   },
 });
 
+/**
+ * Delete feedback older than 180 days. Feedback may include user-written detail
+ * text, so retain it for product-quality analysis without storing it forever.
+ *
+ * Processes up to 10 batches per run. If the last batch fills `limit`, more
+ * work remains — schedule a follow-up so backlog can't outpace the daily cron.
+ */
+export const runOldFeedbackPurge = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - FEEDBACK_RETENTION_MS;
+    const limit = 100;
+    let lastDeletedCount = 0;
+    for (let i = 0; i < 10; i++) {
+      const { deletedCount } = await ctx.runMutation(
+        internal.feedback.purgeOldFeedback,
+        { cutoffTimeMs: cutoff, limit },
+      );
+      lastDeletedCount = deletedCount;
+      if (deletedCount < limit) break;
+    }
+    if (lastDeletedCount === limit) {
+      await ctx.scheduler.runAfter(0, internal.crons.runOldFeedbackPurge, {});
+    }
+    return null;
+  },
+});
+
 const crons = cronJobs();
 
 crons.interval(
@@ -105,6 +136,13 @@ crons.interval(
   "purge stale disconnected sandbox connections older than 30d",
   { hours: 24 },
   internal.crons.runStaleConnectionsPurge,
+  {},
+);
+
+crons.interval(
+  "purge feedback older than 180d",
+  { hours: 24 },
+  internal.crons.runOldFeedbackPurge,
   {},
 );
 
