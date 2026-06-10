@@ -13,8 +13,9 @@ export default defineConfig({
   // "WebSocket constructor not found" when CentrifugoSandbox connects.
   runtime: "node-22",
   logLevel: "log",
-  // Up to one hour per agent-long run.
-  maxDuration: 3600,
+  // Up to two hours per agent-long run. The task enforces a lower free-plan
+  // runtime cap inside trigger/agent-long.ts.
+  maxDuration: 2 * 60 * 60,
   retries: {
     enabledInDev: false,
     default: {

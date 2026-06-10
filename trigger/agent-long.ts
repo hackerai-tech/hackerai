@@ -107,10 +107,25 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
+import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
-// Leave 2 min for cleanup before trigger.dev hits maxDuration: 60 * 60.
-const AGENT_LONG_MAX_DURATION_MS = 58 * 60 * 1000;
+const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
+const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
+const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
+const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
+  AGENT_LONG_PAID_MAX_DURATION_SECONDS;
+
+const getAgentLongPlanDurationMs = (subscription: SubscriptionTier) =>
+  (subscription === "free"
+    ? AGENT_LONG_FREE_MAX_DURATION_SECONDS
+    : AGENT_LONG_PAID_MAX_DURATION_SECONDS) * 1000;
+
+const getAgentLongMaxDurationMs = (subscription: SubscriptionTier) =>
+  Math.max(
+    0,
+    getAgentLongPlanDurationMs(subscription) - AGENT_LONG_CLEANUP_GRACE_MS,
+  );
 
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
 
@@ -572,7 +587,7 @@ export type AgentLongPayload = {
 
 export const agentLongTask = task({
   id: "agent-long",
-  maxDuration: 60 * 60,
+  maxDuration: AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS,
   // Streaming tasks must not retry: a retry emits new chunks into the same
   // "ui" stream the client already subscribed to, producing duplicate output.
   // Provider errors are handled internally via the fallback-model path.
@@ -632,9 +647,10 @@ export const agentLongTask = task({
 
     // Capture task start time here, before any async setup, so the
     // elapsedTimeExceeds stop condition counts from task launch rather
-    // than stream launch. Without this, slow setup (>2 min) would cause
-    // the 58-min stop to fire after trigger.dev's 60-min hard SIGKILL.
+    // than stream launch. Without this, slow setup (>2 min) could push
+    // the soft stop past the plan-specific runtime cap.
     const taskStartTime = Date.now();
+    const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
 
     // Tag for dashboard filtering; add subscription tier for paid-only queries.
     await tags.add([`user_${userId}`, `chat_${chatId}`]);
@@ -693,6 +709,8 @@ export const agentLongTask = task({
       chatLogger,
       chatId,
     });
+
+    let agentLongTimeout: ReturnType<typeof setTimeout> | undefined;
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -773,7 +791,7 @@ export const agentLongTask = task({
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Wire trigger.dev's abort signal into a local controller.
-      // Fires on runs.cancel() (UI Stop) and maxDuration exceeded.
+      // Fires on runs.cancel() (UI Stop) and Trigger's maxDuration.
       const userStopSignal = new AbortController();
       triggerSignal.addEventListener("abort", () => userStopSignal.abort(), {
         once: true,
@@ -782,6 +800,23 @@ export const agentLongTask = task({
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
       let terminalAgentState: AgentStreamState | undefined;
+      let agentLongDurationExceeded = false;
+      const markAgentLongDurationExceeded = () => {
+        agentLongDurationExceeded = true;
+        if (terminalAgentState) {
+          terminalAgentState.stoppedDueToElapsedTimeout = true;
+          terminalAgentState.streamFinishReason ??=
+            PREEMPTIVE_TIMEOUT_FINISH_REASON;
+        }
+      };
+      const agentLongTimeoutDelayMs = Math.max(
+        0,
+        agentLongMaxDurationMs - (Date.now() - taskStartTime),
+      );
+      agentLongTimeout = setTimeout(() => {
+        markAgentLongDurationExceeded();
+        userStopSignal.abort();
+      }, agentLongTimeoutDelayMs);
 
       // Rate limit check happens inside execute so a thrown ChatSDKError
       // (e.g. "exceeded daily messages") flows through createUIMessageStream's
@@ -1038,8 +1073,8 @@ export const agentLongTask = task({
               ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
               : null;
 
-            // Use task start time (not stream start time) so the 58-min stop
-            // condition always fires 2 min before the 60-min hard SIGKILL.
+            // Use task start time (not stream start time) so the soft stop
+            // leaves cleanup grace before the plan-specific runtime cap.
             const streamStartTime = taskStartTime;
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
@@ -1148,7 +1183,7 @@ export const agentLongTask = task({
               streamStartTime,
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
-              maxDurationMs: AGENT_LONG_MAX_DURATION_MS,
+              maxDurationMs: agentLongMaxDurationMs,
               writer,
               abortController: userStopSignal,
               summarizationTracker,
@@ -1159,8 +1194,10 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
-              // trigger.dev has no Vercel-style hard preemptive timeout
-              getHardTimeoutReason: () => null,
+              getHardTimeoutReason: () =>
+                agentLongDurationExceeded
+                  ? PREEMPTIVE_TIMEOUT_FINISH_REASON
+                  : null,
             };
 
             const createStream = (modelName: string) => {
@@ -1653,9 +1690,9 @@ export const agentLongTask = task({
                         });
                       }
 
-                      // Don't auto-continue on elapsed timeout — a 58-min run is large enough
-                      // that the user should explicitly decide whether to continue rather than
-                      // silently chaining up to 5 more hour-long runs.
+                      // Don't auto-continue on elapsed timeout. Runs that hit
+                      // their plan cap are large enough that the user should
+                      // explicitly decide whether to continue.
                       if (
                         (state.stoppedDueToTokenExhaustion ||
                           state.streamFinishReason === "tool-calls") &&
@@ -1823,6 +1860,7 @@ export const agentLongTask = task({
       await phLogger.flush().catch(() => {});
       throw error;
     } finally {
+      if (agentLongTimeout) clearTimeout(agentLongTimeout);
       runCleanupMap.delete(ctx.run.id);
       if (!payload.temporary) {
         try {
