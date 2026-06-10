@@ -105,7 +105,10 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
+  getProviderErrorCategory,
+  getProviderStatusCode,
   getUserFriendlyProviderError,
+  isProviderContentBlockedError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
@@ -846,7 +849,12 @@ export const createChatHandler = () => {
                       );
 
                       // Retry with fallback model if not already retrying (only for auto models)
-                      if (!isRetryWithFallback && !isAborted && isAutoModel) {
+                      if (
+                        !isRetryWithFallback &&
+                        !isAborted &&
+                        isAutoModel &&
+                        !isProviderContentBlockedError(state.providerError)
+                      ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
                         state.stoppedDueToTokenExhaustion = false;
@@ -1520,9 +1528,22 @@ export const createChatHandler = () => {
       // Handle unexpected errors (provider failures, etc.)
       chatLogger?.emitUnexpectedError(error);
 
+      const providerDetails = extractErrorDetails(error);
+      const providerErrorCategory = getProviderErrorCategory(providerDetails);
+      const providerStatusCode = getProviderStatusCode(providerDetails);
+      const isContentBlocked = providerErrorCategory === "content_blocked";
       const unexpectedError = new ChatSDKError(
-        "bad_request:stream",
+        isContentBlocked ? "forbidden:stream" : "bad_request:stream",
         getUserFriendlyProviderError(error),
+        {
+          providerErrorCategory,
+          providerStatusCode,
+          providerErrorRetriable:
+            providerErrorCategory === "rate_limited" ||
+            providerErrorCategory === "provider_5xx" ||
+            providerErrorCategory === "stream_terminated" ||
+            providerErrorCategory === "timeout",
+        },
       );
       return unexpectedError.toResponse();
     }

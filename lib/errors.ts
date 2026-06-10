@@ -109,6 +109,8 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
 
     case "bad_request:stream":
       return "The model provider returned an error.";
+    case "forbidden:stream":
+      return "The model provider blocked this request.";
 
     case "not_found:document":
       return "The requested document was not found. Please check the document ID and try again.";
