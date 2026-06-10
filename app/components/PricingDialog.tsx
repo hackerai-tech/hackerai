@@ -15,7 +15,6 @@ import {
   proFeatures,
   proPlusFeatures,
   ultraFeatures,
-  teamFeatures,
   PRICING,
   PLAN_HEADERS,
 } from "@/lib/pricing/features";
@@ -47,7 +46,6 @@ interface PlanCardProps {
   badgeClassName?: string;
   footerNote?: string;
   featureHeader?: string | null;
-  headerAction?: React.ReactNode;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
@@ -66,7 +64,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
   badgeClassName = "",
   footerNote,
   featureHeader,
-  headerAction,
 }) => {
   return (
     <div
@@ -85,9 +82,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
                 </Badge>
               ) : null}
             </div>
-            {headerAction ? (
-              <div className="shrink-0 pt-0.5">{headerAction}</div>
-            ) : null}
           </div>
           <div className="flex items-end gap-1.5">
             <div className="flex text-foreground">
@@ -152,61 +146,12 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
-type PremiumPlan = "pro-plus" | "ultra";
-
-interface PremiumPlanSelectorProps {
-  value: PremiumPlan;
-  onChange: (value: PremiumPlan) => void;
-}
-
-const PremiumPlanSelector: React.FC<PremiumPlanSelectorProps> = ({
-  value,
-  onChange,
-}) => {
-  const options: Array<{ value: PremiumPlan; label: string }> = [
-    { value: "pro-plus", label: "Pro+" },
-    { value: "ultra", label: "Ultra" },
-  ];
-
-  return (
-    <div
-      className="inline-flex items-center rounded-full bg-muted p-1"
-      role="radiogroup"
-      aria-label="Premium plan tier"
-    >
-      {options.map((option) => {
-        const isSelected = value === option.value;
-
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={isSelected}
-            className={cn(
-              "min-w-16 rounded-full px-3 py-1.5 text-sm font-medium transition",
-              isSelected
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => onChange(option.value)}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-};
-
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
-  const [selectedPremiumPlan, setSelectedPremiumPlan] =
-    React.useState<PremiumPlan>("pro-plus");
   const capturedPricingCtaImpressionRef = React.useRef(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
@@ -221,14 +166,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       onClose();
     }
   }, [isOpen, subscription, onClose]);
-
-  React.useEffect(() => {
-    if (isOpen && subscription === "pro-plus") {
-      setSelectedPremiumPlan("ultra");
-    } else if (isOpen) {
-      setSelectedPremiumPlan("pro-plus");
-    }
-  }, [isOpen, subscription]);
 
   React.useEffect(() => {
     if (!isOpen) {
@@ -462,29 +399,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const ultraButtonConfig = getUltraButtonConfig();
 
   const hasSubscription = subscription !== "free";
-  const premiumButtonConfig =
-    selectedPremiumPlan === "pro-plus"
-      ? proPlusButtonConfig
-      : ultraButtonConfig;
-  const premiumPlanName = selectedPremiumPlan === "pro-plus" ? "Pro+" : "Ultra";
-  const premiumPrice =
-    selectedPremiumPlan === "pro-plus"
-      ? isYearly
-        ? PRICING["pro-plus"].yearly
-        : PRICING["pro-plus"].monthly
-      : isYearly
-        ? PRICING.ultra.yearly
-        : PRICING.ultra.monthly;
-  const premiumDescription =
-    selectedPremiumPlan === "pro-plus"
-      ? "For power users who need more"
-      : "Get the most out of HackerAI";
-  const premiumFeatures =
-    selectedPremiumPlan === "pro-plus" ? proPlusFeatures : ultraFeatures;
-  const premiumFeatureHeader =
-    selectedPremiumPlan === "pro-plus"
-      ? PLAN_HEADERS["pro-plus"]
-      : PLAN_HEADERS.ultra;
 
   return (
     <>
@@ -568,39 +482,49 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
               />
 
               <PlanCard
-                planName={premiumPlanName}
-                price={premiumPrice}
-                description={premiumDescription}
-                features={premiumFeatures}
-                buttonText={premiumButtonConfig.text}
-                buttonVariant={premiumButtonConfig.variant}
-                buttonClassName={premiumButtonConfig.className}
-                onButtonClick={premiumButtonConfig.onClick}
-                isButtonDisabled={premiumButtonConfig.disabled}
-                isButtonLoading={premiumButtonConfig.loading}
+                planName="Pro+"
+                price={
+                  isYearly
+                    ? PRICING["pro-plus"].yearly
+                    : PRICING["pro-plus"].monthly
+                }
+                description="For power users who need more"
+                features={proPlusFeatures}
+                buttonText={proPlusButtonConfig.text}
+                buttonVariant={proPlusButtonConfig.variant}
+                buttonClassName={proPlusButtonConfig.className}
+                onButtonClick={proPlusButtonConfig.onClick}
+                isButtonDisabled={proPlusButtonConfig.disabled}
+                isButtonLoading={proPlusButtonConfig.loading}
                 customClassName="order-3 border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777] md:order-none"
                 badgeText="RECOMMENDED"
-                featureHeader={premiumFeatureHeader}
-                headerAction={
-                  <PremiumPlanSelector
-                    value={selectedPremiumPlan}
-                    onChange={setSelectedPremiumPlan}
-                  />
-                }
+                featureHeader={PLAN_HEADERS["pro-plus"]}
               />
 
               <PlanCard
-                planName="Team"
-                price={isYearly ? PRICING.team.yearly : PRICING.team.monthly}
-                description="Supercharge your team with a secure, collaborative workspace"
-                features={teamFeatures}
-                buttonText={hasSubscription ? "Upgrade to Team" : "Get Team"}
-                buttonVariant="default"
-                onButtonClick={handleTeamClick}
-                isButtonDisabled={false}
+                planName="Ultra"
+                price={isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly}
+                description="Get the most out of HackerAI"
+                features={ultraFeatures}
+                buttonText={ultraButtonConfig.text}
+                buttonVariant={ultraButtonConfig.variant}
+                buttonClassName={ultraButtonConfig.className}
+                onButtonClick={ultraButtonConfig.onClick}
+                isButtonDisabled={ultraButtonConfig.disabled}
+                isButtonLoading={ultraButtonConfig.loading}
                 customClassName="order-4 md:order-none"
-                featureHeader={PLAN_HEADERS.team}
+                featureHeader={PLAN_HEADERS.ultra}
               />
+            </div>
+
+            <div className="mt-8 flex justify-center">
+              <Button
+                variant="secondary"
+                className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
+                onClick={handleTeamClick}
+              >
+                View Team Plans
+              </Button>
             </div>
           </div>
         </DialogContent>
