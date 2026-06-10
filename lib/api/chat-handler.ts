@@ -108,7 +108,6 @@ import {
   getProviderErrorCategory,
   getProviderStatusCode,
   getUserFriendlyProviderError,
-  isProviderContentBlockedError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
@@ -849,12 +848,7 @@ export const createChatHandler = () => {
                       );
 
                       // Retry with fallback model if not already retrying (only for auto models)
-                      if (
-                        !isRetryWithFallback &&
-                        !isAborted &&
-                        isAutoModel &&
-                        !isProviderContentBlockedError(state.providerError)
-                      ) {
+                      if (!isRetryWithFallback && !isAborted && isAutoModel) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
                         state.stoppedDueToTokenExhaustion = false;
