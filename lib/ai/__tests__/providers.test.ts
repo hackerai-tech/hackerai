@@ -1,6 +1,7 @@
 import {
   sanitizeOpenRouterRequestForGeminiFunctionResponses,
   sanitizeOpenRouterRequestForXai,
+  supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
 
 describe("sanitizeOpenRouterRequestForXai", () => {
@@ -215,5 +216,22 @@ describe("sanitizeOpenRouterRequestForGeminiFunctionResponses", () => {
     expect(
       sanitizeOpenRouterRequestForGeminiFunctionResponses(geminiBodyWithoutRef),
     ).toEqual({ body: geminiBodyWithoutRef, changed: false });
+  });
+});
+
+describe("supportsMultimodalToolResults", () => {
+  it("allows Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
+    expect(supportsMultimodalToolResults("model-kimi-k2.6")).toBe(true);
+    expect(supportsMultimodalToolResults("agent-model")).toBe(true);
+    expect(supportsMultimodalToolResults("moonshotai/kimi-k2.6:exacto")).toBe(
+      true,
+    );
+  });
+
+  it("still rejects text-only DeepSeek routes", () => {
+    expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
+    expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
+      false,
+    );
   });
 });

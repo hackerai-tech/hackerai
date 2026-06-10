@@ -24,7 +24,7 @@ const FILE_ACTIONS_TEXT_ONLY = ["read", "write", "append", "edit"] as const;
 type FileAction = (typeof FILE_ACTIONS_WITH_VIEW)[number];
 
 const MULTIMODAL_UPGRADE_MESSAGE =
-  "The current model does not support multimodal tool results for sandbox images. Please select HackerAI Pro or HackerAI Max and retry the view action.";
+  "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
 
 type ViewKind = "image";
 
@@ -964,7 +964,7 @@ export const createFile = (context: ToolContext) => {
         ]
       : [
           "Use 'read' for text-based or line-oriented formats.",
-          "This model cannot view sandbox images directly; ask the user to select HackerAI Pro or HackerAI Max for multimodal image viewing.",
+          "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
     "Code MUST be saved to a file using this tool before execution via the shell tool.",
     "DO NOT write partial or truncated content; always output the full content.",
