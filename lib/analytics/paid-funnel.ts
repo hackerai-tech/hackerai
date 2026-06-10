@@ -9,6 +9,10 @@ export const PAID_FUNNEL_EVENTS = {
   addCreditCheckoutSucceeded: "add_credit_checkout_succeeded",
   checkoutStarted: "checkout_started",
   checkoutSucceeded: "checkout_succeeded",
+  cancellationStarted: "cancellation_started",
+  cancellationReasonSelected: "cancellation_reason_selected",
+  cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
+  cancellationCompleted: "cancellation_completed",
   limitHit: "limit_hit",
 } as const;
 

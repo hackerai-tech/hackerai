@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
 import type * as constants from "../constants.js";
@@ -47,6 +48,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  cancellationReasons: typeof cancellationReasons;
   chatStreams: typeof chatStreams;
   chats: typeof chats;
   constants: typeof constants;
