@@ -31,7 +31,15 @@ const Footer: React.FC = () => {
         >
           Privacy Policy
         </a>
-        .
+        . <span className="text-muted-foreground">&middot;</span>{" "}
+        <a
+          href="/trust"
+          target="_blank"
+          className="text-foreground underline decoration-foreground"
+          rel="noreferrer"
+        >
+          Security &amp; Trust
+        </a>
       </span>
     </div>
   );
