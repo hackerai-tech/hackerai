@@ -11,6 +11,7 @@ jest.mock("@/lib/logger", () => ({
 }));
 
 import { createFile } from "../file";
+import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import type { ToolContext } from "@/types";
 
 type FakeCommandResult = {
@@ -19,7 +20,15 @@ type FakeCommandResult = {
   exitCode: number;
 };
 
-function makeContext(sandbox: unknown): ToolContext {
+const mockUploadSandboxFileToConvex =
+  uploadSandboxFileToConvex as jest.MockedFunction<
+    typeof uploadSandboxFileToConvex
+  >;
+
+function makeContext(
+  sandbox: unknown,
+  overrides: Partial<ToolContext> = {},
+): ToolContext {
   return {
     sandboxManager: {
       getSandbox: jest.fn(async () => ({ sandbox })),
@@ -44,6 +53,7 @@ function makeContext(sandbox: unknown): ToolContext {
     subscription: "pro",
     isE2BSandbox: (() => true) as never,
     caidoEnabled: false,
+    ...overrides,
   };
 }
 
@@ -61,6 +71,18 @@ async function runTool(
     abortSignal: undefined,
     messages: [],
   });
+}
+
+async function runToModelOutput(
+  tool: ReturnType<typeof createFile>,
+  output: unknown,
+) {
+  const toModelOutput = (
+    tool as unknown as {
+      toModelOutput: (i: { output: unknown }) => Promise<unknown>;
+    }
+  ).toModelOutput;
+  return toModelOutput({ output });
 }
 
 function makeSandbox(
@@ -322,5 +344,79 @@ describe("file tool large text safety", () => {
 
     expect(result.content).toContain("full diff preview was skipped");
     expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+});
+
+describe("file tool image view", () => {
+  beforeEach(() => {
+    mockUploadSandboxFileToConvex.mockReset();
+  });
+
+  test("allows Kimi to view sandbox images as multimodal tool output", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+
+    const commandRun = jest
+      .fn<Promise<FakeCommandResult>, [string, any?]>()
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      })
+      .mockImplementationOnce(async (_command, opts) => {
+        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+        return {
+          stdout: JSON.stringify({
+            path: "/tmp/screenshot.png",
+            mediaType: "image/png",
+            sizeBytes: 68,
+            kind: "image",
+            data: "iVBORw0KGgo=",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-kimi-k2.6" }),
+    );
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+    expect(result).toMatchObject({
+      action: "view",
+      mediaType: "image/png",
+      kind: "image",
+    });
+
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: "iVBORw0KGgo=",
+          mediaType: "image/png",
+        },
+      ],
+    });
   });
 });

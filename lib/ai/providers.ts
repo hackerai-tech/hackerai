@@ -323,6 +323,16 @@ export function isDeepSeekModel(modelName: string): boolean {
   );
 }
 
+export function isKimiModel(modelName: string): boolean {
+  const normalized = modelName.toLowerCase();
+  return (
+    normalized === "agent-model" ||
+    normalized === "model-kimi-k2.6" ||
+    normalized.includes("moonshotai/kimi") ||
+    normalized.includes("kimi-")
+  );
+}
+
 export function supportsMultimodalToolResults(modelName?: string): boolean {
   if (!modelName) return false;
 
@@ -330,6 +340,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 
   return (
     normalized === "ask-model" ||
+    isKimiModel(normalized) ||
     normalized.includes("gemini") ||
     normalized.includes("google/") ||
     isAnthropicModel(normalized) ||
