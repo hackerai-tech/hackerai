@@ -259,6 +259,7 @@ export const extractErrorDetails = (
 
 export type ProviderErrorCategory =
   | "rate_limited"
+  | "content_blocked"
   | "provider_5xx"
   | "provider_4xx"
   | "stream_terminated"
@@ -277,6 +278,31 @@ const parseHttpStatus = (value: unknown): number | undefined => {
     ? code
     : undefined;
 };
+
+const getProviderMessageText = (details: Record<string, unknown>): string => {
+  return [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.cause,
+    details.responseBody,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+};
+
+const PROVIDER_CONTENT_BLOCK_PATTERN =
+  /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
+
+export const isProviderContentBlockedDetails = (
+  details: Record<string, unknown>,
+): boolean => {
+  const message = getProviderMessageText(details);
+  return PROVIDER_CONTENT_BLOCK_PATTERN.test(message);
+};
+
+export const isProviderContentBlockedError = (error: unknown): boolean =>
+  isProviderContentBlockedDetails(extractErrorDetails(error));
 
 export const getProviderStatusCode = (
   details: Record<string, unknown>,
@@ -299,17 +325,11 @@ export const getProviderErrorCategory = (
     parseHttpStatus(details.statusCode) ??
     parseHttpStatus(details.providerErrorCode);
   if (statusCode === 429) return "rate_limited";
+  if (isProviderContentBlockedDetails(details)) return "content_blocked";
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
-  const message = [
-    details.errorMessage,
-    details.providerErrorMessage,
-    details.providerRawError,
-    details.cause,
-  ]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ");
+  const message = getProviderMessageText(details);
   if (
     /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i.test(
       message,
@@ -455,6 +475,10 @@ export const extractRetryAttempts = (
 export const getUserFriendlyProviderError = (error: unknown): string => {
   const statusCode = extractStatusCode(error);
   const { providerName, detail } = extractProviderDetails(error);
+
+  if (isProviderContentBlockedError(error)) {
+    return "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+  }
 
   // Friendly summary based on status code
   const summary = getStatusSummary(statusCode);

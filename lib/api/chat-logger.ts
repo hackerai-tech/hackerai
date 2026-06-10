@@ -140,6 +140,9 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "primaryCta",
   "eligibleCtas",
   "resetTimestamp",
+  "providerErrorCategory",
+  "providerStatusCode",
+  "providerErrorRetriable",
 ] as const;
 
 const compactChatErrorMetadata = (
@@ -157,20 +160,25 @@ const compactChatErrorMetadata = (
 };
 
 const providerErrorEventName = (category: ProviderErrorCategory): string =>
-  category === "stream_terminated"
-    ? "provider_stream_terminated"
-    : "provider_streaming_error";
+  category === "content_blocked"
+    ? "provider_content_blocked"
+    : category === "stream_terminated"
+      ? "provider_stream_terminated"
+      : "provider_streaming_error";
 
 const providerErrorMessage = (category: ProviderErrorCategory): string =>
-  category === "stream_terminated"
-    ? "Provider stream terminated"
-    : category === "timeout"
-      ? "Provider stream timeout"
-      : "Provider streaming error";
+  category === "content_blocked"
+    ? "Provider content blocked"
+    : category === "stream_terminated"
+      ? "Provider stream terminated"
+      : category === "timeout"
+        ? "Provider stream timeout"
+        : "Provider streaming error";
 
 const providerWideErrorType = (
   category: ProviderErrorCategory | undefined,
 ): string => {
+  if (category === "content_blocked") return "ProviderContentBlocked";
   if (category === "stream_terminated") return "ProviderStreamTerminated";
   if (category === "timeout") return "ProviderTimeout";
   if (category) return "ProviderError";
@@ -463,7 +471,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
         message: getProviderDiagnosticMessage(details),
-        retriable: details.isRetryable as boolean | undefined,
+        retriable:
+          typeof details.isRetryable === "boolean"
+            ? details.isRetryable
+            : isRetriableProviderCategory(category),
         attempts,
       });
     },

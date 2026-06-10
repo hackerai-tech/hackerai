@@ -41,10 +41,9 @@ export const MessageErrorState = ({
   onRetry,
   onReconnect,
 }: MessageErrorStateProps) => {
-  const { subscription } = useGlobalState();
+  const { subscription, initializeNewChat } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
-  const canReconnect = !!onReconnect && isNetworkStreamError(error);
 
   const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
@@ -74,6 +73,13 @@ export const MessageErrorState = ({
     }
     return error.message || "An error occurred.";
   })();
+  const isProviderContentBlocked =
+    metadata?.providerErrorCategory === "content_blocked" ||
+    /provider blocked this request|flagged by its safety system|PROHIBITED_CONTENT|content[_ -]?filter|content[_ -]?policy/i.test(
+      errorMessage,
+    );
+  const canReconnect =
+    !isProviderContentBlocked && !!onReconnect && isNetworkStreamError(error);
 
   const isPaidUser = subscription !== "free";
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
@@ -115,10 +121,29 @@ export const MessageErrorState = ({
   }, [capReason, extraUsageCta, isPaidUser, isRateLimitError, subscription]);
 
   return (
-    <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
-      <div className="text-destructive text-sm mb-2">
+    <div
+      className={
+        isProviderContentBlocked
+          ? "bg-amber-500/10 border border-amber-500/25 rounded-lg p-3"
+          : "bg-destructive/10 border border-destructive/20 rounded-lg p-3"
+      }
+    >
+      <div
+        className={
+          isProviderContentBlocked
+            ? "text-foreground text-sm mb-2"
+            : "text-destructive text-sm mb-2"
+        }
+      >
         {isRateLimitError ? (
           <MemoizedMarkdown content={errorMessage} />
+        ) : isProviderContentBlocked ? (
+          <>
+            <p>{errorMessage}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Retrying with the same conversation usually fails again.
+            </p>
+          </>
         ) : (
           <p>{errorMessage}</p>
         )}
@@ -184,6 +209,10 @@ export const MessageErrorState = ({
               </Button>
             )}
           </>
+        ) : isProviderContentBlocked ? (
+          <Button variant="outline" size="sm" onClick={initializeNewChat}>
+            New Chat
+          </Button>
         ) : (
           <>
             {isSuspensionError ? (

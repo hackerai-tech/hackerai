@@ -320,6 +320,46 @@ describe("captureUsageCost", () => {
 });
 
 describe("createChatLogger provider stream termination", () => {
+  it("logs provider safety blocks as non-retryable content blocks", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_content_blocked",
+        endpoint: "/api/chat",
+      });
+      const err = Object.assign(new Error("PROHIBITED_CONTENT"), {
+        statusCode: 403,
+      });
+
+      chatLogger.recordProviderError(err, {
+        mode: "ask",
+        model: "ask-model-free",
+        requestedModelSlug: "deepseek/deepseek-v4-flash",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+
+      expect(errorOutput).toContain("Provider content blocked");
+      expect(errorOutput).toContain("provider_content_blocked");
+      expect(wideEvent.error).toMatchObject({
+        type: "ProviderContentBlocked",
+        retriable: false,
+      });
+      expect(wideEvent.provider_error).toMatchObject({
+        category: "content_blocked",
+        status_code: 403,
+        retriable: false,
+      });
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
   it("logs terminated provider streams as warnings and suppresses duplicate unexpected route errors", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
