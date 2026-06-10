@@ -17,6 +17,7 @@ import {
   ExternalLink,
   RefreshCw,
   Gift,
+  ShieldCheck,
   X,
   Zap,
 } from "lucide-react";
@@ -312,6 +313,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
       "_blank",
       "noopener,noreferrer",
     );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleTrustPage = () => {
+    const newWindow = window.open("/trust", "_blank", "noopener,noreferrer");
     if (newWindow) {
       newWindow.opener = null;
     }
@@ -623,6 +631,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               <DropdownMenuItem onClick={handleHelpCenter} className="py-1.5">
                 <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
                 <span>Help Center</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleTrustPage} className="py-1.5">
+                <ShieldCheck className="mr-2 h-4 w-4 text-foreground" />
+                <span>Security &amp; Trust</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleGitHub} className="py-1.5">
                 <GithubIcon className="mr-2 h-4 w-4 text-foreground" />

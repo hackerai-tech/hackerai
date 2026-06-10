@@ -26,6 +26,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/auth-error",
   "/privacy-policy",
   "/terms-of-service",
+  "/trust",
   "/download",
   "/manifest.json",
 ]);

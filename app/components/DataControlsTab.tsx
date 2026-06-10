@@ -140,6 +140,25 @@ const DataControlsTab = () => {
         </div>
       )}
 
+      {/* Divider */}
+      <div className="border-t" />
+
+      {/* Security & Trust Section */}
+      <div className="py-3">
+        <div className="text-sm text-muted-foreground">
+          Learn how HackerAI handles your data on our{" "}
+          <a
+            href="/trust"
+            target="_blank"
+            rel="noreferrer"
+            className="text-foreground underline underline-offset-2"
+          >
+            Security &amp; Trust
+          </a>{" "}
+          page.
+        </div>
+      </div>
+
       {/* Delete All Chats Confirmation Dialog */}
       <AlertDialog open={showDeleteChats} onOpenChange={setShowDeleteChats}>
         <AlertDialogContent>

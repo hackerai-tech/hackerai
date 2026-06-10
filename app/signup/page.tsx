@@ -153,7 +153,11 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           <Link className="underline underline-offset-4" href="/privacy-policy">
             Privacy Policy
           </Link>
-          .
+          . Learn how we handle your data on our{" "}
+          <Link className="underline underline-offset-4" href="/trust">
+            Security &amp; Trust
+          </Link>{" "}
+          page.
         </p>
       </div>
     </main>

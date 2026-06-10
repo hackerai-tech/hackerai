@@ -526,6 +526,19 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                 View Team Plans
               </Button>
             </div>
+
+            <p className="text-muted-foreground mx-auto mt-8 max-w-[88rem] text-center text-xs">
+              Learn how we handle your data on our{" "}
+              <a
+                href="/trust"
+                target="_blank"
+                rel="noreferrer"
+                className="text-foreground underline underline-offset-2"
+              >
+                Security &amp; Trust
+              </a>{" "}
+              page.
+            </p>
           </div>
         </DialogContent>
       </Dialog>
