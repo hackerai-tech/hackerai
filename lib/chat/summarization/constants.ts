@@ -9,3 +9,7 @@ export const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.9;
 export const SUMMARY_TODO_MAX_ITEMS = 100;
 export const SUMMARY_TODO_CONTENT_MAX_TOKENS = 256;
 export const SUMMARY_TODO_BLOCK_MAX_TOKENS = 4096;
+
+// Bound individual tool results fed into the summarizer. Agent tool outputs can
+// be enormous, and summarization should see a preview rather than raw logs.
+export const SUMMARY_TOOL_OUTPUT_MAX_TOKENS = 2048;

@@ -11,6 +11,7 @@ import {
   getMaxTokensForSubscription,
   countMessagesTokens,
   truncateContent,
+  safeCountTokens,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
@@ -22,6 +23,7 @@ import {
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_CONTENT_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
+  SUMMARY_TOOL_OUTPUT_MAX_TOKENS,
 } from "./constants";
 import {
   AGENT_SUMMARIZATION_PROMPT,
@@ -108,6 +110,90 @@ export const extractSummaryText = (message: UIMessage): string | null => {
   return match ? match[1] : null;
 };
 
+const isModelToolOutput = (
+  output: unknown,
+): output is { type: string; value?: unknown } =>
+  typeof output === "object" &&
+  output !== null &&
+  !Array.isArray(output) &&
+  typeof (output as { type?: unknown }).type === "string";
+
+const unwrapModelToolOutput = (output: unknown): unknown =>
+  isModelToolOutput(output) && Object.hasOwn(output, "value")
+    ? output.value
+    : output;
+
+const stringifyToolOutput = (output: unknown): string => {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+};
+
+const toTextModelToolOutput = (value: string) => ({
+  type: "text" as const,
+  value,
+});
+
+/**
+ * Build a summarization-only projection of model messages.
+ *
+ * This keeps tool-call/tool-result structure intact while bounding individual
+ * tool outputs. The full raw transcript can still be persisted separately; the
+ * summarizer only needs enough head/tail detail to preserve important facts.
+ */
+export const compactModelMessagesForSummarization = <T extends ModelMessage>(
+  messages: T[],
+  maxToolOutputTokens: number = SUMMARY_TOOL_OUTPUT_MAX_TOKENS,
+): T[] => {
+  let changed = false;
+
+  const compacted = messages.map((message) => {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      return message;
+    }
+
+    let contentChanged = false;
+    const content = message.content.map((part) => {
+      const partAny = part as Record<string, unknown>;
+      if (partAny.type !== "tool-result" || partAny.output == null) {
+        return part;
+      }
+
+      const outputValue = unwrapModelToolOutput(partAny.output);
+      const outputText = stringifyToolOutput(outputValue);
+      const outputTokens = safeCountTokens(outputText);
+      if (outputTokens <= maxToolOutputTokens) {
+        return part;
+      }
+
+      contentChanged = true;
+      const preview = truncateContent(
+        outputText,
+        "\n[Tool output shortened: middle omitted]\n",
+        maxToolOutputTokens,
+      );
+      const toolName =
+        typeof partAny.toolName === "string" ? partAny.toolName : "tool";
+
+      return {
+        ...partAny,
+        output: toTextModelToolOutput(
+          `[${toolName} output preview: shortened from ${outputTokens} tokens]\n${preview}`,
+        ),
+      } as typeof part;
+    });
+
+    if (!contentChanged) return message;
+    changed = true;
+    return { ...message, content } as T;
+  });
+
+  return changed ? compacted : messages;
+};
+
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
@@ -141,6 +227,13 @@ export const generateSummaryText = async (
       )
     : undefined;
 
+  const sourceModelMessages =
+    modelMessages ??
+    (await convertToModelMessages(messagesToSummarize, { tools }));
+  const summaryModelMessages = compactModelMessagesForSummarization(
+    sourceModelMessages as ModelMessage[],
+  );
+
   const result = await generateText({
     model: languageModel,
     system: chatSystemPrompt,
@@ -149,8 +242,7 @@ export const generateSummaryText = async (
 
     providerOptions: providerOptions as any,
     messages: [
-      ...(modelMessages ??
-        (await convertToModelMessages(messagesToSummarize, { tools }))),
+      ...summaryModelMessages,
       {
         role: "user" as const,
         content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,

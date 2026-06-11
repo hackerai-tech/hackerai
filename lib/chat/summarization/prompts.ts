@@ -2,6 +2,8 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "You are a context condensation engine. You receive a conversation between a user and a security agent. " +
   "You must output ONLY a structured summary — never continue the conversation, never role-play as the agent, " +
   "and never produce tool calls or action plans.\n\n" +
+  "If the conversation includes an existing context summary block, treat it as an anchored summary. " +
+  "Update it by preserving still-true details, removing stale details, and merging in new facts from later messages.\n\n" +
   "ANALYSIS PHASE:\n" +
   "Before producing the summary, chronologically analyze each phase of the conversation. " +
   "For each phase, identify: the agent's objective, tools/techniques used, what was discovered " +
@@ -19,6 +21,8 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "Preserve exact wording — the resuming agent must respect these constraints.\n\n" +
   "## Progress & Decisions\n" +
   "What has been completed, what approach was chosen, and what the agent was doing when interrupted.\n\n" +
+  "## Current State\n" +
+  "What is in progress right now, what is blocked, and any active assumptions. Use '(none)' when empty.\n\n" +
   "## Errors & Recovery\n" +
   "Tool failures, configuration issues, rate limits, and how they were resolved. " +
   "Separate from assessment findings — these are operational issues.\n\n" +
@@ -28,8 +32,13 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "What the agent should do next, DIRECTLY related to the work in progress at interruption. " +
   "Include the exact state of the last operation. " +
   "Do not suggest new attack vectors that weren't part of the current approach.\n\n" +
+  "## Relevant Files & Artifacts\n" +
+  "Important file paths, transcript paths, scan outputs, logs, notes, or generated artifacts and why they matter. Use '(none)' when empty.\n\n" +
   "RULES:\n" +
   "- Output ONLY the structured summary. No preamble, no conversational text.\n" +
+  "- Keep every section header, even when a section is empty.\n" +
+  "- Use terse bullets, not prose paragraphs.\n" +
+  "- Do not mention that summarization or compaction happened.\n" +
   "- Preserve exact technical details (URLs, IPs, ports, headers, payloads).\n" +
   "- Include full sandbox file paths for important scan results and tool outputs (e.g. nmap XML, nuclei JSON, downloaded files).\n" +
   "- Compress verbose tool outputs into key findings.\n" +
@@ -50,6 +59,10 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "- Completed: Port scan, service enumeration, web crawl, auth testing\n" +
   "- Chose to focus on API after finding OpenAPI spec at /api/docs\n" +
   "- Currently running SQLMap against /api/search endpoint\n\n" +
+  "## Current State\n" +
+  "- In progress: SQLMap against /api/search\n" +
+  "- Blocked: (none)\n" +
+  "- Assumptions: API testing remains in scope\n\n" +
   "## Errors & Recovery\n" +
   "- Nmap XML parsing failed due to IPv6 addresses — switched to -4 flag\n" +
   "- Rate limited by WAF after 50 req/s — reduced to 10 req/s\n\n" +
@@ -59,7 +72,9 @@ export const AGENT_SUMMARIZATION_PROMPT =
   "## Next Steps\n" +
   "- SQLMap was running against /api/search with --level=5 --risk=3,\n" +
   "  had completed 40% of payloads (file: /tmp/sqlmap/output.json)\n" +
-  "- After SQLMap completes, test /api/admin endpoints with stolen JWT";
+  "- After SQLMap completes, test /api/admin endpoints with stolen JWT\n\n" +
+  "## Relevant Files & Artifacts\n" +
+  "- /tmp/sqlmap/output.json: active SQLMap output";
 
 export const ASK_SUMMARIZATION_PROMPT =
   "You are performing context condensation for a conversational assistant. " +
@@ -67,6 +82,8 @@ export const ASK_SUMMARIZATION_PROMPT =
   "continue helping the user as if no summarization occurred.\n\n" +
   "Output ONLY the structured summary. Do not continue the conversation, " +
   "generate responses to the user, or produce tool calls.\n\n" +
+  "If the conversation includes an existing context summary block, treat it as an anchored summary. " +
+  "Update it by preserving still-true details, removing stale details, and merging in new facts from later messages.\n\n" +
   "OUTPUT FORMAT:\n" +
   "## Context & Goal\n" +
   "What the user is trying to accomplish overall.\n\n" +
@@ -75,11 +92,18 @@ export const ASK_SUMMARIZATION_PROMPT =
   "Include any URLs, code snippets, or technical details shared.\n\n" +
   "## Decisions & Conclusions\n" +
   "Facts established, recommendations given, choices made.\n\n" +
+  "## Current State\n" +
+  "What is in progress, what is blocked, and any active assumptions. Use '(none)' when empty.\n\n" +
   "## User Preferences & Corrections\n" +
   "Any stated preferences, constraints, or corrections the user made.\n\n" +
+  "## Relevant Files & Artifacts\n" +
+  "Important file paths, URLs, logs, documents, or generated artifacts and why they matter. Use '(none)' when empty.\n\n" +
   "## Open Threads\n" +
   "Unresolved questions, ongoing topics, or tasks the user may return to.\n\n" +
   "COMPRESSION GUIDELINES:\n" +
+  "- Keep every section header, even when a section is empty.\n" +
+  "- Use terse bullets, not prose paragraphs.\n" +
+  "- Do not mention that summarization or compaction happened.\n" +
   "- Preserve exact technical details when relevant.\n" +
   "- Summarize repetitive exchanges into consolidated form.\n" +
   "- Pay special attention to the most recent exchanges — these are the active context.\n" +

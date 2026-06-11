@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
-import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
+import type {
+  UIMessage,
+  UIMessageStreamWriter,
+  LanguageModel,
+  ModelMessage,
+} from "ai";
 import type { Todo } from "@/types";
 import {
   SUMMARIZATION_THRESHOLD_PERCENTAGE,
@@ -219,6 +224,79 @@ describe("checkAndSummarizeIfNeeded", () => {
             .map((p: { text: string }) => p.text)
             .join("");
     expect(lastContent).toContain("security agent");
+  });
+
+  it("should compact huge tool outputs before sending modelMessages to the summarizer", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    const rawToolOutput = Array.from(
+      { length: 12_000 },
+      (_, i) => `unique-tool-line-${i}: ${"x".repeat(32)}`,
+    ).join("\n");
+    const modelMessages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "tc-huge",
+            toolName: "run_terminal_cmd",
+            input: { command: "cat huge.log" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-huge",
+            toolName: "run_terminal_cmd",
+            output: {
+              type: "text",
+              value: rawToolOutput,
+            },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      modelMessages,
+    );
+
+    const callMessages = mockGenerateText.mock.calls[0][0].messages as Array<{
+      role: string;
+      content: Array<{
+        type: string;
+        output?: { type: string; value: string };
+      }>;
+    }>;
+    const toolMessage = callMessages.find((message) => message.role === "tool");
+    const output = toolMessage?.content[0]?.output;
+
+    expect(output).toEqual({
+      type: "text",
+      value: expect.stringContaining("run_terminal_cmd output preview"),
+    });
+    expect(output?.value.length).toBeLessThan(rawToolOutput.length);
+    expect(output?.value).not.toContain("unique-tool-line-6000");
+    expect(JSON.stringify(callMessages)).not.toContain(rawToolOutput);
   });
 
   it("should persist summary when chatId is provided", async () => {
