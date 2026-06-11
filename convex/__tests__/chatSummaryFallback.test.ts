@@ -524,6 +524,33 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     expect(chatPatchCalls).toHaveLength(0);
   });
 
+  it("should delete feedback before deleting regenerated assistant messages", async () => {
+    const assistantMsg = makeAssistantMessage({
+      _creationTime: 5000,
+      feedback_id: "feedback-1" as Id<"feedback">,
+    });
+    const chatDoc = makeChatDoc({ latest_summary_id: undefined });
+
+    setupDbQueryChain({
+      assistantMessage: assistantMsg,
+      chatDoc,
+      cutoffMessage: null,
+    });
+
+    const { deleteLastAssistantMessage } = await import("../messages");
+
+    await deleteLastAssistantMessage.handler(mockCtx, { chatId: CHAT_ID });
+
+    const deleteArgs = mockCtx.db.delete.mock.calls.map(
+      (call: any[]) => call[0],
+    );
+    expect(deleteArgs).toContain("feedback-1");
+    expect(deleteArgs).toContain(ASSISTANT_MSG_ID);
+    expect(deleteArgs.indexOf("feedback-1")).toBeLessThan(
+      deleteArgs.indexOf(ASSISTANT_MSG_ID),
+    );
+  });
+
   it("should fall back to first valid previous summary when current is invalid", async () => {
     const assistantMsg = makeAssistantMessage({ _creationTime: 2000 });
     const chatDoc = makeChatDoc();
@@ -741,5 +768,108 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     );
 
     expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
+  });
+});
+
+describe("regenerateWithNewContent feedback cleanup", () => {
+  let mockCtx: any;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    mockCtx = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+      },
+      db: {
+        query: jest.fn(),
+        get: jest.fn<any>().mockResolvedValue(null),
+        patch: jest.fn<any>().mockResolvedValue(undefined),
+        delete: jest.fn<any>().mockResolvedValue(undefined),
+      },
+      runQuery: jest.fn<any>().mockResolvedValue(true),
+      scheduler: {
+        runAfter: jest.fn<any>().mockResolvedValue(undefined),
+      },
+      storage: {
+        delete: jest.fn<any>().mockResolvedValue(undefined),
+      },
+    };
+  });
+
+  it("should delete feedback for later messages removed by edit-regenerate", async () => {
+    const editedUserMessage = {
+      _id: "user-doc-1" as Id<"messages">,
+      id: "user-msg-1",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "user",
+      parts: [{ type: "text", text: "old prompt" }],
+      content: "old prompt",
+      _creationTime: 1000,
+      file_ids: undefined,
+    };
+    const laterAssistantMessage = {
+      _id: "asst-doc-1" as Id<"messages">,
+      id: "asst-msg-1",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "old response" }],
+      _creationTime: 2000,
+      file_ids: undefined,
+      feedback_id: "feedback-2" as Id<"feedback">,
+    };
+    const chatDoc = makeChatDoc({ latest_summary_id: undefined });
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "messages") {
+        return {
+          withIndex: jest.fn((indexName: string) => {
+            if (indexName === "by_message_id") {
+              return {
+                first: jest.fn<any>().mockResolvedValue(editedUserMessage),
+              };
+            }
+            if (indexName === "by_chat_id") {
+              return {
+                collect: jest
+                  .fn<any>()
+                  .mockResolvedValue([laterAssistantMessage]),
+              };
+            }
+            throw new Error(`Unexpected messages index ${indexName}`);
+          }),
+        };
+      }
+
+      if (table === "chats") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(chatDoc),
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const { regenerateWithNewContent } = await import("../messages");
+
+    await regenerateWithNewContent.handler(mockCtx, {
+      messageId: editedUserMessage.id,
+      newContent: "new prompt",
+    });
+
+    const deleteArgs = mockCtx.db.delete.mock.calls.map(
+      (call: any[]) => call[0],
+    );
+    expect(deleteArgs).toContain("feedback-2");
+    expect(deleteArgs).toContain(laterAssistantMessage._id);
+    expect(deleteArgs.indexOf("feedback-2")).toBeLessThan(
+      deleteArgs.indexOf(laterAssistantMessage._id),
+    );
   });
 });
