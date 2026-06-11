@@ -1,8 +1,19 @@
 // Keep last N messages unsummarized for context
 export const MESSAGES_TO_KEEP_UNSUMMARIZED = 0;
 
-// Summarize at 90% of token limit to leave buffer for current response
-export const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.9;
+// Reserve context headroom before compaction so the next request still has
+// enough room for tool schemas, provider formatting overhead, and output.
+export const SUMMARIZATION_RESERVED_MAX_TOKENS = 20_000;
+export const SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE = 0.1;
+
+export const getSummarizationThresholdTokens = (maxTokens: number): number => {
+  const usableMaxTokens = Math.max(0, maxTokens);
+  const reservedTokens = Math.min(
+    SUMMARIZATION_RESERVED_MAX_TOKENS,
+    Math.floor(usableMaxTokens * SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE),
+  );
+  return Math.max(0, usableMaxTokens - reservedTokens);
+};
 
 // Keep persisted todos useful in the synthetic summary without letting stored
 // todo payloads bypass chat token budgeting.

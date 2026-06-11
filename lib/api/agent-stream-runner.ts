@@ -58,7 +58,7 @@ import {
 } from "@/lib/rate-limit/free-config";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
   extractOpenRouterMetadata,
@@ -457,11 +457,6 @@ export async function createAgentStream(
 
     prepareStep: async ({ steps, messages }) => {
       try {
-        const threshold = Math.floor(
-          getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }) *
-            SUMMARIZATION_THRESHOLD_PERCENTAGE,
-        );
-
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
           state.finalMessages = pruneResult.messages;
@@ -594,9 +589,8 @@ export async function createAgentStream(
     stopWhen: [
       stepCountIs(getMaxStepsForUser(ctx.mode, ctx.subscription)),
       tokenExhaustedAfterSummarization({
-        threshold: Math.floor(
-          getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }) *
-            SUMMARIZATION_THRESHOLD_PERCENTAGE,
+        threshold: getSummarizationThresholdTokens(
+          getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
         ),
         getLastStepInputTokens: () => state.lastStepInputTokens,
         getHasSummarized: () => ctx.summarizationTracker.hasSummarized,

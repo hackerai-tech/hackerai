@@ -7,7 +7,8 @@ import type {
 } from "ai";
 import type { Todo } from "@/types";
 import {
-  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  getSummarizationThresholdTokens,
+  SUMMARIZATION_RESERVED_MAX_TOKENS,
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
 } from "../constants";
@@ -35,9 +36,7 @@ const { checkAndSummarizeIfNeeded } =
 const { isSummaryMessage, extractSummaryText, buildSummaryMessage } =
   require("../helpers") as typeof import("../helpers");
 
-const THRESHOLD = Math.floor(
-  MAX_TOKENS_PAID * SUMMARIZATION_THRESHOLD_PERCENTAGE,
-);
+const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
 const TOKENS_PER_ABOVE_MSG = Math.ceil(THRESHOLD / 4) + 500;
 
@@ -112,6 +111,13 @@ describe("checkAndSummarizeIfNeeded", () => {
     jest.clearAllMocks();
     mockSaveChatSummary.mockResolvedValue(undefined);
     mockWriter = createMockWriter();
+  });
+
+  it("should cap reserved summarization headroom at 20k tokens", () => {
+    expect(getSummarizationThresholdTokens(128_000)).toBe(115_200);
+    expect(getSummarizationThresholdTokens(400_000)).toBe(
+      400_000 - SUMMARIZATION_RESERVED_MAX_TOKENS,
+    );
   });
 
   it("should skip summarization when message count is insufficient", async () => {
@@ -297,6 +303,89 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(output?.value.length).toBeLessThan(rawToolOutput.length);
     expect(output?.value).not.toContain("unique-tool-line-6000");
     expect(JSON.stringify(callMessages)).not.toContain(rawToolOutput);
+  });
+
+  it("should strip media-ish payloads from summarization modelMessages", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    const dataUri = `data:image/png;base64,${"a".repeat(10_000)}`;
+    const rawSnapshot = `dom-node-${"b".repeat(10_000)}`;
+    const modelMessages = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "upload.png",
+            data: dataUri,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "tc-media",
+            toolName: "open_url",
+            input: { url: "https://example.test" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-media",
+            toolName: "open_url",
+            output: {
+              type: "json",
+              value: {
+                screenshot: {
+                  mime: "image/png",
+                  filename: "page.png",
+                  url: dataUri,
+                },
+                rawSnapshot,
+                title: "Example page",
+              },
+            },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      modelMessages,
+    );
+
+    const serializedMessages = JSON.stringify(
+      mockGenerateText.mock.calls[0][0].messages,
+    );
+
+    expect(serializedMessages).toContain("[Attached image/png: page.png]");
+    expect(serializedMessages).toContain("[Attached image/png: upload.png]");
+    expect(serializedMessages).toContain("[rawSnapshot omitted for summary]");
+    expect(serializedMessages).toContain("media payloads omitted");
+    expect(serializedMessages).not.toContain(dataUri);
+    expect(serializedMessages).not.toContain(rawSnapshot);
   });
 
   it("should persist summary when chatId is provided", async () => {
