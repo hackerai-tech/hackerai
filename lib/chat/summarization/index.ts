@@ -39,6 +39,27 @@ export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
+export interface CheckAndSummarizeOptions {
+  uiMessages: UIMessage[];
+  subscription: SubscriptionTier;
+  languageModel: LanguageModel;
+  mode: ChatMode;
+  writer: UIMessageStreamWriter;
+  chatId: string | null;
+  fileTokens?: Record<Id<"files">, number>;
+  todos?: Todo[];
+  abortSignal?: AbortSignal;
+  ensureSandbox?: EnsureSandbox;
+  systemPromptTokens?: number;
+  providerInputTokens?: number;
+  chatSystemPrompt?: string;
+  tools?: ToolSet;
+  providerOptions?: Record<string, Record<string, unknown>>;
+  modelMessages?: ModelMessage[];
+  transcriptMessages?: UIMessage[];
+  maxTokensOverride?: number;
+}
+
 /**
  * Builds the instructional notice appended to summaryText pointing the agent
  * to the saved transcript file on the sandbox filesystem.
@@ -131,26 +152,26 @@ const saveTranscriptToSandbox = async (
   return null;
 };
 
-export const checkAndSummarizeIfNeeded = async (
-  uiMessages: UIMessage[],
-  subscription: SubscriptionTier,
-  languageModel: LanguageModel,
-  mode: ChatMode,
-  writer: UIMessageStreamWriter,
-  chatId: string | null,
-  fileTokens: Record<Id<"files">, number> = {},
-  todos: Todo[] = [],
-  abortSignal?: AbortSignal,
-  ensureSandbox?: EnsureSandbox,
-  systemPromptTokens: number = 0,
-  providerInputTokens: number = 0,
-  chatSystemPrompt: string = "",
-  tools?: ToolSet,
-  providerOptions?: Record<string, Record<string, unknown>>,
-  modelMessages?: ModelMessage[],
-  transcriptMessages?: UIMessage[],
-  maxTokensOverride?: number,
-): Promise<SummarizationResult> => {
+export const checkAndSummarizeIfNeeded = async ({
+  uiMessages,
+  subscription,
+  languageModel,
+  mode,
+  writer,
+  chatId,
+  fileTokens = {},
+  todos = [],
+  abortSignal,
+  ensureSandbox,
+  systemPromptTokens = 0,
+  providerInputTokens = 0,
+  chatSystemPrompt = "",
+  tools,
+  providerOptions,
+  modelMessages,
+  transcriptMessages,
+  maxTokensOverride,
+}: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
   let existingSummaryText: string | null = null;

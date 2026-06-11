@@ -4,8 +4,9 @@ import type {
   UIMessageStreamWriter,
   LanguageModel,
   ModelMessage,
+  ToolSet,
 } from "ai";
-import type { Todo } from "@/types";
+import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import {
   getSummarizationThresholdTokens,
   SUMMARIZATION_RESERVED_MAX_TOKENS,
@@ -81,6 +82,47 @@ const createMockWriter = (): UIMessageStreamWriter =>
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
 
+const checkAndSummarizeForTest = (
+  uiMessages: UIMessage[],
+  subscription: SubscriptionTier,
+  languageModel: LanguageModel,
+  mode: ChatMode,
+  writer: UIMessageStreamWriter,
+  chatId: string | null,
+  fileTokens: Record<string, number> = {},
+  todos: Todo[] = [],
+  abortSignal?: AbortSignal,
+  ensureSandbox?: () => Promise<any>,
+  systemPromptTokens: number = 0,
+  providerInputTokens: number = 0,
+  chatSystemPrompt: string = "",
+  tools?: ToolSet,
+  providerOptions?: Record<string, Record<string, unknown>>,
+  modelMessages?: ModelMessage[],
+  transcriptMessages?: UIMessage[],
+  maxTokensOverride?: number,
+) =>
+  checkAndSummarizeIfNeeded({
+    uiMessages,
+    subscription,
+    languageModel,
+    mode,
+    writer,
+    chatId,
+    fileTokens: fileTokens as any,
+    todos,
+    abortSignal,
+    ensureSandbox,
+    systemPromptTokens,
+    providerInputTokens,
+    chatSystemPrompt,
+    tools,
+    providerOptions,
+    modelMessages,
+    transcriptMessages,
+    maxTokensOverride,
+  });
+
 /**
  * Extract all `[msg-N]` IDs from every generateText call's messages.
  * Used to verify which messages were included in summarization prompts.
@@ -129,7 +171,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should skip summarization when message count is insufficient", async () => {
     const messages = [createMessage("msg-1", "user")];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       messages,
       "free",
       mockLanguageModel,
@@ -152,7 +194,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should skip summarization when tokens are below threshold", async () => {
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessages,
       "free",
       mockLanguageModel,
@@ -175,7 +217,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should summarize and return correct structure when threshold exceeded", async () => {
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -206,7 +248,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should use agent prompt when mode is agent", async () => {
     mockGenerateText.mockResolvedValue({ text: "Agent summary" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -273,7 +315,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     ] as unknown as ModelMessage[];
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -363,7 +405,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     ] as unknown as ModelMessage[];
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -416,7 +458,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should persist summary when chatId is provided", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -453,7 +495,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should skip database persistence for temporary chats", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -475,7 +517,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should write summarization completed even when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -507,7 +549,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -544,7 +586,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       { id: "3", content: "Enumerate subdomains", status: "completed" },
     ];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -629,7 +671,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
 
     await expect(
-      checkAndSummarizeIfNeeded(
+      checkAndSummarizeForTest(
         fourMessagesAboveThreshold,
         "free",
         mockLanguageModel,
@@ -667,7 +709,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     const abortController = new AbortController();
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -693,7 +735,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should not include todo block in summary when todos are empty", async () => {
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -739,7 +781,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       [summaryMsg, ...realMessages],
       "free",
       mockLanguageModel,
@@ -778,7 +820,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     ];
 
     const input = [summaryMsg, ...realMessages];
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       input,
       "free",
       mockLanguageModel,
@@ -821,7 +863,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       [summaryMsg, ...realMessages],
       "free",
       mockLanguageModel,
@@ -870,7 +912,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
     mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
 
-    const result1 = await checkAndSummarizeIfNeeded(
+    const result1 = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -898,7 +940,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     const secondInput = [...result1.summarizedMessages, ...newMessages];
 
-    const result2 = await checkAndSummarizeIfNeeded(
+    const result2 = await checkAndSummarizeForTest(
       secondInput,
       "free",
       mockLanguageModel,
@@ -981,7 +1023,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result1 = await checkAndSummarizeIfNeeded(
+    const result1 = await checkAndSummarizeForTest(
       round1Messages,
       "free",
       mockLanguageModel,
@@ -1007,7 +1049,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result2 = await checkAndSummarizeIfNeeded(
+    const result2 = await checkAndSummarizeForTest(
       round2Input,
       "free",
       mockLanguageModel,
@@ -1033,7 +1075,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-12", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result3 = await checkAndSummarizeIfNeeded(
+    const result3 = await checkAndSummarizeForTest(
       round3Input,
       "free",
       mockLanguageModel,
@@ -1062,7 +1104,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should handle normal first-time summarization unchanged", async () => {
     mockGenerateText.mockResolvedValue({ text: "First summary" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
