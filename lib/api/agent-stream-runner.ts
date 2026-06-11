@@ -60,6 +60,7 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   extractOpenRouterMetadata,
   fetchOpenRouterGenerationMetadata,
@@ -434,8 +435,11 @@ export async function createAgentStream(
     return latestProviderRequestDiagnostics;
   };
   const initialProviderOptions = getStepProviderOptions();
+  const promptSerializationTools = createPromptSerializationTools(ctx.tools);
   const initialModelMessages = prepareProviderMessages(
-    await convertToModelMessages(state.finalMessages, { tools: ctx.tools }),
+    await convertToModelMessages(state.finalMessages, {
+      tools: promptSerializationTools,
+    }),
   );
   recordProviderRequestDiagnostics({
     stepIndex: 0,
@@ -510,7 +514,7 @@ export async function createAgentStream(
             const providerOptions = getStepProviderOptions();
             const preparedMessages = prepareProviderMessages(
               await convertToModelMessages(result.summarizedMessages, {
-                tools: ctx.tools,
+                tools: createPromptSerializationTools(ctx.tools),
               }),
             );
             recordProviderRequestDiagnostics({

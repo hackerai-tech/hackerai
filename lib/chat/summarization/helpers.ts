@@ -15,6 +15,7 @@ import {
 import { saveChatSummary } from "@/lib/db/actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
@@ -150,7 +151,9 @@ export const generateSummaryText = async (
     providerOptions: providerOptions as any,
     messages: [
       ...(modelMessages ??
-        (await convertToModelMessages(messagesToSummarize, { tools }))),
+        (await convertToModelMessages(messagesToSummarize, {
+          tools: tools ? createPromptSerializationTools(tools) : undefined,
+        }))),
       {
         role: "user" as const,
         content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,
