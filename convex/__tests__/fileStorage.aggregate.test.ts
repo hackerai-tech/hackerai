@@ -190,8 +190,12 @@ describe("fileStorage - Aggregate Integration", () => {
         is_attached: false,
       };
 
+      const unique = jest.fn<any>().mockResolvedValue(null);
       const mockCtx: any = {
         db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
           insert: jest.fn<any>().mockResolvedValue(testFileId),
           get: jest.fn<any>().mockResolvedValue(mockFile),
         },
@@ -199,11 +203,13 @@ describe("fileStorage - Aggregate Integration", () => {
 
       const { saveFileToDb } = (await import("../fileStorage")) as any;
       const result = await saveFileToDb.handler(mockCtx, {
+        s3Key: "users/test-user-123/test.pdf",
         userId: testUserId,
         name: "test.pdf",
         mediaType: "application/pdf",
         size: 1024,
         fileTokenSize: 100,
+        trustedServiceGenerated: true,
       });
 
       expect(result).toBe(testFileId);
@@ -211,14 +217,42 @@ describe("fileStorage - Aggregate Integration", () => {
         "files",
         expect.objectContaining({
           user_id: testUserId,
+          s3_key: "users/test-user-123/test.pdf",
           name: "test.pdf",
           is_attached: false,
         }),
       );
+      expect(mockCtx.db.insert.mock.calls[0][1].storage_id).toBeUndefined();
       expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(
         mockCtx,
         mockFile,
       );
+    });
+
+    it("should reject metadata saves without an S3 key", async () => {
+      const mockCtx: any = {
+        db: {
+          query: jest.fn<any>(),
+          insert: jest.fn<any>(),
+        },
+      };
+
+      const { saveFileToDb } = (await import("../fileStorage")) as any;
+
+      await expect(
+        saveFileToDb.handler(mockCtx, {
+          userId: testUserId,
+          name: "legacy.pdf",
+          mediaType: "application/pdf",
+          size: 1024,
+          fileTokenSize: 100,
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "S3_KEY_REQUIRED" }),
+      });
+
+      expect(mockCtx.db.query).not.toHaveBeenCalled();
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
     });
 
     it("should check storage limit before saving file", async () => {
@@ -226,8 +260,12 @@ describe("fileStorage - Aggregate Integration", () => {
       const usedBytes = 9 * 1024 * 1024 * 1024;
       mockFileCountAggregate.sum.mockResolvedValue(usedBytes);
 
+      const unique = jest.fn<any>().mockResolvedValue(null);
       const mockCtx: any = {
         db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
           insert: jest.fn<any>().mockResolvedValue(testFileId),
           get: jest.fn<any>().mockResolvedValue(null),
         },
@@ -238,11 +276,13 @@ describe("fileStorage - Aggregate Integration", () => {
       // Try to upload a 500 MB file (should succeed, under limit)
       const smallFileSize = 500 * 1024 * 1024;
       await saveFileToDb.handler(mockCtx, {
+        s3Key: "users/test-user-123/small.pdf",
         userId: testUserId,
         name: "small.pdf",
         mediaType: "application/pdf",
         size: smallFileSize,
         fileTokenSize: 100,
+        trustedServiceGenerated: true,
       });
 
       expect(mockCtx.db.insert).toHaveBeenCalled();
@@ -253,8 +293,12 @@ describe("fileStorage - Aggregate Integration", () => {
       const usedBytes = 9.5 * 1024 * 1024 * 1024;
       mockFileCountAggregate.sum.mockResolvedValue(usedBytes);
 
+      const unique = jest.fn<any>().mockResolvedValue(null);
       const mockCtx: any = {
         db: {
+          query: jest.fn<any>().mockReturnValue({
+            withIndex: jest.fn<any>().mockReturnValue({ unique }),
+          }),
           insert: jest.fn<any>().mockResolvedValue(testFileId),
           get: jest.fn<any>().mockResolvedValue(null),
         },
@@ -266,11 +310,13 @@ describe("fileStorage - Aggregate Integration", () => {
       const largeFileSize = 1 * 1024 * 1024 * 1024;
       await expect(
         saveFileToDb.handler(mockCtx, {
+          s3Key: "users/test-user-123/large.pdf",
           userId: testUserId,
           name: "large.pdf",
           mediaType: "application/pdf",
           size: largeFileSize,
           fileTokenSize: 100,
+          trustedServiceGenerated: true,
         }),
       ).rejects.toThrow("Storage limit exceeded");
 
@@ -312,7 +358,10 @@ describe("fileStorage - Aggregate Integration", () => {
       expect(result).toBe(testFileId);
       expect(mockCtx.db.patch).toHaveBeenCalledWith(
         testFileId,
-        expect.objectContaining({ file_token_size: 100 }),
+        expect.objectContaining({
+          storage_id: undefined,
+          file_token_size: 100,
+        }),
       );
       expect(mockCtx.db.insert).not.toHaveBeenCalled();
       expect(mockFileCountAggregate.sum).not.toHaveBeenCalled();

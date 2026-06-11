@@ -423,8 +423,7 @@ export const createPendingS3File = internalMutation({
  */
 export const saveFileToDb = internalMutation({
   args: {
-    storageId: v.optional(v.id("_storage")),
-    s3Key: v.optional(v.string()),
+    s3Key: v.string(),
     userId: v.string(),
     name: v.string(),
     mediaType: v.string(),
@@ -435,41 +434,46 @@ export const saveFileToDb = internalMutation({
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
-    if (args.s3Key) {
-      const existing = await ctx.db
-        .query("files")
-        .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
-        .unique();
-      if (existing) {
-        if (existing.user_id !== args.userId) {
-          throw new ConvexError({
-            code: "UNAUTHORIZED",
-            message: "Upload reservation does not belong to this user.",
-          });
-        }
-        if (existing.size !== args.size) {
-          throw new ConvexError({
-            code: "FILE_SIZE_MISMATCH",
-            message: "Uploaded file size does not match reserved size.",
-          });
-        }
+    if (!args.s3Key) {
+      throw new ConvexError({
+        code: "S3_KEY_REQUIRED",
+        message: "S3 key is required to save file metadata.",
+      });
+    }
 
-        await ctx.db.patch(existing._id, {
-          storage_id: args.storageId,
-          name: args.name,
-          media_type: args.mediaType,
-          file_token_size: args.fileTokenSize,
-          content: args.content,
-          is_attached: false,
-        });
-        return existing._id;
-      }
-      if (!args.trustedServiceGenerated) {
+    const existing = await ctx.db
+      .query("files")
+      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+      .unique();
+    if (existing) {
+      if (existing.user_id !== args.userId) {
         throw new ConvexError({
-          code: "MISSING_UPLOAD_RESERVATION",
-          message: "S3 uploads must have an existing upload reservation.",
+          code: "UNAUTHORIZED",
+          message: "Upload reservation does not belong to this user.",
         });
       }
+      if (existing.size !== args.size) {
+        throw new ConvexError({
+          code: "FILE_SIZE_MISMATCH",
+          message: "Uploaded file size does not match reserved size.",
+        });
+      }
+
+      await ctx.db.patch(existing._id, {
+        storage_id: undefined,
+        name: args.name,
+        media_type: args.mediaType,
+        file_token_size: args.fileTokenSize,
+        content: args.content,
+        is_attached: false,
+      });
+      return existing._id;
+    }
+    if (!args.trustedServiceGenerated) {
+      throw new ConvexError({
+        code: "MISSING_UPLOAD_RESERVATION",
+        message: "S3 uploads must have an existing upload reservation.",
+      });
     }
 
     // Check storage limit
@@ -485,7 +489,6 @@ export const saveFileToDb = internalMutation({
     }
 
     const fileId = await ctx.db.insert("files", {
-      storage_id: args.storageId,
       s3_key: args.s3Key,
       user_id: args.userId,
       name: args.name,

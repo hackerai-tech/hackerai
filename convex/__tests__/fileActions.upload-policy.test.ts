@@ -299,10 +299,9 @@ describe("fileActions saveFile upload policy", () => {
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
-  it("rejects storageId uploads based on storage metadata, not client size", async () => {
+  it("rejects storageId uploads without touching Convex storage", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();
-    ctx.storage.getMetadata.mockResolvedValueOnce({ size: 21 * 1024 * 1024 });
 
     await expect(
       saveFile.handler(ctx, {
@@ -313,11 +312,14 @@ describe("fileActions saveFile upload policy", () => {
         mode: "ask",
       }),
     ).rejects.toMatchObject({
-      data: expect.objectContaining({ code: "FILE_SIZE_EXCEEDED" }),
+      data: expect.objectContaining({
+        code: "CONVEX_STORAGE_UPLOADS_DISABLED",
+      }),
     });
 
-    expect(ctx.storage.getMetadata).toHaveBeenCalledWith("storage_large_bin");
-    expect(ctx.storage.delete).toHaveBeenCalledWith("storage_large_bin");
+    expect(ctx.storage.getMetadata).not.toHaveBeenCalled();
+    expect(ctx.storage.delete).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
