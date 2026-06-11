@@ -54,25 +54,36 @@ const getSafeDisplayName = (user: {
   return parts.length > 0 ? parts.join(" ") : undefined;
 };
 
-const getReferralDisplayName = async (
+const getReferralInviteContext = async (
   referralCode: string,
-): Promise<string | undefined> => {
+): Promise<{ active: boolean; referrerName?: string }> => {
   try {
     const invite = await convex.query(api.referrals.getReferralInvite, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       referralCode,
     });
 
-    if (!invite?.active) return undefined;
+    if (!invite?.active) return { active: false };
 
-    const referrer = await workos.userManagement.getUser(invite.referrerUserId);
-    return getSafeDisplayName(referrer);
+    try {
+      const referrer = await workos.userManagement.getUser(
+        invite.referrerUserId,
+      );
+      return { active: true, referrerName: getSafeDisplayName(referrer) };
+    } catch (error) {
+      console.warn("[signup] Failed to resolve referral referrer", {
+        referralCode,
+        referrerUserId: invite.referrerUserId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { active: true };
+    }
   } catch (error) {
     console.warn("[signup] Failed to resolve referral invite", {
       referralCode,
       error: error instanceof Error ? error.message : String(error),
     });
-    return undefined;
+    return { active: false };
   }
 };
 
@@ -85,6 +96,17 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
     redirect(buildAuthHref(params));
   }
 
+  const invite = await getReferralInviteContext(referralCode);
+  if (!invite.active) {
+    redirect(
+      buildAuthHref({
+        ...params,
+        referral_code: undefined,
+        ref: undefined,
+      }),
+    );
+  }
+
   const authHref = buildAuthHref({
     ...params,
     referral_code: referralCode,
@@ -94,9 +116,8 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
     bonusUnits > 0
       ? `Sign up and get ${bonusUnits} extra free request${bonusUnits === 1 ? "" : "s"}`
       : "Sign up through a referral link";
-  const referrerName = await getReferralDisplayName(referralCode);
-  const referralLine = referrerName
-    ? `You're signing up through ${referrerName}'s referral link. Create your account to redeem your starter requests.`
+  const referralLine = invite.referrerName
+    ? `You're signing up through ${invite.referrerName}'s referral link. Create your account to redeem your starter requests.`
     : "You're signing up through a custom referral link. Create your account to redeem your starter requests.";
 
   return (

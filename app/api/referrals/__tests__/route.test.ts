@@ -57,35 +57,22 @@ describe("GET /api/referrals", () => {
     );
   });
 
-  it("allows free users to create referral URLs", async () => {
+  it("blocks free users from creating referral URLs", async () => {
     mockGetUserIDAndPro.mockResolvedValueOnce({
       userId: "user_free",
       subscription: "free",
       organizationId: undefined,
-    } as never);
-    mockConvexMutation.mockResolvedValueOnce({
-      code: "UVVQDMV",
-      active: true,
-      referrerSubscriptionTier: "free",
-      attributedSignups: 0,
-      paidConversions: 0,
-      awardedDollars: 0,
     } as never);
     const { GET } = await import("../route");
 
     const response = await GET({} as any);
     const body = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(body.referralUrl).toBe("https://hackerai.co/invite/UVVQDMV");
-    expect(body.referrerSubscriptionTier).toBe("free");
-    expect(mockConvexMutation).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        userId: "user_free",
-        subscriptionTier: "free",
-      }),
+    expect(response.status).toBe(403);
+    expect(body.error).toBe(
+      "Referral links are currently available to paid customers.",
     );
+    expect(mockConvexMutation).not.toHaveBeenCalled();
   });
 
   it("returns the referrer tier reported by Convex", async () => {

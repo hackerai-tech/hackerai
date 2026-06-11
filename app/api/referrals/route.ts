@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import {
   getReferralRewardConfig,
+  isReferralReferrerTierEligible,
   isValidReferralCode,
 } from "@/lib/referrals/config";
 
@@ -30,6 +31,12 @@ export async function GET(req: NextRequest) {
   }
 
   const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+  if (!isReferralReferrerTierEligible(subscription)) {
+    return NextResponse.json(
+      { error: "Referral links are currently available to paid customers." },
+      { status: 403 },
+    );
+  }
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
   if (!baseUrl) {

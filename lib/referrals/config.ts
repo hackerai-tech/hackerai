@@ -11,6 +11,20 @@ export type ReferralRewardConfig = {
   cookieMaxAgeSeconds: number;
 };
 
+export type ReferralReferrerTier =
+  | "free"
+  | "pro"
+  | "pro-plus"
+  | "ultra"
+  | "team";
+
+const ELIGIBLE_REFERRER_TIERS = new Set<ReferralReferrerTier>([
+  "pro",
+  "pro-plus",
+  "ultra",
+  "team",
+]);
+
 const parsePositiveNumber = (
   raw: string | undefined,
   fallback: number,
@@ -46,4 +60,10 @@ export function getReferralRewardConfig(): ReferralRewardConfig {
 
 export function isValidReferralCode(code: string | null | undefined): boolean {
   return typeof code === "string" && REFERRAL_CODE_PATTERN.test(code);
+}
+
+export function isReferralReferrerTierEligible(
+  tier: string | null | undefined,
+): tier is Exclude<ReferralReferrerTier, "free"> {
+  return ELIGIBLE_REFERRER_TIERS.has(tier as ReferralReferrerTier);
 }
