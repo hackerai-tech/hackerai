@@ -4,6 +4,7 @@ import {
   BadgeCheck,
   Bot,
   Bug,
+  Code,
   CreditCard,
   Database,
   ExternalLink as ExternalLinkIcon,
@@ -340,16 +341,35 @@ export default function TrustPage() {
             </Section>
           </div>
 
-          <Section icon={BadgeCheck} title="Compliance">
-            <p>
-              HackerAI doesn&apos;t currently hold SOC 2, ISO 27001, or other
-              third-party certifications. The service is offered in beta, as
-              described in our{" "}
-              <InlineLink href="/privacy-policy">Privacy Policy</InlineLink> and{" "}
-              <InlineLink href="/terms-of-service">Terms of Service</InlineLink>
-              . We&apos;ll update this page as our compliance program develops.
-            </p>
-          </Section>
+          <div className="grid gap-6 md:grid-cols-2">
+            <Section icon={Code} title="Source code">
+              <p>
+                HackerAI is developed in the open. The full application source
+                code is public on{" "}
+                <InlineLink href="https://github.com/hackerai-tech/hackerai">
+                  GitHub
+                </InlineLink>
+                , including every change we ship. You can review how prompts,
+                files, and sandbox sessions are handled directly in the code
+                rather than relying on this page alone.
+              </p>
+            </Section>
+
+            <Section icon={BadgeCheck} title="Compliance">
+              <p>
+                HackerAI doesn&apos;t currently hold SOC 2, ISO 27001, or other
+                third-party certifications. The service is offered in beta, as
+                described in our{" "}
+                <InlineLink href="/privacy-policy">Privacy Policy</InlineLink>{" "}
+                and{" "}
+                <InlineLink href="/terms-of-service">
+                  Terms of Service
+                </InlineLink>
+                . We&apos;ll update this page as our compliance program
+                develops.
+              </p>
+            </Section>
+          </div>
         </div>
 
         {/* Related documents */}
