@@ -38,7 +38,6 @@ jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
       saveFileToDb: "internal.fileStorage.saveFileToDb",
-      getFileByS3Key: "internal.fileStorage.getFileByS3Key",
     },
     s3Cleanup: {
       deleteS3ObjectAction: "internal.s3Cleanup.deleteS3ObjectAction",
@@ -134,25 +133,7 @@ describe("fileActions saveFile upload policy", () => {
         getUrl: jest.fn().mockResolvedValue("https://storage.example/file"),
         getMetadata: jest.fn().mockResolvedValue({ size: 1024 }),
       },
-      runQuery: jest.fn(async (_fn: unknown, args: { s3Key?: string }) => ({
-        _id: "file_reservation_123",
-        s3_key: args.s3Key,
-        user_id: "user123",
-        name: "reserved.txt",
-        media_type: "text/plain",
-        size: args.s3Key?.includes("large.bin")
-          ? 21 * 1024 * 1024
-          : args.s3Key?.includes("large.png")
-            ? 8 * 1024 * 1024
-            : args.s3Key?.includes("archive.zip")
-              ? 25 * 1024 * 1024
-              : args.s3Key?.includes("huge.bin")
-                ? 251 * 1024 * 1024
-                : 1024,
-        file_token_size: 0,
-        is_attached: false,
-        _creationTime: Date.now(),
-      })),
+      runQuery: jest.fn(),
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
 
@@ -207,20 +188,16 @@ describe("fileActions saveFile upload policy", () => {
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
-  it("rejects S3 uploads when the actual object size differs from the reservation", async () => {
+  it("cleans up S3 when final reservation mutation detects a size mismatch", async () => {
     const { saveFile } = await import("../fileActions");
+    const { ConvexError } = await import("convex/values");
     const ctx = makeCtx();
-    ctx.runQuery.mockResolvedValueOnce({
-      _id: "file_reservation_123",
-      s3_key: "users/user123/notes.txt",
-      user_id: "user123",
-      name: "notes.txt",
-      media_type: "text/plain",
-      size: 512,
-      file_token_size: 0,
-      is_attached: false,
-      _creationTime: Date.now(),
-    });
+    ctx.runMutation.mockRejectedValueOnce(
+      new ConvexError({
+        code: "FILE_SIZE_MISMATCH",
+        message: "Uploaded file size does not match reserved size.",
+      }),
+    );
 
     await expect(
       saveFile.handler(ctx, {
@@ -228,7 +205,7 @@ describe("fileActions saveFile upload policy", () => {
         name: "notes.txt",
         mediaType: "text/plain",
         size: 512,
-        mode: "ask",
+        mode: "agent",
       }),
     ).rejects.toMatchObject({
       data: expect.objectContaining({ code: "FILE_SIZE_MISMATCH" }),
@@ -240,23 +217,19 @@ describe("fileActions saveFile upload policy", () => {
       { s3Key: "users/user123/notes.txt" },
     );
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      "internal.fileStorage.saveFileToDb",
+      expect.objectContaining({
+        s3Key: "users/user123/notes.txt",
+        size: 1024,
+      }),
+    );
   });
 
-  it("rejects cross-user S3 reservations without deleting the object", async () => {
+  it("rejects cross-user S3 keys without deleting the object", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();
-    ctx.runQuery.mockResolvedValueOnce({
-      _id: "file_reservation_victim",
-      s3_key: "users/victim/notes.txt",
-      user_id: "victim",
-      name: "notes.txt",
-      media_type: "text/plain",
-      size: 1024,
-      file_token_size: 0,
-      is_attached: false,
-      _creationTime: Date.now(),
-    });
 
     await expect(
       saveFile.handler(ctx, {
@@ -274,35 +247,49 @@ describe("fileActions saveFile upload policy", () => {
 
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
-  it("does not delete unreserved S3 keys outside the acting user's prefix", async () => {
+  it("cleans up user-scoped S3 objects when final reservation is missing", async () => {
     const { saveFile } = await import("../fileActions");
+    const { ConvexError } = await import("convex/values");
     const ctx = makeCtx();
-    ctx.runQuery.mockResolvedValueOnce(null);
+    ctx.runMutation.mockRejectedValueOnce(
+      new ConvexError({
+        code: "MISSING_UPLOAD_RESERVATION",
+        message: "S3 uploads must have an existing upload reservation.",
+      }),
+    );
 
     await expect(
       saveFile.handler(ctx, {
-        s3Key: "users/victim/orphan.txt",
+        s3Key: "users/user123/orphan.txt",
         name: "orphan.txt",
         mediaType: "text/plain",
         size: 1024,
-        mode: "ask",
+        mode: "agent",
       }),
     ).rejects.toMatchObject({
-      data: expect.objectContaining({ code: "INVALID_UPLOAD_RESERVATION" }),
+      data: expect.objectContaining({ code: "MISSING_UPLOAD_RESERVATION" }),
     });
 
-    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.s3Cleanup.deleteS3ObjectAction",
+      { s3Key: "users/user123/orphan.txt" },
+    );
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      "internal.fileStorage.saveFileToDb",
+      expect.objectContaining({ s3Key: "users/user123/orphan.txt" }),
+    );
   });
 
-  it("rejects storageId uploads based on storage metadata, not client size", async () => {
+  it("rejects storageId uploads without touching Convex storage", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();
-    ctx.storage.getMetadata.mockResolvedValueOnce({ size: 21 * 1024 * 1024 });
 
     await expect(
       saveFile.handler(ctx, {
@@ -313,11 +300,14 @@ describe("fileActions saveFile upload policy", () => {
         mode: "ask",
       }),
     ).rejects.toMatchObject({
-      data: expect.objectContaining({ code: "FILE_SIZE_EXCEEDED" }),
+      data: expect.objectContaining({
+        code: "CONVEX_STORAGE_UPLOADS_DISABLED",
+      }),
     });
 
-    expect(ctx.storage.getMetadata).toHaveBeenCalledWith("storage_large_bin");
-    expect(ctx.storage.delete).toHaveBeenCalledWith("storage_large_bin");
+    expect(ctx.storage.getMetadata).not.toHaveBeenCalled();
+    expect(ctx.storage.delete).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
