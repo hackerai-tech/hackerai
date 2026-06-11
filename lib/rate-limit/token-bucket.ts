@@ -54,11 +54,58 @@ export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+const REDIS_SCAN_COUNT = 500;
+const REDIS_DELETE_BATCH_SIZE = 100;
 const RATE_LIMIT_SERVICE_NOT_CONFIGURED =
   "Rate limiting service is not configured";
 
 const throwRateLimitServiceNotConfigured = (): never => {
   throw new ChatSDKError("rate_limit:chat", RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+};
+
+type RedisClient = NonNullable<ReturnType<typeof createRedisClient>>;
+
+const scanRedisKeys = async (
+  redis: RedisClient,
+  pattern: string,
+): Promise<string[]> => {
+  let cursor = "0";
+  const keys: string[] = [];
+
+  do {
+    const [nextCursor, batch] = await redis.scan(cursor, {
+      match: pattern,
+      count: REDIS_SCAN_COUNT,
+    });
+    keys.push(...batch);
+    cursor = nextCursor;
+  } while (cursor !== "0");
+
+  return keys;
+};
+
+const deleteRedisKeys = async (
+  redis: RedisClient,
+  keys: string[],
+): Promise<void> => {
+  for (let index = 0; index < keys.length; index += REDIS_DELETE_BATCH_SIZE) {
+    await redis.del(...keys.slice(index, index + REDIS_DELETE_BATCH_SIZE));
+  }
+};
+
+export const isUserRateLimitKey = (key: string, userId: string): boolean => {
+  return (
+    key.startsWith(`usage:monthly:${userId}:`) ||
+    key === `upgrade:carryover:${userId}` ||
+    key.startsWith(`free_limit:${userId}:`) ||
+    key === `free_referral_bonus:${userId}` ||
+    (key.startsWith("free_referral_bonus_grant:") &&
+      key.endsWith(`:${userId}`)) ||
+    key.startsWith(`free_agent_limit:${userId}:`) ||
+    key.startsWith(`free_monthly_cost:${userId}:`) ||
+    key === `free_run_lock:${userId}` ||
+    (key.startsWith("team:debt_applied:") && key.endsWith(`:${userId}`))
+  );
 };
 
 // =============================================================================
@@ -637,25 +684,16 @@ export const deleteUserRateLimitKeys = async (
   const redis = createRedisClient();
   if (!redis) return 0;
 
-  const patterns = [
-    `usage:monthly:${userId}:*`,
-    `upgrade:carryover:${userId}`,
-    `free_limit:${userId}:*`,
-    `free_referral_bonus:${userId}`,
-    `free_referral_bonus_grant:*:${userId}`,
-    `free_agent_limit:${userId}:*`,
-    `free_monthly_cost:${userId}:*`,
-    `free_run_lock:${userId}`,
-    `team:debt_applied:*:${userId}`,
-  ];
-
   try {
-    const keyBatches = await Promise.all(
-      patterns.map((pattern) => redis.keys(pattern)),
+    const keys = Array.from(
+      new Set(
+        (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
+          isUserRateLimitKey(key, userId),
+        ),
+      ),
     );
-    const keys = Array.from(new Set(keyBatches.flat()));
     if (keys.length === 0) return 0;
-    await Promise.all(keys.map((key) => redis.del(key)));
+    await deleteRedisKeys(redis, keys);
     return keys.length;
   } catch (error) {
     console.error(

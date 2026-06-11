@@ -34,10 +34,27 @@ config({ path: resolve(process.cwd(), ".env.local") });
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_SCAN_COUNT = 500;
 
 type TestUserTier = "free" | "pro" | "ultra";
 
 const TEST_USERS = getTestUsersRecord();
+
+async function scanRedisKeys(redis: Redis, pattern: string): Promise<string[]> {
+  let cursor = "0";
+  const keys: string[] = [];
+
+  do {
+    const [nextCursor, batch] = await redis.scan(cursor, {
+      match: pattern,
+      count: REDIS_SCAN_COUNT,
+    });
+    keys.push(...batch);
+    cursor = nextCursor;
+  } while (cursor !== "0");
+
+  return keys;
+}
 
 async function getUserId(email: string): Promise<string | null> {
   const workos = new WorkOS(process.env.WORKOS_API_KEY, {
@@ -93,9 +110,9 @@ async function resetRateLimitForUser(
   console.log(`\n🔄 Resetting all rate limits for ${label}...\n`);
 
   try {
-    // Get all keys for this user using pattern matching
+    // Incrementally scan keys for this user; Upstash disables KEYS on large DBs.
     const pattern = `*${userId}*`;
-    const allKeys = await redis.keys(pattern);
+    const allKeys = await scanRedisKeys(redis, pattern);
 
     if (!allKeys || allKeys.length === 0) {
       console.log(`ℹ️  No rate limit keys found for ${userEmail}`);
