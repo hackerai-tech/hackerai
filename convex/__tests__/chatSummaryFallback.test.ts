@@ -86,6 +86,51 @@ function makeChatDoc(overrides: Record<string, any> = {}): Record<string, any> {
   };
 }
 
+describe("copyChatSummary", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("remaps cutoff IDs without copying source cutoff creation time", async () => {
+    const { copyChatSummary } = await import("../lib/utils");
+    const mockDb = {
+      get: jest.fn<any>().mockResolvedValue(
+        makeSummaryDoc({
+          summary_up_to_message_id: "source-msg",
+          summary_up_to_message_creation_time: 12345,
+          reason: "token_threshold",
+          prompt_version: "test-prompt-v1",
+        }),
+      ),
+      insert: jest.fn<any>().mockResolvedValue("new-summary-id"),
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await copyChatSummary(mockDb as any, {
+      sourceSummaryId: SUMMARY_DOC_ID,
+      targetChatDocId: "target-chat-doc-id" as Id<"chats">,
+      targetChatId: "target-chat-id",
+      messageIdMap: new Map([["source-msg", "target-msg"]]),
+    });
+
+    expect(mockDb.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.not.objectContaining({
+        summary_up_to_message_creation_time: 12345,
+      }),
+    );
+    expect(mockDb.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.objectContaining({
+        summary_up_to_message_id: "target-msg",
+        reason: "token_threshold",
+        prompt_version: "test-prompt-v1",
+      }),
+    );
+  });
+});
+
 describe("saveLatestSummary — previous_summaries chain", () => {
   let mockCtx: any;
 

@@ -39,8 +39,6 @@ export async function copyChatSummary(
 
     const metadata = Object.fromEntries(
       Object.entries({
-        summary_up_to_message_creation_time:
-          summary.summary_up_to_message_creation_time,
         reason: summary.reason,
         prompt_version: summary.prompt_version,
         model: summary.model,

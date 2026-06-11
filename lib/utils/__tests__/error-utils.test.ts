@@ -454,4 +454,14 @@ describe("provider error classification", () => {
     expect(classifyProviderOverflowError(err)).toBe("media");
     expect(getUserFriendlyProviderError(err)).toContain("attached media");
   });
+
+  it("does not classify generic payload overflow as media-only", () => {
+    const err = apiCallError({
+      statusCode: 413,
+      message: "payload too large",
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("context");
+    expect(getUserFriendlyProviderError(err)).toContain("context limit");
+  });
 });

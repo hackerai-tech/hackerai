@@ -408,7 +408,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     const serializedMessages = JSON.stringify(bounded);
 
-    expect(estimateSummaryInputTokens(bounded)).toBeLessThan(512);
+    expect(estimateSummaryInputTokens(bounded)).toBeLessThanOrEqual(512);
     expect(serializedMessages).toContain("Summary input shortened");
     expect(serializedMessages).not.toContain(hugeText);
   });

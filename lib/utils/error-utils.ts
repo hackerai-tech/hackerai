@@ -167,6 +167,7 @@ const PROVIDER_CONTEXT_OVERFLOW_PATTERNS = [
   /input(?: is)? too long/i,
   /prompt(?: is)? too long/i,
   /request(?: entity)? too large/i,
+  /payload too large/i,
   /too many tokens/i,
   /reduce (?:the )?(?:length|size)/i,
   /exceeds? (?:the )?(?:model|provider).*(?:limit|maximum)/i,
@@ -177,7 +178,6 @@ const PROVIDER_MEDIA_OVERFLOW_PATTERNS = [
   /media(?: file)? too large/i,
   /attachment(?: file)? too large/i,
   /base64.*too large/i,
-  /payload too large/i,
 ] as const;
 
 const sourceToSearchableStrings = (source: unknown): string[] => {
