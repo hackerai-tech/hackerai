@@ -865,6 +865,46 @@ async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
 ): Promise<void> {
+  const cancellationJustScheduled =
+    subscription.cancel_at_period_end === true &&
+    Boolean(previousAttributes) &&
+    Object.prototype.hasOwnProperty.call(
+      previousAttributes,
+      "cancel_at_period_end",
+    ) &&
+    (previousAttributes as { cancel_at_period_end?: boolean })
+      .cancel_at_period_end !== true;
+
+  if (cancellationJustScheduled) {
+    const customerId =
+      typeof subscription.customer === "string"
+        ? subscription.customer
+        : subscription.customer?.id;
+
+    if (customerId) {
+      const currentPrice = subscription.items?.data[0]?.price;
+      const lookupKey = currentPrice?.lookup_key ?? null;
+      const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
+      const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+
+      if (userIds.length === 0) {
+        console.error(
+          `[Subscription Webhook] subscription.updated cancellation: could not resolve users for customer ${customerId}`,
+        );
+      } else {
+        await recordCancellationCompleted({
+          subscription,
+          customerId,
+          userIds,
+          orgId: orgId ?? undefined,
+          tier,
+          price: currentPrice,
+          completionType: "scheduled",
+        });
+      }
+    }
+  }
+
   // Only act if the subscription items actually changed (plan change)
   const previousItems = (previousAttributes as any)?.items;
   if (!previousItems) return;
@@ -959,6 +999,75 @@ async function handleSubscriptionUpdated(
   }
 }
 
+async function recordCancellationCompleted(args: {
+  subscription: Stripe.Subscription;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier: SubscriptionTier | null;
+  price?: Stripe.Price;
+  completionType: "scheduled" | "deleted";
+}) {
+  const stripeCancellationReason =
+    args.subscription.cancellation_details?.reason ?? undefined;
+  const canceledAt = args.subscription.canceled_at
+    ? args.subscription.canceled_at * 1000
+    : undefined;
+  const completedAt =
+    args.completionType === "deleted" ? (canceledAt ?? Date.now()) : Date.now();
+
+  let updatedCount = 0;
+  try {
+    const result = await convex.mutation(
+      api.cancellationReasons.markCancellationCompleted,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeSubscriptionId: args.subscription.id,
+        stripeCustomerId: args.customerId,
+        userIds: args.userIds,
+        organizationId: args.orgId,
+        subscriptionTier: args.tier ?? undefined,
+        stripeCancellationReason,
+        cancelAtPeriodEnd: args.subscription.cancel_at_period_end,
+        completedAt,
+      },
+    );
+    updatedCount = result.updatedCount;
+  } catch (error) {
+    phLogger.warn("cancellation_reason_completion_update_failed", {
+      stripe_customer_id: args.customerId,
+      stripe_subscription_id: args.subscription.id,
+      org_id: args.orgId,
+      error,
+    });
+  }
+
+  if (updatedCount === 0) {
+    return;
+  }
+
+  for (const uid of args.userIds) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      paidFunnelProperties({
+        userId: uid,
+        subscription_tier: args.tier,
+        org_id: args.orgId,
+        plan: args.price?.lookup_key,
+        billing_interval: priceBillingInterval(args.price),
+        billing_interval_count: args.price?.recurring?.interval_count,
+        cancellation_reason: stripeCancellationReason,
+        cancellation_completion_type: args.completionType,
+        cancel_at_period_end: args.subscription.cancel_at_period_end,
+        stripe_customer_id: args.customerId,
+        stripe_subscription_id: args.subscription.id,
+        stripe_price_id: args.price?.id,
+        $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${args.subscription.id}`,
+      }),
+    );
+  }
+}
+
 /** Handle customer.subscription.deleted — emit churn analytics for the lapsed paid users. */
 async function handleSubscriptionDeleted(
   subscription: Stripe.Subscription,
@@ -985,6 +1094,16 @@ async function handleSubscriptionDeleted(
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
+
+  await recordCancellationCompleted({
+    subscription,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    tier,
+    price: subscription.items?.data[0]?.price,
+    completionType: "deleted",
+  });
 
   for (const uid of userIds) {
     phLogger.event("subscription_cancelled", {

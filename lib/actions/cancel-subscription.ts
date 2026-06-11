@@ -1,0 +1,266 @@
+"use server";
+
+import { stripe } from "../../app/api/stripe";
+import { api } from "@/convex/_generated/api";
+import { getBillingActionContext } from "@/lib/actions/billing-context";
+import {
+  isCancellationReasonCategory,
+  normalizeCancellationReasonDetails,
+  type CancellationReasonCategory,
+} from "@/lib/billing/cancellation-reasons";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+  planLookupKeyToTier,
+} from "@/lib/analytics/paid-funnel";
+import type { SubscriptionTier } from "@/types";
+
+type CancellationReasonInput = {
+  reasonCategory: CancellationReasonCategory;
+  reasonDetails: string;
+};
+
+type CancelSubscriptionInput = {
+  cancellationReason: CancellationReasonInput;
+};
+
+type SubscriptionContext = {
+  id: string;
+  priceId?: string;
+  plan?: string;
+  tier?: SubscriptionTier;
+  currentPeriodEnd?: number;
+};
+
+function parseCancellationReasonInput(
+  value: CancelSubscriptionInput["cancellationReason"],
+): CancellationReasonInput {
+  const reasonCategory = value?.reasonCategory;
+  const reasonDetails = normalizeCancellationReasonDetails(
+    value?.reasonDetails,
+  );
+
+  if (!isCancellationReasonCategory(reasonCategory)) {
+    throw new Error("Please select the main cancellation reason");
+  }
+
+  if (!reasonDetails) {
+    throw new Error("Please write a cancellation reason before continuing");
+  }
+
+  return {
+    reasonCategory,
+    reasonDetails,
+  };
+}
+
+function parseCreatedAtMs(value: unknown): number | undefined {
+  const raw = (value as { createdAt?: unknown; created_at?: unknown }) ?? {};
+  const createdAt = raw.createdAt ?? raw.created_at;
+
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt === "string" || typeof createdAt === "number") {
+    const timestamp = new Date(createdAt).getTime();
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  return undefined;
+}
+
+function subscriptionTierFromLookupKey(
+  lookupKey: string | null | undefined,
+): SubscriptionTier | undefined {
+  return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
+}
+
+function currentPeriodEndMs(subscription: unknown): number | undefined {
+  const currentPeriodEnd = (subscription as { current_period_end?: unknown })
+    .current_period_end;
+  return typeof currentPeriodEnd === "number" &&
+    Number.isFinite(currentPeriodEnd) &&
+    currentPeriodEnd > 0
+    ? currentPeriodEnd * 1000
+    : undefined;
+}
+
+async function getActiveSubscriptionContext(
+  stripeCustomerId: string,
+): Promise<SubscriptionContext> {
+  const subscriptions = await stripe.subscriptions.list({
+    customer: stripeCustomerId,
+    status: "all",
+    limit: 10,
+    expand: ["data.items.data.price"],
+  });
+  const currentSubscription = subscriptions.data.find((subscription) =>
+    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+  );
+
+  if (!currentSubscription) {
+    throw new Error("No active subscription found");
+  }
+
+  if (currentSubscription.cancel_at_period_end) {
+    throw new Error("Your subscription is already scheduled to cancel");
+  }
+
+  const price = currentSubscription.items.data[0]?.price;
+  return {
+    id: currentSubscription.id,
+    priceId: price?.id,
+    plan: price?.lookup_key ?? undefined,
+    tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+  };
+}
+
+function stripeCancellationFeedback(
+  reasonCategory: CancellationReasonCategory,
+) {
+  if (reasonCategory === "too_expensive") return "too_expensive";
+  if (reasonCategory === "missing_feature") return "missing_features";
+  if (reasonCategory === "switched_tool") return "switched_service";
+  if (reasonCategory === "not_using_enough") return "unused";
+  return "other";
+}
+
+export default async function cancelSubscriptionAction(
+  input: CancelSubscriptionInput,
+) {
+  const cancellationReason = parseCancellationReasonInput(
+    input.cancellationReason,
+  );
+  const { organizationId, user, stripeCustomerId } =
+    await getBillingActionContext();
+  const subscriptionContext =
+    await getActiveSubscriptionContext(stripeCustomerId);
+
+  const now = Date.now();
+  const accountCreatedAt = parseCreatedAtMs(user);
+  const accountAgeDays = accountCreatedAt
+    ? Math.max(0, Math.floor((now - accountCreatedAt) / 86_400_000))
+    : undefined;
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+
+  if (serviceKey) {
+    try {
+      await getConvexClient().mutation(
+        api.cancellationReasons.recordCancellationStarted,
+        {
+          serviceKey,
+          userId: user.id,
+          organizationId,
+          stripeCustomerId,
+          stripeSubscriptionId: subscriptionContext.id,
+          stripePriceId: subscriptionContext.priceId,
+          plan: subscriptionContext.plan,
+          subscriptionTier: subscriptionContext.tier,
+          reasonCategory: cancellationReason.reasonCategory,
+          reasonDetails: cancellationReason.reasonDetails,
+          accountCreatedAt,
+          accountAgeDays,
+          startedAt: now,
+          source: "in_app",
+        },
+      );
+    } catch (error) {
+      phLogger.error("Failed to record cancellation reason", {
+        userId: user.id,
+        org_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        error,
+      });
+    }
+  } else {
+    phLogger.error("Failed to record cancellation reason", {
+      userId: user.id,
+      org_id: organizationId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+      error: new Error("CONVEX_SERVICE_ROLE_KEY is not set"),
+    });
+  }
+
+  const updatedSubscription = await stripe.subscriptions.update(
+    subscriptionContext.id,
+    {
+      cancel_at_period_end: true,
+      cancellation_details: {
+        feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+      },
+    },
+  );
+
+  const completedAt = updatedSubscription.canceled_at
+    ? updatedSubscription.canceled_at * 1000
+    : Date.now();
+
+  if (serviceKey) {
+    try {
+      await getConvexClient().mutation(
+        api.cancellationReasons.markCancellationCompleted,
+        {
+          serviceKey,
+          stripeSubscriptionId: subscriptionContext.id,
+          stripeCustomerId,
+          userIds: [user.id],
+          organizationId,
+          subscriptionTier: subscriptionContext.tier,
+          stripeCancellationReason:
+            updatedSubscription.cancellation_details?.reason ?? undefined,
+          cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+          completedAt,
+        },
+      );
+    } catch (error) {
+      phLogger.warn("cancellation_reason_completion_update_failed", {
+        userId: user.id,
+        org_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        error,
+      });
+    }
+  }
+
+  phLogger.event(
+    PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
+    paidFunnelProperties({
+      userId: user.id,
+      org_id: organizationId,
+      subscription_tier: subscriptionContext.tier,
+      plan: subscriptionContext.plan,
+      reason_category: cancellationReason.reasonCategory,
+      reason_details_length: cancellationReason.reasonDetails.length,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+    }),
+  );
+  phLogger.event(
+    PAID_FUNNEL_EVENTS.cancellationCompleted,
+    paidFunnelProperties({
+      userId: user.id,
+      org_id: organizationId,
+      subscription_tier: subscriptionContext.tier,
+      plan: subscriptionContext.plan,
+      reason_category: cancellationReason.reasonCategory,
+      cancellation_completion_type: "scheduled_in_app",
+      cancel_at_period_end: updatedSubscription.cancel_at_period_end,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+      stripe_price_id: subscriptionContext.priceId,
+      $insert_id: `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${subscriptionContext.id}:in_app`,
+    }),
+  );
+
+  return {
+    canceled: true,
+    cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+    currentPeriodEnd:
+      currentPeriodEndMs(updatedSubscription) ??
+      subscriptionContext.currentPeriodEnd,
+  };
+}

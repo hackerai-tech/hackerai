@@ -122,6 +122,77 @@ export default defineSchema({
     feedback_details: v.optional(v.string()),
   }),
 
+  cancellation_reasons: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_customer_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    stripe_price_id: v.optional(v.string()),
+    plan: v.optional(v.string()),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    reason_category: v.union(
+      v.literal("too_expensive"),
+      v.literal("not_using_enough"),
+      v.literal("missing_feature"),
+      v.literal("results_not_good_enough"),
+      v.literal("too_slow_or_unreliable"),
+      v.literal("hit_usage_limits"),
+      v.literal("switched_tool"),
+      v.literal("temporary_pause"),
+      v.literal("other"),
+    ),
+    reason_details_id: v.optional(v.id("cancellation_reason_details")),
+    status: v.union(v.literal("started"), v.literal("completed")),
+    source: v.union(v.literal("in_app"), v.literal("billing_portal")),
+    started_at: v.number(),
+    completed_at: v.optional(v.number()),
+    account_created_at: v.optional(v.number()),
+    account_age_days: v.optional(v.number()),
+    recent_usage_days: v.number(),
+    recent_usage_request_count: v.number(),
+    recent_usage_cost_dollars: v.number(),
+    recent_usage_total_tokens: v.number(),
+    recent_usage_segment: v.union(
+      v.literal("none"),
+      v.literal("light"),
+      v.literal("moderate"),
+      v.literal("heavy"),
+    ),
+    stripe_cancellation_reason: v.optional(v.string()),
+    cancel_at_period_end: v.optional(v.boolean()),
+    updated_at: v.number(),
+  })
+    .index("by_user_started", ["user_id", "started_at"])
+    .index("by_org_started", ["organization_id", "started_at"])
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_stripe_customer_id", ["stripe_customer_id"])
+    .index("by_tier_started", ["subscription_tier", "started_at"])
+    .index("by_started_at", ["started_at"])
+    .index("by_status_started", ["status", "started_at"]),
+
+  cancellation_reason_details: defineTable({
+    cancellation_reason_id: v.id("cancellation_reasons"),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_subscription_id: v.optional(v.string()),
+    reason_details: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_cancellation_reason_id", ["cancellation_reason_id"])
+    .index("by_user_id_and_created_at", ["user_id", "created_at"])
+    .index("by_stripe_subscription_id_and_created_at", [
+      "stripe_subscription_id",
+      "created_at",
+    ]),
+
   user_customization: defineTable({
     user_id: v.string(),
     nickname: v.optional(v.string()),
