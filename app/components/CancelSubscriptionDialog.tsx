@@ -52,6 +52,13 @@ type CancellationResult = {
 type CancellationStep = "feedback" | "confirm";
 
 const reasonOptionBadges = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const visibleCancellationReasonValues: CancellationReasonCategory[] = [
+  "too_expensive",
+  "not_using_enough",
+  "missing_feature",
+  "too_slow_or_unreliable",
+  "other",
+];
 
 function getFeaturesForTier(tier: SubscriptionTier) {
   switch (tier) {
@@ -245,6 +252,9 @@ export const CancelSubscriptionDialog = ({
   const selectedReasonLabel = CANCELLATION_REASON_OPTIONS.find(
     (option) => option.value === reasonCategory,
   )?.label;
+  const visibleCancellationReasonOptions = CANCELLATION_REASON_OPTIONS.filter(
+    (option) => visibleCancellationReasonValues.includes(option.value),
+  );
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -253,8 +263,8 @@ export const CancelSubscriptionDialog = ({
         className="flex max-h-[90vh] flex-col overflow-hidden p-0 sm:max-w-[560px]"
       >
         <div className="flex items-center justify-between border-b border-border bg-muted/40 px-5 py-3">
-          <div className="flex min-w-0 items-center gap-3 text-sm font-semibold text-lime-400">
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-lime-400/15 text-lime-400">
+          <div className="flex min-w-0 items-center gap-3 text-sm font-semibold text-premium-text">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
               <StepIcon className="size-4" aria-hidden="true" />
             </span>
             <span className="truncate">{stepLabel}</span>
@@ -264,7 +274,7 @@ export const CancelSubscriptionDialog = ({
             aria-label="Close"
             onClick={() => handleOpenChange(false)}
             disabled={isProcessing}
-            className="flex size-8 shrink-0 items-center justify-center rounded-md bg-lime-400/15 text-lime-400 transition-colors hover:bg-lime-400/25 focus-visible:ring-2 focus-visible:ring-lime-400 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+            className="flex size-8 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text transition-colors hover:bg-premium-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
           >
             <XIcon className="size-4" aria-hidden="true" />
           </button>
@@ -363,7 +373,7 @@ export const CancelSubscriptionDialog = ({
                 aria-label="Main cancellation reason"
                 aria-invalid={categoryMissing}
               >
-                {CANCELLATION_REASON_OPTIONS.map((option, index) => {
+                {visibleCancellationReasonOptions.map((option, index) => {
                   const isSelected = reasonCategory === option.value;
 
                   return (
@@ -375,9 +385,9 @@ export const CancelSubscriptionDialog = ({
                       onClick={() => handleReasonCategoryChange(option.value)}
                       disabled={isProcessing}
                       className={cn(
-                        "flex h-14 w-full items-center gap-4 rounded-md border px-4 text-left text-base font-medium transition-colors focus-visible:ring-2 focus-visible:ring-lime-400 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                        "flex h-14 w-full items-center gap-4 rounded-md border px-4 text-left text-base font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
                         isSelected
-                          ? "border-lime-400/70 bg-lime-400/10 text-foreground"
+                          ? "border-violet-500/70 bg-premium-bg text-foreground"
                           : "border-border bg-muted/40 text-foreground hover:bg-muted",
                       )}
                     >
@@ -385,8 +395,8 @@ export const CancelSubscriptionDialog = ({
                         className={cn(
                           "flex size-8 shrink-0 items-center justify-center rounded-md text-sm font-semibold",
                           isSelected
-                            ? "bg-lime-400 text-black"
-                            : "bg-lime-400/15 text-lime-400",
+                            ? "bg-premium-text text-background"
+                            : "bg-premium-bg text-premium-text",
                         )}
                       >
                         {reasonOptionBadges[index]}
