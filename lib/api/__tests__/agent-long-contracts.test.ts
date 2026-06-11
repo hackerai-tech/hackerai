@@ -222,6 +222,32 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("provider stream errors with reasoning-only output can retry on fallback", () => {
+    const helperImportIdx = taskSrc.indexOf("shouldRetryAgentLongWithFallback");
+    const partsIdx = taskSrc.indexOf(
+      "const lastAssistantMessageParts",
+      helperImportIdx,
+    );
+    const retryDecisionIdx = taskSrc.indexOf(
+      "shouldRetryAgentLongWithFallback(",
+      partsIdx,
+    );
+    const terminalProviderErrorIdx = taskSrc.indexOf(
+      "hasTerminalProviderStreamError:",
+      retryDecisionIdx,
+    );
+    const fallbackIdx = taskSrc.indexOf(
+      "const retryResult = await createStream(fallbackModel)",
+      terminalProviderErrorIdx,
+    );
+
+    expect(helperImportIdx).toBeGreaterThan(-1);
+    expect(partsIdx).toBeGreaterThan(helperImportIdx);
+    expect(retryDecisionIdx).toBeGreaterThan(partsIdx);
+    expect(terminalProviderErrorIdx).toBeGreaterThan(retryDecisionIdx);
+    expect(fallbackIdx).toBeGreaterThan(terminalProviderErrorIdx);
+  });
+
   test("outer catch checks live usage tracker before refunding", () => {
     const liveUsagePredicateIdx = taskSrc.indexOf(
       "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",

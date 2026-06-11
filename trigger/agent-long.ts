@@ -108,6 +108,7 @@ import {
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
 import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
@@ -1275,7 +1276,8 @@ export const agentLongTask = task({
                   }) => {
                     let retryScheduled = false;
                     try {
-                      // Retry with fallback if stream only produced step-start (incomplete response)
+                      // Retry with fallback if the primary stream failed before
+                      // producing text, tool calls, or tool output worth saving.
                       const lastAssistantMessage = finishedMessages
                         .slice()
                         .reverse()
@@ -1284,13 +1286,17 @@ export const agentLongTask = task({
                         stripAgentLongHeartbeatParts(
                           lastAssistantMessage ?? { parts: [] },
                         ).parts ?? [];
-                      const hasOnlyStepStart =
-                        lastAssistantMessageParts.length === 1 &&
-                        (lastAssistantMessageParts[0] as { type?: string })
-                          ?.type === "step-start";
+                      const shouldRetryWithFallback =
+                        shouldRetryAgentLongWithFallback(
+                          lastAssistantMessageParts,
+                          {
+                            hasTerminalProviderStreamError:
+                              isTerminalProviderStreamError(state),
+                          },
+                        );
 
                       if (
-                        hasOnlyStepStart &&
+                        shouldRetryWithFallback &&
                         !isRetryWithFallback &&
                         !isAborted &&
                         isAutoModel
