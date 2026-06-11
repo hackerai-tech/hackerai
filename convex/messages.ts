@@ -1115,6 +1115,16 @@ export const deleteLastAssistantMessage = mutation({
               }
             }
           }
+          if (msg.feedback_id) {
+            try {
+              await ctx.db.delete(msg.feedback_id);
+            } catch (error) {
+              console.error(
+                `Failed to delete feedback ${msg.feedback_id}:`,
+                error,
+              );
+            }
+          }
           await ctx.db.delete(msg._id);
         }
       }
@@ -1850,6 +1860,17 @@ export const regenerateWithNewContent = mutation({
             } catch (error) {
               console.error(`Failed to delete file ${fileId}:`, error);
             }
+          }
+        }
+
+        if (msg.feedback_id) {
+          try {
+            await ctx.db.delete(msg.feedback_id);
+          } catch (error) {
+            console.error(
+              `Failed to delete feedback ${msg.feedback_id}:`,
+              error,
+            );
           }
         }
 
