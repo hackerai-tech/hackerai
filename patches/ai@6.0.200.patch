@@ -1,7 +1,7 @@
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -13435,14 +13435,16 @@ var AbstractChat = class {
+@@ -13513,14 +13513,16 @@ var AbstractChat = class {
        this.setStatus({ status: "error", error: err });
      } finally {
        try {
@@ -29,7 +29,7 @@ diff --git a/dist/index.js b/dist/index.js
 diff --git a/dist/index.mjs b/dist/index.mjs
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -13413,14 +13413,16 @@ var AbstractChat = class {
+@@ -13488,14 +13488,16 @@ var AbstractChat = class {
        this.setStatus({ status: "error", error: err });
      } finally {
        try {
