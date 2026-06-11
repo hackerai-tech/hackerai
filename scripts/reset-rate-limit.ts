@@ -26,6 +26,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
+import { isUserRateLimitKey } from "../lib/rate-limit/key-cleanup";
 import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -34,10 +35,27 @@ config({ path: resolve(process.cwd(), ".env.local") });
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const REDIS_SCAN_COUNT = 500;
 
 type TestUserTier = "free" | "pro" | "ultra";
 
 const TEST_USERS = getTestUsersRecord();
+
+async function scanRedisKeys(redis: Redis, pattern: string): Promise<string[]> {
+  let cursor = "0";
+  const keys: string[] = [];
+
+  do {
+    const [nextCursor, batch] = await redis.scan(cursor, {
+      match: pattern,
+      count: REDIS_SCAN_COUNT,
+    });
+    keys.push(...batch);
+    cursor = nextCursor;
+  } while (cursor !== "0");
+
+  return keys;
+}
 
 async function getUserId(email: string): Promise<string | null> {
   const workos = new WorkOS(process.env.WORKOS_API_KEY, {
@@ -93,9 +111,11 @@ async function resetRateLimitForUser(
   console.log(`\n🔄 Resetting all rate limits for ${label}...\n`);
 
   try {
-    // Get all keys for this user using pattern matching
+    // Scan broadly for the user ID, then delete only known rate-limit keys.
     const pattern = `*${userId}*`;
-    const allKeys = await redis.keys(pattern);
+    const allKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
+      isUserRateLimitKey(key, userId),
+    );
 
     if (!allKeys || allKeys.length === 0) {
       console.log(`ℹ️  No rate limit keys found for ${userEmail}`);
