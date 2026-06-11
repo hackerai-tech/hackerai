@@ -17,6 +17,9 @@ import {
   getLimitPressureContext,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
+import { isUserRateLimitKey } from "./key-cleanup";
+
+export { isUserRateLimitKey } from "./key-cleanup";
 
 // =============================================================================
 // Configuration
@@ -91,21 +94,6 @@ const deleteRedisKeys = async (
   for (let index = 0; index < keys.length; index += REDIS_DELETE_BATCH_SIZE) {
     await redis.del(...keys.slice(index, index + REDIS_DELETE_BATCH_SIZE));
   }
-};
-
-export const isUserRateLimitKey = (key: string, userId: string): boolean => {
-  return (
-    key.startsWith(`usage:monthly:${userId}:`) ||
-    key === `upgrade:carryover:${userId}` ||
-    key.startsWith(`free_limit:${userId}:`) ||
-    key === `free_referral_bonus:${userId}` ||
-    (key.startsWith("free_referral_bonus_grant:") &&
-      key.endsWith(`:${userId}`)) ||
-    key.startsWith(`free_agent_limit:${userId}:`) ||
-    key.startsWith(`free_monthly_cost:${userId}:`) ||
-    key === `free_run_lock:${userId}` ||
-    (key.startsWith("team:debt_applied:") && key.endsWith(`:${userId}`))
-  );
 };
 
 // =============================================================================

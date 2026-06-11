@@ -26,6 +26,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
+import { isUserRateLimitKey } from "../lib/rate-limit/key-cleanup";
 import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -110,9 +111,11 @@ async function resetRateLimitForUser(
   console.log(`\n🔄 Resetting all rate limits for ${label}...\n`);
 
   try {
-    // Incrementally scan keys for this user; Upstash disables KEYS on large DBs.
+    // Scan broadly for the user ID, then delete only known rate-limit keys.
     const pattern = `*${userId}*`;
-    const allKeys = await scanRedisKeys(redis, pattern);
+    const allKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
+      isUserRateLimitKey(key, userId),
+    );
 
     if (!allKeys || allKeys.length === 0) {
       console.log(`ℹ️  No rate limit keys found for ${userEmail}`);
