@@ -69,7 +69,7 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("warns before selecting HackerAI Pro on paid plans", () => {
+  it("warns before selecting HackerAI Pro on Pro Plus plans", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
 
@@ -87,6 +87,18 @@ describe("ModelSelector", () => {
 
     expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
+  });
+
+  it("warns before selecting HackerAI Max on Pro Plus plans", () => {
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
+    expect(screen.getByText(/HackerAI Max is powerful/i)).toBeVisible();
   });
 
   it("warns before selecting HackerAI Max on paid tiers above Pro", () => {

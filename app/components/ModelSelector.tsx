@@ -66,11 +66,18 @@ interface ModelSelectorProps {
 const AUTO_MODEL_DESCRIPTION =
   "Balanced quality and speed, recommended for most tasks";
 
+const HIGH_COST_MODEL_WARNING_TIERS = new Set<SubscriptionTier>([
+  "pro",
+  "pro-plus",
+  "ultra",
+  "team",
+]);
+
 const shouldWarnForPaidHighCostModel = (
   subscription: SubscriptionTier,
   model: SelectedModel,
 ): boolean =>
-  subscription !== "free" &&
+  HIGH_COST_MODEL_WARNING_TIERS.has(subscription) &&
   (model === "hackerai-pro" || model === "hackerai-max");
 
 const AutoOptionButton = ({
