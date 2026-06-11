@@ -109,6 +109,7 @@ export const CancelSubscriptionDialog = ({
     useState<CancellationResult | null>(null);
   const [step, setStep] = useState<CancellationStep>("feedback");
   const openRef = useRef(open);
+  const wasOpenRef = useRef(false);
   const requestIdRef = useRef(0);
 
   const handleOpenChange = useCallback(
@@ -123,7 +124,9 @@ export const CancelSubscriptionDialog = ({
   );
 
   useEffect(() => {
+    const wasOpen = wasOpenRef.current;
     openRef.current = open;
+    wasOpenRef.current = open;
 
     if (!open) {
       requestIdRef.current += 1;
@@ -133,6 +136,10 @@ export const CancelSubscriptionDialog = ({
       setIsProcessing(false);
       setCancellationResult(null);
       setStep("feedback");
+      return;
+    }
+
+    if (wasOpen) {
       return;
     }
 
