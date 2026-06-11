@@ -158,6 +158,79 @@ const getOpenRouterProviderInfo = (
   return details;
 };
 
+const PROVIDER_CONTEXT_OVERFLOW_PATTERNS = [
+  /context[_\s-]?length[_\s-]?exceeded/i,
+  /context window/i,
+  /context limit/i,
+  /maximum context/i,
+  /max(?:imum)? token/i,
+  /input(?: is)? too long/i,
+  /prompt(?: is)? too long/i,
+  /request(?: entity)? too large/i,
+  /too many tokens/i,
+  /reduce (?:the )?(?:length|size)/i,
+  /exceeds? (?:the )?(?:model|provider).*(?:limit|maximum)/i,
+] as const;
+
+const PROVIDER_MEDIA_OVERFLOW_PATTERNS = [
+  /image(?: file)? too large/i,
+  /media(?: file)? too large/i,
+  /attachment(?: file)? too large/i,
+  /base64.*too large/i,
+  /payload too large/i,
+] as const;
+
+const sourceToSearchableStrings = (source: unknown): string[] => {
+  if (typeof source === "string") return [source];
+  if (!isRecord(source)) return [];
+
+  const result: string[] = [];
+  for (const key of [
+    "name",
+    "message",
+    "code",
+    "statusText",
+    "responseBody",
+  ] as const) {
+    const value = source[key];
+    if (typeof value === "string") result.push(value);
+  }
+
+  const providerInfo = getOpenRouterProviderInfo(source);
+  for (const value of Object.values(providerInfo)) {
+    if (typeof value === "string") result.push(value);
+  }
+
+  return result;
+};
+
+export const classifyProviderOverflowError = (
+  error: unknown,
+): "context" | "media" | null => {
+  const searchable = collectErrorSources(error).flatMap(
+    sourceToSearchableStrings,
+  );
+  if (
+    searchable.some((text) =>
+      PROVIDER_MEDIA_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text)),
+    )
+  ) {
+    return "media";
+  }
+  if (
+    searchable.some((text) =>
+      PROVIDER_CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text)),
+    )
+  ) {
+    return "context";
+  }
+  return null;
+};
+
+export const isProviderContextOrMediaOverflowError = (
+  error: unknown,
+): boolean => classifyProviderOverflowError(error) !== null;
+
 /**
  * Removes sensitive user data from provider error objects.
  * Fields containing user prompts/messages are completely removed.
@@ -475,9 +548,18 @@ export const extractRetryAttempts = (
 export const getUserFriendlyProviderError = (error: unknown): string => {
   const statusCode = extractStatusCode(error);
   const { providerName, detail } = extractProviderDetails(error);
+  const overflowKind = classifyProviderOverflowError(error);
 
   if (isProviderContentBlockedError(error)) {
     return "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+  }
+
+  if (overflowKind === "media") {
+    return "The model provider rejected this request because attached media or file payloads were too large. Remove or shrink the attachments, then try again.";
+  }
+
+  if (overflowKind === "context") {
+    return "The model provider rejected this request because the conversation exceeded its context limit. The conversation may need another compaction pass, or you can retry after removing large tool output or attachments.";
   }
 
   // Friendly summary based on status code

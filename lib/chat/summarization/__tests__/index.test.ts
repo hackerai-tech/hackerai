@@ -9,6 +9,7 @@ import type { Todo } from "@/types";
 import {
   getSummarizationThresholdTokens,
   SUMMARIZATION_RESERVED_MAX_TOKENS,
+  SUMMARY_PROMPT_VERSION,
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
 } from "../constants";
@@ -33,8 +34,13 @@ jest.doMock("@/lib/ai/providers", () => ({
 
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
-const { isSummaryMessage, extractSummaryText, buildSummaryMessage } =
-  require("../helpers") as typeof import("../helpers");
+const {
+  isSummaryMessage,
+  extractSummaryText,
+  buildSummaryMessage,
+  boundModelMessagesForSummarization,
+  estimateSummaryInputTokens,
+} = require("../helpers") as typeof import("../helpers");
 
 const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
@@ -73,7 +79,7 @@ const fourMessagesAboveThreshold: UIMessage[] = [
 const createMockWriter = (): UIMessageStreamWriter =>
   ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
 
-const mockLanguageModel = {} as LanguageModel;
+const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
 
 /**
  * Extract all `[msg-N]` IDs from every generateText call's messages.
@@ -388,6 +394,25 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(serializedMessages).not.toContain(rawSnapshot);
   });
 
+  it("should bound total summarization modelMessages input", () => {
+    const hugeText = `keep-start ${"huge-text ".repeat(20_000)} keep-end`;
+    const messages = [
+      {
+        role: "user",
+        content: hugeText,
+      },
+    ] as unknown as ModelMessage[];
+
+    const bounded = boundModelMessagesForSummarization(messages, {
+      maxInputTokens: 512,
+    });
+    const serializedMessages = JSON.stringify(bounded);
+
+    expect(estimateSummaryInputTokens(bounded)).toBeLessThan(512);
+    expect(serializedMessages).toContain("Summary input shortened");
+    expect(serializedMessages).not.toContain(hugeText);
+  });
+
   it("should persist summary when chatId is provided", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
@@ -407,11 +432,22 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
-    expect(mockSaveChatSummary).toHaveBeenCalledWith({
-      chatId: "chat-123",
-      summaryText: "Summary",
-      summaryUpToMessageId: "msg-4",
-    });
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-123",
+        summaryText: "Summary",
+        summaryUpToMessageId: "msg-4",
+        metadata: expect.objectContaining({
+          reason: "token_threshold",
+          promptVersion: SUMMARY_PROMPT_VERSION,
+          model: "test-model",
+          status: "completed",
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCompactedInputTokens: expect.any(Number),
+        }),
+      }),
+    );
   });
 
   it("should skip database persistence for temporary chats", async () => {

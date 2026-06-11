@@ -170,6 +170,16 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       chatId: CHAT_ID,
       summaryText: "new summary",
       summaryUpToMessageId: "msg-10",
+      metadata: {
+        reason: "token_threshold",
+        promptVersion: "test-prompt-v1",
+        model: "test-model",
+        status: "completed",
+        inputTokens: 100,
+        outputTokens: 20,
+        estimatedCompactedInputTokens: 90,
+        transcriptPath: "/tmp/agent-transcripts/test.json",
+      },
     });
 
     expect(mockCtx.db.insert).toHaveBeenCalledWith(
@@ -177,6 +187,14 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       expect.objectContaining({
         previous_summaries: [],
         summary_up_to_message_creation_time: 10_000,
+        reason: "token_threshold",
+        prompt_version: "test-prompt-v1",
+        model: "test-model",
+        status: "completed",
+        input_tokens: 100,
+        output_tokens: 20,
+        estimated_compacted_input_tokens: 90,
+        transcript_path: "/tmp/agent-transcripts/test.json",
       }),
     );
   });

@@ -9,6 +9,7 @@ import {
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
@@ -16,7 +17,11 @@ import {
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 
-import { MESSAGES_TO_KEEP_UNSUMMARIZED } from "./constants";
+import {
+  MESSAGES_TO_KEEP_UNSUMMARIZED,
+  getSummaryInputMaxTokens,
+  getSummarizationThresholdTokens,
+} from "./constants";
 import {
   NO_SUMMARIZATION,
   isAboveTokenThreshold,
@@ -26,6 +31,7 @@ import {
   persistSummary,
   isSummaryMessage,
   extractSummaryText,
+  buildSummaryPersistenceMetadata,
 } from "./helpers";
 import type { SummarizationResult } from "./helpers";
 
@@ -142,6 +148,8 @@ export const checkAndSummarizeIfNeeded = async (
   tools?: ToolSet,
   providerOptions?: Record<string, Record<string, unknown>>,
   modelMessages?: ModelMessage[],
+  transcriptMessages?: UIMessage[],
+  maxTokensOverride?: number,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -160,6 +168,9 @@ export const checkAndSummarizeIfNeeded = async (
   }
 
   // Check token threshold on full messages (including summary) to determine need
+  const maxTokens =
+    maxTokensOverride ?? getMaxTokensForSubscription(subscription);
+  const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   if (
     !isAboveTokenThreshold(
       uiMessages,
@@ -167,6 +178,7 @@ export const checkAndSummarizeIfNeeded = async (
       fileTokens,
       systemPromptTokens,
       providerInputTokens,
+      maxTokens,
     )
   ) {
     return NO_SUMMARIZATION(uiMessages);
@@ -193,6 +205,7 @@ export const checkAndSummarizeIfNeeded = async (
       providerOptions,
       abortSignal,
       modelMessages,
+      getSummaryInputMaxTokens(maxTokens),
     );
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
@@ -202,7 +215,7 @@ export const checkAndSummarizeIfNeeded = async (
         ? ensureSandbox()
             .then((sandbox) =>
               saveTranscriptToSandbox(
-                messagesToSummarize,
+                transcriptMessages ?? messagesToSummarize,
                 sandbox,
                 modelMessages,
               ),
@@ -228,8 +241,15 @@ export const checkAndSummarizeIfNeeded = async (
     }
 
     const summaryMessage = buildSummaryMessage(finalSummaryText, todos);
+    const metadata = buildSummaryPersistenceMetadata({
+      providerInputTokens,
+      threshold: summarizationThreshold,
+      languageModel,
+      usage: summarizationUsage,
+      transcriptPath: savedPath,
+    });
 
-    await persistSummary(chatId, finalSummaryText, cutoffMessageId);
+    await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
 
     return {
       needsSummarization: true,

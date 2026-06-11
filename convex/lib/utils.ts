@@ -37,10 +37,31 @@ export async function copyChatSummary(
         )!,
       }));
 
+    const metadata = Object.fromEntries(
+      Object.entries({
+        summary_up_to_message_creation_time:
+          summary.summary_up_to_message_creation_time,
+        reason: summary.reason,
+        prompt_version: summary.prompt_version,
+        model: summary.model,
+        status: summary.status,
+        error: summary.error,
+        input_tokens: summary.input_tokens,
+        output_tokens: summary.output_tokens,
+        cache_read_tokens: summary.cache_read_tokens,
+        cache_write_tokens: summary.cache_write_tokens,
+        cost: summary.cost,
+        estimated_compacted_input_tokens:
+          summary.estimated_compacted_input_tokens,
+        transcript_path: summary.transcript_path,
+      }).filter(([, value]) => value !== undefined),
+    );
+
     const summaryId = await db.insert("chat_summaries", {
       chat_id: opts.targetChatId,
       summary_text: summary.summary_text,
       summary_up_to_message_id: remappedId,
+      ...metadata,
       previous_summaries: remappedPrevious,
     });
 

@@ -351,6 +351,7 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  transcriptMessages?: UIMessage[];
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded(
@@ -370,6 +371,8 @@ export async function runSummarizationStep(options: {
       options.tools,
       options.providerOptions,
       options.modelMessages,
+      options.transcriptMessages,
+      options.ctxMaxTokens,
     );
 
   if (!needsSummarization) {

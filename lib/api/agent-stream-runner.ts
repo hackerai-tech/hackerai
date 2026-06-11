@@ -65,6 +65,7 @@ import {
   fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
 } from "@/lib/api/openrouter-metadata";
+import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type { BudgetMonitor } from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
@@ -81,6 +82,8 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 export type AgentStreamState = {
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
+  /** Raw UI messages captured before in-memory pruning, for transcript sidecars. */
+  transcriptSourceMessages?: UIMessage[];
   /** Context-window usage data; updated after summarization and each step. */
   ctxUsage: { usedTokens: number; maxTokens: number };
   lastStepInputTokens: number;
@@ -459,6 +462,7 @@ export async function createAgentStream(
       try {
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
+          state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
         }
 
@@ -490,6 +494,7 @@ export async function createAgentStream(
             chatSystemPrompt: ctx.currentSystemPrompt,
             tools: ctx.tools,
             providerOptions: getStepProviderOptions(),
+            transcriptMessages: state.transcriptSourceMessages,
           });
 
           if (result.needsSummarization && result.summarizedMessages) {
@@ -501,6 +506,7 @@ export async function createAgentStream(
             if (result.contextUsage) {
               state.ctxUsage = result.contextUsage;
             }
+            state.transcriptSourceMessages = undefined;
             const activeTools = await getActiveTools();
             const providerOptions = getStepProviderOptions();
             const preparedMessages = prepareProviderMessages(
@@ -723,6 +729,17 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      const overflowKind = classifyProviderOverflowError(error);
+      if (overflowKind) {
+        state.stoppedDueToTokenExhaustion = true;
+        state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
+        console.warn("[agent-stream] provider overflow detected", {
+          overflowKind,
+          chatId: ctx.chatId,
+          model: modelName,
+          hadSummarization: ctx.summarizationTracker.hasSummarized,
+        });
+      }
       if (!isXaiSafetyError(error)) {
         const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
           hasMultimodalToolResults: streamHasImageViewResults,

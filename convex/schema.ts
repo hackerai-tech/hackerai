@@ -56,6 +56,18 @@ export default defineSchema({
     summary_text: v.string(),
     summary_up_to_message_id: v.string(),
     summary_up_to_message_creation_time: v.optional(v.number()),
+    reason: v.optional(v.string()),
+    prompt_version: v.optional(v.string()),
+    model: v.optional(v.string()),
+    status: v.optional(v.string()),
+    error: v.optional(v.string()),
+    input_tokens: v.optional(v.number()),
+    output_tokens: v.optional(v.number()),
+    cache_read_tokens: v.optional(v.number()),
+    cache_write_tokens: v.optional(v.number()),
+    cost: v.optional(v.number()),
+    estimated_compacted_input_tokens: v.optional(v.number()),
+    transcript_path: v.optional(v.string()),
     previous_summaries: v.optional(
       v.array(
         v.object({

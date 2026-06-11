@@ -19,6 +19,10 @@ import type { Id } from "@/convex/_generated/dataModel";
 
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
+  SUMMARY_INPUT_MAX_TOKENS,
+  SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS,
+  SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
+  SUMMARY_PROMPT_VERSION,
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_CONTENT_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
@@ -33,9 +37,24 @@ import {
 export interface SummarizationUsage {
   inputTokens: number;
   outputTokens: number;
+  estimatedCompactedInputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   cost?: number;
+}
+
+export interface SummaryPersistenceMetadata {
+  reason: "token_threshold" | "provider_input_threshold";
+  promptVersion: string;
+  model?: string;
+  status: "completed";
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cost?: number;
+  estimatedCompactedInputTokens?: number;
+  transcriptPath?: string;
 }
 
 export interface SummarizationResult {
@@ -64,8 +83,10 @@ export const isAboveTokenThreshold = (
   fileTokens: Record<Id<"files">, number>,
   systemPromptTokens: number = 0,
   providerInputTokens: number = 0,
+  maxTokensOverride?: number,
 ): boolean => {
-  const maxTokens = getMaxTokensForSubscription(subscription);
+  const maxTokens =
+    maxTokensOverride ?? getMaxTokensForSubscription(subscription);
   const threshold = getSummarizationThresholdTokens(maxTokens);
 
   // If the provider already reported input tokens exceeding the threshold,
@@ -360,6 +381,165 @@ export const compactModelMessagesForSummarization = <T extends ModelMessage>(
   return changed ? compacted : messages;
 };
 
+const stringifySummaryMessages = (messages: ModelMessage[]): string => {
+  try {
+    return JSON.stringify(messages);
+  } catch {
+    return String(messages);
+  }
+};
+
+export const estimateSummaryInputTokens = (messages: ModelMessage[]): number =>
+  safeCountTokens(stringifySummaryMessages(messages));
+
+const truncateSummaryText = (text: string, maxTokens: number): string =>
+  safeCountTokens(text) > maxTokens
+    ? truncateContent(
+        text,
+        "\n[Summary input shortened: middle omitted]\n",
+        maxTokens,
+      )
+    : text;
+
+const compactContentPartForSummaryBudget = (
+  part: unknown,
+  maxTextPartTokens: number,
+): { value: unknown; changed: boolean } => {
+  if (part === null || typeof part !== "object") {
+    return { value: part, changed: false };
+  }
+
+  const record = part as Record<string, unknown>;
+
+  if (record.type === "text" && typeof record.text === "string") {
+    const text = truncateSummaryText(record.text, maxTextPartTokens);
+    return {
+      value: text === record.text ? part : { ...record, text },
+      changed: text !== record.text,
+    };
+  }
+
+  if (record.type === "tool-call" && record.input != null) {
+    const inputText = stringifyToolOutput(record.input);
+    if (safeCountTokens(inputText) <= maxTextPartTokens) {
+      return { value: part, changed: false };
+    }
+    const toolName =
+      typeof record.toolName === "string" ? record.toolName : "tool";
+    return {
+      value: {
+        ...record,
+        input: {
+          summary: `[${toolName} input omitted to fit summary budget: ${inputText.length} chars]`,
+        },
+      },
+      changed: true,
+    };
+  }
+
+  return { value: part, changed: false };
+};
+
+const compactTextPartsForSummaryBudget = <T extends ModelMessage>(
+  messages: T[],
+  maxTextPartTokens: number,
+): T[] => {
+  let changed = false;
+
+  const compacted = messages.map((message) => {
+    if (typeof message.content === "string") {
+      const content = truncateSummaryText(message.content, maxTextPartTokens);
+      if (content === message.content) return message;
+      changed = true;
+      return { ...message, content } as T;
+    }
+
+    if (!Array.isArray(message.content)) return message;
+
+    let contentChanged = false;
+    const content = message.content.map((part) => {
+      const compactedPart = compactContentPartForSummaryBudget(
+        part,
+        maxTextPartTokens,
+      );
+      if (compactedPart.changed) {
+        contentChanged = true;
+        return compactedPart.value as typeof part;
+      }
+      return part;
+    });
+
+    if (!contentChanged) return message;
+    changed = true;
+    return { ...message, content } as T;
+  });
+
+  return changed ? compacted : messages;
+};
+
+const fallbackSummaryInputMessages = (
+  messages: ModelMessage[],
+  maxInputTokens: number,
+): ModelMessage[] => {
+  const transcript = truncateContent(
+    stringifySummaryMessages(messages),
+    "\n[Summary input transcript shortened: middle omitted]\n",
+    Math.max(1, maxInputTokens - 256),
+  );
+
+  return [
+    {
+      role: "user",
+      content: `[Summary input transcript was too large after compaction; sanitized transcript follows.]\n${transcript}`,
+    },
+  ] as ModelMessage[];
+};
+
+export const boundModelMessagesForSummarization = (
+  messages: ModelMessage[],
+  {
+    maxInputTokens = SUMMARY_INPUT_MAX_TOKENS,
+    overflowToolOutputMaxTokens = SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
+    overflowTextPartMaxTokens = SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS,
+  }: {
+    maxInputTokens?: number;
+    overflowToolOutputMaxTokens?: number;
+    overflowTextPartMaxTokens?: number;
+  } = {},
+): ModelMessage[] => {
+  if (maxInputTokens <= 0) return fallbackSummaryInputMessages(messages, 1);
+  if (estimateSummaryInputTokens(messages) <= maxInputTokens) return messages;
+
+  let compacted = compactModelMessagesForSummarization(
+    messages,
+    overflowToolOutputMaxTokens,
+  );
+  compacted = compactTextPartsForSummaryBudget(
+    compacted,
+    overflowTextPartMaxTokens,
+  );
+  if (estimateSummaryInputTokens(compacted) <= maxInputTokens) {
+    return compacted;
+  }
+
+  compacted = compactTextPartsForSummaryBudget(compacted, 128);
+  if (estimateSummaryInputTokens(compacted) <= maxInputTokens) {
+    return compacted;
+  }
+
+  return fallbackSummaryInputMessages(compacted, maxInputTokens);
+};
+
+const getLanguageModelIdentifier = (
+  languageModel: LanguageModel,
+): string | undefined => {
+  const record = languageModel as unknown as Record<string, unknown>;
+  for (const key of ["modelId", "modelID", "id"] as const) {
+    if (typeof record[key] === "string") return record[key];
+  }
+  return undefined;
+};
+
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
@@ -370,6 +550,7 @@ export const generateSummaryText = async (
   providerOptions?: Record<string, Record<string, unknown>>,
   abortSignal?: AbortSignal,
   modelMessages?: ModelMessage[],
+  summaryInputMaxTokens: number = SUMMARY_INPUT_MAX_TOKENS,
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
 
@@ -396,9 +577,15 @@ export const generateSummaryText = async (
   const sourceModelMessages =
     modelMessages ??
     (await convertToModelMessages(messagesToSummarize, { tools }));
-  const summaryModelMessages = compactModelMessagesForSummarization(
+  const compactedModelMessages = compactModelMessagesForSummarization(
     sourceModelMessages as ModelMessage[],
   );
+  const summaryModelMessages = boundModelMessagesForSummarization(
+    compactedModelMessages,
+    { maxInputTokens: summaryInputMaxTokens },
+  );
+  const estimatedCompactedInputTokens =
+    estimateSummaryInputTokens(summaryModelMessages);
 
   const result = await generateText({
     model: languageModel,
@@ -430,6 +617,7 @@ export const generateSummaryText = async (
     usage: {
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
+      estimatedCompactedInputTokens,
       ...(details?.cacheReadTokens
         ? { cacheReadTokens: details.cacheReadTokens }
         : undefined),
@@ -440,6 +628,35 @@ export const generateSummaryText = async (
     },
   };
 };
+
+export const buildSummaryPersistenceMetadata = ({
+  providerInputTokens,
+  threshold,
+  languageModel,
+  usage,
+  transcriptPath,
+}: {
+  providerInputTokens: number;
+  threshold: number;
+  languageModel: LanguageModel;
+  usage?: SummarizationUsage;
+  transcriptPath?: string | null;
+}): SummaryPersistenceMetadata => ({
+  reason:
+    providerInputTokens > threshold
+      ? "provider_input_threshold"
+      : "token_threshold",
+  promptVersion: SUMMARY_PROMPT_VERSION,
+  model: getLanguageModelIdentifier(languageModel),
+  status: "completed",
+  inputTokens: usage?.inputTokens,
+  outputTokens: usage?.outputTokens,
+  cacheReadTokens: usage?.cacheReadTokens,
+  cacheWriteTokens: usage?.cacheWriteTokens,
+  cost: usage?.cost,
+  estimatedCompactedInputTokens: usage?.estimatedCompactedInputTokens,
+  transcriptPath: transcriptPath ?? undefined,
+});
 
 export const buildSummaryMessage = (
   summaryText: string,
@@ -484,6 +701,7 @@ export const persistSummary = async (
   chatId: string | null,
   summaryText: string,
   cutoffMessageId: string,
+  metadata?: SummaryPersistenceMetadata,
 ): Promise<void> => {
   if (!chatId) return;
 
@@ -492,6 +710,7 @@ export const persistSummary = async (
       chatId,
       summaryText,
       summaryUpToMessageId: cutoffMessageId,
+      metadata,
     });
   } catch (error) {
     console.error("[Summarization] Failed to save summary:", error);

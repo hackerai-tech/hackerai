@@ -5,6 +5,7 @@ export const MESSAGES_TO_KEEP_UNSUMMARIZED = 0;
 // enough room for tool schemas, provider formatting overhead, and output.
 export const SUMMARIZATION_RESERVED_MAX_TOKENS = 20_000;
 export const SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE = 0.1;
+export const SUMMARY_PROMPT_VERSION = "2026-06-11.opencode-anchored-summary-v2";
 
 export const getSummarizationThresholdTokens = (maxTokens: number): number => {
   const usableMaxTokens = Math.max(0, maxTokens);
@@ -24,3 +25,15 @@ export const SUMMARY_TODO_BLOCK_MAX_TOKENS = 4096;
 // Bound individual tool results fed into the summarizer. Agent tool outputs can
 // be enormous, and summarization should see a preview rather than raw logs.
 export const SUMMARY_TOOL_OUTPUT_MAX_TOKENS = 2048;
+
+// Bound the entire model-message projection sent to the summarizer. This is a
+// second safety net after per-tool/media compaction.
+export const SUMMARY_INPUT_MAX_TOKENS = 64_000;
+export const SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS = 1024;
+export const SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS = 512;
+
+export const getSummaryInputMaxTokens = (maxTokens: number): number =>
+  Math.min(
+    SUMMARY_INPUT_MAX_TOKENS,
+    getSummarizationThresholdTokens(maxTokens),
+  );
