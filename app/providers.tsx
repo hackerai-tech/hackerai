@@ -18,6 +18,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
     if (!shouldTrack) {
       if (posthog.__loaded) {
+        posthog.stopSessionRecording();
         posthog.reset();
         posthog.opt_out_capturing();
       }
@@ -30,6 +31,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         api_host: `${process.env.NEXT_PUBLIC_POSTHOG_HOST}`,
         capture_pageview: false, // Disable automatic pageview capture, as we capture manually
         autocapture: false, // Disable automatic event capture, as we capture manually
+        disable_session_recording: true,
         before_send: (event) => {
           if (!event || shouldDropExpectedConvexException(event)) {
             return null;
@@ -48,6 +50,15 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         user!.email,
       subscription,
     });
+
+    if (subscription !== "free") {
+      if (!posthog.sessionRecordingStarted()) {
+        posthog.startSessionRecording();
+      }
+      return;
+    }
+
+    posthog.stopSessionRecording();
   }, [subscription, user]);
 
   return <PHProvider client={posthog}>{children}</PHProvider>;

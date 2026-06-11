@@ -6,6 +6,7 @@ import {
   getBudgetLimits,
   getCycleExpireSeconds,
   getSubscriptionPrice,
+  isUserRateLimitKey,
   POINTS_PER_DOLLAR,
 } from "../token-bucket";
 
@@ -177,6 +178,48 @@ describe("token-bucket", () => {
       const periodEnd = now + 31 * 24 * 60 * 60;
 
       expect(getCycleExpireSeconds(periodEnd, now)).toBe(32 * 24 * 60 * 60);
+    });
+  });
+
+  describe("isUserRateLimitKey", () => {
+    const userId = "user_123";
+
+    it("matches all rate-limit namespaces owned by the user", () => {
+      expect(isUserRateLimitKey(`usage:monthly:${userId}:pro`, userId)).toBe(
+        true,
+      );
+      expect(isUserRateLimitKey(`upgrade:carryover:${userId}`, userId)).toBe(
+        true,
+      );
+      expect(isUserRateLimitKey(`free_limit:${userId}:free:ask`, userId)).toBe(
+        true,
+      );
+      expect(isUserRateLimitKey(`free_referral_bonus:${userId}`, userId)).toBe(
+        true,
+      );
+      expect(
+        isUserRateLimitKey(`free_referral_bonus_grant:ref:${userId}`, userId),
+      ).toBe(true);
+      expect(
+        isUserRateLimitKey(`free_agent_limit:${userId}:agent`, userId),
+      ).toBe(true);
+      expect(
+        isUserRateLimitKey(`free_monthly_cost:${userId}:2026-06`, userId),
+      ).toBe(true);
+      expect(isUserRateLimitKey(`free_run_lock:${userId}`, userId)).toBe(true);
+      expect(
+        isUserRateLimitKey(`team:debt_applied:org_123:${userId}`, userId),
+      ).toBe(true);
+    });
+
+    it("rejects unrelated keys that contain the same user id", () => {
+      expect(isUserRateLimitKey(`chat:${userId}:messages`, userId)).toBe(false);
+      expect(
+        isUserRateLimitKey(`team:removed_usage:org_${userId}`, userId),
+      ).toBe(false);
+      expect(isUserRateLimitKey(`usage:monthly:user_456:pro`, userId)).toBe(
+        false,
+      );
     });
   });
 

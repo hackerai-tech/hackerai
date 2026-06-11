@@ -16,6 +16,7 @@ import {
 import { saveChatSummary } from "@/lib/db/actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
@@ -576,7 +577,9 @@ export const generateSummaryText = async (
 
   const sourceModelMessages =
     modelMessages ??
-    (await convertToModelMessages(messagesToSummarize, { tools }));
+    (await convertToModelMessages(messagesToSummarize, {
+      tools: tools ? createPromptSerializationTools(tools) : undefined,
+    }));
   const compactedModelMessages = compactModelMessagesForSummarization(
     sourceModelMessages as ModelMessage[],
   );
