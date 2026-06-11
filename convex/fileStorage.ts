@@ -338,34 +338,6 @@ export const getFileById = internalQuery({
   },
 });
 
-export const getFileByS3Key = internalQuery({
-  args: {
-    s3Key: v.string(),
-  },
-  returns: v.union(
-    v.object({
-      _id: v.id("files"),
-      storage_id: v.optional(v.id("_storage")),
-      s3_key: v.optional(v.string()),
-      user_id: v.string(),
-      name: v.string(),
-      media_type: v.string(),
-      size: v.number(),
-      file_token_size: v.number(),
-      content: v.optional(v.string()),
-      is_attached: v.boolean(),
-      _creationTime: v.number(),
-    }),
-    v.null(),
-  ),
-  handler: async (ctx, args) => {
-    return await ctx.db
-      .query("files")
-      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
-      .unique();
-  },
-});
-
 export const createPendingS3File = internalMutation({
   args: {
     s3Key: v.string(),

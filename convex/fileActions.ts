@@ -745,6 +745,36 @@ export const saveFile = action({
     // Token was already consumed at URL generation step
     await checkFileUploadRateLimit(actingUserId, false, { entitlements });
 
+    if (!isUserScopedS3Key(s3Key, actingUserId)) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+        message: `Failed to upload ${args.name}: Upload reservation belongs to another user`,
+      });
+    }
+
+    const cleanupUploadedObject = async (stage: string) => {
+      try {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.s3Cleanup.deleteS3ObjectAction,
+          {
+            s3Key,
+          },
+        );
+      } catch (cleanupError) {
+        convexLogger.warn("file_upload_storage_cleanup_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          stage,
+          s3Key,
+          error:
+            cleanupError instanceof Error
+              ? { name: cleanupError.name, message: cleanupError.message }
+              : String(cleanupError),
+        });
+      }
+    };
+
     let verifiedSize = args.size;
     try {
       verifiedSize = await getS3ObjectSizeBytes(s3Key);
@@ -765,41 +795,6 @@ export const saveFile = action({
       });
     }
 
-    const reservation = await ctx.runQuery(
-      internal.fileStorage.getFileByS3Key,
-      {
-        s3Key,
-      },
-    );
-    if (!reservation) {
-      if (isUserScopedS3Key(s3Key, actingUserId)) {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.s3Cleanup.deleteS3ObjectAction,
-          { s3Key },
-        );
-      }
-      throw new ConvexError({
-        code: "INVALID_UPLOAD_RESERVATION",
-        message: `Failed to upload ${args.name}: Upload reservation not found`,
-      });
-    }
-    if (reservation.user_id !== actingUserId) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED_UPLOAD_RESERVATION",
-        message: `Failed to upload ${args.name}: Upload reservation belongs to another user`,
-      });
-    }
-    if (reservation.size !== verifiedSize) {
-      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
-        s3Key,
-      });
-      throw new ConvexError({
-        code: "FILE_SIZE_MISMATCH",
-        message: `File "${args.name}" uploaded size does not match the reserved upload size`,
-      });
-    }
-
     const uploadLimits = getUploadLimitsForMode(args.mode, {
       surface: "backend",
     });
@@ -817,26 +812,7 @@ export const saveFile = action({
       uploadValidation.code === "FILE_SIZE_EXCEEDED"
     ) {
       // Clean up storage before throwing error
-      try {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.s3Cleanup.deleteS3ObjectAction,
-          {
-            s3Key,
-          },
-        );
-      } catch (deleteError) {
-        convexLogger.warn("file_upload_storage_cleanup_failed", {
-          userId: actingUserId,
-          fileName: args.name,
-          stage: "oversized",
-          s3Key,
-          error:
-            deleteError instanceof Error
-              ? { name: deleteError.name, message: deleteError.message }
-              : String(deleteError),
-        });
-      }
+      await cleanupUploadedObject("oversized");
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
         message: `File "${args.name}" exceeds the maximum file size limit of ${uploadLimits.maxFileSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
@@ -847,26 +823,7 @@ export const saveFile = action({
       !uploadValidation.valid &&
       uploadValidation.code === "IMAGE_SIZE_EXCEEDED"
     ) {
-      try {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.s3Cleanup.deleteS3ObjectAction,
-          {
-            s3Key,
-          },
-        );
-      } catch (deleteError) {
-        convexLogger.warn("file_upload_storage_cleanup_failed", {
-          userId: actingUserId,
-          fileName: args.name,
-          stage: "oversized_image",
-          s3Key,
-          error:
-            deleteError instanceof Error
-              ? { name: deleteError.name, message: deleteError.message }
-              : String(deleteError),
-        });
-      }
+      await cleanupUploadedObject("oversized_image");
       throw new ConvexError({
         code: "IMAGE_SIZE_EXCEEDED",
         message: `Image "${args.name}" exceeds the maximum image size limit of ${uploadLimits.maxProviderImageSizeBytes / (1024 * 1024)} MB. Current size: ${(verifiedSize / (1024 * 1024)).toFixed(2)} MB`,
@@ -962,24 +919,7 @@ export const saveFile = action({
             errorMessage: errorData?.message,
           });
         }
-        try {
-          await ctx.scheduler.runAfter(
-            0,
-            internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key },
-          );
-        } catch (cleanupError) {
-          convexLogger.warn("file_upload_storage_cleanup_failed", {
-            userId: actingUserId,
-            fileName: args.name,
-            stage: "post_processing_error",
-            s3Key,
-            error:
-              cleanupError instanceof Error
-                ? { name: cleanupError.name, message: cleanupError.message }
-                : String(cleanupError),
-          });
-        }
+        await cleanupUploadedObject("post_processing_error");
         throw error; // Re-throw ConvexError as-is
       }
 
@@ -997,24 +937,7 @@ export const saveFile = action({
           errorMessage: error.message,
         });
         // Best-effort cleanup before throwing standardized error
-        try {
-          await ctx.scheduler.runAfter(
-            0,
-            internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key },
-          );
-        } catch (cleanupError) {
-          convexLogger.warn("file_upload_storage_cleanup_failed", {
-            userId: actingUserId,
-            fileName: args.name,
-            stage: "post_processing_error",
-            s3Key,
-            error:
-              cleanupError instanceof Error
-                ? { name: cleanupError.name, message: cleanupError.message }
-                : String(cleanupError),
-          });
-        }
+        await cleanupUploadedObject("post_processing_error");
         // Convert to ConvexError for consistent error handling
         throw new ConvexError({
           code: "FILE_TOKEN_LIMIT_EXCEEDED",
@@ -1035,26 +958,7 @@ export const saveFile = action({
             : String(error),
       });
       // Best-effort cleanup before throwing standardized error
-      try {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.s3Cleanup.deleteS3ObjectAction,
-          {
-            s3Key,
-          },
-        );
-      } catch (cleanupError) {
-        convexLogger.warn("file_upload_storage_cleanup_failed", {
-          userId: actingUserId,
-          fileName: args.name,
-          stage: "post_unexpected_error",
-          s3Key,
-          error:
-            cleanupError instanceof Error
-              ? { name: cleanupError.name, message: cleanupError.message }
-              : String(cleanupError),
-        });
-      }
+      await cleanupUploadedObject("post_unexpected_error");
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       throw new ConvexError({
         code: "FILE_PROCESSING_FAILED",
@@ -1063,15 +967,31 @@ export const saveFile = action({
     }
 
     // Use internal mutation to save to database
-    const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
-      s3Key,
-      userId: actingUserId,
-      name: args.name,
-      mediaType: args.mediaType,
-      size: verifiedSize,
-      fileTokenSize: tokenSize,
-      content: fileContent,
-    })) as Id<"files">;
+    let fileId: Id<"files">;
+    try {
+      fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
+        s3Key,
+        userId: actingUserId,
+        name: args.name,
+        mediaType: args.mediaType,
+        size: verifiedSize,
+        fileTokenSize: tokenSize,
+        content: fileContent,
+      })) as Id<"files">;
+    } catch (error) {
+      const errorCode =
+        error instanceof ConvexError
+          ? (error.data as { code?: string } | undefined)?.code
+          : undefined;
+      if (
+        errorCode === "MISSING_UPLOAD_RESERVATION" ||
+        errorCode === "FILE_SIZE_MISMATCH" ||
+        errorCode === "UNAUTHORIZED"
+      ) {
+        await cleanupUploadedObject("metadata_save_failed");
+      }
+      throw error;
+    }
 
     // Return the file URL, database file ID, and token count
     return {
