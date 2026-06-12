@@ -10,7 +10,7 @@ type CostTier = "low" | "medium" | "high" | "very-high";
 
 // Cost tier per HackerAI tier id. Standard is mode-aware: in ask it routes
 // through the cheap DeepSeek V4 Flash text path (low), in agent it runs on
-// Kimi K2.6 (medium).
+// Kimi K2.7 Code (medium).
 export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
   switch (modelId) {
     case "hackerai-standard":

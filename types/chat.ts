@@ -29,7 +29,7 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
  * shapes:
  *   1. Underlying-model ids from before the HackerAI tier rebrand.
  *   2. `hackerai-lite` from the short-lived first naming of the entry tier
- *      (renamed to `hackerai-standard` because Lite mis-described Kimi K2.6).
+ *      (renamed to `hackerai-standard` because Lite mis-described the entry tier).
  * Used by `coerceSelectedModel` to migrate values on read.
  */
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {

@@ -390,7 +390,7 @@ describe("file tool image view", () => {
       });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.6" }),
+      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
     );
 
     const result = await runTool(tool, {

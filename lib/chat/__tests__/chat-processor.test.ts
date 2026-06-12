@@ -213,11 +213,11 @@ describe("selectModel", () => {
     });
   });
 
-  // Agent mode — Lite resolves to Kimi instead of Gemini
+  // Agent mode — Standard resolves to Kimi instead of Gemini
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to Kimi K2.6 in agent mode", () => {
+    it("should map HackerAI Standard to Kimi K2.7 Code in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
-        "model-kimi-k2.6",
+        "model-kimi-k2.7-code",
       );
     });
 
