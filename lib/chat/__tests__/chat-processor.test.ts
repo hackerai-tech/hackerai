@@ -182,16 +182,22 @@ describe("selectModel", () => {
     });
   });
 
-  // Tier override — Pro/Max map to the same provider key in both modes
+  // Tier override — Pro is mode/content-aware; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to Sonnet 4.6 in ask mode", () => {
+    it("should map HackerAI Pro to DeepSeek V4 Pro for text-only ask mode", () => {
       expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-sonnet-4.6",
+        "model-deepseek-v4-pro",
       );
     });
 
-    it("should map HackerAI Pro to Sonnet 4.6 for team users", () => {
+    it("should map HackerAI Pro to DeepSeek V4 Pro for team users", () => {
       expect(selectModel("ask", "team", "hackerai-pro")).toBe(
+        "model-deepseek-v4-pro",
+      );
+    });
+
+    it("should keep HackerAI Pro on Sonnet 4.6 when an image/PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-pro", true)).toBe(
         "model-sonnet-4.6",
       );
     });

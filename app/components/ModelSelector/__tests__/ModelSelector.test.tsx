@@ -69,9 +69,20 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("warns before selecting HackerAI Pro on paid plans", () => {
+  it("selects HackerAI Pro in ask mode without the high-cost warning", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+
+    expect(onChange).toHaveBeenCalledWith("hackerai-pro");
+    expect(screen.queryByTestId("high-cost-model-warning")).toBeNull();
+  });
+
+  it("warns before selecting HackerAI Pro in agent mode on paid plans", () => {
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
@@ -105,7 +116,7 @@ describe("ModelSelector", () => {
   it("uses team-specific warning copy for team users", () => {
     mockSubscription = "team";
     const onChange = jest.fn();
-    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));

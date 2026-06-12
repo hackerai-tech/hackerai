@@ -23,7 +23,8 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy: "Claude Sonnet 4.6",
+    poweredBy:
+      "DeepSeek V4 Pro · switches to Claude Sonnet 4.6 for images & PDFs",
   },
   {
     id: "hackerai-max",

@@ -377,6 +377,15 @@ describe("token-bucket", () => {
       );
     });
 
+    it("should use DeepSeek V4 Pro pricing ($0.435/$0.87)", () => {
+      expect(
+        calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro"),
+      ).toBe(5655);
+      expect(
+        calculateTokenCost(1_000_000, "output", "model-deepseek-v4-pro"),
+      ).toBe(11310);
+    });
+
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens

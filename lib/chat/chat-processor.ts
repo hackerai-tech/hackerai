@@ -34,12 +34,14 @@ export const getMaxStepsForUser = (
 };
 
 /**
- * Selects the appropriate model based on mode and subscription
+ * Selects the appropriate model based on mode and subscription.
  * @param mode - Chat mode (ask or agent)
  * @param hasImageOrPdf - Whether any message has an image or PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Flash
  *   (text-only, much cheaper); when an image or PDF is present we promote to
- *   Gemini 3 Flash so vision/document parts are actually understood.
+ *   Gemini 3 Flash so vision/document parts are actually understood. Paid ASK
+ *   Pro mirrors that shape with DeepSeek V4 Pro for text and Sonnet 4.6 for
+ *   image/PDF prompts.
  * @returns Model name to use
  */
 export function selectModel(
@@ -75,6 +77,10 @@ export function selectModel(
   // auto-router label.
   if (selectedModel === "hackerai-standard" && !isAgent) {
     return askUsesDeepSeek ? "model-deepseek-v4-flash" : "model-gemini-3-flash";
+  }
+
+  if (selectedModel === "hackerai-pro" && !isAgent) {
+    return hasImageOrPdf ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
   }
 
   const providerKey = resolveTierToProviderKey(selectedModel, mode);

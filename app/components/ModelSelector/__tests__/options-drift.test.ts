@@ -40,13 +40,16 @@ describe("ModelSelector tier ↔ provider drift", () => {
     );
   });
 
-  it("HackerAI Pro and Max resolve to the same provider in both modes", () => {
+  it("HackerAI Pro resolves to DeepSeek in ask mode and Sonnet in agent mode", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-sonnet-4.6",
+      "model-deepseek-v4-pro",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
       "model-sonnet-4.6",
     );
+  });
+
+  it("HackerAI Max resolves to the same provider in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
       "model-opus-4.6",
     );

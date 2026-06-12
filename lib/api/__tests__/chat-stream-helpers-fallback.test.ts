@@ -128,6 +128,19 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-pro",
+      "ask",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [GEMINI_SLUG],
+      user: "user-1",
+    });
+  });
+
   it("falls back from Gemini to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({

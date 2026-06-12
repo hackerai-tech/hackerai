@@ -69,9 +69,10 @@ const AUTO_MODEL_DESCRIPTION =
 const shouldWarnForPaidHighCostModel = (
   subscription: SubscriptionTier,
   model: SelectedModel,
+  mode: ChatMode,
 ): boolean =>
   subscription !== "free" &&
-  (model === "hackerai-pro" || model === "hackerai-max");
+  (model === "hackerai-max" || (model === "hackerai-pro" && isAgentMode(mode)));
 
 const AutoOptionButton = ({
   isSelected,
@@ -375,7 +376,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     }
 
     if (
-      shouldWarnForPaidHighCostModel(subscription, option.id) &&
+      shouldWarnForPaidHighCostModel(subscription, option.id, mode) &&
       !isHighCostModelUsageNoticeDismissed()
     ) {
       setOpen(false);
