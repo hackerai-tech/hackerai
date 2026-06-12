@@ -7,6 +7,7 @@ import {
 import { ConvexError, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import type { Id } from "./_generated/dataModel";
 
 const POINTS_PER_DOLLAR = 10_000;
 
@@ -37,13 +38,35 @@ const QUALIFYING_TIERS = new Set<PaidTier>([
 ]);
 
 const SUBSCRIPTION_ENDED_REASON = "subscription_ended";
+const INELIGIBLE_REFERRER_REASON = "ineligible_referrer_tier";
 
 const isReferralCodeUsable = (referralCode: {
+  status: "active" | "deactivated";
+  referrer_subscription_tier?: ReferrerTier;
+}) =>
+  referralCode.status === "active" &&
+  referralCode.referrer_subscription_tier != null &&
+  QUALIFYING_TIERS.has(referralCode.referrer_subscription_tier as PaidTier);
+
+const isReferralCodeReactivateable = (referralCode: {
   status: "active" | "deactivated";
   deactivated_reason?: string;
 }) =>
   referralCode.status === "active" ||
-  referralCode.deactivated_reason === SUBSCRIPTION_ENDED_REASON;
+  referralCode.deactivated_reason === SUBSCRIPTION_ENDED_REASON ||
+  referralCode.deactivated_reason === INELIGIBLE_REFERRER_REASON;
+
+const referralCodeBlockedReason = (
+  referralCode: {
+    status: "active" | "deactivated";
+    referrer_subscription_tier?: ReferrerTier;
+  } | null,
+) => {
+  if (!referralCode || referralCode.status !== "active") {
+    return "invalid_or_inactive_referral_code";
+  }
+  return INELIGIBLE_REFERRER_REASON;
+};
 
 const rewardTierForReferralCode = (
   referralCode: {
@@ -53,10 +76,23 @@ const rewardTierForReferralCode = (
   },
   fallback?: ReferrerTier,
 ): ReferrerTier | undefined =>
-  referralCode.status === "deactivated" &&
-  referralCode.deactivated_reason === SUBSCRIPTION_ENDED_REASON
-    ? "free"
-    : (referralCode.referrer_subscription_tier ?? fallback);
+  referralCode.referrer_subscription_tier ?? fallback;
+
+const deactivateReferralCode = async (
+  ctx: MutationCtx,
+  referralCodeId: Id<"referral_codes">,
+  now: number,
+  reason: string,
+) => {
+  await ctx.db.patch(referralCodeId, {
+    status: "deactivated",
+    deactivated_at: now,
+    deactivated_reason: reason,
+    referrer_subscription_tier: "free",
+    referrer_organization_id: undefined,
+    updated_at: now,
+  });
+};
 
 const dollarsToPoints = (dollars: number): number =>
   Math.round(dollars * POINTS_PER_DOLLAR);
@@ -308,6 +344,9 @@ export const getOrCreateReferralCode = mutation({
     validateServiceKey(args.serviceKey);
 
     const now = Date.now();
+    const isEligibleReferrer = QUALIFYING_TIERS.has(
+      args.subscriptionTier as PaidTier,
+    );
     const organizationId =
       args.subscriptionTier === "team" ? args.organizationId : undefined;
     const existingForUser = await ctx.db
@@ -316,12 +355,23 @@ export const getOrCreateReferralCode = mutation({
       .first();
 
     if (existingForUser) {
-      const canBeActive = isReferralCodeUsable(existingForUser);
+      const canBeActive =
+        isEligibleReferrer && isReferralCodeReactivateable(existingForUser);
 
       await ctx.db.patch(existingForUser._id, {
         status: canBeActive ? "active" : existingForUser.status,
         referrer_subscription_tier: args.subscriptionTier,
         referrer_organization_id: organizationId,
+        ...(canBeActive && {
+          deactivated_at: undefined,
+          deactivated_reason: undefined,
+        }),
+        ...(!isEligibleReferrer && {
+          status: "deactivated" as const,
+          deactivated_at: now,
+          deactivated_reason: INELIGIBLE_REFERRER_REASON,
+          referrer_organization_id: undefined,
+        }),
         updated_at: now,
       });
       return {
@@ -330,6 +380,13 @@ export const getOrCreateReferralCode = mutation({
         referrerSubscriptionTier: args.subscriptionTier,
         ...(await getReferralStats(ctx, args.userId)),
       };
+    }
+
+    if (!isEligibleReferrer) {
+      throw new ConvexError({
+        code: "REFERRAL_REFERRER_INELIGIBLE",
+        message: "Referral links are only available to paid customers.",
+      });
     }
 
     const existingForCode = await ctx.db
@@ -488,12 +545,15 @@ export const setReferralCodesPaidEligibility = mutation({
       if (!referralCode) continue;
 
       if (args.active) {
-        const canReactivate = isReferralCodeUsable(referralCode);
+        const subscriptionTier =
+          args.subscriptionTier ?? referralCode.referrer_subscription_tier;
+        const canReactivate =
+          subscriptionTier != null &&
+          QUALIFYING_TIERS.has(subscriptionTier as PaidTier) &&
+          isReferralCodeReactivateable(referralCode);
 
         if (!canReactivate) continue;
 
-        const subscriptionTier =
-          args.subscriptionTier ?? referralCode.referrer_subscription_tier;
         const organizationId =
           subscriptionTier === "team"
             ? (args.organizationId ?? referralCode.referrer_organization_id)
@@ -503,6 +563,8 @@ export const setReferralCodesPaidEligibility = mutation({
           status: "active",
           referrer_subscription_tier: subscriptionTier,
           referrer_organization_id: organizationId,
+          deactivated_at: undefined,
+          deactivated_reason: undefined,
           updated_at: now,
         });
         updated += 1;
@@ -511,11 +573,12 @@ export const setReferralCodesPaidEligibility = mutation({
 
       if (referralCode.status !== "active") continue;
 
-      await ctx.db.patch(referralCode._id, {
-        referrer_subscription_tier: "free",
-        referrer_organization_id: undefined,
-        updated_at: now,
-      });
+      await deactivateReferralCode(
+        ctx,
+        referralCode._id,
+        now,
+        SUBSCRIPTION_ENDED_REASON,
+      );
       updated += 1;
     }
 
@@ -592,18 +655,22 @@ export const attributeReferredSignup = mutation({
       .first();
 
     if (!referralCode || !isReferralCodeUsable(referralCode)) {
+      const reason = referralCodeBlockedReason(referralCode);
       await insertRewardLog(ctx, {
-        idempotencyKey: `referral_signup_blocked:${args.referredUserId}:${args.referralCode}`,
+        idempotencyKey: `referral_signup_blocked:${args.referredUserId}:${args.referralCode}:${reason}`,
         rewardType: "referred_signup",
         status: "withheld",
         amountDollars: 0,
         referredUserId: args.referredUserId,
         referralCode: args.referralCode,
-        reason: "invalid_or_inactive_referral_code",
+        referrerUserId: referralCode?.user_id,
+        reason,
       });
       return {
         status: "not_found" as const,
-        reason: "invalid_or_inactive_referral_code",
+        reason,
+        referrerUserId: referralCode?.user_id,
+        referrerSubscriptionTier: referralCode?.referrer_subscription_tier,
         starterBonusAwarded: false,
         starterBonusEligible: false,
         starterBonusUnits: 0,
@@ -611,17 +678,6 @@ export const attributeReferredSignup = mutation({
     }
 
     const referrerSubscriptionTier = rewardTierForReferralCode(referralCode);
-    if (
-      referralCode.status === "deactivated" &&
-      referralCode.deactivated_reason === SUBSCRIPTION_ENDED_REASON
-    ) {
-      await ctx.db.patch(referralCode._id, {
-        status: "active",
-        referrer_subscription_tier: "free",
-        referrer_organization_id: undefined,
-        updated_at: now,
-      });
-    }
 
     if (referralCode.user_id === args.referredUserId) {
       await insertRewardLog(ctx, {
@@ -973,13 +1029,14 @@ export const awardConversionReward = mutation({
       .first();
 
     if (!referralCode || !isReferralCodeUsable(referralCode)) {
+      const reason = referralCodeBlockedReason(referralCode);
       await ctx.db.patch(attribution._id, {
         conversion_reward_status: "withheld",
-        withheld_reason: "inactive_referral_code",
+        withheld_reason: reason,
         updated_at: Date.now(),
       });
       await insertRewardLog(ctx, {
-        idempotencyKey: `referral_conversion_withheld:${attribution._id}:inactive_referral_code`,
+        idempotencyKey: `referral_conversion_withheld:${attribution._id}:${reason}`,
         rewardType: "referrer_conversion",
         status: "withheld",
         amountDollars: 0,
@@ -990,11 +1047,11 @@ export const awardConversionReward = mutation({
         stripeCustomerId: args.stripeCustomerId,
         stripeSubscriptionId: args.stripeSubscriptionId,
         stripeInvoiceId: args.stripeInvoiceId,
-        reason: "inactive_referral_code",
+        reason,
       });
       return {
         status: "withheld" as const,
-        reason: "inactive_referral_code",
+        reason,
         referrerUserId: attribution.referrer_user_id,
         referredUserId: attribution.referred_user_id,
         referralCode: attribution.referral_code,
@@ -1017,18 +1074,6 @@ export const awardConversionReward = mutation({
           attribution.referrer_organization_id)
         : undefined;
 
-    if (
-      referralCode.status === "deactivated" &&
-      referralCode.deactivated_reason === SUBSCRIPTION_ENDED_REASON
-    ) {
-      await ctx.db.patch(referralCode._id, {
-        status: "active",
-        referrer_subscription_tier: "free",
-        referrer_organization_id: undefined,
-        updated_at: now,
-      });
-    }
-
     const reward = await grantReward(ctx, {
       idempotencyKey: `referral_conversion:${attribution._id}`,
       rewardType: "referrer_conversion",
@@ -1039,9 +1084,7 @@ export const awardConversionReward = mutation({
       referralCode: attribution.referral_code,
       subscriptionTier: referrerSubscriptionTier,
       organizationId: referrerOrganizationId,
-      activatePersonalCreditsForPaidUse:
-        attribution.referrer_subscription_tier === "free" ||
-        referrerSubscriptionTier === "free",
+      activatePersonalCreditsForPaidUse: false,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripeCustomerId: args.stripeCustomerId,
       stripeSubscriptionId: args.stripeSubscriptionId,

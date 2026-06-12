@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import {
+  classifyProviderOverflowError,
   extractErrorDetails,
   extractRetryAttempts,
   getUserFriendlyProviderError,
@@ -423,5 +424,44 @@ describe("provider error classification", () => {
     });
 
     expect(getProviderErrorCategory(extractErrorDetails(err))).toBe("timeout");
+  });
+
+  it("classifies provider context overflow errors", () => {
+    const err = apiCallError({
+      statusCode: 400,
+      data: {
+        error: {
+          message:
+            "context_length_exceeded: maximum context length is 128000 tokens",
+        },
+      },
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("context");
+    expect(getUserFriendlyProviderError(err)).toContain("context limit");
+  });
+
+  it("classifies provider media overflow errors", () => {
+    const err = apiCallError({
+      statusCode: 413,
+      responseBody: JSON.stringify({
+        error: {
+          message: "image file too large; reduce the attachment size",
+        },
+      }),
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("media");
+    expect(getUserFriendlyProviderError(err)).toContain("attached media");
+  });
+
+  it("does not classify generic payload overflow as media-only", () => {
+    const err = apiCallError({
+      statusCode: 413,
+      message: "payload too large",
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("context");
+    expect(getUserFriendlyProviderError(err)).toContain("context limit");
   });
 });

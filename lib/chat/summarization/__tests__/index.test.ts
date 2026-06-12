@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
-import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
-import type { Todo } from "@/types";
+import type {
+  UIMessage,
+  UIMessageStreamWriter,
+  LanguageModel,
+  ModelMessage,
+  ToolSet,
+} from "ai";
+import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import {
-  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  getSummarizationThresholdTokens,
+  SUMMARIZATION_RESERVED_MAX_TOKENS,
+  SUMMARY_PROMPT_VERSION,
   SUMMARY_TODO_BLOCK_MAX_TOKENS,
   SUMMARY_TODO_MAX_ITEMS,
 } from "../constants";
@@ -27,12 +35,15 @@ jest.doMock("@/lib/ai/providers", () => ({
 
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
-const { isSummaryMessage, extractSummaryText, buildSummaryMessage } =
-  require("../helpers") as typeof import("../helpers");
+const {
+  isSummaryMessage,
+  extractSummaryText,
+  buildSummaryMessage,
+  boundModelMessagesForSummarization,
+  estimateSummaryInputTokens,
+} = require("../helpers") as typeof import("../helpers");
 
-const THRESHOLD = Math.floor(
-  MAX_TOKENS_PAID * SUMMARIZATION_THRESHOLD_PERCENTAGE,
-);
+const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
 const TOKENS_PER_ABOVE_MSG = Math.ceil(THRESHOLD / 4) + 500;
 
@@ -69,7 +80,48 @@ const fourMessagesAboveThreshold: UIMessage[] = [
 const createMockWriter = (): UIMessageStreamWriter =>
   ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
 
-const mockLanguageModel = {} as LanguageModel;
+const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
+
+const checkAndSummarizeForTest = (
+  uiMessages: UIMessage[],
+  subscription: SubscriptionTier,
+  languageModel: LanguageModel,
+  mode: ChatMode,
+  writer: UIMessageStreamWriter,
+  chatId: string | null,
+  fileTokens: Record<string, number> = {},
+  todos: Todo[] = [],
+  abortSignal?: AbortSignal,
+  ensureSandbox?: () => Promise<any>,
+  systemPromptTokens: number = 0,
+  providerInputTokens: number = 0,
+  chatSystemPrompt: string = "",
+  tools?: ToolSet,
+  providerOptions?: Record<string, Record<string, unknown>>,
+  modelMessages?: ModelMessage[],
+  transcriptMessages?: UIMessage[],
+  maxTokensOverride?: number,
+) =>
+  checkAndSummarizeIfNeeded({
+    uiMessages,
+    subscription,
+    languageModel,
+    mode,
+    writer,
+    chatId,
+    fileTokens: fileTokens as any,
+    todos,
+    abortSignal,
+    ensureSandbox,
+    systemPromptTokens,
+    providerInputTokens,
+    chatSystemPrompt,
+    tools,
+    providerOptions,
+    modelMessages,
+    transcriptMessages,
+    maxTokensOverride,
+  });
 
 /**
  * Extract all `[msg-N]` IDs from every generateText call's messages.
@@ -109,10 +161,17 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockWriter = createMockWriter();
   });
 
+  it("should cap reserved summarization headroom at 20k tokens", () => {
+    expect(getSummarizationThresholdTokens(128_000)).toBe(115_200);
+    expect(getSummarizationThresholdTokens(400_000)).toBe(
+      400_000 - SUMMARIZATION_RESERVED_MAX_TOKENS,
+    );
+  });
+
   it("should skip summarization when message count is insufficient", async () => {
     const messages = [createMessage("msg-1", "user")];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       messages,
       "free",
       mockLanguageModel,
@@ -135,7 +194,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should skip summarization when tokens are below threshold", async () => {
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessages,
       "free",
       mockLanguageModel,
@@ -158,7 +217,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should summarize and return correct structure when threshold exceeded", async () => {
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -189,7 +248,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should use agent prompt when mode is agent", async () => {
     mockGenerateText.mockResolvedValue({ text: "Agent summary" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -221,10 +280,185 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(lastContent).toContain("security agent");
   });
 
+  it("should compact huge tool outputs before sending modelMessages to the summarizer", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    const rawToolOutput = Array.from(
+      { length: 12_000 },
+      (_, i) => `unique-tool-line-${i}: ${"x".repeat(32)}`,
+    ).join("\n");
+    const modelMessages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "tc-huge",
+            toolName: "run_terminal_cmd",
+            input: { command: "cat huge.log" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-huge",
+            toolName: "run_terminal_cmd",
+            output: {
+              type: "text",
+              value: rawToolOutput,
+            },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      modelMessages,
+    );
+
+    const callMessages = mockGenerateText.mock.calls[0][0].messages as Array<{
+      role: string;
+      content: Array<{
+        type: string;
+        output?: { type: string; value: string };
+      }>;
+    }>;
+    const toolMessage = callMessages.find((message) => message.role === "tool");
+    const output = toolMessage?.content[0]?.output;
+
+    expect(output).toEqual({
+      type: "text",
+      value: expect.stringContaining("run_terminal_cmd output preview"),
+    });
+    expect(output?.value.length).toBeLessThan(rawToolOutput.length);
+    expect(output?.value).not.toContain("unique-tool-line-6000");
+    expect(JSON.stringify(callMessages)).not.toContain(rawToolOutput);
+  });
+
+  it("should strip media-ish payloads from summarization modelMessages", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    const dataUri = `data:image/png;base64,${"a".repeat(10_000)}`;
+    const rawSnapshot = `dom-node-${"b".repeat(10_000)}`;
+    const modelMessages = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "upload.png",
+            data: dataUri,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "tc-media",
+            toolName: "open_url",
+            input: { url: "https://example.test" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-media",
+            toolName: "open_url",
+            output: {
+              type: "json",
+              value: {
+                screenshot: {
+                  mime: "image/png",
+                  filename: "page.png",
+                  url: dataUri,
+                },
+                rawSnapshot,
+                title: "Example page",
+              },
+            },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      modelMessages,
+    );
+
+    const serializedMessages = JSON.stringify(
+      mockGenerateText.mock.calls[0][0].messages,
+    );
+
+    expect(serializedMessages).toContain("[Attached image/png: page.png]");
+    expect(serializedMessages).toContain("[Attached image/png: upload.png]");
+    expect(serializedMessages).toContain("[rawSnapshot omitted for summary]");
+    expect(serializedMessages).toContain("media payloads omitted");
+    expect(serializedMessages).not.toContain(dataUri);
+    expect(serializedMessages).not.toContain(rawSnapshot);
+  });
+
+  it("should bound total summarization modelMessages input", () => {
+    const hugeText = `keep-start ${"huge-text ".repeat(20_000)} keep-end`;
+    const messages = [
+      {
+        role: "user",
+        content: hugeText,
+      },
+    ] as unknown as ModelMessage[];
+
+    const bounded = boundModelMessagesForSummarization(messages, {
+      maxInputTokens: 512,
+    });
+    const serializedMessages = JSON.stringify(bounded);
+
+    expect(estimateSummaryInputTokens(bounded)).toBeLessThanOrEqual(512);
+    expect(serializedMessages).toContain("Summary input shortened");
+    expect(serializedMessages).not.toContain(hugeText);
+  });
+
   it("should persist summary when chatId is provided", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -240,17 +474,28 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
-    expect(mockSaveChatSummary).toHaveBeenCalledWith({
-      chatId: "chat-123",
-      summaryText: "Summary",
-      summaryUpToMessageId: "msg-4",
-    });
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-123",
+        summaryText: "Summary",
+        summaryUpToMessageId: "msg-4",
+        metadata: expect.objectContaining({
+          reason: "token_threshold",
+          promptVersion: SUMMARY_PROMPT_VERSION,
+          model: "test-model",
+          status: "completed",
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCompactedInputTokens: expect.any(Number),
+        }),
+      }),
+    );
   });
 
   it("should skip database persistence for temporary chats", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -272,7 +517,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should write summarization completed even when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -304,7 +549,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -341,7 +586,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       { id: "3", content: "Enumerate subdomains", status: "completed" },
     ];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -426,7 +671,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
 
     await expect(
-      checkAndSummarizeIfNeeded(
+      checkAndSummarizeForTest(
         fourMessagesAboveThreshold,
         "free",
         mockLanguageModel,
@@ -464,7 +709,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     const abortController = new AbortController();
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -490,7 +735,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should not include todo block in summary when todos are empty", async () => {
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -536,7 +781,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       [summaryMsg, ...realMessages],
       "free",
       mockLanguageModel,
@@ -575,7 +820,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     ];
 
     const input = [summaryMsg, ...realMessages];
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       input,
       "free",
       mockLanguageModel,
@@ -618,7 +863,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    await checkAndSummarizeIfNeeded(
+    await checkAndSummarizeForTest(
       [summaryMsg, ...realMessages],
       "free",
       mockLanguageModel,
@@ -667,7 +912,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
     mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
 
-    const result1 = await checkAndSummarizeIfNeeded(
+    const result1 = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
@@ -695,7 +940,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     const secondInput = [...result1.summarizedMessages, ...newMessages];
 
-    const result2 = await checkAndSummarizeIfNeeded(
+    const result2 = await checkAndSummarizeForTest(
       secondInput,
       "free",
       mockLanguageModel,
@@ -778,7 +1023,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result1 = await checkAndSummarizeIfNeeded(
+    const result1 = await checkAndSummarizeForTest(
       round1Messages,
       "free",
       mockLanguageModel,
@@ -804,7 +1049,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result2 = await checkAndSummarizeIfNeeded(
+    const result2 = await checkAndSummarizeForTest(
       round2Input,
       "free",
       mockLanguageModel,
@@ -830,7 +1075,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-12", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
-    const result3 = await checkAndSummarizeIfNeeded(
+    const result3 = await checkAndSummarizeForTest(
       round3Input,
       "free",
       mockLanguageModel,
@@ -859,7 +1104,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should handle normal first-time summarization unchanged", async () => {
     mockGenerateText.mockResolvedValue({ text: "First summary" });
 
-    const result = await checkAndSummarizeIfNeeded(
+    const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,

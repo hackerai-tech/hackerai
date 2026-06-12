@@ -267,7 +267,7 @@ describe("referral reward notifications", () => {
     expect(queryCalls).not.toContain("user_customization");
   });
 
-  it("awards personal credits to free referrers after referred users convert", async () => {
+  it("withholds conversion rewards from free referrer codes", async () => {
     const { awardConversionReward } = await import("../referrals");
     const { ctx, tables } = makeMockCtx({
       referral_attributions: [
@@ -308,24 +308,25 @@ describe("referral reward notifications", () => {
       tier: "pro",
     });
 
-    expect(result.status).toBe("awarded");
-    expect(tables.extra_usage).toMatchObject([
-      {
-        user_id: USER_ID,
-        balance_points: 100_000,
-        auto_reload_enabled: false,
-      },
+    expect(result.status).toBe("withheld");
+    expect(result.reason).toBe("ineligible_referrer_tier");
+    expect(tables.referral_attributions[0]).toMatchObject({
+      conversion_reward_status: "withheld",
+      withheld_reason: "ineligible_referrer_tier",
+    });
+    expect(tables.referral_rewards).toMatchObject([
+      expect.objectContaining({
+        reward_type: "referrer_conversion",
+        status: "withheld",
+        reason: "ineligible_referrer_tier",
+      }),
     ]);
-    expect(tables.user_customization).toMatchObject([
-      {
-        user_id: USER_ID,
-        extra_usage_enabled: true,
-      },
-    ]);
+    expect(tables.extra_usage).toEqual([]);
+    expect(tables.user_customization).toEqual([]);
     expect(tables.team_extra_usage).toEqual([]);
   });
 
-  it("activates earned personal credits when an originally free referrer upgrades before conversion", async () => {
+  it("awards paid credits when an originally free referrer upgrades before conversion", async () => {
     const { awardConversionReward } = await import("../referrals");
     const { ctx, tables } = makeMockCtx({
       referral_attributions: [
@@ -380,9 +381,8 @@ describe("referral reward notifications", () => {
       {
         user_id: USER_ID,
         balance_points: 100_000,
-        auto_reload_enabled: false,
       },
     ]);
-    expect(tables.user_customization[0].extra_usage_enabled).toBe(true);
+    expect(tables.user_customization[0].extra_usage_enabled).toBe(false);
   });
 });

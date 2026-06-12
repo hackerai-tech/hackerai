@@ -30,6 +30,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
+  "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
   "fallback-gemini-3.5-flash": { input: 1.5, output: 9.0 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // "agent-model" and "model-kimi-k2.7-code" route to

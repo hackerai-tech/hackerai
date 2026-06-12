@@ -351,26 +351,29 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  transcriptMessages?: UIMessage[];
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
-    await checkAndSummarizeIfNeeded(
-      options.messages,
-      options.subscription,
-      options.languageModel,
-      options.mode,
-      options.writer,
-      options.chatId,
-      options.fileTokens,
-      options.todos,
-      options.abortSignal,
-      options.ensureSandbox,
-      options.systemPromptTokens,
-      options.providerInputTokens ?? 0,
-      options.chatSystemPrompt,
-      options.tools,
-      options.providerOptions,
-      options.modelMessages,
-    );
+    await checkAndSummarizeIfNeeded({
+      uiMessages: options.messages,
+      subscription: options.subscription,
+      languageModel: options.languageModel,
+      mode: options.mode,
+      writer: options.writer,
+      chatId: options.chatId,
+      fileTokens: options.fileTokens,
+      todos: options.todos,
+      abortSignal: options.abortSignal,
+      ensureSandbox: options.ensureSandbox,
+      systemPromptTokens: options.systemPromptTokens,
+      providerInputTokens: options.providerInputTokens ?? 0,
+      chatSystemPrompt: options.chatSystemPrompt,
+      tools: options.tools,
+      providerOptions: options.providerOptions,
+      modelMessages: options.modelMessages,
+      transcriptMessages: options.transcriptMessages,
+      maxTokensOverride: options.ctxMaxTokens,
+    });
 
   if (!needsSummarization) {
     return { needsSummarization: false };
@@ -469,6 +472,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
   "model-deepseek-v4-flash": ["fallback-ask-model"],
+  "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-grok-4.3"],
   "agent-model": ["fallback-grok-4.3"],
   "model-gemini-3-flash": ["fallback-grok-4.3"],

@@ -233,5 +233,6 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
       false,
     );
+    expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
   });
 });

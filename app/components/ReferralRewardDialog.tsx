@@ -115,16 +115,8 @@ export function ReferralRewardDialog({
   };
 
   const referrerReward = program?.referrerRewardDollars ?? 0;
-  const isFreeReferrer = program?.referrerSubscriptionTier === "free";
-  const referrerRewardTitle = isFreeReferrer
-    ? `Earn $${referrerReward} in usage credits`
-    : `Earn $${referrerReward} in extra usage credits`;
-  const referrerRewardCopy = isFreeReferrer ? (
-    <>
-      You get <b>${referrerReward} in usage credits</b> when they upgrade. Use
-      them after you upgrade to a paid plan.
-    </>
-  ) : (
+  const referrerRewardTitle = `Earn $${referrerReward} in extra usage credits`;
+  const referrerRewardCopy = (
     <>
       You get <b>${referrerReward} in extra usage credits</b> when they upgrade
     </>
@@ -164,9 +156,8 @@ export function ReferralRewardDialog({
               <ul className="flex list-disc flex-col gap-2 px-5">
                 <li>
                   <span className="text-muted-foreground text-sm">
-                    This promotion is available to new HackerAI users who sign
-                    up through your link only — we want to share HackerAI with
-                    fresh eyes and grow our community.
+                    Referral links are available to paid HackerAI customers and
+                    apply to new users who sign up through your link only.
                   </span>
                 </li>
                 <li>
@@ -174,12 +165,6 @@ export function ReferralRewardDialog({
                     Rewards are earned once your invitee creates a new account
                     and subscribes to any paid HackerAI plan. No credit is
                     granted for inactive or incomplete referrals.
-                  </span>
-                </li>
-                <li>
-                  <span className="text-muted-foreground text-sm">
-                    If you are on the Free plan, earned usage credits are saved
-                    to your account and become usable after you upgrade.
                   </span>
                 </li>
                 <li>

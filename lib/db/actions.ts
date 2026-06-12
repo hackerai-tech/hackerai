@@ -1093,17 +1093,39 @@ export async function saveChatSummary({
   chatId,
   summaryText,
   summaryUpToMessageId,
+  metadata,
 }: {
   chatId: string;
   summaryText: string;
   summaryUpToMessageId: string;
+  metadata?: {
+    reason?: string;
+    promptVersion?: string;
+    model?: string;
+    status?: string;
+    error?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    cost?: number;
+    estimatedCompactedInputTokens?: number;
+    transcriptPath?: string;
+  };
 }) {
   try {
+    const compactedMetadata = metadata
+      ? Object.fromEntries(
+          Object.entries(metadata).filter(([, value]) => value !== undefined),
+        )
+      : undefined;
+
     await getConvexClient().mutation(api.chats.saveLatestSummary, {
       serviceKey,
       chatId,
       summaryText,
       summaryUpToMessageId,
+      ...(compactedMetadata ? { metadata: compactedMetadata } : {}),
     });
 
     return;

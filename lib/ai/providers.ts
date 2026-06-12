@@ -256,6 +256,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
+    "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
     // Compatibility alias for stale internal references persisted before the
@@ -281,6 +282,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-sonnet-4.6": "May 2025",
   "model-gemini-3-flash": "January 2025",
   "model-deepseek-v4-flash": "May 2025",
+  "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-kimi-k2.7-code": "April 2024",
   "model-kimi-k2.6": "April 2024",
@@ -300,6 +302,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-gemini-3-flash": "Google Gemini 3 Flash",
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
+  "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
@@ -326,7 +329,8 @@ export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash"
+    modelName === "model-deepseek-v4-flash" ||
+    modelName === "model-deepseek-v4-pro"
   );
 }
 
@@ -371,8 +375,8 @@ export function isGeminiModel(modelName: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). The Pro/Max tiers map to the same model in both modes; only
- * Standard differs (Gemini 3 Flash for ask, Kimi K2.7 Code for agent).
+ * key instead). Standard and Pro are mode-aware; Max maps to Opus in both
+ * modes.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
@@ -385,7 +389,7 @@ export function resolveTierToProviderKey(
         ? "model-kimi-k2.7-code"
         : "model-gemini-3-flash";
     case "hackerai-pro":
-      return "model-sonnet-4.6";
+      return isAgentMode(mode) ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
     case "hackerai-max":
       return "model-opus-4.6";
   }
