@@ -1093,6 +1093,22 @@ export const saveLatestSummary = mutation({
     chatId: v.string(),
     summaryText: v.string(),
     summaryUpToMessageId: v.string(),
+    metadata: v.optional(
+      v.object({
+        reason: v.optional(v.string()),
+        promptVersion: v.optional(v.string()),
+        model: v.optional(v.string()),
+        status: v.optional(v.string()),
+        error: v.optional(v.string()),
+        inputTokens: v.optional(v.number()),
+        outputTokens: v.optional(v.number()),
+        cacheReadTokens: v.optional(v.number()),
+        cacheWriteTokens: v.optional(v.number()),
+        cost: v.optional(v.number()),
+        estimatedCompactedInputTokens: v.optional(v.number()),
+        transcriptPath: v.optional(v.string()),
+      }),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1226,11 +1242,30 @@ export const saveLatestSummary = mutation({
           summaryTextSizeKB + previousSummariesTotalSizeKB,
       });
 
+      const summaryMetadata = Object.fromEntries(
+        Object.entries({
+          reason: args.metadata?.reason,
+          prompt_version: args.metadata?.promptVersion,
+          model: args.metadata?.model,
+          status: args.metadata?.status ?? "completed",
+          error: args.metadata?.error,
+          input_tokens: args.metadata?.inputTokens,
+          output_tokens: args.metadata?.outputTokens,
+          cache_read_tokens: args.metadata?.cacheReadTokens,
+          cache_write_tokens: args.metadata?.cacheWriteTokens,
+          cost: args.metadata?.cost,
+          estimated_compacted_input_tokens:
+            args.metadata?.estimatedCompactedInputTokens,
+          transcript_path: args.metadata?.transcriptPath,
+        }).filter(([, value]) => value !== undefined),
+      );
+
       const summaryId = await ctx.db.insert("chat_summaries", {
         chat_id: args.chatId,
         summary_text: args.summaryText,
         summary_up_to_message_id: args.summaryUpToMessageId,
         summary_up_to_message_creation_time: incomingCutoffCreationTime,
+        ...summaryMetadata,
         previous_summaries: previousSummaries,
       });
 

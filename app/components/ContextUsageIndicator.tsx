@@ -10,7 +10,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 
 export interface ContextUsageData {
@@ -38,10 +38,6 @@ function formatTokenCount(n: number): string {
 function formatExactTokenCount(n: number): string {
   return Math.round(n).toLocaleString();
 }
-
-const AUTO_COMPACT_PERCENT = Math.round(
-  SUMMARIZATION_THRESHOLD_PERCENTAGE * 100,
-);
 
 const CIRCLE_SIZE = 16;
 const STROKE_WIDTH = 2.5;
@@ -122,9 +118,8 @@ export const ContextUsageIndicator = ({
   if (usedTokens === 0 || maxTokens === 0) return null;
   const percent = Math.min((usedTokens / maxTokens) * 100, 100);
   const remaining = Math.max(0, 100 - Math.round(percent));
-  const autoCompactTokens = Math.floor(
-    maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE,
-  );
+  const autoCompactTokens = getSummarizationThresholdTokens(maxTokens);
+  const autoCompactPercent = Math.round((autoCompactTokens / maxTokens) * 100);
   const tokensUntilAutoCompact = Math.max(0, autoCompactTokens - usedTokens);
   const dashOffset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
 
@@ -185,7 +180,7 @@ export const ContextUsageIndicator = ({
         </div>
         <div className="text-xs text-muted-foreground pt-1">
           Auto-compact starts at {formatExactTokenCount(autoCompactTokens)}{" "}
-          tokens ({AUTO_COMPACT_PERCENT}%).
+          tokens ({autoCompactPercent}%).
         </div>
         <div className="text-xs text-muted-foreground">
           {tokensUntilAutoCompact > 0

@@ -351,26 +351,29 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  transcriptMessages?: UIMessage[];
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
-    await checkAndSummarizeIfNeeded(
-      options.messages,
-      options.subscription,
-      options.languageModel,
-      options.mode,
-      options.writer,
-      options.chatId,
-      options.fileTokens,
-      options.todos,
-      options.abortSignal,
-      options.ensureSandbox,
-      options.systemPromptTokens,
-      options.providerInputTokens ?? 0,
-      options.chatSystemPrompt,
-      options.tools,
-      options.providerOptions,
-      options.modelMessages,
-    );
+    await checkAndSummarizeIfNeeded({
+      uiMessages: options.messages,
+      subscription: options.subscription,
+      languageModel: options.languageModel,
+      mode: options.mode,
+      writer: options.writer,
+      chatId: options.chatId,
+      fileTokens: options.fileTokens,
+      todos: options.todos,
+      abortSignal: options.abortSignal,
+      ensureSandbox: options.ensureSandbox,
+      systemPromptTokens: options.systemPromptTokens,
+      providerInputTokens: options.providerInputTokens ?? 0,
+      chatSystemPrompt: options.chatSystemPrompt,
+      tools: options.tools,
+      providerOptions: options.providerOptions,
+      modelMessages: options.modelMessages,
+      transcriptMessages: options.transcriptMessages,
+      maxTokensOverride: options.ctxMaxTokens,
+    });
 
   if (!needsSummarization) {
     return { needsSummarization: false };
