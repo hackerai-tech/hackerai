@@ -78,6 +78,21 @@ export const NO_SUMMARIZATION = (
 export const getSummarizationPrompt = (mode: ChatMode): string =>
   mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT;
 
+export const resolveSummarizationMaxTokens = (
+  subscription: SubscriptionTier,
+  maxTokensOverride?: number,
+): number => {
+  if (
+    typeof maxTokensOverride === "number" &&
+    Number.isFinite(maxTokensOverride) &&
+    maxTokensOverride > 0
+  ) {
+    return maxTokensOverride;
+  }
+
+  return getMaxTokensForSubscription(subscription);
+};
+
 export const isAboveTokenThreshold = (
   uiMessages: UIMessage[],
   subscription: SubscriptionTier,
@@ -86,8 +101,10 @@ export const isAboveTokenThreshold = (
   providerInputTokens: number = 0,
   maxTokensOverride?: number,
 ): boolean => {
-  const maxTokens =
-    maxTokensOverride ?? getMaxTokensForSubscription(subscription);
+  const maxTokens = resolveSummarizationMaxTokens(
+    subscription,
+    maxTokensOverride,
+  );
   const threshold = getSummarizationThresholdTokens(maxTokens);
 
   // If the provider already reported input tokens exceeding the threshold,

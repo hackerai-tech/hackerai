@@ -9,7 +9,6 @@ import {
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
@@ -32,6 +31,7 @@ import {
   isSummaryMessage,
   extractSummaryText,
   buildSummaryPersistenceMetadata,
+  resolveSummarizationMaxTokens,
 } from "./helpers";
 import type { SummarizationResult } from "./helpers";
 
@@ -189,8 +189,10 @@ export const checkAndSummarizeIfNeeded = async ({
   }
 
   // Check token threshold on full messages (including summary) to determine need
-  const maxTokens =
-    maxTokensOverride ?? getMaxTokensForSubscription(subscription);
+  const maxTokens = resolveSummarizationMaxTokens(
+    subscription,
+    maxTokensOverride,
+  );
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   if (
     !isAboveTokenThreshold(

@@ -214,6 +214,33 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizedMessages).toBe(fourMessages);
   });
 
+  it("should ignore a zero max token override instead of summarizing every free ask message", async () => {
+    const result = await checkAndSummarizeForTest(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+    );
+
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summarizedMessages).toBe(fourMessages);
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
   it("should summarize and return correct structure when threshold exceeded", async () => {
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
