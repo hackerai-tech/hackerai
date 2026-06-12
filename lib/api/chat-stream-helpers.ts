@@ -472,6 +472,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
   "model-deepseek-v4-flash": ["fallback-ask-model"],
+  "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-grok-4.3"],
   "agent-model": ["fallback-grok-4.3"],
   "model-gemini-3-flash": ["fallback-grok-4.3"],
