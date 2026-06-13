@@ -83,6 +83,17 @@ describe("agent-long-transport — direct UI stream reader", () => {
   test("clearTimeout is called after normal stream end", () => {
     expect(transportSrc).toMatch(/clearTimeout\(\s*timeoutId\s*\)/);
   });
+
+  test("drains post-finish data chunks before closing the browser stream", () => {
+    expect(transportSrc).toMatch(/POST_FINISH_DRAIN_TIMEOUT_MS/);
+    expect(transportSrc).toMatch(/sawFinishChunk/);
+    expect(transportSrc).toMatch(
+      /chunkType\s*===\s*"finish"[\s\S]*sawFinishChunk\s*=\s*true[\s\S]*continue;/,
+    );
+    expect(transportSrc).not.toMatch(
+      /chunkType\s*===\s*"finish"[\s\S]{0,220}break;/,
+    );
+  });
 });
 
 describe("agent-long cancel route — compare-and-clear idempotency", () => {

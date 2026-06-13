@@ -9,6 +9,7 @@ import {
 } from "react";
 import { MessageItem } from "./MessageItem";
 import { MessageErrorState } from "./MessageErrorState";
+import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { AllFilesDialog } from "./AllFilesDialog";
 import Loading from "@/components/ui/loading";
@@ -19,7 +20,6 @@ import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { toast } from "sonner";
-import { WandSparkles } from "lucide-react";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
@@ -348,12 +348,11 @@ export const Messages = ({
             shouldShowLoadingDots) && (
             <div className="flex flex-col items-start">
               {showSummarizationSeparately && (
-                <div className="flex items-center gap-2">
-                  <WandSparkles className="w-4 h-4 text-muted-foreground" />
-                  <Shimmer className="text-sm">
-                    {`${summarizationStatus?.message}...`}
-                  </Shimmer>
-                </div>
+                <SummarizationStatusDivider
+                  status={summarizationStatus?.status}
+                  message={summarizationStatus?.message}
+                  className="mb-1 mt-0"
+                />
               )}
               {uploadStatus?.isUploading && (
                 <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>

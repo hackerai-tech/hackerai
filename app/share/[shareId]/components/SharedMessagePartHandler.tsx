@@ -16,7 +16,6 @@ import {
   FileDown,
   ExternalLink,
   Globe,
-  WandSparkles,
 } from "lucide-react";
 import {
   getNotesIcon,
@@ -25,6 +24,7 @@ import {
   type NotesToolName,
 } from "@/app/components/tools/notes-tool-utils";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
+import { SummarizationStatusDivider } from "@/app/components/SummarizationStatusDivider";
 import ToolBlock from "@/components/ui/tool-block";
 import {
   Reasoning,
@@ -849,13 +849,11 @@ function renderSummarizationPart(part: MessagePart, idx: number) {
   const data = (part as any).data as { status?: string; message?: string };
 
   return (
-    <div key={idx} className="mb-3 flex items-center gap-2">
-      <WandSparkles
-        className="w-4 h-4 text-muted-foreground"
-        aria-hidden="true"
-      />
-      <span className="text-sm text-muted-foreground">{data?.message}</span>
-    </div>
+    <SummarizationStatusDivider
+      key={idx}
+      status={data?.status}
+      message={data?.message}
+    />
   );
 }
 

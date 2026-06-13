@@ -7,13 +7,13 @@ import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
 import { splitWorkedForParts } from "./worked-for-parts";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import {
   WorkedFor,
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { ChevronDown, ChevronUp, FileSearch, WandSparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, FileSearch } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -612,12 +612,11 @@ export const MessageItem = memo(function MessageItem({
         {isLastAssistantMessage &&
           hasAnyContent &&
           summarizationStatus?.status === "started" && (
-            <div className="flex items-center gap-2 mt-2">
-              <WandSparkles className="w-4 h-4 text-muted-foreground" />
-              <Shimmer className="text-sm">
-                {`${summarizationStatus.message}...`}
-              </Shimmer>
-            </div>
+            <SummarizationStatusDivider
+              status={summarizationStatus.status}
+              message={summarizationStatus.message}
+              className="mb-1 mt-3"
+            />
           )}
 
         {/* Finish reason notice under last assistant message */}

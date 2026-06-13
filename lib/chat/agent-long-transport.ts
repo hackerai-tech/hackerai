@@ -48,6 +48,7 @@ const TERMINAL_RUN_STATUSES = new Set([
 // this guarantees useChat eventually exits streaming state.
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const STREAM_IDLE_TIMEOUT_SECONDS = STREAM_TIMEOUT_MS / 1000;
+const POST_FINISH_DRAIN_TIMEOUT_MS = 2_000;
 
 const buildSSEResponseFromRun = (
   { runId, publicAccessToken }: RunHandle,
@@ -192,6 +193,7 @@ const buildSSEResponseFromRun = (
           // closes the local stream in one tick, even when the LLM is mid-step
           // and no chunks are flowing.
           const abortSentinel = Symbol("aborted");
+          const postFinishDrainTimeout = Symbol("post-finish-drain-timeout");
           const abortPromise = new Promise<typeof abortSentinel>((resolve) => {
             if (!signal) return; // never resolves — Promise.race ignores it
             signal.addEventListener("abort", () => resolve(abortSentinel), {
@@ -200,12 +202,44 @@ const buildSSEResponseFromRun = (
           });
 
           let sawTerminalChunk = false;
+          let sawFinishChunk = false;
+          let timedOutAfterFinish = false;
           let firstEventReceived = false;
           const iter = uiStream[Symbol.asyncIterator]();
+          const readNextChunk = () => {
+            if (!sawFinishChunk) {
+              return Promise.race([iter.next(), abortPromise]);
+            }
+
+            let timeoutId: ReturnType<typeof setTimeout> | undefined;
+            const timeoutPromise = new Promise<typeof postFinishDrainTimeout>(
+              (resolve) => {
+                timeoutId = setTimeout(
+                  () => resolve(postFinishDrainTimeout),
+                  POST_FINISH_DRAIN_TIMEOUT_MS,
+                );
+              },
+            );
+
+            return Promise.race([
+              iter.next(),
+              abortPromise,
+              timeoutPromise,
+            ]).finally(() => {
+              if (timeoutId !== undefined) {
+                clearTimeout(timeoutId);
+              }
+            });
+          };
+
           while (true) {
-            const next = await Promise.race([iter.next(), abortPromise]);
+            const next = await readNextChunk();
             if (next === abortSentinel) {
               userAborted = true;
+              break;
+            }
+            if (next === postFinishDrainTimeout) {
+              timedOutAfterFinish = true;
               break;
             }
             if (next.done) break;
@@ -273,12 +307,17 @@ const buildSSEResponseFromRun = (
                 encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
               );
             }
-            // finish / abort / error are the last chunks useChat needs.
-            if (
-              chunkType === "finish" ||
-              chunkType === "abort" ||
-              chunkType === "error"
-            ) {
+            if (chunkType === "finish") {
+              // The task writes a few data chunks after `finish`
+              // (message-metadata, final context usage, auto-continue).
+              // Drain that short tail so the browser receives them.
+              sawTerminalChunk = true;
+              sawFinishChunk = true;
+              continue;
+            }
+
+            // abort / error are terminal and do not have useful trailing data.
+            if (chunkType === "abort" || chunkType === "error") {
               sawTerminalChunk = true;
               break;
             }
@@ -287,7 +326,7 @@ const buildSSEResponseFromRun = (
           // Flush any deltas that didn't trigger a count- or timer-based flush.
           flushDeltaBuffers();
 
-          if (userAborted) {
+          if (userAborted || timedOutAfterFinish) {
             // Release the trigger.dev subscription so it doesn't keep
             // streaming chunks into a dead controller.
             await iter.return?.(undefined).catch(() => undefined);
