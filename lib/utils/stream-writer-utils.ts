@@ -41,7 +41,7 @@ export const writeSummarizationStarted = (
     id: "summarization-status",
     data: {
       status: "started",
-      message: "Summarizing chat context",
+      message: "Automatically compacting context",
     },
     transient: true, // Don't persist started state - only show during processing
   });
@@ -55,7 +55,7 @@ export const writeSummarizationCompleted = (
     id: "summarization-status",
     data: {
       status: "completed",
-      message: "Chat context summarized",
+      message: "Context automatically compacted",
     },
   });
 };
@@ -68,7 +68,7 @@ export const createSummarizationCompletedPart = (): UIMessagePart<
   id: "summarization-status",
   data: {
     status: "completed",
-    message: "Chat context summarized",
+    message: "Context automatically compacted",
   },
 });
 

@@ -1,7 +1,6 @@
 import { memo } from "react";
 import { UIMessage } from "@ai-sdk/react";
-import { WandSparkles } from "lucide-react";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+import { SummarizationStatusDivider } from "../SummarizationStatusDivider";
 
 interface SummarizationHandlerProps {
   message: UIMessage;
@@ -27,18 +26,10 @@ export const SummarizationHandler = memo(function SummarizationHandler({
   partIndex,
 }: SummarizationHandlerProps) {
   return (
-    <div
+    <SummarizationStatusDivider
       key={`${message.id}-summarization-${partIndex}`}
-      className="mb-3 flex items-center gap-2"
-    >
-      <WandSparkles className="w-4 h-4 text-muted-foreground" />
-      {part.data.status === "started" ? (
-        <Shimmer className="text-sm">{`${part.data.message}...`}</Shimmer>
-      ) : (
-        <span className="text-sm text-muted-foreground">
-          {part.data.message}
-        </span>
-      )}
-    </div>
+      status={part.data?.status}
+      message={part.data?.message}
+    />
   );
 }, areSummarizationPropsEqual);
