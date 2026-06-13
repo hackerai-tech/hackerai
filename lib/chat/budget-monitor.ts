@@ -28,6 +28,8 @@ export interface BudgetSnapshot {
   extraUsageBalanceAtStart: number;
   extraUsageAutoReload: boolean;
   extraUsageMonthlyRemainingAtStart?: number;
+  capReasonOnExhaustion?: LimitCapReason;
+  extraUsageOverflowAllowed?: boolean;
 }
 
 /**
@@ -117,7 +119,9 @@ export class BudgetMonitor {
           snapshot.extraUsageAutoReload ||
           snapshot.extraUsageBalanceAtStart >= overflowDollars;
         const hasExtraCushion =
-          guardrailAllowsOverflow && balanceAllowsOverflow;
+          snapshot.extraUsageOverflowAllowed !== false &&
+          guardrailAllowsOverflow &&
+          balanceAllowsOverflow;
 
         if (hasExtraCushion) {
           if (threshold <= this.highestThresholdEmitted) {
@@ -134,11 +138,12 @@ export class BudgetMonitor {
           });
         } else {
           const capReason: LimitCapReason =
-            this.subscription === "free"
+            snapshot.capReasonOnExhaustion ??
+            (this.subscription === "free"
               ? "free_monthly_exhausted"
               : !guardrailAllowsOverflow
                 ? "extra_usage_cap"
-                : "monthly_exhausted";
+                : "monthly_exhausted");
           this.emit({
             usedPercent: 100,
             projectedUsedPoints: snapshot.monthlyLimitPoints,

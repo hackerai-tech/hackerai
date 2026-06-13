@@ -72,6 +72,38 @@ describe("BudgetMonitor", () => {
       }),
     );
   });
+
+  it("aborts with the paid daily free allowance cap reason when overflow is disabled", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        monthlyLimitPoints: 1000,
+        monthlyRemainingAtStart: 100,
+        monthlyResetTime: new Date("2026-06-12T00:00:00.000Z"),
+        extraUsageBalanceAtStart: 0,
+        extraUsageAutoReload: false,
+        extraUsageOverflowAllowed: false,
+        capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
+      },
+      writer,
+      "pro",
+    );
+
+    const decision = monitor.checkAfterStep(0.02);
+
+    expect(decision).toBe("abort");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "token-bucket",
+          cutOff: true,
+          capReason: "paid_daily_free_allowance_cut_off",
+          limitDollars: 0.1,
+        }),
+      }),
+    );
+  });
 });
 
 describe("captureBudgetSnapshot", () => {

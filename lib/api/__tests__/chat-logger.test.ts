@@ -286,6 +286,13 @@ describe("captureUsageCost", () => {
         nonModelCostDollars: 0.12,
         costSource: "provider",
       },
+      paidDailyFreeAllowance: {
+        active: true,
+        cutOff: false,
+        requestLimit: 1,
+        costLimitDollars: 0.1,
+        resetTimestamp: 1_800_000_000_000,
+      },
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -310,6 +317,12 @@ describe("captureUsageCost", () => {
         cache_read_tokens: 200,
         cache_write_tokens: 0,
         cost_source: "provider",
+        limit_rescue_type: "paid_daily_free_allowance",
+        paid_daily_free_allowance_active: true,
+        paid_daily_free_allowance_cut_off: false,
+        paid_daily_free_allowance_request_limit: 1,
+        paid_daily_free_allowance_cost_limit_dollars: 0.1,
+        paid_daily_free_allowance_reset_timestamp: 1_800_000_000_000,
         $set: expect.objectContaining({
           subscription_tier: "pro",
           last_usage_cost_at: expect.any(String),
@@ -445,6 +458,15 @@ describe("createChatLogger ChatSDKError metadata", () => {
         new ChatSDKError("rate_limit:chat", "Monthly limit hit", {
           capReason: "monthly_exhausted",
           resetTimestamp: 1_800_000_000_000,
+          paidDailyFreeAllowance: {
+            type: "paid_daily_free_allowance",
+            available: true,
+            requestsRemaining: 1,
+            requestLimit: 1,
+            costRemainingDollars: 0.1,
+            costLimitDollars: 0.1,
+            rolloutPercent: 10,
+          },
         }),
       );
 
@@ -458,6 +480,12 @@ describe("createChatLogger ChatSDKError metadata", () => {
           add_credit_available: true,
           primary_cta: "add_credits",
           eligible_ctas: ["add_credits", "upgrade_plan"],
+          paid_daily_free_allowance_available: true,
+          paid_daily_free_allowance_requests_remaining: 1,
+          paid_daily_free_allowance_request_limit: 1,
+          paid_daily_free_allowance_cost_remaining_dollars: 0.1,
+          paid_daily_free_allowance_cost_limit_dollars: 0.1,
+          paid_daily_free_allowance_rollout_percent: 10,
           chat_id: "chat_limit",
         }),
       );

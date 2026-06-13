@@ -8,6 +8,8 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
+  capturePaidDailyFreeAllowanceClick,
+  capturePaidDailyFreeAllowanceImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 import type { LimitCapReason } from "@/lib/limit-pressure";
@@ -15,10 +17,11 @@ import {
   getExtraUsageLimitCta,
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
+import type { RetryOptions } from "../hooks/useChatHandlers";
 
 interface MessageErrorStateProps {
   error: Error;
-  onRetry: () => void;
+  onRetry: (options?: RetryOptions) => void;
   onReconnect?: () => void;
 }
 
@@ -51,6 +54,7 @@ export const MessageErrorState = ({
   const capReason = metadata?.capReason as LimitCapReason | undefined;
   const upgradeImpressionRef = useRef(false);
   const addCreditImpressionRef = useRef(false);
+  const paidDailyFreeAllowanceImpressionRef = useRef(false);
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
 
@@ -79,6 +83,15 @@ export const MessageErrorState = ({
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
   const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
+  const paidDailyFreeAllowance =
+    metadata?.paidDailyFreeAllowance &&
+    typeof metadata.paidDailyFreeAllowance === "object"
+      ? (metadata.paidDailyFreeAllowance as Record<string, unknown>)
+      : undefined;
+  const canUsePaidDailyFreeAllowance =
+    isRateLimitError &&
+    paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
+    paidDailyFreeAllowance.available === true;
 
   useEffect(() => {
     if (!isRateLimitError || !canUpgrade || upgradeImpressionRef.current)
@@ -114,6 +127,32 @@ export const MessageErrorState = ({
     });
   }, [capReason, extraUsageCta, isPaidUser, isRateLimitError, subscription]);
 
+  useEffect(() => {
+    if (
+      !canUsePaidDailyFreeAllowance ||
+      paidDailyFreeAllowanceImpressionRef.current
+    ) {
+      return;
+    }
+
+    paidDailyFreeAllowanceImpressionRef.current = true;
+    capturePaidDailyFreeAllowanceImpression({
+      surface: "message_error_state",
+      source: "rate_limit_error",
+      from_tier: subscription,
+      cap_reason: capReason,
+      cta_text: "Use today's free request",
+      allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
+      allowance_cost_remaining_dollars:
+        paidDailyFreeAllowance?.costRemainingDollars,
+    });
+  }, [
+    canUsePaidDailyFreeAllowance,
+    capReason,
+    paidDailyFreeAllowance,
+    subscription,
+  ]);
+
   return (
     <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
       <div className="text-destructive text-sm mb-2">
@@ -134,7 +173,7 @@ export const MessageErrorState = ({
             <Button
               variant="destructive"
               size="sm"
-              onClick={onRetry}
+              onClick={() => onRetry()}
               disabled={timeRemaining > 0 && !isPaidUser}
             >
               {timeRemaining > 0 && !isPaidUser
@@ -150,7 +189,11 @@ export const MessageErrorState = ({
             </Button>
             {extraUsageCta && (
               <Button
-                variant="outline"
+                variant={
+                  extraUsageCta.analyticsText === "Add Credits"
+                    ? "default"
+                    : "outline"
+                }
                 size="sm"
                 onClick={() => {
                   captureAddCreditCtaClick({
@@ -166,9 +209,37 @@ export const MessageErrorState = ({
                 {extraUsageCta.label}
               </Button>
             )}
+            {canUsePaidDailyFreeAllowance && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  capturePaidDailyFreeAllowanceClick({
+                    surface: "message_error_state",
+                    source: "rate_limit_error",
+                    from_tier: subscription,
+                    cap_reason: capReason,
+                    cta_text: "Use today's free request",
+                    allowance_requests_remaining:
+                      paidDailyFreeAllowance?.requestsRemaining,
+                    allowance_cost_remaining_dollars:
+                      paidDailyFreeAllowance?.costRemainingDollars,
+                  });
+                  onRetry({
+                    limitRescue: { type: "paid_daily_free_allowance" },
+                  });
+                }}
+              >
+                Use today&apos;s free request
+              </Button>
+            )}
             {canUpgrade && (
               <Button
-                variant="default"
+                variant={
+                  extraUsageCta?.analyticsText === "Add Credits"
+                    ? "outline"
+                    : "default"
+                }
                 size="sm"
                 onClick={() =>
                   redirectToPricing({
@@ -207,7 +278,11 @@ export const MessageErrorState = ({
                     Reconnect
                   </Button>
                 )}
-                <Button variant="destructive" size="sm" onClick={onRetry}>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => onRetry()}
+                >
                   Retry
                 </Button>
               </>

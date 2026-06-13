@@ -6,7 +6,7 @@ import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import type { ChatMessage, ChatStatus } from "@/types";
+import type { ChatMessage, ChatStatus, LimitRescueRequest } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -43,6 +43,10 @@ interface UseChatHandlersProps {
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
+
+export type RetryOptions = {
+  limitRescue?: LimitRescueRequest;
+};
 
 export const useChatHandlers = ({
   chatId,
@@ -475,7 +479,7 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleRetry = async () => {
+  const handleRetry = async (options: RetryOptions = {}) => {
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -502,6 +506,7 @@ export const useChatHandlers = ({
           temporary: false,
           sandboxPreference,
           selectedModel,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
     } else {
@@ -526,6 +531,7 @@ export const useChatHandlers = ({
           sandboxPreference,
 
           selectedModel,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
     }
