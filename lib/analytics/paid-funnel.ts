@@ -14,6 +14,12 @@ export const PAID_FUNNEL_EVENTS = {
   cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
   cancellationCompleted: "cancellation_completed",
   limitHit: "limit_hit",
+  paidDailyFreeAllowanceImpressed: "paid_daily_free_allowance_impressed",
+  paidDailyFreeAllowanceClicked: "paid_daily_free_allowance_clicked",
+  paidDailyFreeAllowanceStarted: "paid_daily_free_allowance_started",
+  paidDailyFreeAllowanceSucceeded: "paid_daily_free_allowance_succeeded",
+  paidDailyFreeAllowanceBlocked: "paid_daily_free_allowance_blocked",
+  paidDailyFreeAllowanceCutOff: "paid_daily_free_allowance_cut_off",
 } as const;
 
 export type PaidFunnelPlan =

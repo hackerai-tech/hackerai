@@ -104,6 +104,9 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       if (data.capReason === "extra_usage_cap") {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
       }
+      if (data.capReason === "paid_daily_free_allowance_cut_off") {
+        return `You've reached today's free request cost limit and this response was cut off. Add credits to continue. Resets ${timeString}.`;
+      }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
@@ -203,7 +206,11 @@ export const RateLimitWarning = ({
               openSettingsDialog(extraUsageCta.settingsTab);
             }}
             size="sm"
-            variant="outline"
+            variant={
+              extraUsageCta.analyticsText === "Add Credits"
+                ? "default"
+                : "outline"
+            }
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
             {extraUsageCta.label}

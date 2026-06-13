@@ -10,6 +10,8 @@ export type LimitCapReason =
   | "team_pool_disabled"
   | "auto_reload_failed"
   | "billing_unavailable"
+  | "paid_daily_free_allowance_exhausted"
+  | "paid_daily_free_allowance_cut_off"
   | "monthly_near_limit"
   | "extra_usage_active"
   | (string & {});
@@ -20,7 +22,8 @@ export type LimitType =
   | "monthly"
   | "extra_usage"
   | "team_extra_usage"
-  | "billing";
+  | "billing"
+  | "paid_daily_free_allowance";
 
 export type LimitCta =
   | "upgrade_plan"
@@ -60,6 +63,9 @@ export function getLimitTypeForCapReason(
   capReason: LimitCapReason | undefined,
 ): LimitType {
   if (!capReason) return "monthly";
+  if (capReason.startsWith("paid_daily_free_allowance")) {
+    return "paid_daily_free_allowance";
+  }
   if (capReason.includes("daily")) return "daily_requests";
   if (capReason === "free_monthly_exhausted") return "free_monthly";
   if (

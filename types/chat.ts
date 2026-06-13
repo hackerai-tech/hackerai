@@ -72,6 +72,20 @@ export function isSelectedModel(value: string | null): value is SelectedModel {
   );
 }
 
+export type LimitRescueRequest = {
+  type: "paid_daily_free_allowance";
+};
+
+export function isLimitRescueRequest(
+  value: unknown,
+): value is LimitRescueRequest {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as { type?: unknown }).type === "paid_daily_free_allowance"
+  );
+}
+
 export type SubscriptionTier = "free" | "pro" | "pro-plus" | "ultra" | "team";
 
 export const SUBSCRIPTION_TIERS: readonly SubscriptionTier[] = [
