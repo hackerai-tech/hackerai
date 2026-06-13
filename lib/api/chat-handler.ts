@@ -20,7 +20,6 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
-  SubscriptionTier,
 } from "@/types";
 import { coerceSelectedModel, isLimitRescueRequest } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
@@ -40,7 +39,6 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
-  type BudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
@@ -111,10 +109,15 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
+import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
-  PAID_FUNNEL_EVENTS,
-  paidFunnelProperties,
-} from "@/lib/analytics/paid-funnel";
+  PAID_DAILY_FREE_ALLOWANCE_MODEL,
+  capturePaidDailyFreeAllowanceServerEvent,
+  createPaidDailyFreeAllowanceBudgetSnapshot,
+  createPaidDailyFreeAllowanceRateLimitInfo,
+  createPaidDailyFreeAllowanceUsageLogContext,
+  getRateLimitErrorCapReason,
+} from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
   extractErrorDetails,
   getUserFriendlyProviderError,
@@ -136,86 +139,6 @@ function getStreamContext() {
 }
 
 export { getStreamContext };
-
-const PAID_DAILY_FREE_ALLOWANCE_MODEL = "ask-model-free";
-
-function getCapReason(error: ChatSDKError): string | undefined {
-  return typeof error.metadata?.capReason === "string"
-    ? error.metadata.capReason
-    : undefined;
-}
-
-function createPaidDailyFreeAllowanceRateLimitInfo(
-  reservation: PaidDailyFreeAllowanceReservation,
-): RateLimitInfo {
-  return {
-    remaining: 0,
-    resetTime: reservation.status.resetTime,
-    limit: 0,
-    ...(reservation.status.rateLimitSkipped && { rateLimitSkipped: true }),
-  };
-}
-
-function createPaidDailyFreeAllowanceBudgetSnapshot(
-  reservation: PaidDailyFreeAllowanceReservation,
-): BudgetSnapshot | null {
-  if (reservation.status.rateLimitSkipped) return null;
-
-  return {
-    monthlyLimitPoints: reservation.status.costLimitPoints,
-    monthlyRemainingAtStart: reservation.status.costRemainingPoints,
-    monthlyResetTime: reservation.status.resetTime,
-    extraUsageBalanceAtStart: 0,
-    extraUsageAutoReload: false,
-    extraUsageOverflowAllowed: false,
-    capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
-  };
-}
-
-function capturePaidDailyFreeAllowanceEvent({
-  event,
-  userId,
-  subscription,
-  mode,
-  chatId,
-  endpoint,
-  reservation,
-  extra,
-}: {
-  event: (typeof PAID_FUNNEL_EVENTS)[keyof typeof PAID_FUNNEL_EVENTS];
-  userId: string;
-  subscription: SubscriptionTier;
-  mode: ChatMode;
-  chatId: string;
-  endpoint: "/api/chat";
-  reservation?: PaidDailyFreeAllowanceReservation;
-  extra?: Record<string, unknown>;
-}) {
-  const status = reservation?.status;
-  phLogger.event(
-    event,
-    paidFunnelProperties({
-      userId,
-      subscription_tier: subscription,
-      mode,
-      chat_id: chatId,
-      endpoint,
-      limit_rescue_type: "paid_daily_free_allowance",
-      paid_daily_free_allowance_request_limit: status?.requestLimit,
-      paid_daily_free_allowance_requests_remaining: status?.requestsRemaining,
-      paid_daily_free_allowance_cost_limit_dollars: status?.costLimitDollars,
-      paid_daily_free_allowance_cost_remaining_dollars:
-        status?.costRemainingDollars,
-      paid_daily_free_allowance_reset_timestamp: status?.resetTimestamp,
-      paid_daily_free_allowance_unavailable_reason:
-        status?.unavailableReason ?? reservation?.blockReason,
-      ...extra,
-      $set: {
-        subscription_tier: subscription,
-      },
-    }),
-  );
-}
 
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
@@ -438,10 +361,10 @@ export const createChatHandler = () => {
           throw error;
         }
 
-        const capReason = getCapReason(error);
+        const capReason = getRateLimitErrorCapReason(error);
         if (capReason !== "monthly_exhausted") {
           if (limitRescue) {
-            capturePaidDailyFreeAllowanceEvent({
+            capturePaidDailyFreeAllowanceServerEvent({
               event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceBlocked,
               userId,
               subscription,
@@ -487,7 +410,7 @@ export const createChatHandler = () => {
         };
 
         if (!allowanceReservation.allowed) {
-          capturePaidDailyFreeAllowanceEvent({
+          capturePaidDailyFreeAllowanceServerEvent({
             event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceBlocked,
             userId,
             subscription,
@@ -510,7 +433,7 @@ export const createChatHandler = () => {
         chatLogger.setChat(chatLogContext, selectedModel);
         rateLimitInfo =
           createPaidDailyFreeAllowanceRateLimitInfo(allowanceReservation);
-        capturePaidDailyFreeAllowanceEvent({
+        capturePaidDailyFreeAllowanceServerEvent({
           event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceStarted,
           userId,
           subscription,
@@ -882,7 +805,7 @@ export const createChatHandler = () => {
                     rateLimitInfo,
                   });
                   const cutOff = state.stoppedDueToBudgetExhaustion;
-                  capturePaidDailyFreeAllowanceEvent({
+                  capturePaidDailyFreeAllowanceServerEvent({
                     event: cutOff
                       ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
                       : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
@@ -944,17 +867,11 @@ export const createChatHandler = () => {
                   mode,
                   usage: usageCostRecord,
                   ...(paidDailyFreeAllowanceReservation && {
-                    paidDailyFreeAllowance: {
-                      active: true,
-                      cutOff: state.stoppedDueToBudgetExhaustion,
-                      requestLimit:
-                        paidDailyFreeAllowanceReservation.status.requestLimit,
-                      costLimitDollars:
-                        paidDailyFreeAllowanceReservation.status
-                          .costLimitDollars,
-                      resetTimestamp:
-                        paidDailyFreeAllowanceReservation.status.resetTimestamp,
-                    },
+                    paidDailyFreeAllowance:
+                      createPaidDailyFreeAllowanceUsageLogContext(
+                        paidDailyFreeAllowanceReservation,
+                        state.stoppedDueToBudgetExhaustion,
+                      ),
                   }),
                 });
               } finally {
