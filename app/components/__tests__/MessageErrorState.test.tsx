@@ -38,7 +38,7 @@ describe("MessageErrorState paid daily free allowance", () => {
     jest.clearAllMocks();
   });
 
-  it("shows Add Credits plus a secondary free-request retry CTA when allowance is available", async () => {
+  it("shows Add Credits plus a secondary free Ask retry CTA when allowance is available", async () => {
     const user = userEvent.setup();
     const onRetry = jest.fn();
     const error = new ChatSDKError(
@@ -59,13 +59,13 @@ describe("MessageErrorState paid daily free allowance", () => {
 
     expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
     const freeRequestButton = screen.getByRole("button", {
-      name: "Use today's free request",
+      name: "Try free Ask",
     });
     expect(freeRequestButton).toBeVisible();
     expect(capturePaidDailyFreeAllowanceImpression).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: "Use today's free request",
+        cta_text: "Try free Ask",
         allowance_requests_remaining: 1,
         allowance_cost_remaining_dollars: 0.1,
       }),
@@ -76,7 +76,7 @@ describe("MessageErrorState paid daily free allowance", () => {
     expect(capturePaidDailyFreeAllowanceClick).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: "Use today's free request",
+        cta_text: "Try free Ask",
       }),
     );
     expect(onRetry).toHaveBeenCalledWith({
@@ -100,8 +100,6 @@ describe("MessageErrorState paid daily free allowance", () => {
 
     render(<MessageErrorState error={error} onRetry={jest.fn()} />);
 
-    expect(
-      screen.queryByRole("button", { name: "Use today's free request" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try free Ask" })).toBeNull();
   });
 });

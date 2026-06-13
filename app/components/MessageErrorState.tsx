@@ -141,7 +141,7 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: "Use today's free request",
+      cta_text: "Try free Ask",
       allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
       allowance_cost_remaining_dollars:
         paidDailyFreeAllowance?.costRemainingDollars,
@@ -219,7 +219,7 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     cap_reason: capReason,
-                    cta_text: "Use today's free request",
+                    cta_text: "Try free Ask",
                     allowance_requests_remaining:
                       paidDailyFreeAllowance?.requestsRemaining,
                     allowance_cost_remaining_dollars:
@@ -230,7 +230,7 @@ export const MessageErrorState = ({
                   });
                 }}
               >
-                Use today&apos;s free request
+                Try free Ask
               </Button>
             )}
             {canUpgrade && (
