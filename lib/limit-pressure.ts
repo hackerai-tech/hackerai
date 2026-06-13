@@ -1,5 +1,7 @@
 import type { SubscriptionTier } from "@/types";
 
+export const PAID_DAILY_FREE_ASK_CTA_TEXT = "Try free Ask";
+
 export type LimitCapReason =
   | "daily_requests_exhausted"
   | "free_monthly_exhausted"

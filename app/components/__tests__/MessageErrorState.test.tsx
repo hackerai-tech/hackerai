@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { ChatSDKError } from "@/lib/errors";
+import { PAID_DAILY_FREE_ASK_CTA_TEXT } from "@/lib/limit-pressure";
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
@@ -112,13 +113,13 @@ describe("MessageErrorState", () => {
 
     expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
     const freeRequestButton = screen.getByRole("button", {
-      name: "Try free Ask",
+      name: PAID_DAILY_FREE_ASK_CTA_TEXT,
     });
     expect(freeRequestButton).toBeVisible();
     expect(capturePaidDailyFreeAllowanceImpression).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: "Try free Ask",
+        cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
         allowance_requests_remaining: 1,
         allowance_cost_remaining_dollars: 0.1,
       }),
@@ -129,7 +130,7 @@ describe("MessageErrorState", () => {
     expect(capturePaidDailyFreeAllowanceClick).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: "Try free Ask",
+        cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
       }),
     );
     expect(onRetry).toHaveBeenCalledWith({
@@ -157,6 +158,8 @@ describe("MessageErrorState", () => {
       </TestWrapper>,
     );
 
-    expect(screen.queryByRole("button", { name: "Try free Ask" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: PAID_DAILY_FREE_ASK_CTA_TEXT }),
+    ).toBeNull();
   });
 });

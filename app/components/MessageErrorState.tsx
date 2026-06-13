@@ -14,6 +14,7 @@ import {
 } from "@/lib/analytics/client";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  PAID_DAILY_FREE_ASK_CTA_TEXT,
   getExtraUsageLimitCta,
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
@@ -147,7 +148,7 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: "Try free Ask",
+      cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
       allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
       allowance_cost_remaining_dollars:
         paidDailyFreeAllowance?.costRemainingDollars,
@@ -244,7 +245,7 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     cap_reason: capReason,
-                    cta_text: "Try free Ask",
+                    cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
                     allowance_requests_remaining:
                       paidDailyFreeAllowance?.requestsRemaining,
                     allowance_cost_remaining_dollars:
@@ -255,7 +256,7 @@ export const MessageErrorState = ({
                   });
                 }}
               >
-                Try free Ask
+                {PAID_DAILY_FREE_ASK_CTA_TEXT}
               </Button>
             )}
             {canUpgrade && (
