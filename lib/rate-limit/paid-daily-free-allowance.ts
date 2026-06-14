@@ -1,7 +1,6 @@
 import "server-only";
 
 import { isFeatureEnabled } from "@/lib/auth/feature-flags";
-import { ChatSDKError } from "@/lib/errors";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
@@ -182,6 +181,14 @@ function pointsToDollars(points: number): number {
   return Math.round((points / POINTS_PER_DOLLAR) * 10_000) / 10_000;
 }
 
+function getRedisClient() {
+  try {
+    return createRedisClient();
+  } catch {
+    return null;
+  }
+}
+
 function getCurrentUtcDayWindow(now = new Date()) {
   const bucket = now.toISOString().slice(0, 10);
   const reset = Date.UTC(
@@ -274,7 +281,7 @@ export async function getPaidDailyFreeAllowanceStatus(
 
   if (!enabledByRollout) return baseStatus(ctx, "rollout_disabled");
 
-  const redis = createRedisClient();
+  const redis = getRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {
       return {
@@ -297,10 +304,17 @@ export async function getPaidDailyFreeAllowanceStatus(
     ctx.userId,
     bucket,
   );
-  const [rawRequestsUsed, rawCostUsed] = await Promise.all([
-    redis.get(requestsKey),
-    redis.get(costKey),
-  ]);
+  let rawRequestsUsed: unknown;
+  let rawCostUsed: unknown;
+  try {
+    [rawRequestsUsed, rawCostUsed] = await Promise.all([
+      redis.get(requestsKey),
+      redis.get(costKey),
+    ]);
+  } catch {
+    return baseStatus(ctx, "redis_unavailable");
+  }
+
   const requestsUsed = Math.max(0, Number(rawRequestsUsed ?? 0));
   const costUsedPoints = Math.max(0, Number(rawCostUsed ?? 0));
   const requestsRemaining = Math.max(0, requestLimit - requestsUsed);
@@ -340,7 +354,7 @@ export async function reservePaidDailyFreeAllowanceRequest(
     return { allowed: false, status, blockReason: status.unavailableReason };
   }
 
-  const redis = createRedisClient();
+  const redis = getRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {
       return {
@@ -370,16 +384,34 @@ export async function reservePaidDailyFreeAllowanceRequest(
     ctx.userId,
     bucket,
   );
-  const result = (await redis.eval(
-    RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
-    [requestsKey, costKey],
-    [status.requestLimit, status.costLimitPoints, ttlMs],
-  )) as [
+  let result: [
     number,
     PaidDailyFreeAllowanceUnavailableReason | "ok",
     number,
     number,
   ];
+  try {
+    result = (await redis.eval(
+      RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
+      [requestsKey, costKey],
+      [status.requestLimit, status.costLimitPoints, ttlMs],
+    )) as [
+      number,
+      PaidDailyFreeAllowanceUnavailableReason | "ok",
+      number,
+      number,
+    ];
+  } catch {
+    return {
+      allowed: false,
+      status: {
+        ...status,
+        available: false,
+        unavailableReason: "redis_unavailable",
+      },
+      blockReason: "redis_unavailable",
+    };
+  }
 
   const [allowedRaw, rawReason, requestsUsedRaw, costUsedRaw] = result;
   const allowed = allowedRaw === 1;
@@ -422,22 +454,24 @@ export async function recordPaidDailyFreeAllowanceCost(
   const costPoints = dollarsToPoints(costDollars);
   if (costPoints <= 0) return 0;
 
-  const redis = createRedisClient();
+  const redis = getRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") return costPoints;
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      "Rate limiting service is not configured",
-    );
+    return 0;
   }
 
   const { bucket, ttlMs } = getCurrentUtcDayWindow();
   const { costKey } = getPaidDailyFreeAllowanceKeys(userId, bucket);
-  const nextCost = await redis.eval(
-    RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
-    [costKey],
-    [costPoints, ttlMs],
-  );
+  let nextCost: unknown;
+  try {
+    nextCost = await redis.eval(
+      RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
+      [costKey],
+      [costPoints, ttlMs],
+    );
+  } catch {
+    return 0;
+  }
   return Math.max(0, Number(nextCost ?? 0));
 }
 

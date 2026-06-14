@@ -200,6 +200,43 @@ describe("paid daily free allowance", () => {
     });
   });
 
+  it("reports Redis unavailable when allowance reads fail", async () => {
+    const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+    mockRedis.get.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      getPaidDailyFreeAllowanceStatus(eligibleContext),
+    ).resolves.toMatchObject({
+      available: false,
+      unavailableReason: "redis_unavailable",
+    });
+  });
+
+  it("blocks rescue reservation when the Redis reservation script fails", async () => {
+    const { reservePaidDailyFreeAllowanceRequest } = getIsolatedModule();
+    mockRedis.eval.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      reservePaidDailyFreeAllowanceRequest(eligibleContext),
+    ).resolves.toMatchObject({
+      allowed: false,
+      blockReason: "redis_unavailable",
+      status: {
+        available: false,
+        unavailableReason: "redis_unavailable",
+      },
+    });
+  });
+
+  it("does not throw when recording allowance cost fails", async () => {
+    const { recordPaidDailyFreeAllowanceCost } = getIsolatedModule();
+    mockRedis.eval.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      recordPaidDailyFreeAllowanceCost("user_123", 0.03),
+    ).resolves.toBe(0);
+  });
+
   it("keys counters to the UTC date and resets at midnight UTC", async () => {
     const {
       getPaidDailyFreeAllowanceKeys,
