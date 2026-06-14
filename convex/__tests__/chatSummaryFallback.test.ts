@@ -994,4 +994,81 @@ describe("regenerateWithNewContent feedback cleanup", () => {
       deleteArgs.indexOf(laterAssistantMessage._id),
     );
   });
+
+  it("should clear stale summaries when the edited message is covered by the latest summary", async () => {
+    const editedUserMessage = {
+      _id: "user-doc-1" as Id<"messages">,
+      id: "user-msg-1",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "user",
+      parts: [{ type: "text", text: "old prompt" }],
+      content: "old prompt",
+      _creationTime: 1000,
+      file_ids: undefined,
+    };
+    const laterAssistantMessage = {
+      _id: "asst-doc-1" as Id<"messages">,
+      id: "asst-msg-1",
+      chat_id: CHAT_ID,
+      user_id: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "old response" }],
+      _creationTime: 2000,
+      file_ids: undefined,
+      feedback_id: undefined,
+    };
+    const chatDoc = makeChatDoc();
+    const summaryDoc = makeSummaryDoc({
+      summary_up_to_message_id: editedUserMessage.id,
+      previous_summaries: [],
+    });
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "messages") {
+        return {
+          withIndex: jest.fn((indexName: string) => {
+            if (indexName === "by_message_id") {
+              return {
+                first: jest.fn<any>().mockResolvedValue(editedUserMessage),
+              };
+            }
+            if (indexName === "by_chat_id") {
+              return {
+                collect: jest
+                  .fn<any>()
+                  .mockResolvedValue([laterAssistantMessage]),
+              };
+            }
+            throw new Error(`Unexpected messages index ${indexName}`);
+          }),
+        };
+      }
+
+      if (table === "chats") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(chatDoc),
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected table ${table}`);
+    });
+    mockCtx.db.get.mockResolvedValue(summaryDoc);
+
+    const { regenerateWithNewContent } = await import("../messages");
+
+    await regenerateWithNewContent.handler(mockCtx, {
+      messageId: editedUserMessage.id,
+      newContent: "new prompt",
+    });
+
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      CHAT_DOC_ID,
+      expect.objectContaining({ latest_summary_id: undefined }),
+    );
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(laterAssistantMessage._id);
+  });
 });
