@@ -88,7 +88,7 @@ describe("MessageErrorState", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
-  it("shows Add Credits plus a secondary free Ask retry CTA when allowance is available", async () => {
+  it("shows a focused Add Credits plus free Ask CTA when allowance is available", async () => {
     const user = userEvent.setup();
     const onRetry = jest.fn();
     const error = new ChatSDKError(
@@ -112,6 +112,10 @@ describe("MessageErrorState", () => {
     );
 
     expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try Again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+
     const freeRequestButton = screen.getByRole("button", {
       name: PAID_DAILY_FREE_ASK_CTA_TEXT,
     });

@@ -99,9 +99,15 @@ export const MessageErrorState = ({
     isRateLimitError &&
     paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
     paidDailyFreeAllowance.available === true;
+  const shouldFocusPaidAllowanceActions =
+    canUsePaidDailyFreeAllowance &&
+    extraUsageCta?.analyticsText === "Add Credits";
+  const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
+  const showRateLimitUsage = !shouldFocusPaidAllowanceActions;
+  const showUpgrade = canUpgrade && !shouldFocusPaidAllowanceActions;
 
   useEffect(() => {
-    if (!isRateLimitError || !canUpgrade || upgradeImpressionRef.current)
+    if (!isRateLimitError || !showUpgrade || upgradeImpressionRef.current)
       return;
 
     upgradeImpressionRef.current = true;
@@ -112,7 +118,7 @@ export const MessageErrorState = ({
       cap_reason: capReason,
       cta_text: "Upgrade Plan",
     });
-  }, [canUpgrade, capReason, isRateLimitError, subscription]);
+  }, [capReason, isRateLimitError, showUpgrade, subscription]);
 
   useEffect(() => {
     if (
@@ -196,23 +202,27 @@ export const MessageErrorState = ({
       <div className="flex gap-2 flex-wrap">
         {isRateLimitError ? (
           <>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => onRetry()}
-              disabled={timeRemaining > 0 && !isPaidUser}
-            >
-              {timeRemaining > 0 && !isPaidUser
-                ? `Try again in ${formatCountdown(timeRemaining)}`
-                : "Try Again"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openSettingsDialog("Usage")}
-            >
-              View Usage
-            </Button>
+            {showRateLimitRetry && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onRetry()}
+                disabled={timeRemaining > 0 && !isPaidUser}
+              >
+                {timeRemaining > 0 && !isPaidUser
+                  ? `Try again in ${formatCountdown(timeRemaining)}`
+                  : "Try Again"}
+              </Button>
+            )}
+            {showRateLimitUsage && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openSettingsDialog("Usage")}
+              >
+                View Usage
+              </Button>
+            )}
             {extraUsageCta && (
               <Button
                 variant={
@@ -259,7 +269,7 @@ export const MessageErrorState = ({
                 {PAID_DAILY_FREE_ASK_CTA_TEXT}
               </Button>
             )}
-            {canUpgrade && (
+            {showUpgrade && (
               <Button
                 variant={
                   extraUsageCta?.analyticsText === "Add Credits"
