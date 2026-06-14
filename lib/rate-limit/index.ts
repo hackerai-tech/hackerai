@@ -76,6 +76,7 @@ export {
   type PaidDailyFreeAllowanceMetadata,
   type PaidDailyFreeAllowanceReservation,
   type PaidDailyFreeAllowanceStatus,
+  type PaidDailyFreeAllowanceCostRecordResult,
 } from "./paid-daily-free-allowance";
 
 // Import for internal use

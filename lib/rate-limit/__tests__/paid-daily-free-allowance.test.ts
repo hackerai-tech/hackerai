@@ -228,13 +228,17 @@ describe("paid daily free allowance", () => {
     });
   });
 
-  it("does not throw when recording allowance cost fails", async () => {
+  it("returns an explicit failure when recording allowance cost fails", async () => {
     const { recordPaidDailyFreeAllowanceCost } = getIsolatedModule();
     mockRedis.eval.mockRejectedValueOnce(new Error("redis down"));
 
     await expect(
       recordPaidDailyFreeAllowanceCost("user_123", 0.03),
-    ).resolves.toBe(0);
+    ).resolves.toMatchObject({
+      recorded: false,
+      costDollars: 0.03,
+      unavailableReason: "redis_unavailable",
+    });
   });
 
   it("keys counters to the UTC date and resets at midnight UTC", async () => {

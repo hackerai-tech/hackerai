@@ -100,6 +100,21 @@ export interface PaidDailyFreeAllowanceReservation {
   blockReason?: PaidDailyFreeAllowanceUnavailableReason;
 }
 
+export type PaidDailyFreeAllowanceCostRecordResult =
+  | {
+      recorded: true;
+      costPoints: number;
+      costDollars: number;
+      nextCostPoints: number;
+      nextCostDollars: number;
+    }
+  | {
+      recorded: false;
+      costPoints: number;
+      costDollars: number;
+      unavailableReason: "redis_unavailable";
+    };
+
 export type PaidDailyFreeAllowanceMetadata = {
   type: "paid_daily_free_allowance";
   available: boolean;
@@ -450,14 +465,35 @@ export async function reservePaidDailyFreeAllowanceRequest(
 export async function recordPaidDailyFreeAllowanceCost(
   userId: string,
   costDollars: number,
-): Promise<number> {
+): Promise<PaidDailyFreeAllowanceCostRecordResult> {
   const costPoints = dollarsToPoints(costDollars);
-  if (costPoints <= 0) return 0;
+  if (costPoints <= 0) {
+    return {
+      recorded: true,
+      costPoints: 0,
+      costDollars: 0,
+      nextCostPoints: 0,
+      nextCostDollars: 0,
+    };
+  }
 
   const redis = getRedisClient();
   if (!redis) {
-    if (process.env.NODE_ENV !== "production") return costPoints;
-    return 0;
+    if (process.env.NODE_ENV !== "production") {
+      return {
+        recorded: true,
+        costPoints,
+        costDollars: pointsToDollars(costPoints),
+        nextCostPoints: costPoints,
+        nextCostDollars: pointsToDollars(costPoints),
+      };
+    }
+    return {
+      recorded: false,
+      costPoints,
+      costDollars: pointsToDollars(costPoints),
+      unavailableReason: "redis_unavailable",
+    };
   }
 
   const { bucket, ttlMs } = getCurrentUtcDayWindow();
@@ -470,9 +506,22 @@ export async function recordPaidDailyFreeAllowanceCost(
       [costPoints, ttlMs],
     );
   } catch {
-    return 0;
+    return {
+      recorded: false,
+      costPoints,
+      costDollars: pointsToDollars(costPoints),
+      unavailableReason: "redis_unavailable",
+    };
   }
-  return Math.max(0, Number(nextCost ?? 0));
+
+  const nextCostPoints = Math.max(0, Number(nextCost ?? 0));
+  return {
+    recorded: true,
+    costPoints,
+    costDollars: pointsToDollars(costPoints),
+    nextCostPoints,
+    nextCostDollars: pointsToDollars(nextCostPoints),
+  };
 }
 
 export function paidDailyFreeAllowanceStatusToMetadata(

@@ -790,10 +790,27 @@ export const createChatHandler = () => {
                     : undefined;
 
                 if (paidDailyFreeAllowanceReservation) {
-                  await recordPaidDailyFreeAllowanceCost(
-                    userId,
-                    usageCostRecord.costDollars,
-                  );
+                  const allowanceCostRecord =
+                    await recordPaidDailyFreeAllowanceCost(
+                      userId,
+                      usageCostRecord.costDollars,
+                    );
+                  if (!allowanceCostRecord.recorded) {
+                    phLogger.warn(
+                      "Paid daily free allowance cost recording failed",
+                      {
+                        userId,
+                        chatId,
+                        endpoint,
+                        mode,
+                        subscription,
+                        selected_model: selectedModel,
+                        cost_dollars: usageCostRecord.costDollars,
+                        cost_record_failure_reason:
+                          allowanceCostRecord.unavailableReason,
+                      },
+                    );
+                  }
                   usageTracker.log({
                     userId,
                     organizationId,
@@ -826,6 +843,16 @@ export const createChatHandler = () => {
                       selected_model: selectedModel,
                       response_model: state.responseModel,
                       cost_source: usageCostRecord.costSource,
+                      paid_daily_free_allowance_cost_recorded:
+                        allowanceCostRecord.recorded,
+                      paid_daily_free_allowance_cost_record_failure_reason:
+                        allowanceCostRecord.recorded
+                          ? undefined
+                          : allowanceCostRecord.unavailableReason,
+                      paid_daily_free_allowance_cost_record_next_dollars:
+                        allowanceCostRecord.recorded
+                          ? allowanceCostRecord.nextCostDollars
+                          : undefined,
                     },
                   });
                 } else if (subscription === "free") {
