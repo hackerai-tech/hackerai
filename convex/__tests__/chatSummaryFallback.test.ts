@@ -614,6 +614,65 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     );
   });
 
+  it("should clear summaries when deleting for regenerate", async () => {
+    const assistantMsg = makeAssistantMessage({ _creationTime: 5000 });
+    const chatDoc = makeChatDoc();
+    const oldSummary = makeSummaryDoc({
+      _id: "old-summary-doc-id" as Id<"chat_summaries">,
+    });
+    const latestSummary = makeSummaryDoc();
+
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "messages") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            order: jest.fn().mockReturnValue({
+              collect: jest.fn<any>().mockResolvedValue([assistantMsg]),
+            }),
+          }),
+        };
+      }
+
+      if (table === "chats") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(chatDoc),
+          }),
+        };
+      }
+
+      if (table === "chat_summaries") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            collect: jest
+              .fn<any>()
+              .mockResolvedValue([latestSummary, oldSummary]),
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected table ${table}`);
+    });
+
+    const { deleteLastAssistantMessage } = await import("../messages");
+
+    await deleteLastAssistantMessage.handler(mockCtx, {
+      chatId: CHAT_ID,
+      resetSummary: true,
+    });
+
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(CHAT_DOC_ID, {
+      latest_summary_id: undefined,
+    });
+
+    const deleteArgs = mockCtx.db.delete.mock.calls.map(
+      (call: any[]) => call[0],
+    );
+    expect(deleteArgs).toContain(SUMMARY_DOC_ID);
+    expect(deleteArgs).toContain("old-summary-doc-id");
+    expect(deleteArgs).toContain(ASSISTANT_MSG_ID);
+  });
+
   it("should fall back to first valid previous summary when current is invalid", async () => {
     const assistantMsg = makeAssistantMessage({ _creationTime: 2000 });
     const chatDoc = makeChatDoc();

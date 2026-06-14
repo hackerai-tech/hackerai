@@ -646,9 +646,10 @@ export async function getMessagesByChatId({
     if (!isNewChat && !shouldUseClientMessagesForRegenerate) {
       try {
         // Fetch latest summary only if chat has a summary ID
-        const latestSummary = chat?.latest_summary_id
-          ? await getLatestSummary({ chatId })
-          : null;
+        const latestSummary =
+          !regenerate && chat?.latest_summary_id
+            ? await getLatestSummary({ chatId })
+            : null;
 
         // Adaptive paginated backfill: fetch pages until token budget is hit or cap reached
         const PAGE_SIZE = 24;
@@ -744,9 +745,9 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // Apply summary if it exists (regardless of current mode)
-          // Note: Summaries are only created in agent mode but provide value in any mode
-          if (latestSummary) {
+          // Apply summary if it exists, except during regeneration where the
+          // deleted assistant response must not leak back into the new run.
+          if (latestSummary && !regenerate) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
 
             // Find cutoff index once

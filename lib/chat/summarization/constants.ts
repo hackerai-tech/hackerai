@@ -5,10 +5,33 @@ export const MESSAGES_TO_KEEP_UNSUMMARIZED = 0;
 // enough room for tool schemas, provider formatting overhead, and output.
 export const SUMMARIZATION_RESERVED_MAX_TOKENS = 20_000;
 export const SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE = 0.1;
+export const DEV_SUMMARIZATION_THRESHOLD_TOKENS_ENV =
+  "NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS";
 export const SUMMARY_PROMPT_VERSION = "2026-06-11.opencode-anchored-summary-v2";
+
+const getDevSummarizationThresholdTokens = (
+  maxTokens: number,
+): number | null => {
+  if (process.env.NODE_ENV !== "development") return null;
+
+  const configuredTokens = Number.parseInt(
+    process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS ?? "",
+    10,
+  );
+
+  if (!Number.isFinite(configuredTokens) || configuredTokens <= 0) {
+    return null;
+  }
+
+  return Math.min(maxTokens, Math.floor(configuredTokens));
+};
 
 export const getSummarizationThresholdTokens = (maxTokens: number): number => {
   const usableMaxTokens = Math.max(0, maxTokens);
+  const devThresholdTokens =
+    getDevSummarizationThresholdTokens(usableMaxTokens);
+  if (devThresholdTokens !== null) return devThresholdTokens;
+
   const reservedTokens = Math.min(
     SUMMARIZATION_RESERVED_MAX_TOKENS,
     Math.floor(usableMaxTokens * SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE),

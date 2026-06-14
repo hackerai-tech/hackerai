@@ -183,4 +183,41 @@ describe("getMessagesByChatId", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("does not inject a stored summary while regenerating", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const lastUserMessage = {
+      id: "user-message-1",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: "do recon on hackerai.co" }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({
+        id: "chat-1",
+        user_id: "user-1",
+        latest_summary_id: "summary-1",
+      })
+      .mockResolvedValueOnce({
+        page: [lastUserMessage],
+        isDone: true,
+        continueCursor: "",
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      regenerate: true,
+      isTemporary: false,
+      mode: "agent",
+    });
+
+    expect(result.truncatedMessages).toEqual([lastUserMessage]);
+    expect(JSON.stringify(result.truncatedMessages)).not.toContain(
+      "context_summary",
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
 });
