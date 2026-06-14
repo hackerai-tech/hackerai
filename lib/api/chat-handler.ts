@@ -554,7 +554,9 @@ export const createChatHandler = () => {
 
             // Inject resume context into messages instead of system prompt
             // to keep the system prompt stable for caching
-            const resumeContext = getResumeSection(chat?.finish_reason);
+            const resumeContext = regenerate
+              ? ""
+              : getResumeSection(chat?.finish_reason);
             if (resumeContext) {
               finalMessages = appendSystemReminderToLastUserMessage(
                 finalMessages,

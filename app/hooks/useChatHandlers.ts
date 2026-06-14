@@ -439,11 +439,12 @@ export const useChatHandlers = ({
       : [];
 
     if (!temporaryChatsEnabled) {
-      // Delete the entire trailing auto-continue chain (all assistant + hidden user messages)
-      // back to the last real user message, so regeneration starts from the original request
+      // Delete the trailing response chain and clear summaries that may include
+      // that deleted work, so regeneration starts from the original request.
       if (chainAssistantIds.length > 0) {
         await deleteLastAssistantMessage({
           chatId,
+          resetSummary: true,
           todos: cleanedTodos,
         });
       }

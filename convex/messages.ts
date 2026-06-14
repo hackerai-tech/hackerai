@@ -328,6 +328,32 @@ const checkAndInvalidateSummary = async (
   }
 };
 
+const clearChatSummaries = async (ctx: any, chatId: string) => {
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q: any) => q.eq("id", chatId))
+    .first();
+
+  if (chat?.latest_summary_id) {
+    await ctx.db.patch(chat._id, {
+      latest_summary_id: undefined,
+    });
+  }
+
+  const summaries = await ctx.db
+    .query("chat_summaries")
+    .withIndex("by_chat_id", (q: any) => q.eq("chat_id", chatId))
+    .collect();
+
+  for (const summary of summaries) {
+    try {
+      await ctx.db.delete(summary._id);
+    } catch (error) {
+      console.error(`Failed to delete summary ${summary._id}:`, error);
+    }
+  }
+};
+
 export const verifyChatOwnership = internalQuery({
   args: {
     chatId: v.string(),
@@ -1015,6 +1041,7 @@ export const saveAssistantMessage = mutation({
 export const deleteLastAssistantMessage = mutation({
   args: {
     chatId: v.string(),
+    resetSummary: v.optional(v.boolean()),
     todos: v.optional(
       v.array(
         v.object({
@@ -1081,15 +1108,19 @@ export const deleteLastAssistantMessage = mutation({
           }
         }
 
-        // Check summary invalidation for all messages being deleted
-        await checkAndInvalidateSummary(
-          ctx,
-          args.chatId,
-          messagesToDelete.map((m) => ({
-            id: m.id,
-            creationTime: m._creationTime,
-          })),
-        );
+        if (args.resetSummary) {
+          await clearChatSummaries(ctx, args.chatId);
+        } else {
+          // Check summary invalidation for all messages being deleted
+          await checkAndInvalidateSummary(
+            ctx,
+            args.chatId,
+            messagesToDelete.map((m) => ({
+              id: m.id,
+              creationTime: m._creationTime,
+            })),
+          );
+        }
 
         // Delete files and messages
         for (const msg of messagesToDelete) {

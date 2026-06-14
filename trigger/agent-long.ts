@@ -1035,7 +1035,9 @@ export const agentLongTask = task({
 
             let finalMessages = processedMessages;
 
-            const resumeContext = getResumeSection(chat?.finish_reason);
+            const resumeContext = regenerate
+              ? ""
+              : getResumeSection(chat?.finish_reason);
             if (resumeContext) {
               finalMessages = appendSystemReminderToLastUserMessage(
                 finalMessages,

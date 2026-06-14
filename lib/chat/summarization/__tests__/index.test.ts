@@ -168,6 +168,48 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
+  it("should allow a lower summarization threshold in development", () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalDevThreshold =
+      process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS;
+
+    process.env.NODE_ENV = "development";
+    process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS = "12000";
+
+    try {
+      expect(getSummarizationThresholdTokens(128_000)).toBe(12_000);
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalDevThreshold === undefined) {
+        delete process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS;
+      } else {
+        process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS =
+          originalDevThreshold;
+      }
+    }
+  });
+
+  it("should ignore the development threshold outside development", () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalDevThreshold =
+      process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS;
+
+    process.env.NODE_ENV = "production";
+    process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS = "12000";
+
+    try {
+      expect(getSummarizationThresholdTokens(128_000)).toBe(115_200);
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalDevThreshold === undefined) {
+        delete process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS;
+      } else {
+        process.env.NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS =
+          originalDevThreshold;
+      }
+    }
+  });
+
   it("should skip summarization when message count is insufficient", async () => {
     const messages = [createMessage("msg-1", "user")];
 
