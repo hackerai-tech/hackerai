@@ -15,19 +15,25 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type {
   ChatMode,
+  LimitRescueRequest,
   Todo,
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
 } from "@/types";
-import { coerceSelectedModel } from "@/types";
+import { coerceSelectedModel, isLimitRescueRequest } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
   checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
+  getPaidDailyFreeAllowanceStatus,
+  paidDailyFreeAllowanceStatusToMetadata,
+  recordPaidDailyFreeAllowanceCost,
   recordFreeMonthlyCost,
+  reservePaidDailyFreeAllowanceRequest,
+  type PaidDailyFreeAllowanceReservation,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import {
@@ -83,7 +89,7 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
+import { processChatMessages } from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
@@ -103,6 +109,15 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
+import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
+import {
+  PAID_DAILY_FREE_ALLOWANCE_MODEL,
+  capturePaidDailyFreeAllowanceServerEvent,
+  createPaidDailyFreeAllowanceBudgetSnapshot,
+  createPaidDailyFreeAllowanceRateLimitInfo,
+  createPaidDailyFreeAllowanceUsageLogContext,
+  getRateLimitErrorCapReason,
+} from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
   extractErrorDetails,
   getProviderErrorCategory,
@@ -160,6 +175,7 @@ export const createChatHandler = () => {
         selectedModel: rawSelectedModel,
         isAutoContinue,
         useClientMessagesForRegenerate,
+        limitRescue: rawLimitRescue,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -171,11 +187,17 @@ export const createChatHandler = () => {
         selectedModel?: string;
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
+        limitRescue?: unknown;
       } = await req.json();
       outerChatId = chatId;
 
       const selectedModelOverride: SelectedModel | undefined =
         coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
+      const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
+        rawLimitRescue,
+      )
+        ? rawLimitRescue
+        : undefined;
 
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
@@ -302,17 +324,15 @@ export const createChatHandler = () => {
       });
 
       const fileCounts = countFileAttachments(truncatedMessages);
-      chatLogger.setChat(
-        {
-          messageCount: truncatedMessages.length,
-          estimatedInputTokens,
-          isNewChat,
-          fileCount: fileCounts.totalFiles,
-          imageCount: fileCounts.imageCount,
-          notesEnabled,
-        },
-        selectedModel,
-      );
+      const chatLogContext = {
+        messageCount: truncatedMessages.length,
+        estimatedInputTokens,
+        isNewChat,
+        fileCount: fileCounts.totalFiles,
+        imageCount: fileCounts.imageCount,
+        notesEnabled,
+      };
+      chatLogger.setChat(chatLogContext, selectedModel);
 
       const extraUsageConfig = await buildExtraUsageConfig({
         userId,
@@ -321,17 +341,113 @@ export const createChatHandler = () => {
         organizationId,
       });
 
-      const rateLimitInfo: RateLimitInfo =
-        freeAskRateLimitInfo ??
-        (await checkRateLimit(
+      let paidDailyFreeAllowanceReservation:
+        | PaidDailyFreeAllowanceReservation
+        | undefined;
+      let rateLimitInfo: RateLimitInfo;
+
+      try {
+        rateLimitInfo =
+          freeAskRateLimitInfo ??
+          (await checkRateLimit(
+            userId,
+            mode,
+            subscription,
+            estimatedInputTokens,
+            extraUsageConfig,
+            selectedModel,
+            organizationId,
+          ));
+      } catch (error) {
+        if (!(error instanceof ChatSDKError)) {
+          throw error;
+        }
+
+        const capReason = getRateLimitErrorCapReason(error);
+        if (capReason !== "monthly_exhausted") {
+          if (limitRescue) {
+            capturePaidDailyFreeAllowanceServerEvent({
+              event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceBlocked,
+              userId,
+              subscription,
+              mode,
+              chatId,
+              endpoint,
+              extra: {
+                blocked_reason: "not_monthly_exhausted",
+                cap_reason: capReason,
+              },
+            });
+          }
+          throw error;
+        }
+
+        const allowanceContext = {
           userId,
-          mode,
           subscription,
-          estimatedInputTokens,
-          extraUsageConfig,
-          selectedModel,
-          organizationId,
-        ));
+          mode,
+          capReason,
+          hasAttachments: fileCounts.totalFiles > 0,
+        };
+        const allowanceStatus =
+          await getPaidDailyFreeAllowanceStatus(allowanceContext);
+        const allowanceMetadata =
+          paidDailyFreeAllowanceStatusToMetadata(allowanceStatus);
+        error.metadata = {
+          ...error.metadata,
+          paidDailyFreeAllowance: allowanceMetadata,
+        };
+
+        if (!limitRescue) {
+          throw error;
+        }
+
+        const allowanceReservation =
+          await reservePaidDailyFreeAllowanceRequest(allowanceContext);
+        error.metadata = {
+          ...error.metadata,
+          paidDailyFreeAllowance: paidDailyFreeAllowanceStatusToMetadata(
+            allowanceReservation.status,
+          ),
+        };
+
+        if (!allowanceReservation.allowed) {
+          capturePaidDailyFreeAllowanceServerEvent({
+            event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceBlocked,
+            userId,
+            subscription,
+            mode,
+            chatId,
+            endpoint,
+            reservation: allowanceReservation,
+            extra: {
+              blocked_reason:
+                allowanceReservation.blockReason ??
+                allowanceReservation.status.unavailableReason,
+              cap_reason: capReason,
+            },
+          });
+          throw error;
+        }
+
+        paidDailyFreeAllowanceReservation = allowanceReservation;
+        selectedModel = PAID_DAILY_FREE_ALLOWANCE_MODEL;
+        chatLogger.setChat(chatLogContext, selectedModel);
+        rateLimitInfo =
+          createPaidDailyFreeAllowanceRateLimitInfo(allowanceReservation);
+        capturePaidDailyFreeAllowanceServerEvent({
+          event: PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceStarted,
+          userId,
+          subscription,
+          mode,
+          chatId,
+          endpoint,
+          reservation: allowanceReservation,
+          extra: {
+            selected_model: selectedModel,
+          },
+        });
+      }
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -598,7 +714,14 @@ export const createChatHandler = () => {
               extraUsageConfig,
               subscription,
             });
+            const paidDailyFreeAllowanceBudgetSnapshot =
+              paidDailyFreeAllowanceReservation
+                ? createPaidDailyFreeAllowanceBudgetSnapshot(
+                    paidDailyFreeAllowanceReservation,
+                  )
+                : null;
             const effectiveBudgetSnapshot =
+              paidDailyFreeAllowanceBudgetSnapshot ??
               budgetSnapshot ??
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
@@ -666,7 +789,73 @@ export const createChatHandler = () => {
                     ? usageTracker.providerCost
                     : undefined;
 
-                if (subscription === "free") {
+                if (paidDailyFreeAllowanceReservation) {
+                  const allowanceCostRecord =
+                    await recordPaidDailyFreeAllowanceCost(
+                      userId,
+                      usageCostRecord.costDollars,
+                    );
+                  if (!allowanceCostRecord.recorded) {
+                    phLogger.warn(
+                      "Paid daily free allowance cost recording failed",
+                      {
+                        userId,
+                        chatId,
+                        endpoint,
+                        mode,
+                        subscription,
+                        selected_model: selectedModel,
+                        cost_dollars: usageCostRecord.costDollars,
+                        cost_record_failure_reason:
+                          allowanceCostRecord.unavailableReason,
+                      },
+                    );
+                  }
+                  usageTracker.log({
+                    userId,
+                    organizationId,
+                    chatId,
+                    endpoint,
+                    mode,
+                    subscription,
+                    selectedModel,
+                    selectedModelOverride,
+                    responseModel: state.responseModel,
+                    configuredModelId,
+                    rateLimitInfo,
+                  });
+                  const cutOff = state.stoppedDueToBudgetExhaustion;
+                  capturePaidDailyFreeAllowanceServerEvent({
+                    event: cutOff
+                      ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
+                      : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
+                    userId,
+                    subscription,
+                    mode,
+                    chatId,
+                    endpoint,
+                    reservation: paidDailyFreeAllowanceReservation,
+                    extra: {
+                      cost_dollars: usageCostRecord.costDollars,
+                      model_cost_dollars: usageCostRecord.modelCostDollars,
+                      non_model_cost_dollars:
+                        usageCostRecord.nonModelCostDollars,
+                      selected_model: selectedModel,
+                      response_model: state.responseModel,
+                      cost_source: usageCostRecord.costSource,
+                      paid_daily_free_allowance_cost_recorded:
+                        allowanceCostRecord.recorded,
+                      paid_daily_free_allowance_cost_record_failure_reason:
+                        allowanceCostRecord.recorded
+                          ? undefined
+                          : allowanceCostRecord.unavailableReason,
+                      paid_daily_free_allowance_cost_record_next_dollars:
+                        allowanceCostRecord.recorded
+                          ? allowanceCostRecord.nextCostDollars
+                          : undefined,
+                    },
+                  });
+                } else if (subscription === "free") {
                   await recordFreeMonthlyCost(
                     userId,
                     usageCostRecord.costDollars,
@@ -707,6 +896,13 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  ...(paidDailyFreeAllowanceReservation && {
+                    paidDailyFreeAllowance:
+                      createPaidDailyFreeAllowanceUsageLogContext(
+                        paidDailyFreeAllowanceReservation,
+                        state.stoppedDueToBudgetExhaustion,
+                      ),
+                  }),
                 });
               } finally {
                 await releaseFreeRunLockOnce();

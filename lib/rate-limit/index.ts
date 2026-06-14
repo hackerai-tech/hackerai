@@ -61,6 +61,23 @@ export {
   checkFreeMonthlyCostLimit,
   recordFreeMonthlyCost,
 } from "./free-monthly-cost";
+export {
+  getPaidDailyFreeAllowanceStatus,
+  reservePaidDailyFreeAllowanceRequest,
+  recordPaidDailyFreeAllowanceCost,
+  paidDailyFreeAllowanceStatusToMetadata,
+  getPaidDailyFreeAllowanceKeys,
+  getPaidDailyFreeAllowanceRolloutPercent,
+  getPaidDailyFreeAllowanceRequestsPerDay,
+  getPaidDailyFreeAllowanceCostLimitDollars,
+  PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT,
+  PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT,
+  PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT,
+  type PaidDailyFreeAllowanceMetadata,
+  type PaidDailyFreeAllowanceReservation,
+  type PaidDailyFreeAllowanceStatus,
+  type PaidDailyFreeAllowanceCostRecordResult,
+} from "./paid-daily-free-allowance";
 
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";

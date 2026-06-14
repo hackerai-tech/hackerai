@@ -19,6 +19,7 @@ import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
 import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
+import type { RetryOptions } from "../hooks/useChatHandlers";
 import { toast } from "sonner";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
@@ -28,7 +29,7 @@ interface MessagesProps {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
-  onRetry: () => void;
+  onRetry: (options?: RetryOptions) => void;
   onContinue?: () => void;
   onReconnect?: () => void;
   onEditMessage: (
