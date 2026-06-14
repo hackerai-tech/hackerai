@@ -342,4 +342,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(emptyPayloadIdx).toBeGreaterThan(guardIdx);
     expect(triggerIdx).toBeGreaterThan(emptyPayloadIdx);
   });
+
+  test("agent-long passes Vercel-derived region to Trigger.dev", () => {
+    const routingIdx = routeSrc.indexOf(
+      "getTriggerRegionForVercelRequest(req)",
+    );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", routingIdx);
+    const regionOptionIdx = routeSrc.indexOf(
+      "region: triggerRegion",
+      triggerIdx,
+    );
+
+    expect(routingIdx).toBeGreaterThan(-1);
+    expect(triggerIdx).toBeGreaterThan(routingIdx);
+    expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
+    expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
+    expect(routeSrc).not.toMatch(/trigger region routing/);
+  });
 });
