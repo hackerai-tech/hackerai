@@ -162,6 +162,30 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
+  it.each([
+    "ask-model",
+    "ask-model-free",
+    "model-gemini-3-flash",
+    "model-deepseek-v4-flash",
+  ])(
+    "keeps reasoning disabled for auto/standard ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({ enabled: false });
+    },
+  );
+
+  it.each(["model-deepseek-v4-pro", "model-sonnet-4.6", "model-opus-4.6"])(
+    "enables medium reasoning for ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "medium",
+      });
+    },
+  );
+
   it("includes reasoning settings independent of fallback chain", () => {
     const reasoning = buildProviderOptions(
       true,

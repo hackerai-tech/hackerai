@@ -566,16 +566,23 @@ export function buildProviderOptions(
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
+  const isAskProOrMaxModel =
+    mode === "ask" &&
+    (modelName === "model-deepseek-v4-pro" ||
+      modelName === "model-sonnet-4.6" ||
+      modelName === "model-opus-4.6");
+  const reasoning = isReasoningModel
+    ? {
+        enabled: true,
+        ...(isDeepSeekV4 && { effort: "xhigh" }),
+      }
+    : isAskProOrMaxModel
+      ? { enabled: true, effort: "medium" }
+      : { enabled: false };
+
   return {
     openrouter: {
-      ...(isReasoningModel
-        ? {
-            reasoning: {
-              enabled: true,
-              ...(isDeepSeekV4 && { effort: "xhigh" }),
-            },
-          }
-        : { reasoning: { enabled: false } }),
+      reasoning,
       ...(userId && { user: userId }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
