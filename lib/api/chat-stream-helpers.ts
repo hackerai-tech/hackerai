@@ -490,6 +490,16 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
   "fallback-grok-4.3",
 ] as const satisfies readonly ModelName[];
 
+const ASK_MEDIUM_REASONING_MODELS = [
+  "model-deepseek-v4-pro",
+  "model-sonnet-4.6",
+  "model-opus-4.6",
+] as const satisfies readonly ModelName[];
+
+const isAskMediumReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
 };
@@ -566,17 +576,12 @@ export function buildProviderOptions(
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const isAskProOrMaxModel =
-    mode === "ask" &&
-    (modelName === "model-deepseek-v4-pro" ||
-      modelName === "model-sonnet-4.6" ||
-      modelName === "model-opus-4.6");
   const reasoning = isReasoningModel
     ? {
         enabled: true,
         ...(isDeepSeekV4 && { effort: "xhigh" }),
       }
-    : isAskProOrMaxModel
+    : mode === "ask" && isAskMediumReasoningModel(modelName)
       ? { enabled: true, effort: "medium" }
       : { enabled: false };
 
