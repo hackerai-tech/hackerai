@@ -217,9 +217,15 @@ const describeAttachmentObject = (
       : undefined);
   const filename =
     getStringField(value, ["filename", "fileName", "name", "path"]) ?? "file";
-  const hasPayload = ["url", "uri", "data", "base64", "content", "value"].some(
-    (key) => typeof value[key] === "string" && value[key],
-  );
+  const hasPayload = [
+    "url",
+    "uri",
+    "image",
+    "data",
+    "base64",
+    "content",
+    "value",
+  ].some((key) => value[key] != null && value[key] !== "");
   const keySuggestsMedia = keyHint ? MEDIA_KEY_PATTERN.test(keyHint) : false;
   const typeSuggestsMedia =
     typeof value.type === "string" && MEDIA_KEY_PATTERN.test(value.type);
