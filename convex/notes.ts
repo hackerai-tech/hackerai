@@ -133,7 +133,7 @@ export const createNoteForBackend = mutation({
 
 /**
  * Get notes for backend processing (for system prompt injection)
- * Enforces token limit based on user plan (same as memories)
+ * Enforces token limit based on user plan.
  * Returns notes sorted by updated_at (newest first)
  */
 export const getNotesForBackend = query({

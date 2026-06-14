@@ -430,7 +430,7 @@ export const systemPrompt = async (
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
-    (userCustomization?.include_memory_entries ?? true);
+    (userCustomization?.include_notes ?? true);
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,

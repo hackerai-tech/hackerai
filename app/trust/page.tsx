@@ -199,7 +199,7 @@ export default function TrustPage() {
                 "URLs and search queries used when the agent browses or searches the web",
                 "Terminal commands and their output from agent sandbox sessions",
                 "Browser screenshots captured inside the agent sandbox",
-                "Memories, notes, and custom instructions you save",
+                "Notes and custom instructions you save",
                 "Account information such as your email address and name",
                 "Usage analytics and error diagnostics",
               ]}

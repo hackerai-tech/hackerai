@@ -50,7 +50,7 @@ export const createTools = (
   mode: ChatMode = "agent",
   userLocation: Geo,
   initialTodos?: Todo[],
-  memoryEnabled: boolean = true,
+  notesEnabled: boolean = true,
   isTemporary: boolean = false,
   assistantMessageId?: string,
   sandboxPreference?: SandboxPreference,
@@ -146,7 +146,7 @@ export const createTools = (
       file: createFile(context),
       todo_write: createTodoWrite(context),
       ...(!isTemporary &&
-        memoryEnabled && {
+        notesEnabled && {
           create_note: createCreateNote(context),
           list_notes: createListNotes(context),
           update_note: createUpdateNote(context),
@@ -166,7 +166,7 @@ export const createTools = (
     return mode === "ask"
       ? {
           ...(!isTemporary &&
-            memoryEnabled && {
+            notesEnabled && {
               create_note: allTools.create_note,
               list_notes: allTools.list_notes,
               update_note: allTools.update_note,

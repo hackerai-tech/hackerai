@@ -115,7 +115,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
@@ -200,7 +199,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
@@ -272,7 +270,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
@@ -348,7 +345,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
@@ -425,7 +421,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
@@ -488,7 +483,6 @@ describe("userDeletion", () => {
       mockQueryBuilder.collect
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce([]) // files - empty
-        .mockResolvedValueOnce([]) // memories
         .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 

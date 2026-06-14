@@ -287,9 +287,9 @@ export const createChatHandler = () => {
         );
       }
 
-      const memoryEnabled =
+      const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
-        (userCustomization?.include_memory_entries ?? true);
+        (userCustomization?.include_notes ?? true);
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -309,7 +309,7 @@ export const createChatHandler = () => {
           isNewChat,
           fileCount: fileCounts.totalFiles,
           imageCount: fileCounts.imageCount,
-          memoryEnabled,
+          notesEnabled,
         },
         selectedModel,
       );
@@ -416,7 +416,7 @@ export const createChatHandler = () => {
               mode,
               userLocation,
               baseTodos,
-              memoryEnabled,
+              notesEnabled,
               temporary,
               assistantMessageId,
               sandboxPreference,
@@ -566,8 +566,7 @@ export const createChatHandler = () => {
 
             // Inject notes into messages instead of system prompt
             // to keep the system prompt stable for prompt caching
-            const shouldIncludeNotes =
-              userCustomization?.include_memory_entries ?? true;
+            const shouldIncludeNotes = userCustomization?.include_notes ?? true;
             const noteInjectionOpts = {
               userId,
               subscription,

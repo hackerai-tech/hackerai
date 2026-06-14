@@ -777,7 +777,7 @@ describe("createChatLogger OpenRouter metadata", () => {
           messageCount: 1,
           estimatedInputTokens: 100,
           isNewChat: false,
-          memoryEnabled: false,
+          notesEnabled: false,
         },
         "model-opus-4.6",
       );

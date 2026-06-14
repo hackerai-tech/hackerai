@@ -213,6 +213,10 @@ export default defineSchema({
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
+    include_notes: v.optional(v.boolean()),
+    // Legacy preference retained on historical rows so old documents still
+    // pass validation. New code writes include_notes and uses this only as a
+    // fallback when returning older customization rows.
     include_memory_entries: v.optional(v.boolean()),
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
@@ -414,16 +418,6 @@ export default defineSchema({
     ])
     .index("by_user_and_source", ["user_id", "source_id"])
     .index("by_customer_and_status", ["stripe_customer_id", "status"]),
-
-  memories: defineTable({
-    user_id: v.string(),
-    memory_id: v.string(),
-    content: v.string(),
-    update_time: v.number(),
-    tokens: v.number(),
-  })
-    .index("by_memory_id", ["memory_id"])
-    .index("by_user_and_update_time", ["user_id", "update_time"]),
 
   notes: defineTable({
     user_id: v.string(),
