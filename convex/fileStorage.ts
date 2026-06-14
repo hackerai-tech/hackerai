@@ -350,6 +350,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
     detachedRecordCount: v.number(),
     deletedRecordCount: v.number(),
     aggregateRemovedCount: v.number(),
+    aggregateFailedCount: v.number(),
     failedCount: v.number(),
     samples: v.array(
       v.object({
@@ -428,6 +429,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
     let detachedRecordCount = 0;
     let deletedRecordCount = 0;
     let aggregateRemovedCount = 0;
+    let aggregateFailedCount = 0;
     const failures: Array<{
       fileId: Id<"files">;
       name: string;
@@ -452,8 +454,27 @@ export const purgeLegacyConvexStorageFiles = mutation({
             });
           }
 
-          await fileCountAggregate.deleteIfExists(ctx, file);
-          aggregateRemovedCount++;
+          try {
+            await fileCountAggregate.deleteIfExists(ctx, file);
+            aggregateRemovedCount++;
+          } catch (error) {
+            aggregateFailedCount++;
+            convexLogger.warn(
+              "legacy_convex_storage_aggregate_cleanup_failed",
+              {
+                fileId: file._id,
+                userId: file.user_id,
+                error:
+                  error instanceof Error
+                    ? {
+                        name: error.name,
+                        message: error.message,
+                        stack: error.stack,
+                      }
+                    : String(error),
+              },
+            );
+          }
 
           if (deleteDatabaseRecords) {
             await ctx.db.delete(file._id);
@@ -501,6 +522,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
       detachedRecordCount,
       deletedRecordCount,
       aggregateRemovedCount,
+      aggregateFailedCount,
       failedCount: failures.length,
       samples,
       failures,
@@ -521,6 +543,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
       detachedRecordCount,
       deletedRecordCount,
       aggregateRemovedCount,
+      aggregateFailedCount,
       failedCount: failures.length,
     });
 
