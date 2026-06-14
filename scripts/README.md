@@ -77,6 +77,29 @@ Two different strategies are used based on subscription tier:
 
 Token costs are calculated per request based on model pricing and actual token usage, then deducted from the monthly budget. The budget refills every 30 days. Paid users can also enable extra usage (prepaid balance) when their monthly budget is exceeded.
 
+### Paid Daily Free Allowance Testing
+
+Use the `paid-daily-free-allowance-dev.ts` helper to prime a paid test user for the monthly-exhausted rescue flow.
+
+```bash
+# Make the pro test user hit monthly_exhausted and clear today's rescue allowance
+pnpm paid-allowance:dev prime pro
+
+# Inspect the monthly bucket and today's allowance counters
+pnpm paid-allowance:dev status pro
+
+# Restore the paid monthly bucket and clear today's allowance
+pnpm paid-allowance:dev reset pro
+```
+
+For local manual testing, run the app with the allowance rollout forced on:
+
+```bash
+PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT=100 pnpm dev
+```
+
+Then sign in as the pro test user, send a text-only Ask message, confirm the limit error keeps **Add Credits** primary, and use **Try free Ask** to retry on the allowance route.
+
 ## Other Scripts
 
 ### Test User Management
