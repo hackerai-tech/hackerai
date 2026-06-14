@@ -21,7 +21,7 @@ jest.mock("@/lib/logger", () => ({
 const GEMINI_SLUG = "google/gemini-3-flash-preview";
 const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
-const KIMI_SLUG = "moonshotai/kimi-k2.7-code";
+const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
   it("resolves Opus 4.6 ask chain to Gemini slug", () => {

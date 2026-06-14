@@ -377,7 +377,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code",
+        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -833,7 +833,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code",
+        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
       });
       chatLogger.emitUnexpectedError(err);
 

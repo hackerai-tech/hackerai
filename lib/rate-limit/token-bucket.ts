@@ -34,7 +34,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "fallback-gemini-3.5-flash": { input: 1.5, output: 9.0 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // "agent-model" and "model-kimi-k2.7-code" route to
-  // moonshotai/kimi-k2.7-code via lib/ai/providers.ts. Rates from OpenRouter:
+  // moonshotai/kimi-k2.7-code:exacto via lib/ai/providers.ts. Rates from OpenRouter:
   // $0.95 in / $4.00 out per 1M tokens. The old model-kimi-k2.6 key remains
   // priced here as a compatibility alias. Cache-read discount ($0.16/M) applies
   // when provider cost is available via usage.raw.cost.
