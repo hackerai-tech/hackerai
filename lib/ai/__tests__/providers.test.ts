@@ -223,9 +223,9 @@ describe("supportsMultimodalToolResults", () => {
   it("allows Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
-    expect(supportsMultimodalToolResults("moonshotai/kimi-k2.7-code")).toBe(
-      true,
-    );
+    expect(
+      supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),
+    ).toBe(true);
   });
 
   it("still rejects text-only DeepSeek routes", () => {

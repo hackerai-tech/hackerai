@@ -245,7 +245,7 @@ const openrouter = createOpenRouter({
 
 type OpenRouterInstance = typeof openrouter;
 
-const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code";
+const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
