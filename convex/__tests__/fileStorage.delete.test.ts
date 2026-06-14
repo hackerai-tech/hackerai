@@ -323,12 +323,14 @@ describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
   const makeQueryChain = (rows: any[]) => {
     const rangeBuilder: any = {
       eq: jest.fn(() => rangeBuilder),
+      gt: jest.fn(() => "range"),
       lt: jest.fn(() => "range"),
     };
     const filterBuilder = {
       field: jest.fn((field: string) => field),
       neq: jest.fn(() => true),
       eq: jest.fn(() => true),
+      lt: jest.fn(() => true),
       and: jest.fn(() => true),
     };
     const chain: any = {
@@ -366,7 +368,7 @@ describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
   });
 
   it("reports legacy Convex storage candidates without deleting anything in dry run", async () => {
-    const { chain } = makeQueryChain([
+    const { chain, rangeBuilder, filterBuilder } = makeQueryChain([
       attachedLegacyFile,
       unattachedLegacyFile,
     ]);
@@ -392,6 +394,16 @@ describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
       deletedRecordCount: 0,
       failedCount: 0,
     });
+    expect(chain.withIndex).toHaveBeenCalledWith(
+      "by_storage_id",
+      expect.any(Function),
+    );
+    expect(rangeBuilder.gt).toHaveBeenCalledWith("storage_id", undefined);
+    expect(filterBuilder.eq).toHaveBeenCalledWith("s3_key", undefined);
+    expect(filterBuilder.lt).toHaveBeenCalledWith(
+      "_creationTime",
+      cutoffTimeMs,
+    );
     expect(result.samples).toHaveLength(2);
     expect(mockCtx.storage.delete).not.toHaveBeenCalled();
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
