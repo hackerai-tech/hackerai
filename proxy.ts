@@ -1,5 +1,5 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
-import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
@@ -93,10 +93,7 @@ function withReferralCookie(
   return response;
 }
 
-export default async function middleware(
-  request: NextRequest,
-  _event: NextFetchEvent,
-) {
+export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
   // Desktop app: redirect unauthenticated users to desktop-specific error page
@@ -123,7 +120,7 @@ export default async function middleware(
       if (isRateLimitError(error)) {
         refreshHitRateLimit = true;
         console.warn(
-          "[Auth Middleware] WorkOS rate limit hit during session refresh",
+          "[Auth Proxy] WorkOS rate limit hit during session refresh",
         );
       }
     },
@@ -180,7 +177,7 @@ export default async function middleware(
   }
 
   if (!authorizationUrl) {
-    console.error("[Auth Middleware] authorizationUrl unavailable", {
+    console.error("[Auth Proxy] authorizationUrl unavailable", {
       pathname,
       hasSession: !!session.user,
     });
