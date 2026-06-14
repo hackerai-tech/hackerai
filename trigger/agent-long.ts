@@ -764,7 +764,7 @@ export const agentLongTask = task({
         );
       }
 
-      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+      const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -783,7 +783,7 @@ export const agentLongTask = task({
           isNewChat: !!isNewChat,
           fileCount: 0,
           imageCount: 0,
-          memoryEnabled,
+          notesEnabled,
         },
         selectedModel,
       );
@@ -907,7 +907,7 @@ export const agentLongTask = task({
               mode,
               userLocation,
               baseTodos,
-              memoryEnabled,
+              notesEnabled,
               !!temporary,
               assistantMessageId,
               sandboxPreference,
@@ -1048,8 +1048,7 @@ export const agentLongTask = task({
             const noteInjectionOpts = {
               userId,
               subscription,
-              shouldIncludeNotes:
-                userCustomization?.include_memory_entries ?? true,
+              shouldIncludeNotes: userCustomization?.include_notes ?? true,
               isTemporary: !!temporary as boolean | undefined,
             };
             finalMessages = await injectNotesIntoMessages(

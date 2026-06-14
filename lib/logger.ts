@@ -73,7 +73,7 @@ export interface ChatWideEvent {
     is_new_chat: boolean;
     file_count?: number;
     image_count?: number;
-    memory_enabled: boolean;
+    notes_enabled: boolean;
   };
 
   // Extra usage context (paid users)
@@ -304,7 +304,7 @@ export class WideEventBuilder {
     isNewChat: boolean;
     fileCount?: number;
     imageCount?: number;
-    memoryEnabled: boolean;
+    notesEnabled: boolean;
   }): this {
     this.event.chat = {
       message_count: chat.messageCount,
@@ -312,7 +312,7 @@ export class WideEventBuilder {
       is_new_chat: chat.isNewChat,
       file_count: chat.fileCount,
       image_count: chat.imageCount,
-      memory_enabled: chat.memoryEnabled,
+      notes_enabled: chat.notesEnabled,
     };
     return this;
   }

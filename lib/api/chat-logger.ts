@@ -67,7 +67,7 @@ export interface ChatContext {
   isNewChat: boolean;
   fileCount?: number;
   imageCount?: number;
-  memoryEnabled: boolean;
+  notesEnabled: boolean;
 }
 
 export interface RateLimitContext {

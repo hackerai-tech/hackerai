@@ -11,14 +11,12 @@ import type { SubscriptionTier } from "@/types";
 
 interface PersonalizationTabProps {
   onCustomInstructions: () => void;
-  // onManageMemories: () => void;
   onManageNotes: () => void;
   subscription?: SubscriptionTier;
 }
 
 const PersonalizationTab = ({
   onCustomInstructions,
-  // onManageMemories,
   onManageNotes,
   subscription,
 }: PersonalizationTabProps) => {
@@ -50,7 +48,7 @@ const PersonalizationTab = ({
         </div>
       </div>
 
-      {/* Notes Section (formerly Memory Section) */}
+      {/* Notes Section */}
       {subscription && (
         <div>
           <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
@@ -63,11 +61,11 @@ const PersonalizationTab = ({
                 </div>
               </div>
               <Switch
-                checked={userCustomization?.include_memory_entries ?? true}
+                checked={userCustomization?.include_notes ?? true}
                 onCheckedChange={async (checked) => {
                   try {
                     await saveCustomization({
-                      include_memory_entries: checked,
+                      include_notes: checked,
                     });
                   } catch (error) {
                     console.error("Failed to save customization:", error);
@@ -90,9 +88,6 @@ const PersonalizationTab = ({
               <div>
                 <div className="font-medium">Manage notes</div>
               </div>
-              {/* <Button variant="outline" size="sm" onClick={onManageMemories}>
-                Manage
-              </Button> */}
               <Button variant="outline" size="sm" onClick={onManageNotes}>
                 Manage
               </Button>

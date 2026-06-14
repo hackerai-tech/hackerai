@@ -13,9 +13,8 @@ import { fileCountAggregate } from "./fileAggregate";
  * 4) Files + storage (owned by user, may be referenced by messages)
  *    - S3 files: Batch deleted using scheduled action
  *    - Convex storage files: Deleted directly
- * 5) Memories (owned by user)
- * 6) Notes (owned by user)
- * 7) User customization (owned by user)
+ * 5) Notes (owned by user)
+ * 6) User customization (owned by user)
  *
  * Uses parallel queries and deletions for optimal performance.
  * S3 cleanup is scheduled asynchronously and errors don't block user deletion.
@@ -31,7 +30,7 @@ export const deleteAllUserData = mutation({
 
     try {
       // Fetch all user data in parallel using indexed queries
-      const [chats, files, memories, notes, customization, messagesByUser] =
+      const [chats, files, notes, customization, messagesByUser] =
         await Promise.all([
           ctx.db
             .query("chats")
@@ -42,12 +41,6 @@ export const deleteAllUserData = mutation({
           ctx.db
             .query("files")
             .withIndex("by_user_id", (q) => q.eq("user_id", user.subject))
-            .collect(),
-          ctx.db
-            .query("memories")
-            .withIndex("by_user_and_update_time", (q) =>
-              q.eq("user_id", user.subject),
-            )
             .collect(),
           ctx.db
             .query("notes")
@@ -158,18 +151,7 @@ export const deleteAllUserData = mutation({
         }
       }
 
-      // Step 5: Delete memories (independent of other data)
-      await Promise.all(
-        memories.map(async (memory) => {
-          try {
-            await ctx.db.delete(memory._id);
-          } catch (error) {
-            console.error(`Failed to delete memory ${memory._id}:`, error);
-          }
-        }),
-      );
-
-      // Step 6: Delete notes (independent of other data)
+      // Step 5: Delete notes (independent of other data)
       await Promise.all(
         notes.map(async (note) => {
           try {
@@ -180,7 +162,7 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 7: Delete user customization (independent of other data)
+      // Step 6: Delete user customization (independent of other data)
       if (customization) {
         try {
           await ctx.db.delete(customization._id);

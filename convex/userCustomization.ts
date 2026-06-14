@@ -2,6 +2,12 @@ import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 
+const shouldIncludeNotes = (customization: {
+  include_notes?: boolean;
+  include_memory_entries?: boolean;
+}) =>
+  customization.include_notes ?? customization.include_memory_entries ?? true;
+
 /**
  * Save or update user customization data
  */
@@ -12,7 +18,7 @@ export const saveUserCustomization = mutation({
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
-    include_memory_entries: v.optional(v.boolean()),
+    include_notes: v.optional(v.boolean()),
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
@@ -105,8 +111,8 @@ export const saveUserCustomization = mutation({
           patch.traits = args.traits.trim() || undefined;
         if (args.additional_info !== undefined)
           patch.additional_info = args.additional_info.trim() || undefined;
-        if (args.include_memory_entries !== undefined)
-          patch.include_memory_entries = args.include_memory_entries;
+        if (args.include_notes !== undefined)
+          patch.include_notes = args.include_notes;
         if (args.guardrails_config !== undefined)
           patch.guardrails_config = args.guardrails_config.trim() || undefined;
         if (args.caido_enabled !== undefined)
@@ -126,7 +132,7 @@ export const saveUserCustomization = mutation({
           personality: args.personality?.trim() || undefined,
           traits: args.traits?.trim() || undefined,
           additional_info: args.additional_info?.trim() || undefined,
-          include_memory_entries: args.include_memory_entries ?? true,
+          include_notes: args.include_notes ?? true,
           guardrails_config: args.guardrails_config?.trim() || undefined,
           caido_enabled: args.caido_enabled,
           caido_port: args.caido_port ? args.caido_port : undefined,
@@ -163,7 +169,7 @@ export const getUserCustomization = query({
       personality: v.optional(v.string()),
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
-      include_memory_entries: v.boolean(),
+      include_notes: v.boolean(),
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
@@ -193,7 +199,7 @@ export const getUserCustomization = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
-        include_memory_entries: customization.include_memory_entries ?? true,
+        include_notes: shouldIncludeNotes(customization),
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
@@ -223,7 +229,7 @@ export const getUserCustomizationForBackend = query({
       personality: v.optional(v.string()),
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
-      include_memory_entries: v.boolean(),
+      include_notes: v.boolean(),
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
       caido_port: v.optional(v.number()),
@@ -250,7 +256,7 @@ export const getUserCustomizationForBackend = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
-        include_memory_entries: customization.include_memory_entries ?? true,
+        include_notes: shouldIncludeNotes(customization),
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
         caido_port: customization.caido_port,
