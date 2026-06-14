@@ -40,6 +40,7 @@ const {
   extractSummaryText,
   buildSummaryMessage,
   boundModelMessagesForSummarization,
+  compactModelMessagesForSummarization,
   estimateSummaryInputTokens,
 } = require("../helpers") as typeof import("../helpers");
 
@@ -503,6 +504,35 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(serializedMessages).toContain("media payloads omitted");
     expect(serializedMessages).not.toContain(dataUri);
     expect(serializedMessages).not.toContain(rawSnapshot);
+  });
+
+  it("should convert native image and binary file parts to text placeholders", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            mediaType: "image/png",
+            image: new Uint8Array([1, 2, 3, 4]),
+          },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "report.pdf",
+            data: new Uint8Array([5, 6, 7, 8]),
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    const compacted = compactModelMessagesForSummarization(messages);
+
+    expect(compacted[0].content).toEqual([
+      { type: "text", text: "[Attached image/png: file]" },
+      { type: "text", text: "[Attached application/pdf: report.pdf]" },
+    ]);
+    expect(JSON.stringify(compacted)).not.toContain('"0":1');
   });
 
   it("should bound total summarization modelMessages input", () => {
