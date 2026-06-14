@@ -493,4 +493,40 @@ describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
       aggregateRemovedCount: 1,
     });
   });
+
+  it("clears stale DB references when the Convex storage blob is already missing", async () => {
+    const { chain } = makeQueryChain([attachedLegacyFile]);
+    mockCtx.db.query.mockReturnValue(chain);
+    mockCtx.storage.delete.mockRejectedValue(
+      new Error(`storage id ${attachedLegacyFile.storage_id} not found`),
+    );
+
+    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
+
+    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
+      serviceKey: "service-key",
+      cutoffTimeMs,
+      dryRun: false,
+      includeAttached: true,
+    });
+
+    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
+      attachedLegacyFile.storage_id,
+    );
+    expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+      mockCtx,
+      attachedLegacyFile,
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(attachedLegacyFile._id, {
+      storage_id: undefined,
+    });
+    expect(result).toMatchObject({
+      deletedStorageCount: 0,
+      missingStorageCount: 1,
+      detachedRecordCount: 1,
+      aggregateRemovedCount: 1,
+      failedCount: 0,
+      failures: [],
+    });
+  });
 });

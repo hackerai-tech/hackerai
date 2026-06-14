@@ -18,6 +18,12 @@ const LEGACY_CONVEX_PURGE_DEFAULT_LIMIT = 100;
 const LEGACY_CONVEX_PURGE_MAX_LIMIT = 500;
 const LEGACY_CONVEX_PURGE_SAMPLE_LIMIT = 20;
 
+function isMissingConvexStorageError(error: unknown): boolean {
+  return (
+    error instanceof Error && /^storage id .+ not found$/.test(error.message)
+  );
+}
+
 /**
  * Get download URL for a file by storageId (on-demand for non-image files)
  */
@@ -340,6 +346,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
     attachedCount: v.number(),
     unattachedCount: v.number(),
     deletedStorageCount: v.number(),
+    missingStorageCount: v.number(),
     detachedRecordCount: v.number(),
     deletedRecordCount: v.number(),
     aggregateRemovedCount: v.number(),
@@ -417,6 +424,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
       }));
 
     let deletedStorageCount = 0;
+    let missingStorageCount = 0;
     let detachedRecordCount = 0;
     let deletedRecordCount = 0;
     let aggregateRemovedCount = 0;
@@ -429,8 +437,20 @@ export const purgeLegacyConvexStorageFiles = mutation({
     if (!dryRun) {
       for (const file of candidates) {
         try {
-          await ctx.storage.delete(file.storage_id);
-          deletedStorageCount++;
+          try {
+            await ctx.storage.delete(file.storage_id);
+            deletedStorageCount++;
+          } catch (error) {
+            if (!isMissingConvexStorageError(error)) {
+              throw error;
+            }
+
+            missingStorageCount++;
+            convexLogger.warn("legacy_convex_storage_already_missing", {
+              fileId: file._id,
+              userId: file.user_id,
+            });
+          }
 
           await fileCountAggregate.deleteIfExists(ctx, file);
           aggregateRemovedCount++;
@@ -477,6 +497,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
       attachedCount,
       unattachedCount,
       deletedStorageCount,
+      missingStorageCount,
       detachedRecordCount,
       deletedRecordCount,
       aggregateRemovedCount,
@@ -496,6 +517,7 @@ export const purgeLegacyConvexStorageFiles = mutation({
       attachedCount,
       unattachedCount,
       deletedStorageCount,
+      missingStorageCount,
       detachedRecordCount,
       deletedRecordCount,
       aggregateRemovedCount,
