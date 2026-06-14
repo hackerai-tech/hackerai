@@ -9,7 +9,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 type CostTier = "low" | "medium" | "high" | "very-high";
 
 // Cost tier per HackerAI tier id. Standard and Pro are mode-aware in ask;
-// Agent keeps the higher-cost coding/automation models.
+// Agent keeps the higher-cost coding/automation models, including Kimi K2.7 Code.
 export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
   switch (modelId) {
     case "hackerai-standard":

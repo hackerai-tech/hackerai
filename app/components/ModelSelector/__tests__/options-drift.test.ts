@@ -36,7 +36,7 @@ describe("ModelSelector tier ↔ provider drift", () => {
       "model-gemini-3-flash",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-kimi-k2.6",
+      "model-kimi-k2.7-code",
     );
   });
 

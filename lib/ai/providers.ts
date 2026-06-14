@@ -245,18 +245,23 @@ const openrouter = createOpenRouter({
 
 type OpenRouterInstance = typeof openrouter;
 
+const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code";
+
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or("google/gemini-3-flash-preview"),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
-    "agent-model": or("moonshotai/kimi-k2.6:exacto"),
+    "agent-model": or(KIMI_K2_7_CODE_SLUG),
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
-    "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
+    "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
+    // Compatibility alias for stale internal references persisted before the
+    // Kimi 2.7 Code rollout. New selections should use model-kimi-k2.7-code.
+    "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
     "fallback-agent-model": or("google/gemini-3-flash-preview"),
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
     "fallback-gemini-3.5-flash": or("google/gemini-3.5-flash"),
@@ -272,14 +277,15 @@ export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
   "ask-model": "January 2025",
   "ask-model-free": "May 2025",
-  "agent-model": "April 2024",
+  "agent-model": "June 2025",
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-gemini-3-flash": "January 2025",
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
-  "model-kimi-k2.6": "April 2024",
+  "model-kimi-k2.7-code": "June 2025",
+  "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "fallback-gemini-3.5-flash": "May 2026",
@@ -298,7 +304,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
-  "model-kimi-k2.6": "Moonshot Kimi K2.6",
+  "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
+  "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-gemini-3.5-flash": "Google Gemini 3.5 Flash",
@@ -331,6 +338,7 @@ export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
     normalized === "agent-model" ||
+    normalized === "model-kimi-k2.7-code" ||
     normalized === "model-kimi-k2.6" ||
     normalized.includes("moonshotai/kimi") ||
     normalized.includes("kimi-")
@@ -377,7 +385,9 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return isAgentMode(mode) ? "model-kimi-k2.6" : "model-gemini-3-flash";
+      return isAgentMode(mode)
+        ? "model-kimi-k2.7-code"
+        : "model-gemini-3-flash";
     case "hackerai-pro":
       return isAgentMode(mode) ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
     case "hackerai-max":

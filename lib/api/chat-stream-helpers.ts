@@ -476,12 +476,13 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model": ["fallback-grok-4.3"],
   "agent-model": ["fallback-grok-4.3"],
   "model-gemini-3-flash": ["fallback-grok-4.3"],
+  "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-kimi-k2.6", "fallback-grok-4.3"],
+    agent: ["model-kimi-k2.7-code", "fallback-grok-4.3"],
     ask: ["model-gemini-3-flash"],
   };
 
