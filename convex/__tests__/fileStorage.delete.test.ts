@@ -529,4 +529,42 @@ describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
       failures: [],
     });
   });
+
+  it("still clears storage_id when aggregate cleanup exceeds Convex read limits", async () => {
+    const { chain } = makeQueryChain([attachedLegacyFile]);
+    mockCtx.db.query.mockReturnValue(chain);
+    mockFileCountAggregate.deleteIfExists.mockRejectedValueOnce(
+      new Error(
+        "Uncaught Error: Too many bytes read in a single function execution (limit: 16777216 bytes).",
+      ),
+    );
+
+    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
+
+    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
+      serviceKey: "service-key",
+      cutoffTimeMs,
+      dryRun: false,
+      includeAttached: true,
+    });
+
+    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
+      attachedLegacyFile.storage_id,
+    );
+    expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+      mockCtx,
+      attachedLegacyFile,
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(attachedLegacyFile._id, {
+      storage_id: undefined,
+    });
+    expect(result).toMatchObject({
+      deletedStorageCount: 1,
+      aggregateRemovedCount: 0,
+      aggregateFailedCount: 1,
+      detachedRecordCount: 1,
+      failedCount: 0,
+      failures: [],
+    });
+  });
 });
