@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  experimental: {
+    optimizePackageImports: ["lucide-react", "date-fns"],
+  },
   ...(process.env.NODE_ENV === "development" && {
     logging: {
       serverFunctions: false,

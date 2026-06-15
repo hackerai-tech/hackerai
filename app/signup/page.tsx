@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { ArrowRight, Gift } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -41,8 +41,6 @@ const buildAuthHref = (
   return query ? `/signup/auth?${query}` : "/signup/auth";
 };
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
 const getSafeDisplayName = (user: {
   firstName?: string | null;
   lastName?: string | null;
@@ -58,10 +56,13 @@ const getReferralInviteContext = async (
   referralCode: string,
 ): Promise<{ active: boolean; referrerName?: string }> => {
   try {
-    const invite = await convex.query(api.referrals.getReferralInvite, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      referralCode,
-    });
+    const invite = await getConvexClient().query(
+      api.referrals.getReferralInvite,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        referralCode,
+      },
+    );
 
     if (!invite?.active) return { active: false };
 

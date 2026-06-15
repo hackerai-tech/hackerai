@@ -1,14 +1,12 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
  * GET /api/team/extra-usage/confirm?session_id=cs_xxx
@@ -55,7 +53,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(redirectUrl, { status: 303 });
     }
 
-    await convex.mutation(api.teamExtraUsage.addTeamCredits, {
+    await getConvexClient().mutation(api.teamExtraUsage.addTeamCredits, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       organizationId,
       amountDollars,

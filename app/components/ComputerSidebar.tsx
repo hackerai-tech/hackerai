@@ -1,5 +1,6 @@
 import React from "react";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { createPortal } from "react-dom";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -17,7 +18,6 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
-import { DiffView } from "./DiffView";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
@@ -59,6 +59,15 @@ interface ComputerSidebarProps {
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
 }
+
+const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      Loading diff...
+    </div>
+  ),
+});
 
 const formatFileSize = (sizeBytes?: number): string | null => {
   if (typeof sizeBytes !== "number") return null;

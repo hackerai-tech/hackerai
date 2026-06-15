@@ -109,7 +109,11 @@ export default function RootLayout({
   );
 
   return (
-    <html lang="en" className="dark h-full" suppressHydrationWarning>
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} dark h-full`}
+      suppressHydrationWarning
+    >
       <head>
         <meta
           name="viewport"
@@ -117,9 +121,7 @@ export default function RootLayout({
         />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased h-full`}
-      >
+      <body className="antialiased h-full">
         <ConvexClientProvider>{content}</ConvexClientProvider>
       </body>
     </html>

@@ -7,7 +7,7 @@ import {
   ThumbsDown,
   Split,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
@@ -21,7 +21,7 @@ interface MessageActionsProps {
   isUser: boolean;
   isLastAssistantMessage: boolean;
   canRegenerate: boolean;
-  onRegenerate: () => void;
+  onRegenerate: () => void | Promise<void>;
   onEdit: () => void;
   onBranch?: () => void;
   isHovered: boolean;
@@ -51,6 +51,19 @@ interface MessageActionVisibility {
 
 const timestampClassName =
   "flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground tabular-nums whitespace-nowrap transition-opacity duration-200 ease-in-out";
+
+const getFaviconUrl = (domain: string) => {
+  return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+};
+
+const getDomain = (url: string) => {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.hostname}`;
+  } catch {
+    return url;
+  }
+};
 
 export function getMessageActionVisibility({
   isUser,
@@ -133,19 +146,14 @@ export const MessageActions = ({
   const [copied, setCopied] = useState(false);
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const regenerateInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  const getFaviconUrl = (domain: string) => {
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-  };
-
-  const getDomain = (url: string) => {
-    try {
-      const u = new URL(url);
-      return `${u.protocol}//${u.hostname}`;
-    } catch {
-      return url;
-    }
-  };
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const handleCopy = async () => {
     try {
@@ -164,9 +172,23 @@ export const MessageActions = ({
   };
 
   const handleRegenerate = () => {
-    if (isRegenerating) return;
+    if (!canRegenerate || regenerateInFlightRef.current) return;
+    regenerateInFlightRef.current = true;
     setIsRegenerating(true);
-    onRegenerate();
+
+    const resetRegenerateGuard = () => {
+      regenerateInFlightRef.current = false;
+      if (mountedRef.current) {
+        setIsRegenerating(false);
+      }
+    };
+
+    void Promise.resolve()
+      .then(onRegenerate)
+      .catch((error) => {
+        console.error("Failed to regenerate response:", error);
+      })
+      .finally(resetRegenerateGuard);
   };
 
   // Don't show actions for last assistant message when it's loading/streaming
@@ -193,11 +215,7 @@ export const MessageActions = ({
     hasTimestamp: formattedCreatedAt !== null && timestampDateTime !== null,
   });
 
-  // Reset isRegenerating when status changes back to idle
   const isLoading = status === "submitted" || status === "streaming";
-  if (!isLoading && isRegenerating) {
-    setIsRegenerating(false);
-  }
 
   return (
     <div

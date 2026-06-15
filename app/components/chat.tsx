@@ -2,6 +2,7 @@
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import dynamic from "next/dynamic";
 import {
   useRef,
   useEffect,
@@ -16,7 +17,6 @@ import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import type { RateLimitWarningData } from "./RateLimitWarning";
-import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
@@ -57,6 +57,11 @@ import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
+
+const ComputerSidebar = dynamic(
+  () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
+  { ssr: false },
+);
 
 // --- Streaming ephemeral state reducer ---
 // Consolidates high-frequency streaming state updates into a single dispatch
@@ -1086,31 +1091,36 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     resetAutoContinueCount,
   });
 
-  const handleScrollToBottom = () => scrollToBottom({ force: true });
+  const handleScrollToBottom = useCallback(() => {
+    scrollToBottom({ force: true });
+  }, [scrollToBottom]);
 
   // Rate limit warning dismiss handler
-  const handleDismissRateLimitWarning = () => {
+  const handleDismissRateLimitWarning = useCallback(() => {
     dispatchStreaming({ type: "SET_RATE_LIMIT_WARNING", payload: null });
     setHasUserDismissedRateLimitWarning(true);
-  };
+  }, [setHasUserDismissedRateLimitWarning]);
 
   // Branch chat handler
   const branchChatMutation = useMutation(api.messages.branchChat);
 
-  const handleBranchMessage = async (messageId: string) => {
-    try {
-      const newChatId = await branchChatMutation({ messageId });
-      if (!newChatId) {
-        toast.error("That message is no longer available to branch.");
-        return;
+  const handleBranchMessage = useCallback(
+    async (messageId: string) => {
+      try {
+        const newChatId = await branchChatMutation({ messageId });
+        if (!newChatId) {
+          toast.error("That message is no longer available to branch.");
+          return;
+        }
+        initializeChat(newChatId);
+        router.push(`/c/${newChatId}`);
+      } catch (error) {
+        console.error("Failed to branch chat:", error);
+        toast.error("Failed to branch chat. Please try again.");
       }
-      initializeChat(newChatId);
-      router.push(`/c/${newChatId}`);
-    } catch (error) {
-      console.error("Failed to branch chat:", error);
-      toast.error("Failed to branch chat. Please try again.");
-    }
-  };
+    },
+    [branchChatMutation, initializeChat, router],
+  );
 
   // Auto-send message after forking a shared chat
   const autoSendFiredRef = useRef(false);

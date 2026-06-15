@@ -1,5 +1,5 @@
 import { Centrifuge, type Subscription } from "centrifuge";
-import posthog from "posthog-js";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   sandboxConnectionChannel,
   type SandboxMessage,
@@ -168,11 +168,10 @@ export class DesktopSandboxBridge {
               "[DesktopSandboxBridge] Centrifugo refresh aborted — user not authenticated; stopping client to break retry loop",
               eventProps,
             );
-            try {
-              posthog.capture("sandbox_connection_terminated", eventProps);
-            } catch {
-              // posthog not initialized for this user
-            }
+            captureAuthenticatedEvent(
+              "sandbox_connection_terminated",
+              eventProps,
+            );
             this.terminateClient();
           } else {
             console.error(
@@ -200,11 +199,7 @@ export class DesktopSandboxBridge {
           "[DesktopSandboxBridge] Centrifugo refresh aborted — server reports connection terminated; stopping client to break retry loop",
           eventProps,
         );
-        try {
-          posthog.capture("sandbox_connection_terminated", eventProps);
-        } catch {
-          // posthog not initialized for this user
-        }
+        captureAuthenticatedEvent("sandbox_connection_terminated", eventProps);
         this.terminateClient();
         throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },

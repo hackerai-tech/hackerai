@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "crypto";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import {
@@ -8,8 +8,6 @@ import {
   isReferralReferrerTierEligible,
   isValidReferralCode,
 } from "@/lib/referrals/config";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const runtime = "nodejs";
 
@@ -60,13 +58,16 @@ export async function GET(req: NextRequest) {
     if (!isValidReferralCode(codeCandidate)) continue;
 
     try {
-      result = await convex.mutation(api.referrals.getOrCreateReferralCode, {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        subscriptionTier: subscription,
-        organizationId,
-        codeCandidate,
-      });
+      result = await getConvexClient().mutation(
+        api.referrals.getOrCreateReferralCode,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          userId,
+          subscriptionTier: subscription,
+          organizationId,
+          codeCandidate,
+        },
+      );
       break;
     } catch (error) {
       if (
