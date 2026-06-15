@@ -32,7 +32,7 @@ export function AgentUpgradeDialog({
       surface: "agent_upgrade_dialog",
       source: "agent_mode_gate",
       from_tier: "free",
-      cta_text: "Upgrade",
+      cta_text: "Upgrade for cloud Agent",
     });
   }, [open]);
 
@@ -43,9 +43,10 @@ export function AgentUpgradeDialog({
         data-testid="agent-upgrade-dialog"
       >
         <DialogHeader>
-          <DialogTitle>Get Agent mode</DialogTitle>
+          <DialogTitle>Use Agent mode</DialogTitle>
           <DialogDescription>
-            Connect a local sandbox to use Agent mode for free.
+            Connect a local sandbox for free, or upgrade for cloud Agent mode
+            with higher limits.
           </DialogDescription>
         </DialogHeader>
 
@@ -66,7 +67,7 @@ export function AgentUpgradeDialog({
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Desktop App</div>
                 <div className="text-xs text-muted-foreground">
-                  Download and run locally
+                  Free local Agent runs
                 </div>
               </div>
             </button>
@@ -84,7 +85,7 @@ export function AgentUpgradeDialog({
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">Remote Machine</div>
                 <div className="text-xs text-muted-foreground">
-                  Connect via the CLI package
+                  Free Agent on your own machine
                 </div>
               </div>
             </button>
@@ -109,7 +110,7 @@ export function AgentUpgradeDialog({
                 surface: "agent_upgrade_dialog",
                 source: "agent_mode_gate",
                 from_tier: "free",
-                cta_text: "Upgrade",
+                cta_text: "Upgrade for cloud Agent",
               });
             }}
             className="w-full flex items-center gap-3 p-3 rounded-lg border text-left hover:bg-muted/50 transition-colors"
@@ -119,9 +120,9 @@ export function AgentUpgradeDialog({
               <Cloud className="h-4 w-4 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium">Upgrade</div>
+              <div className="text-sm font-medium">Upgrade for cloud Agent</div>
               <div className="text-xs text-muted-foreground">
-                Cloud sandbox, custom models, higher limits
+                No local setup, stronger models, higher limits
               </div>
             </div>
           </button>

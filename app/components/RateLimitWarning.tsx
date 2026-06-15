@@ -86,9 +86,13 @@ const formatTimeUntil = (resetTime: Date): string => {
 
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.warningType === "sliding-window") {
-    return data.remaining === 0
-      ? `You've used all your daily requests. Daily requests reset at midnight UTC.`
-      : `You have ${data.remaining} daily ${data.remaining === 1 ? "request" : "requests"} remaining today.`;
+    if (data.remaining === 0) {
+      return data.mode === "agent"
+        ? "You've used today's free Agent requests. Upgrade to keep running Agent today, or wait for the reset at midnight UTC."
+        : "You've used all your daily free requests. Upgrade to keep going today, or wait for the reset at midnight UTC.";
+    }
+
+    return `You have ${data.remaining} daily ${data.remaining === 1 ? "request" : "requests"} remaining today.`;
   }
 
   if (data.warningType === "extra-usage-active") {
@@ -99,13 +103,17 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
       if (data.subscription === "free") {
-        return `You've reached your free monthly usage limit and this response was cut off. Upgrade to continue. Resets ${timeString}.`;
+        return `You've reached your free monthly usage limit and this response was cut off. Upgrade to keep Agent running with higher limits. Resets ${timeString}.`;
       }
       if (data.capReason === "extra_usage_cap") {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
       }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
+    if (data.subscription === "free") {
+      return `You've reached your free monthly usage limit. Upgrade for higher Agent limits and cloud agents. Resets ${timeString}.`;
+    }
+
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
   }
 
@@ -115,6 +123,20 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+};
+
+const getUpgradeCtaText = (
+  data: RateLimitWarningData,
+  limitType: string,
+): string => {
+  if (
+    data.subscription === "free" &&
+    (limitType === "daily_requests" || limitType === "free_monthly")
+  ) {
+    return "Keep going";
+  }
+
+  return "Upgrade plan";
 };
 
 const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
@@ -152,6 +174,7 @@ export const RateLimitWarning = ({
     data.warningType === "token-bucket" && data.remainingPercent === 0
       ? "hit"
       : "warning";
+  const upgradeCtaText = getUpgradeCtaText(data, limitType);
 
   useEffect(() => {
     if (!showUpgrade || capturedUpgradeImpressionRef.current) return;
@@ -163,9 +186,16 @@ export const RateLimitWarning = ({
       limit_type: limitType,
       limit_severity: limitSeverity,
       cap_reason: capReason,
-      cta_text: "Upgrade plan",
+      cta_text: upgradeCtaText,
     });
-  }, [capReason, data.subscription, limitSeverity, limitType, showUpgrade]);
+  }, [
+    capReason,
+    data.subscription,
+    limitSeverity,
+    limitType,
+    showUpgrade,
+    upgradeCtaText,
+  ]);
 
   useEffect(() => {
     if (!extraUsageCta || capturedAddCreditImpressionRef.current) return;
@@ -218,14 +248,14 @@ export const RateLimitWarning = ({
                 from_tier: data.subscription,
                 limit_type: limitType,
                 reason: capReason,
-                cta_text: "Upgrade plan",
+                cta_text: upgradeCtaText,
               })
             }
             size="sm"
             variant="outline"
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
-            Upgrade plan
+            {upgradeCtaText}
           </Button>
         )}
       </div>

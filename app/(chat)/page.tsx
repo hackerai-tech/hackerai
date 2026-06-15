@@ -126,7 +126,8 @@ export default function Page() {
     migrateFromPentestgptDialogOpen,
     setMigrateFromPentestgptDialogOpen,
   } = useGlobalState();
-  const { showPricing, handleClosePricing } = usePricingDialog(subscription);
+  const { showPricing, handleClosePricing, pricingContext } =
+    usePricingDialog(subscription);
 
   const { isMigrating, migrate } = usePentestgptMigration();
   const searchParams =
@@ -159,7 +160,11 @@ export default function Page() {
       <Authenticated>
         <AuthenticatedContent />
         <ExtraUsagePurchaseToast />
-        <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
+        <PricingDialog
+          isOpen={showPricing}
+          onClose={handleClosePricing}
+          context={pricingContext}
+        />
         <TeamPricingDialog
           isOpen={teamPricingDialogOpen}
           onClose={() => setTeamPricingDialogOpen(false)}

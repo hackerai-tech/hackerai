@@ -24,6 +24,8 @@ export const useUpgrade = () => {
     analyticsContext: {
       source?: string;
       surface?: string;
+      reason?: string;
+      limit_type?: string;
     } = {},
   ) => {
     e?.preventDefault();
@@ -51,12 +53,16 @@ export const useUpgrade = () => {
         checkoutAttemptId: string;
         source?: string;
         surface?: string;
+        reason?: string;
+        limitType?: string;
         fromTier?: string;
       } = {
         plan: selectedPlan,
         checkoutAttemptId,
         source: analyticsContext.source,
         surface: analyticsContext.surface,
+        reason: analyticsContext.reason,
+        limitType: analyticsContext.limit_type,
         fromTier: currentSubscription ?? "free",
       };
 
@@ -76,6 +82,8 @@ export const useUpgrade = () => {
           billing_interval: billingInterval,
           surface: analyticsContext.surface,
           source: analyticsContext.source,
+          reason: analyticsContext.reason,
+          limit_type: analyticsContext.limit_type,
           checkout_type: "new_subscription",
         });
 
@@ -109,6 +117,8 @@ export const useUpgrade = () => {
             billing_interval: billingInterval,
             surface: analyticsContext.surface,
             source: analyticsContext.source,
+            reason: analyticsContext.reason,
+            limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
           });
           window.location.href = url;
@@ -132,6 +142,8 @@ export const useUpgrade = () => {
           billing_interval: billingInterval,
           surface: analyticsContext.surface,
           source: analyticsContext.source,
+          reason: analyticsContext.reason,
+          limit_type: analyticsContext.limit_type,
           checkout_type: "subscription_change",
         });
 
@@ -148,6 +160,8 @@ export const useUpgrade = () => {
             checkoutAttemptId,
             source: analyticsContext.source,
             surface: analyticsContext.surface,
+            reason: analyticsContext.reason,
+            limitType: analyticsContext.limit_type,
             fromTier: currentSubscription,
           }),
         });
