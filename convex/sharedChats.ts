@@ -316,16 +316,22 @@ export const forkSharedChat = mutation({
       throw new Error("Shared chat not found");
     }
 
-    // Get only messages up to share_date (frozen content)
+    // Read this chat's messages via the existing per-chat index, then apply the
+    // frozen-share cutoff locally to avoid a production-wide compound index.
     const messages = await ctx.db
       .query("messages")
-      .withIndex("by_chat_id_and_update_time", (q) =>
-        q.eq("chat_id", chat.id).lte("update_time", chat.share_date!),
-      )
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
       .order("asc")
       .collect();
 
-    const frozenMessages = messages.filter((msg) => msg.is_hidden !== true);
+    const frozenMessages = messages
+      .filter(
+        (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
+      )
+      .sort(
+        (a, b) =>
+          a.update_time - b.update_time || a._creationTime - b._creationTime,
+      );
 
     // Create new chat owned by the current user
     const newChatId = crypto.randomUUID();
