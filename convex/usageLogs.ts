@@ -125,14 +125,6 @@ export const getDailyUsageSummary = query({
     }
     const userId = identity.subject;
     const days = Math.min(Math.max(Math.round(args.days ?? 7), 1), 30);
-    const startDate = Date.now() - days * 24 * 60 * 60 * 1000;
-
-    const logs = await ctx.db
-      .query("usage_logs")
-      .withIndex("by_user", (q) =>
-        q.eq("user_id", userId).gte("_creationTime", startDate),
-      )
-      .collect();
 
     // Aggregate by day (UTC), zero-filling missing days
     const dailyMap = new Map<string, number>();
@@ -142,9 +134,23 @@ export const getDailyUsageSummary = query({
       d.setUTCDate(d.getUTCDate() - i);
       dailyMap.set(d.toISOString().slice(0, 10), 0);
     }
-    for (const log of logs) {
-      const day = new Date(log._creationTime).toISOString().slice(0, 10);
-      dailyMap.set(day, (dailyMap.get(day) ?? 0) + log.cost_dollars);
+
+    const dayKeys = Array.from(dailyMap.keys());
+    const rollups = await ctx.db
+      .query("unit_economics_daily")
+      .withIndex("by_user_day", (q) =>
+        q
+          .eq("user_id", userId)
+          .gte("day", dayKeys[0])
+          .lte("day", dayKeys[dayKeys.length - 1]),
+      )
+      .collect();
+
+    for (const row of rollups) {
+      dailyMap.set(
+        row.day,
+        row.included_usage_cost_dollars + row.extra_usage_cost_dollars,
+      );
     }
 
     return Array.from(dailyMap.entries())

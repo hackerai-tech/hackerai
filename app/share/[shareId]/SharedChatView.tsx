@@ -1,8 +1,8 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
+import { useConvex, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { SharedMessages } from "./SharedMessages";
+import { SharedMessages, type SharedMessage } from "./SharedMessages";
 import { Loader2, AlertCircle } from "lucide-react";
 import { SharedChatProvider, useSharedChatContext } from "./SharedChatContext";
 import { ComputerSidebarBase } from "@/app/components/ComputerSidebar";
@@ -13,13 +13,17 @@ import ChatHeader from "@/app/components/ChatHeader";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChatInput } from "@/app/components/ChatInput";
 import { upsertDraft } from "@/lib/utils/client-storage";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
-function SharedComputerSidebarDesktop({ messages }: { messages: any[] }) {
+function SharedComputerSidebarDesktop({
+  messages,
+}: {
+  messages: SharedMessage[];
+}) {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useSharedChatContext();
 
@@ -43,7 +47,11 @@ function SharedComputerSidebarDesktop({ messages }: { messages: any[] }) {
 }
 
 // Mobile wrapper component for full-screen sidebar overlay
-function SharedComputerSidebarMobile({ messages }: { messages: any[] }) {
+function SharedComputerSidebarMobile({
+  messages,
+}: {
+  messages: SharedMessage[];
+}) {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useSharedChatContext();
 
@@ -72,25 +80,87 @@ interface SharedChatViewProps {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+type SharedChat = {
+  id: string;
+  title: string;
+  share_id: string;
+  share_date: number;
+  update_time: number;
+};
+
+type SharedSnapshot = {
+  shareId: string;
+  chat: SharedChat | null | undefined;
+  messages: SharedMessage[] | undefined;
+};
+
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
   const { chatSidebarOpen, setChatSidebarOpen, input } = useGlobalState();
   const router = useRouter();
+  const convex = useConvex();
   const forkSharedChatMutation = useMutation(api.sharedChats.forkSharedChat);
   const [isForking, setIsForking] = useState(false);
+  const [snapshot, setSnapshot] = useState<SharedSnapshot>(() => ({
+    shareId,
+    chat: undefined,
+    messages: undefined,
+  }));
+  const loadGenerationRef = useRef(0);
 
   // Validate shareId format before making database query
   const isValidUUID = UUID_REGEX.test(shareId);
 
-  const chat = useQuery(
-    api.sharedChats.getSharedChat,
-    isValidUUID ? { shareId } : "skip",
-  );
-  const messages = useQuery(
-    api.messages.getSharedMessages,
-    chat ? { chatId: chat.id } : "skip",
-  );
+  useEffect(() => {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
+
+    if (!isValidUUID) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadSharedSnapshot = async () => {
+      try {
+        const nextChat = await convex.query(api.sharedChats.getSharedChat, {
+          shareId,
+        });
+        if (cancelled || loadGenerationRef.current !== generation) return;
+
+        if (!nextChat) {
+          setSnapshot({ shareId, chat: null, messages: [] });
+          return;
+        }
+
+        setSnapshot({ shareId, chat: nextChat, messages: undefined });
+
+        const nextMessages = await convex.query(
+          api.messages.getSharedMessages,
+          {
+            chatId: nextChat.id,
+          },
+        );
+        if (cancelled || loadGenerationRef.current !== generation) return;
+        setSnapshot({ shareId, chat: nextChat, messages: nextMessages });
+      } catch (error) {
+        console.error("Failed to load shared chat:", error);
+        if (cancelled || loadGenerationRef.current !== generation) return;
+        setSnapshot({ shareId, chat: null, messages: [] });
+      }
+    };
+
+    void loadSharedSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [convex, isValidUUID, shareId]);
+
+  const isSnapshotCurrent = snapshot.shareId === shareId;
+  const chat = isSnapshotCurrent ? snapshot.chat : undefined;
+  const messages = isSnapshotCurrent ? snapshot.messages : undefined;
 
   // Update page title when chat loads
   useEffect(() => {

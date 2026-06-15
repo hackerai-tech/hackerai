@@ -45,6 +45,7 @@ export default defineSchema({
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
+    .index("by_user_and_share_date", ["user_id", "share_date"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
       searchField: "title",
@@ -104,6 +105,7 @@ export default defineSchema({
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
+    .index("by_chat_id_and_update_time", ["chat_id", "update_time"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
     .searchIndex("search_content", {
@@ -384,6 +386,13 @@ export default defineSchema({
   })
     .index("by_idempotency_key", ["idempotency_key"])
     .index("by_referrer_user_id", ["referrer_user_id"])
+    .index("by_referrer_notification", [
+      "referrer_user_id",
+      "reward_type",
+      "status",
+      "notification_seen_at",
+      "created_at",
+    ])
     .index("by_referred_user_id", ["referred_user_id"]),
 
   user_suspensions: defineTable({
