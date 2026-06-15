@@ -653,9 +653,6 @@ const processDocxFile = async (
  */
 export const saveFile = action({
   args: {
-    // Accepted only to return a stable error to stale clients. New file
-    // uploads must go through S3.
-    storageId: v.optional(v.id("_storage")),
     s3Key: v.optional(v.string()),
     name: v.string(),
     mediaType: v.string(),
@@ -673,13 +670,6 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
-    if (args.storageId) {
-      throw new ConvexError({
-        code: "CONVEX_STORAGE_UPLOADS_DISABLED",
-        message:
-          "Convex storage uploads are no longer supported. Upload files through S3 instead.",
-      });
-    }
     if (!args.s3Key) {
       throw new ConvexError({
         code: "INVALID_STORAGE_ARGS",

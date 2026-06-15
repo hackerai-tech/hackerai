@@ -67,7 +67,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
         for (const file of message.fileDetails) {
           // Only process files that:
-          // 1. Have an S3 key (not Convex storage)
+          // 1. Have an S3 key
           // 2. Are supported image types
           // 3. Haven't been prefetched yet
           // 4. Haven't been seen in this run

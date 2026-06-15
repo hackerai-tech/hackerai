@@ -222,11 +222,10 @@ export const Messages = ({
       if (!fileDetails || fileDetails.length === 0) return;
 
       const files = fileDetails
-        .filter((file) => file.url || file.storageId || file.s3Key)
+        .filter((file) => file.url || file.fileId || file.s3Key)
         .map((file, fileIndex) => ({
           part: {
             url: file.url ?? undefined,
-            storageId: file.storageId,
             fileId: file.fileId,
             s3Key: file.s3Key,
             name: file.name,

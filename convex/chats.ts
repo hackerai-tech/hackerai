@@ -48,9 +48,9 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   if (messages.length > 0) {
     for (const message of messages) {
       if (!message.source_message_id && message.file_ids?.length) {
-        for (const storageId of message.file_ids) {
+        for (const fileId of message.file_ids) {
           try {
-            const file = await ctx.db.get(storageId);
+            const file = await ctx.db.get(fileId);
             if (file) {
               if (file.s3_key) {
                 await ctx.scheduler.runAfter(
@@ -59,14 +59,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
                   { s3Key: file.s3_key },
                 );
               }
-              if (file.storage_id) {
-                await ctx.storage.delete(file.storage_id);
-              }
               await fileCountAggregate.deleteIfExists(ctx, file);
               await ctx.db.delete(file._id);
             }
           } catch (error) {
-            console.error(`Failed to delete file ${storageId}:`, error);
+            console.error(`Failed to delete file ${fileId}:`, error);
           }
         }
       }
@@ -740,11 +737,10 @@ export const deleteChat = mutation({
         if (!message.source_message_id) {
           // Clean up files associated with this message
           if (message.file_ids && message.file_ids.length > 0) {
-            for (const storageId of message.file_ids) {
+            for (const fileId of message.file_ids) {
               try {
-                const file = await ctx.db.get(storageId);
+                const file = await ctx.db.get(fileId);
                 if (file) {
-                  // Delete from appropriate storage
                   if (file.s3_key) {
                     await ctx.scheduler.runAfter(
                       0,
@@ -752,15 +748,12 @@ export const deleteChat = mutation({
                       { s3Key: file.s3_key },
                     );
                   }
-                  if (file.storage_id) {
-                    await ctx.storage.delete(file.storage_id);
-                  }
                   // Delete from aggregate
                   await fileCountAggregate.deleteIfExists(ctx, file);
                   await ctx.db.delete(file._id);
                 }
               } catch (error) {
-                console.error(`Failed to delete file ${storageId}:`, error);
+                console.error(`Failed to delete file ${fileId}:`, error);
                 // Continue with deletion even if file cleanup fails
               }
             }
@@ -1018,9 +1011,9 @@ export const deleteAllChatsForUser = mutation({
 
       for (const message of messages) {
         if (!message.source_message_id && message.file_ids?.length) {
-          for (const storageId of message.file_ids) {
+          for (const fileId of message.file_ids) {
             try {
-              const file = await ctx.db.get(storageId);
+              const file = await ctx.db.get(fileId);
               if (file) {
                 if (file.s3_key) {
                   await ctx.scheduler.runAfter(
@@ -1029,14 +1022,11 @@ export const deleteAllChatsForUser = mutation({
                     { s3Key: file.s3_key },
                   );
                 }
-                if (file.storage_id) {
-                  await ctx.storage.delete(file.storage_id);
-                }
                 await fileCountAggregate.deleteIfExists(ctx, file);
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
+              console.error(`Failed to delete file ${fileId}:`, error);
             }
           }
         }

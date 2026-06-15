@@ -392,7 +392,6 @@ function renderFileTool(
       name?: string;
       filename?: string;
       mediaType?: string;
-      storageId?: string;
       s3Key?: string;
       page?: number;
     }>;

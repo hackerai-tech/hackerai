@@ -27,7 +27,6 @@ export type UploadedFileInfo = {
   name: string;
   mediaType: string;
   s3Key?: string;
-  storageId?: Id<"_storage">;
 };
 
 /**

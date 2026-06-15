@@ -128,11 +128,6 @@ describe("fileActions saveFile upload policy", () => {
       scheduler: {
         runAfter: jest.fn().mockResolvedValue(undefined),
       },
-      storage: {
-        delete: jest.fn().mockResolvedValue(undefined),
-        getUrl: jest.fn().mockResolvedValue("https://storage.example/file"),
-        getMetadata: jest.fn().mockResolvedValue({ size: 1024 }),
-      },
       runQuery: jest.fn(),
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
@@ -287,13 +282,12 @@ describe("fileActions saveFile upload policy", () => {
     );
   });
 
-  it("rejects storageId uploads without touching Convex storage", async () => {
+  it("rejects uploads without an S3 key", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();
 
     await expect(
       saveFile.handler(ctx, {
-        storageId: "storage_large_bin",
         name: "large.bin",
         mediaType: "application/octet-stream",
         size: 1024,
@@ -301,12 +295,10 @@ describe("fileActions saveFile upload policy", () => {
       }),
     ).rejects.toMatchObject({
       data: expect.objectContaining({
-        code: "CONVEX_STORAGE_UPLOADS_DISABLED",
+        code: "INVALID_STORAGE_ARGS",
       }),
     });
 
-    expect(ctx.storage.getMetadata).not.toHaveBeenCalled();
-    expect(ctx.storage.delete).not.toHaveBeenCalled();
     expect(ctx.runQuery).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
     expect(ctx.runMutation).not.toHaveBeenCalled();

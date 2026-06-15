@@ -96,9 +96,6 @@ describe("fileStorage - deleteFile", () => {
         get: jest.fn().mockResolvedValue(mockFile),
         delete: jest.fn().mockResolvedValue(undefined),
       },
-      storage: {
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
       scheduler: {
         runAfter: jest.fn().mockResolvedValue(undefined),
       },
@@ -148,7 +145,6 @@ describe("fileStorage - deleteFile", () => {
   describe("S3 File Deletion", () => {
     it("should schedule S3 deletion for S3 files", async () => {
       mockFile.s3_key = "users/test-user-123/test-file.pdf";
-      mockFile.storage_id = undefined;
       mockCtx.db.get.mockResolvedValue(mockFile);
 
       const { deleteFile } = await import("../fileStorage");
@@ -162,9 +158,6 @@ describe("fileStorage - deleteFile", () => {
         { s3Key: mockFile.s3_key },
       );
 
-      // Verify Convex storage delete was not called
-      expect(mockCtx.storage.delete).not.toHaveBeenCalled();
-
       // Verify aggregate was updated
       expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
         mockCtx,
@@ -177,7 +170,6 @@ describe("fileStorage - deleteFile", () => {
 
     it("should delete DB record even if S3 scheduling fails", async () => {
       mockFile.s3_key = "users/test-user-123/test-file.pdf";
-      mockFile.storage_id = undefined;
       mockCtx.db.get.mockResolvedValue(mockFile);
       mockCtx.scheduler.runAfter.mockRejectedValue(
         new Error("Scheduler error"),
@@ -194,72 +186,20 @@ describe("fileStorage - deleteFile", () => {
     });
   });
 
-  describe("Convex Storage File Deletion", () => {
-    it("should delete Convex storage for Convex files", async () => {
-      mockFile.storage_id = "storage-id-123" as Id<"_storage">;
-      mockFile.s3_key = undefined;
-      mockCtx.db.get.mockResolvedValue(mockFile);
-
-      const { deleteFile } = await import("../fileStorage");
-
-      await deleteFile.handler(mockCtx, { fileId: testFileId });
-
-      // Verify Convex storage delete was called
-      expect(mockCtx.storage.delete).toHaveBeenCalledWith(mockFile.storage_id);
-
-      // Verify S3 deletion was not scheduled (scheduler might be called for aggregate but not S3)
-      expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalledWith(
-        expect.anything(),
-        "internal.s3Cleanup.deleteS3ObjectAction",
-        expect.anything(),
-      );
-
-      // Verify aggregate was updated
-      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
-        mockCtx,
-        mockFile,
-      );
-
-      // Verify database record was deleted
-      expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);
-    });
-
-    it("should delete DB record even if Convex storage deletion fails", async () => {
-      mockFile.storage_id = "storage-id-123" as Id<"_storage">;
-      mockFile.s3_key = undefined;
-      mockCtx.db.get.mockResolvedValue(mockFile);
-      mockCtx.storage.delete.mockRejectedValue(
-        new Error("Storage delete failed"),
-      );
-
-      const { deleteFile } = await import("../fileStorage");
-
-      await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId }),
-      ).rejects.toThrow("Storage delete failed");
-
-      // DB delete should not be called if storage delete fails
-      expect(mockCtx.db.delete).not.toHaveBeenCalled();
-    });
-  });
-
   describe("Edge Cases", () => {
-    it("should warn and still delete DB record if file has neither s3_key nor storage_id", async () => {
+    it("should warn and still delete DB record if file has no s3_key", async () => {
       mockFile.s3_key = undefined;
-      mockFile.storage_id = undefined;
       mockCtx.db.get.mockResolvedValue(mockFile);
 
       const { deleteFile } = await import("../fileStorage");
 
       await deleteFile.handler(mockCtx, { fileId: testFileId });
 
-      // Should warn about missing storage reference
+      // Should warn about missing S3 object reference
       expect(console.warn).toHaveBeenCalledWith(
-        expect.stringContaining("has neither s3_key nor storage_id"),
+        expect.stringContaining("has no s3_key"),
       );
 
-      // Should not attempt storage deletion
-      expect(mockCtx.storage.delete).not.toHaveBeenCalled();
       // S3 cleanup should not be scheduled (aggregate delete attempts are okay)
       expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalledWith(
         expect.anything(),
@@ -278,7 +218,7 @@ describe("fileStorage - deleteFile", () => {
     });
 
     it("should return null on successful deletion", async () => {
-      mockFile.storage_id = "storage-id-123" as Id<"_storage">;
+      mockFile.s3_key = "users/test-user-123/test-file.pdf";
       mockCtx.db.get.mockResolvedValue(mockFile);
 
       const { deleteFile } = await import("../fileStorage");
@@ -286,297 +226,6 @@ describe("fileStorage - deleteFile", () => {
       const result = await deleteFile.handler(mockCtx, { fileId: testFileId });
 
       expect(result).toBeNull();
-    });
-  });
-});
-
-describe("fileStorage - purgeLegacyConvexStorageFiles", () => {
-  let mockCtx: any;
-  const cutoffTimeMs = Date.parse("2025-12-14T00:00:00.000Z");
-
-  const attachedLegacyFile = {
-    _id: "attached-file-id" as Id<"files">,
-    storage_id: "attached-storage-id" as Id<"_storage">,
-    s3_key: undefined,
-    user_id: "user-1",
-    name: "attached.pdf",
-    media_type: "application/pdf",
-    size: 2048,
-    file_token_size: 0,
-    is_attached: true,
-    _creationTime: cutoffTimeMs - 1000,
-  };
-
-  const unattachedLegacyFile = {
-    _id: "unattached-file-id" as Id<"files">,
-    storage_id: "unattached-storage-id" as Id<"_storage">,
-    s3_key: undefined,
-    user_id: "user-1",
-    name: "orphan.txt",
-    media_type: "text/plain",
-    size: 1024,
-    file_token_size: 12,
-    is_attached: false,
-    _creationTime: cutoffTimeMs - 2000,
-  };
-
-  const makeQueryChain = (rows: any[]) => {
-    const rangeBuilder: any = {
-      eq: jest.fn(() => rangeBuilder),
-      gt: jest.fn(() => "range"),
-      lt: jest.fn(() => "range"),
-    };
-    const filterBuilder = {
-      field: jest.fn((field: string) => field),
-      neq: jest.fn(() => true),
-      eq: jest.fn(() => true),
-      lt: jest.fn(() => true),
-      and: jest.fn(() => true),
-    };
-    const chain: any = {
-      withIndex: jest.fn((_indexName: string, range: any) => {
-        range(rangeBuilder);
-        return chain;
-      }),
-      order: jest.fn(() => chain),
-      filter: jest.fn((predicate: any) => {
-        predicate(filterBuilder);
-        return chain;
-      }),
-      take: jest.fn().mockResolvedValue(rows),
-    };
-
-    return { chain, rangeBuilder, filterBuilder };
-  };
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    jest.spyOn(console, "log").mockImplementation(() => {});
-    jest.spyOn(console, "error").mockImplementation(() => {});
-    jest.spyOn(console, "warn").mockImplementation(() => {});
-
-    mockCtx = {
-      db: {
-        query: jest.fn(),
-        patch: jest.fn().mockResolvedValue(undefined),
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-      storage: {
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-    };
-  });
-
-  it("reports legacy Convex storage candidates without deleting anything in dry run", async () => {
-    const { chain, rangeBuilder, filterBuilder } = makeQueryChain([
-      attachedLegacyFile,
-      unattachedLegacyFile,
-    ]);
-    mockCtx.db.query.mockReturnValue(chain);
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: true,
-      includeAttached: true,
-    });
-
-    expect(result).toMatchObject({
-      dryRun: true,
-      candidateCount: 2,
-      totalBytes: 3072,
-      attachedCount: 1,
-      unattachedCount: 1,
-      deletedStorageCount: 0,
-      detachedRecordCount: 0,
-      deletedRecordCount: 0,
-      failedCount: 0,
-    });
-    expect(chain.withIndex).toHaveBeenCalledWith(
-      "by_storage_id",
-      expect.any(Function),
-    );
-    expect(rangeBuilder.gt).toHaveBeenCalledWith("storage_id", undefined);
-    expect(filterBuilder.eq).toHaveBeenCalledWith("s3_key", undefined);
-    expect(filterBuilder.lt).toHaveBeenCalledWith(
-      "_creationTime",
-      cutoffTimeMs,
-    );
-    expect(result.samples).toHaveLength(2);
-    expect(mockCtx.storage.delete).not.toHaveBeenCalled();
-    expect(mockCtx.db.patch).not.toHaveBeenCalled();
-    expect(mockCtx.db.delete).not.toHaveBeenCalled();
-    expect(mockFileCountAggregate.deleteIfExists).not.toHaveBeenCalled();
-  });
-
-  it("deletes Convex storage and clears storage_id by default", async () => {
-    const { chain } = makeQueryChain([attachedLegacyFile]);
-    mockCtx.db.query.mockReturnValue(chain);
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: false,
-      includeAttached: true,
-    });
-
-    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
-      attachedLegacyFile.storage_id,
-    );
-    expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
-      mockCtx,
-      attachedLegacyFile,
-    );
-    expect(mockCtx.db.patch).toHaveBeenCalledWith(attachedLegacyFile._id, {
-      storage_id: undefined,
-    });
-    expect(mockCtx.db.delete).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      dryRun: false,
-      candidateCount: 1,
-      deletedStorageCount: 1,
-      detachedRecordCount: 1,
-      deletedRecordCount: 0,
-      aggregateRemovedCount: 1,
-      failedCount: 0,
-    });
-  });
-
-  it("skips attached files when includeAttached is false", async () => {
-    const { chain, filterBuilder } = makeQueryChain([
-      attachedLegacyFile,
-      unattachedLegacyFile,
-    ]);
-    mockCtx.db.query.mockReturnValue(chain);
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: false,
-      includeAttached: false,
-    });
-
-    expect(filterBuilder.eq).toHaveBeenCalledWith("is_attached", false);
-    expect(mockCtx.storage.delete).toHaveBeenCalledTimes(1);
-    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
-      unattachedLegacyFile.storage_id,
-    );
-    expect(mockCtx.storage.delete).not.toHaveBeenCalledWith(
-      attachedLegacyFile.storage_id,
-    );
-    expect(result).toMatchObject({
-      candidateCount: 1,
-      attachedCount: 0,
-      unattachedCount: 1,
-      deletedStorageCount: 1,
-      detachedRecordCount: 1,
-    });
-  });
-
-  it("deletes database records only when explicitly requested", async () => {
-    const { chain } = makeQueryChain([unattachedLegacyFile]);
-    mockCtx.db.query.mockReturnValue(chain);
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: false,
-      includeAttached: true,
-      deleteDatabaseRecords: true,
-    });
-
-    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
-      unattachedLegacyFile.storage_id,
-    );
-    expect(mockCtx.db.delete).toHaveBeenCalledWith(unattachedLegacyFile._id);
-    expect(mockCtx.db.patch).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      deletedStorageCount: 1,
-      detachedRecordCount: 0,
-      deletedRecordCount: 1,
-      aggregateRemovedCount: 1,
-    });
-  });
-
-  it("clears stale DB references when the Convex storage blob is already missing", async () => {
-    const { chain } = makeQueryChain([attachedLegacyFile]);
-    mockCtx.db.query.mockReturnValue(chain);
-    mockCtx.storage.delete.mockRejectedValue(
-      new Error(`storage id ${attachedLegacyFile.storage_id} not found`),
-    );
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: false,
-      includeAttached: true,
-    });
-
-    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
-      attachedLegacyFile.storage_id,
-    );
-    expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
-      mockCtx,
-      attachedLegacyFile,
-    );
-    expect(mockCtx.db.patch).toHaveBeenCalledWith(attachedLegacyFile._id, {
-      storage_id: undefined,
-    });
-    expect(result).toMatchObject({
-      deletedStorageCount: 0,
-      missingStorageCount: 1,
-      detachedRecordCount: 1,
-      aggregateRemovedCount: 1,
-      failedCount: 0,
-      failures: [],
-    });
-  });
-
-  it("still clears storage_id when aggregate cleanup exceeds Convex read limits", async () => {
-    const { chain } = makeQueryChain([attachedLegacyFile]);
-    mockCtx.db.query.mockReturnValue(chain);
-    mockFileCountAggregate.deleteIfExists.mockRejectedValueOnce(
-      new Error(
-        "Uncaught Error: Too many bytes read in a single function execution (limit: 16777216 bytes).",
-      ),
-    );
-
-    const { purgeLegacyConvexStorageFiles } = await import("../fileStorage");
-
-    const result = await purgeLegacyConvexStorageFiles.handler(mockCtx, {
-      serviceKey: "service-key",
-      cutoffTimeMs,
-      dryRun: false,
-      includeAttached: true,
-    });
-
-    expect(mockCtx.storage.delete).toHaveBeenCalledWith(
-      attachedLegacyFile.storage_id,
-    );
-    expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
-      mockCtx,
-      attachedLegacyFile,
-    );
-    expect(mockCtx.db.patch).toHaveBeenCalledWith(attachedLegacyFile._id, {
-      storage_id: undefined,
-    });
-    expect(result).toMatchObject({
-      deletedStorageCount: 1,
-      aggregateRemovedCount: 0,
-      aggregateFailedCount: 1,
-      detachedRecordCount: 1,
-      failedCount: 0,
-      failures: [],
     });
   });
 });
