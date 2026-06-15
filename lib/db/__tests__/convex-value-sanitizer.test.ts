@@ -1,6 +1,28 @@
 import { describe, expect, it } from "@jest/globals";
 import { sanitizeForConvexValue } from "../convex-value-sanitizer";
 
+const expectConvexCompatibleFieldNames = (value: unknown) => {
+  if (!value || typeof value !== "object" || value instanceof ArrayBuffer) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(expectConvexCompatibleFieldNames);
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    expect(key.length).toBeLessThanOrEqual(1024);
+    expect(key.startsWith("$")).toBe(false);
+    for (let i = 0; i < key.length; i++) {
+      const charCode = key.charCodeAt(i);
+      expect(charCode).toBeGreaterThanOrEqual(32);
+      expect(charCode).toBeLessThan(127);
+    }
+    expectConvexCompatibleFieldNames(child);
+  }
+};
+
 describe("sanitizeForConvexValue", () => {
   it("converts Error instances in tool outputs into plain objects", () => {
     const error = new Error(
@@ -117,5 +139,89 @@ describe("sanitizeForConvexValue", () => {
     expect(result.dataView).toBeInstanceOf(ArrayBuffer);
     expect(result.dataView).not.toBe(backingBuffer);
     expect([...new Uint8Array(result.dataView)]).toEqual([3, 4]);
+  });
+
+  it("renames object fields Convex cannot persist", () => {
+    const commandKey = `command'"cat > /tmp/patch3.py << 'PY'\nprint("hi")`;
+    const longNonAsciiKey = `action_check_${"quietly_".repeat(140)}针头`;
+
+    const result = sanitizeForConvexValue({
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          input: {
+            [commandKey]: "echo hi",
+            $reserved: true,
+            [longNonAsciiKey]: "kept",
+            command: "still exact",
+          },
+        },
+      ],
+    }) as {
+      parts: Array<{
+        input: Record<
+          string,
+          string | boolean | Array<{ storedKey: string; originalKey: string }>
+        >;
+      }>;
+    };
+
+    expectConvexCompatibleFieldNames(result);
+
+    const input = result.parts[0].input;
+    expect(input.command).toBe("still exact");
+
+    const renamedFields = input._convex_renamed_fields as Array<{
+      storedKey: string;
+      originalKey: string;
+    }>;
+    expect(renamedFields).toHaveLength(3);
+
+    const commandRename = renamedFields.find(
+      (field) => field.originalKey === commandKey,
+    );
+    expect(commandRename?.storedKey).toMatch(/^field_command_/);
+    expect(input[commandRename!.storedKey]).toBe("echo hi");
+
+    const reservedRename = renamedFields.find(
+      (field) => field.originalKey === "$reserved",
+    );
+    expect(input[reservedRename!.storedKey]).toBe(true);
+
+    const longRename = renamedFields.find((field) =>
+      field.originalKey.startsWith("action_check_"),
+    );
+    expect(longRename?.storedKey.length).toBeLessThanOrEqual(200);
+    expect(longRename?.originalKey.endsWith("...")).toBe(true);
+    expect(input[longRename!.storedKey]).toBe("kept");
+  });
+
+  it("keeps sanitizer metadata on a stable key", () => {
+    const result = sanitizeForConvexValue({
+      _convex_renamed_fields: "user payload",
+      $reserved: true,
+    }) as Record<string, unknown>;
+
+    expectConvexCompatibleFieldNames(result);
+
+    const renamedFields = result._convex_renamed_fields as Array<{
+      storedKey: string;
+      originalKey: string;
+    }>;
+    expect(renamedFields).toHaveLength(2);
+
+    const reservedRename = renamedFields.find(
+      (field) => field.originalKey === "$reserved",
+    );
+    expect(result[reservedRename!.storedKey]).toBe(true);
+
+    const userMetadataRename = renamedFields.find(
+      (field) => field.originalKey === "_convex_renamed_fields",
+    );
+    expect(userMetadataRename?.storedKey).toMatch(
+      /^field_convex_renamed_fields_/,
+    );
+    expect(result[userMetadataRename!.storedKey]).toBe("user payload");
+    expect(result._convex_renamed_fields_1).toBeUndefined();
   });
 });
