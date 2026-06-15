@@ -39,6 +39,7 @@ export {
   clearOrgRemovedUsage,
   applyTeamSeatDebt,
   calculateTokenCost,
+  calculateRawTokenCost,
   getBudgetLimits,
   getSubscriptionPrice,
   getMonthlyBucketKey,

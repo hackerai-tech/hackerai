@@ -1,5 +1,5 @@
 import { logUsageRecord } from "@/lib/db/actions";
-import { calculateTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
+import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 
 interface StepUsage {
@@ -24,7 +24,7 @@ export interface UsageCostRecord {
   costDollars: number;
   modelCostDollars: number;
   nonModelCostDollars: number;
-  costSource: "provider" | "token_estimate";
+  costSource: "provider" | "token_estimate" | "raw_token_estimate";
 }
 
 /**
@@ -113,8 +113,8 @@ export class UsageTracker {
       return this.providerCost - this.nonModelCost;
     }
     return (
-      (calculateTokenCost(this.inputTokens, "input", selectedModel) +
-        calculateTokenCost(this.outputTokens, "output", selectedModel)) /
+      (calculateRawTokenCost(this.inputTokens, "input", selectedModel) +
+        calculateRawTokenCost(this.outputTokens, "output", selectedModel)) /
       POINTS_PER_DOLLAR
     );
   }
@@ -183,7 +183,8 @@ export class UsageTracker {
       costDollars: modelCostDollars + this.nonModelCost,
       modelCostDollars,
       nonModelCostDollars: this.nonModelCost,
-      costSource: this.modelProviderCost > 0 ? "provider" : "token_estimate",
+      costSource:
+        this.modelProviderCost > 0 ? "provider" : "raw_token_estimate",
     };
   }
 

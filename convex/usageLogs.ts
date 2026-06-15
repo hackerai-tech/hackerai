@@ -2,7 +2,11 @@ import { mutation, query } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { applyUnitEconomicsDelta, utcDay } from "./unitEconomicsLib";
+import {
+  applyUnitEconomicsDelta,
+  LEGACY_USAGE_COST_MULTIPLIER,
+  utcDay,
+} from "./unitEconomicsLib";
 
 const typeValidator = v.union(v.literal("included"), v.literal("extra"));
 
@@ -39,19 +43,35 @@ export const logUsage = mutation({
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
-      v.union(v.literal("provider"), v.literal("token_estimate")),
+      v.union(
+        v.literal("provider"),
+        v.literal("token_estimate"),
+        v.literal("raw_token_estimate"),
+      ),
     ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const modelCostDollars = Number.isFinite(args.model_cost_dollars)
-      ? args.model_cost_dollars!
-      : args.cost_dollars;
     const nonModelCostDollars = Number.isFinite(args.non_model_cost_dollars)
       ? args.non_model_cost_dollars!
       : 0;
+    const reportedModelCostDollars = Number.isFinite(args.model_cost_dollars)
+      ? args.model_cost_dollars!
+      : Math.max(0, args.cost_dollars - nonModelCostDollars);
+    // Older app builds sent token_estimate costs after applying the 1.3 usage
+    // multiplier. Normalize those at ingestion so unit economics tracks raw
+    // model cost even during staggered deploys.
+    const modelCostDollars =
+      args.cost_source === "token_estimate"
+        ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
+        : reportedModelCostDollars;
+    const costDollars = modelCostDollars + nonModelCostDollars;
+    const costSource =
+      args.cost_source === "token_estimate"
+        ? "raw_token_estimate"
+        : args.cost_source;
     const now = Date.now();
 
     await ctx.db.insert("usage_logs", {
@@ -68,19 +88,18 @@ export const logUsage = mutation({
       cache_read_tokens: args.cache_read_tokens,
       cache_write_tokens: args.cache_write_tokens,
       total_tokens: args.total_tokens,
-      cost_dollars: args.cost_dollars,
+      cost_dollars: costDollars,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
-      cost_source: args.cost_source,
+      cost_source: costSource,
     });
 
     const commonDelta = {
       day: utcDay(now),
       modelCostDollars,
       nonModelCostDollars,
-      includedUsageCostDollars:
-        args.type === "included" ? args.cost_dollars : 0,
-      extraUsageCostDollars: args.type === "extra" ? args.cost_dollars : 0,
+      includedUsageCostDollars: args.type === "included" ? costDollars : 0,
+      extraUsageCostDollars: args.type === "extra" ? costDollars : 0,
       usageRequestCount: 1,
       inputTokens: args.input_tokens,
       outputTokens: args.output_tokens,

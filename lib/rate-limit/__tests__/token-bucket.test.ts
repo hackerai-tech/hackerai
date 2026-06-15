@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   calculateTokenCost,
+  calculateRawTokenCost,
   calculateProratedCredits,
   getBudgetLimits,
   getCycleExpireSeconds,
@@ -65,6 +66,28 @@ describe("token-bucket", () => {
       expect(calculateTokenCost(10, "input")).toBe(1);
       // 10000 tokens at $0.50/1M * 1.3 = 65 points
       expect(calculateTokenCost(10000, "input")).toBe(65);
+    });
+  });
+
+  // ==========================================================================
+  // calculateRawTokenCost - Analytics/reporting cost without usage multiplier
+  // ==========================================================================
+  describe("calculateRawTokenCost", () => {
+    it("should return 0 for zero or negative tokens", () => {
+      expect(calculateRawTokenCost(0, "input")).toBe(0);
+      expect(calculateRawTokenCost(0, "output")).toBe(0);
+      expect(calculateRawTokenCost(-100, "input")).toBe(0);
+      expect(calculateRawTokenCost(-100, "output")).toBe(0);
+    });
+
+    it("should calculate raw input token cost without the 1.3x multiplier", () => {
+      expect(calculateRawTokenCost(1_000_000, "input")).toBe(5000);
+      expect(calculateRawTokenCost(1000, "input")).toBe(5);
+    });
+
+    it("should calculate raw output token cost without the 1.3x multiplier", () => {
+      expect(calculateRawTokenCost(1_000_000, "output")).toBe(30000);
+      expect(calculateRawTokenCost(1000, "output")).toBe(30);
     });
   });
 
