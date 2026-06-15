@@ -12,7 +12,7 @@ import { useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File, Download } from "lucide-react";
+import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
@@ -85,6 +85,7 @@ const FilePartRendererComponent = ({
         if (cache) {
           const cachedUrl = cache.getCachedUrl(part.fileId);
           if (cachedUrl) {
+            setUrlError(null);
             setFileUrl(cachedUrl);
             return;
           }
@@ -118,6 +119,7 @@ const FilePartRendererComponent = ({
 
       // Fallback for transient already-resolved URLs.
       if (part.url) {
+        setUrlError(null);
         setFileUrl(part.url);
       }
     }
@@ -336,9 +338,28 @@ const FilePartRendererComponent = ({
         );
       }
 
-      // Handle image files - they should always have URL
+      // Handle image files - resolve fetchable URLs before showing a real error
       if (part.mediaType?.startsWith("image/")) {
         if (!actualUrl) {
+          if (part.fileId) {
+            const isMultipleImages = totalFileParts > 1;
+            const loadingClass = isMultipleImages
+              ? "h-32 w-32"
+              : "h-36 w-36 max-w-64";
+
+            return (
+              <div key={partId} className="overflow-hidden rounded-lg">
+                <div
+                  className={`${loadingClass} bg-token-main-surface-secondary text-token-text-tertiary relative flex items-center justify-center overflow-hidden rounded-lg`}
+                  aria-label={`Loading ${part.name || part.filename || "image"}`}
+                  role="status"
+                >
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              </div>
+            );
+          }
+
           return (
             <FilePreviewCard
               partId={partId}
