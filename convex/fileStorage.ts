@@ -383,19 +383,23 @@ export const purgeLegacyConvexStorageFiles = mutation({
 
     const legacyQuery = ctx.db
       .query("files")
-      .withIndex("by_s3_key", (q) =>
-        q.eq("s3_key", undefined).lt("_creationTime", args.cutoffTimeMs),
-      )
+      .withIndex("by_storage_id", (q) => q.gt("storage_id", undefined))
       .order("asc");
 
     const candidateRows = includeAttached
       ? await legacyQuery
-          .filter((q) => q.neq(q.field("storage_id"), undefined))
+          .filter((q) =>
+            q.and(
+              q.eq(q.field("s3_key"), undefined),
+              q.lt(q.field("_creationTime"), args.cutoffTimeMs),
+            ),
+          )
           .take(limit)
       : await legacyQuery
           .filter((q) =>
             q.and(
-              q.neq(q.field("storage_id"), undefined),
+              q.eq(q.field("s3_key"), undefined),
+              q.lt(q.field("_creationTime"), args.cutoffTimeMs),
               q.eq(q.field("is_attached"), false),
             ),
           )
