@@ -7,11 +7,19 @@ import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import { useAuthFromAuthKit } from "@/lib/auth/use-auth-from-authkit";
 
 const noop = () => {};
+const PRERENDER_CONVEX_URL = "https://placeholder.convex.cloud";
 
 export function ConvexClientProvider({ children }: { children: ReactNode }) {
   const [convex] = useState(() => {
-    const client = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-    return client;
+    const convexUrl =
+      process.env.NEXT_PUBLIC_CONVEX_URL ??
+      (typeof window === "undefined" ? PRERENDER_CONVEX_URL : undefined);
+
+    if (!convexUrl) {
+      throw new Error("NEXT_PUBLIC_CONVEX_URL is not configured");
+    }
+
+    return new ConvexReactClient(convexUrl);
   });
 
   return (

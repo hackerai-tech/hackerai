@@ -1,5 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { workos } from "@/app/api/workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -11,8 +11,6 @@ import {
 } from "@/lib/referrals/config";
 import { grantFreeReferralBonusUnits } from "@/lib/rate-limit/sliding-window";
 import { phLogger } from "@/lib/posthog/server";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const runtime = "nodejs";
 
@@ -55,15 +53,18 @@ export async function POST(req: NextRequest) {
   }
 
   const user = await workos.userManagement.getUser(userId);
-  const result = await convex.mutation(api.referrals.attributeReferredSignup, {
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    referredUserId: userId,
-    referralCode,
-    starterBonusUnits: config.referredSignupBonusUnits,
-    userCreatedAtMs: parseCreatedAtMs(user.createdAt),
-    maxUserAgeDays: config.attributionMaxUserAgeDays,
-    source: "referral_cookie",
-  });
+  const result = await getConvexClient().mutation(
+    api.referrals.attributeReferredSignup,
+    {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      referredUserId: userId,
+      referralCode,
+      starterBonusUnits: config.referredSignupBonusUnits,
+      userCreatedAtMs: parseCreatedAtMs(user.createdAt),
+      maxUserAgeDays: config.attributionMaxUserAgeDays,
+      source: "referral_cookie",
+    },
+  );
   const referrerSubscriptionTier = (
     result as { referrerSubscriptionTier?: string }
   ).referrerSubscriptionTier;
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest) {
       );
 
       if (grant.granted || grant.alreadyGranted) {
-        const marked = await convex.mutation(
+        const marked = await getConvexClient().mutation(
           api.referrals.markReferredSignupBonusGranted,
           {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
