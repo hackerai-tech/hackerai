@@ -26,6 +26,7 @@ import {
   getMaxFilesLimitForMode,
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
+import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -113,6 +114,8 @@ export const useChatHandlers = ({
   const cancelTempStreamMutation = useMutation(
     api.tempStreams.cancelTempStreamFromClient,
   );
+  const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
+    sanitizeForConvexValue(parts) as ChatMessage["parts"];
 
   // Mirrors the transport routing rule in app/components/chat.tsx. Persistent
   // chats only; temporary chats use the legacy Redis pub/sub cancel path.
@@ -196,7 +199,7 @@ export const useChatHandlers = ({
               id: lastMessage.id,
               chatId,
               role: lastMessage.role,
-              parts: lastMessage.parts,
+              parts: getConvexSafeParts(lastMessage.parts),
               mode: lastMessage.metadata?.mode ?? chatModeRef.current,
               generationStartedAt,
               generationTimeMs,
@@ -295,7 +298,7 @@ export const useChatHandlers = ({
                 id: lastMessage.id,
                 chatId,
                 role: lastMessage.role,
-                parts: lastMessage.parts,
+                parts: getConvexSafeParts(lastMessage.parts),
               }).catch((error) => {
                 console.error("Failed to save message on stop:", error);
               });
