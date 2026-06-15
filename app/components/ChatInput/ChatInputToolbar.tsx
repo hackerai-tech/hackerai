@@ -12,6 +12,7 @@ import {
   type ContextUsageData,
 } from "@/app/components/ContextUsageIndicator";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
@@ -29,6 +30,7 @@ export function ChatInputToolbar({
   ...submitStopProps
 }: ChatInputToolbarProps) {
   const { selectedModel, setSelectedModel } = useGlobalState();
+  const { user } = useAuth();
 
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
@@ -36,11 +38,13 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      <ModelSelector
-        value={selectedModel}
-        onChange={setSelectedModel}
-        mode={chatMode}
-      />
+      {user ? (
+        <ModelSelector
+          value={selectedModel}
+          onChange={setSelectedModel}
+          mode={chatMode}
+        />
+      ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
         {showContextIndicator && contextUsage && (
           <ContextUsageIndicator
