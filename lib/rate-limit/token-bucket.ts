@@ -122,6 +122,22 @@ export const calculateTokenCost = (
   );
 };
 
+/**
+ * Estimate raw model cost for analytics/reporting only.
+ * Unlike calculateTokenCost, this intentionally excludes the normal usage
+ * multiplier so unit economics reflects provider-priced usage cost.
+ */
+export const calculateRawTokenCost = (
+  tokens: number,
+  type: "input" | "output",
+  modelName?: string,
+): number => {
+  if (tokens <= 0) return 0;
+  const pricing = getModelPricing(modelName);
+  const price = type === "input" ? pricing.input : pricing.output;
+  return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
+};
+
 // =============================================================================
 // Budget Limits
 // =============================================================================

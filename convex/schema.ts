@@ -518,7 +518,11 @@ export default defineSchema({
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
-      v.union(v.literal("provider"), v.literal("token_estimate")),
+      v.union(
+        v.literal("provider"),
+        v.literal("token_estimate"),
+        v.literal("raw_token_estimate"),
+      ),
     ),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema
