@@ -262,16 +262,15 @@ export const getUserSharedChats = query({
 
     const chats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_share_date", (q) =>
-        q.eq("user_id", identity.subject).gt("share_date", 0),
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", identity.subject),
       )
       .order("desc")
       .collect();
 
-    // Map only chats with complete share metadata. The index already excludes
-    // ordinary unshared chats, so this defensive check is cheap.
     return chats
       .filter((chat) => chat.share_id && chat.share_date)
+      .sort((a, b) => b.share_date! - a.share_date!)
       .map((chat) => ({
         _id: chat._id,
         id: chat.id,
@@ -386,8 +385,8 @@ export const unshareAllChats = mutation({
 
     const sharedChats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_share_date", (q) =>
-        q.eq("user_id", identity.subject).gt("share_date", 0),
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", identity.subject),
       )
       .collect();
 
