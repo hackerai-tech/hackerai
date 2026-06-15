@@ -454,6 +454,9 @@ export async function saveMessage({
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
+    const usageForSave = sanitizeForConvexValue(usage) as
+      | Record<string, unknown>
+      | undefined;
 
     return await getConvexClient().mutation(api.messages.saveMessage, {
       serviceKey,
@@ -468,7 +471,7 @@ export async function saveMessage({
       generationStartedAt,
       generationTimeMs,
       finishReason,
-      usage,
+      usage: usageForSave,
       updateOnly,
       isHidden,
     });

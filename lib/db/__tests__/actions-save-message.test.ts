@@ -78,6 +78,45 @@ describe("saveMessage", () => {
     expect(() => JSON.stringify(compactedMessage.parts)).not.toThrow();
   });
 
+  it("sanitizes usage metadata before saving", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const invalidUsageKey = "$provider\nraw";
+
+    await expect(
+      saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "assistant",
+          parts: [{ type: "text", text: "done" }],
+        },
+        usage: {
+          inputTokens: 12,
+          [invalidUsageKey]: { ok: true },
+        },
+      }),
+    ).resolves.toBeDefined();
+
+    const mutationArgs = mockMutation.mock.calls[0]?.[1] as {
+      usage?: Record<string, unknown>;
+    };
+    expect(mutationArgs.usage?.inputTokens).toBe(12);
+    expect(mutationArgs.usage?.[invalidUsageKey]).toBeUndefined();
+
+    const renamedFields = mutationArgs.usage?._convex_renamed_fields as Array<{
+      storedKey: string;
+      originalKey: string;
+    }>;
+    const renamedUsageField = renamedFields.find(
+      (field) => field.originalKey === invalidUsageKey,
+    );
+    expect(renamedUsageField?.storedKey).toMatch(/^field_provider_raw_/);
+    expect(mutationArgs.usage?.[renamedUsageField!.storedKey]).toEqual({
+      ok: true,
+    });
+  });
+
   it("maps Convex message-size rejections to a user-facing bad request", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {
