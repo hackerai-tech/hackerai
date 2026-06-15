@@ -210,14 +210,23 @@ export function sanitizeForConvexValue(
   const usedKeys = new Set(
     entries
       .map(([key]) => (isValidConvexObjectFieldName(key) ? key : undefined))
+      .filter((key) => key !== RENAMED_FIELDS_METADATA_KEY)
       .filter((key): key is string => key !== undefined),
   );
   const renamedFields: Array<{ storedKey: string; originalKey: string }> = [];
+  let userMetadataValue: unknown;
+  let hasUserMetadataValue = false;
 
   for (const [key, childValue] of entries) {
     const sanitizedChild = sanitizeForConvexValue(childValue, seen);
     if (sanitizedChild !== undefined) {
       if (isValidConvexObjectFieldName(key)) {
+        if (key === RENAMED_FIELDS_METADATA_KEY) {
+          userMetadataValue = sanitizedChild;
+          hasUserMetadataValue = true;
+          continue;
+        }
+
         sanitized[key] = sanitizedChild;
         continue;
       }
@@ -233,11 +242,22 @@ export function sanitizeForConvexValue(
   }
 
   if (renamedFields.length > 0) {
-    const metadataKey = getUniqueFieldName(
-      RENAMED_FIELDS_METADATA_KEY,
-      usedKeys,
-    );
-    sanitized[metadataKey] = renamedFields;
+    if (hasUserMetadataValue) {
+      const sanitizedKey = sanitizeInvalidFieldName(
+        RENAMED_FIELDS_METADATA_KEY,
+        usedKeys,
+      );
+      usedKeys.add(sanitizedKey);
+      sanitized[sanitizedKey] = userMetadataValue;
+      renamedFields.push({
+        storedKey: sanitizedKey,
+        originalKey: RENAMED_FIELDS_METADATA_KEY,
+      });
+    }
+
+    sanitized[RENAMED_FIELDS_METADATA_KEY] = renamedFields;
+  } else if (hasUserMetadataValue) {
+    sanitized[RENAMED_FIELDS_METADATA_KEY] = userMetadataValue;
   }
 
   if (!isPlainObject(value) && Object.keys(sanitized).length === 0) {

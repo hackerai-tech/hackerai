@@ -195,4 +195,33 @@ describe("sanitizeForConvexValue", () => {
     expect(longRename?.originalKey.endsWith("...")).toBe(true);
     expect(input[longRename!.storedKey]).toBe("kept");
   });
+
+  it("keeps sanitizer metadata on a stable key", () => {
+    const result = sanitizeForConvexValue({
+      _convex_renamed_fields: "user payload",
+      $reserved: true,
+    }) as Record<string, unknown>;
+
+    expectConvexCompatibleFieldNames(result);
+
+    const renamedFields = result._convex_renamed_fields as Array<{
+      storedKey: string;
+      originalKey: string;
+    }>;
+    expect(renamedFields).toHaveLength(2);
+
+    const reservedRename = renamedFields.find(
+      (field) => field.originalKey === "$reserved",
+    );
+    expect(result[reservedRename!.storedKey]).toBe(true);
+
+    const userMetadataRename = renamedFields.find(
+      (field) => field.originalKey === "_convex_renamed_fields",
+    );
+    expect(userMetadataRename?.storedKey).toMatch(
+      /^field_convex_renamed_fields_/,
+    );
+    expect(result[userMetadataRename!.storedKey]).toBe("user payload");
+    expect(result._convex_renamed_fields_1).toBeUndefined();
+  });
 });
