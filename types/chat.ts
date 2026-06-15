@@ -230,7 +230,6 @@ export interface SidebarSharedFiles {
     mediaType?: string;
     fileId?: string;
     s3Key?: string;
-    storageId?: string;
   }>;
   requestedPaths: string[];
   isExecuting: boolean;

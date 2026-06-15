@@ -57,17 +57,13 @@ describe("userDeletion", () => {
         delete: jest.fn(),
       };
 
-      const mockStorage = {
-        delete: jest.fn(),
-      };
-
       const mockAuth = {
         getUserIdentity: jest.fn().mockResolvedValue({
           subject: "user123",
         }),
       };
 
-      // Mock files with both S3 and Convex storage
+      // Mock files with S3 objects and one DB-only file row.
       const mockFiles = [
         {
           _id: "file1",
@@ -91,7 +87,6 @@ describe("userDeletion", () => {
         },
         {
           _id: "file3",
-          storage_id: "storage123",
           user_id: "user123",
           name: "file3.txt",
           media_type: "text/plain",
@@ -123,7 +118,6 @@ describe("userDeletion", () => {
       const mockCtx = {
         auth: mockAuth,
         db: mockDb,
-        storage: mockStorage,
         scheduler: mockScheduler,
       };
 
@@ -138,9 +132,6 @@ describe("userDeletion", () => {
         },
       );
 
-      // Verify Convex storage file was deleted
-      expect(mockStorage.delete).toHaveBeenCalledWith("storage123");
-
       // Verify all file records were deleted
       expect(mockDb.delete).toHaveBeenCalledWith("file1");
       expect(mockDb.delete).toHaveBeenCalledWith("file2");
@@ -152,7 +143,7 @@ describe("userDeletion", () => {
       );
     });
 
-    it("should handle only Convex files (no S3 files)", async () => {
+    it("should handle file rows without S3 keys", async () => {
       const { deleteAllUserData } = await import("../userDeletion");
 
       const mockScheduler = {
@@ -161,10 +152,6 @@ describe("userDeletion", () => {
 
       const mockDb = {
         query: jest.fn(),
-        delete: jest.fn(),
-      };
-
-      const mockStorage = {
         delete: jest.fn(),
       };
 
@@ -177,7 +164,6 @@ describe("userDeletion", () => {
       const mockFiles = [
         {
           _id: "file1",
-          storage_id: "storage123",
           user_id: "user123",
           name: "file1.txt",
           media_type: "text/plain",
@@ -207,7 +193,6 @@ describe("userDeletion", () => {
       const mockCtx = {
         auth: mockAuth,
         db: mockDb,
-        storage: mockStorage,
         scheduler: mockScheduler,
       };
 
@@ -216,14 +201,11 @@ describe("userDeletion", () => {
       // Verify S3 batch deletion was NOT scheduled (no S3 files)
       expect(mockScheduler.runAfter).not.toHaveBeenCalled();
 
-      // Verify Convex storage file was deleted
-      expect(mockStorage.delete).toHaveBeenCalledWith("storage123");
-
       // Verify file record was deleted
       expect(mockDb.delete).toHaveBeenCalledWith("file1");
     });
 
-    it("should handle only S3 files (no Convex files)", async () => {
+    it("should handle only S3 files", async () => {
       const { deleteAllUserData } = await import("../userDeletion");
 
       const mockScheduler = {
@@ -232,10 +214,6 @@ describe("userDeletion", () => {
 
       const mockDb = {
         query: jest.fn(),
-        delete: jest.fn(),
-      };
-
-      const mockStorage = {
         delete: jest.fn(),
       };
 
@@ -278,7 +256,6 @@ describe("userDeletion", () => {
       const mockCtx = {
         auth: mockAuth,
         db: mockDb,
-        storage: mockStorage,
         scheduler: mockScheduler,
       };
 
@@ -290,9 +267,6 @@ describe("userDeletion", () => {
         "deleteS3ObjectsBatchAction",
         { s3Keys: ["users/user456/file1.pdf"] },
       );
-
-      // Verify Convex storage delete was NOT called
-      expect(mockStorage.delete).not.toHaveBeenCalled();
 
       // Verify file record was deleted
       expect(mockDb.delete).toHaveBeenCalledWith("file1");
@@ -307,10 +281,6 @@ describe("userDeletion", () => {
 
       const mockDb = {
         query: jest.fn(),
-        delete: jest.fn(),
-      };
-
-      const mockStorage = {
         delete: jest.fn(),
       };
 
@@ -353,7 +323,6 @@ describe("userDeletion", () => {
       const mockCtx = {
         auth: mockAuth,
         db: mockDb,
-        storage: mockStorage,
         scheduler: mockScheduler,
       };
 
@@ -372,83 +341,6 @@ describe("userDeletion", () => {
       expect(mockDb.delete).toHaveBeenCalledWith("file1");
     });
 
-    it("should handle Convex storage deletion errors gracefully", async () => {
-      const { deleteAllUserData } = await import("../userDeletion");
-
-      const mockScheduler = {
-        runAfter: jest.fn(),
-      };
-
-      const mockDb = {
-        query: jest.fn(),
-        delete: jest.fn(),
-      };
-
-      const mockStorage = {
-        delete: jest
-          .fn()
-          .mockRejectedValue(new Error("Storage deletion failed")),
-      };
-
-      const mockAuth = {
-        getUserIdentity: jest.fn().mockResolvedValue({
-          subject: "user999",
-        }),
-      };
-
-      const mockFiles = [
-        {
-          _id: "file1",
-          storage_id: "storage123",
-          user_id: "user999",
-          name: "file1.txt",
-          media_type: "text/plain",
-          size: 500,
-          file_token_size: 50,
-          is_attached: true,
-        },
-      ];
-
-      const mockQueryBuilder = {
-        withIndex: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockReturnThis(),
-        collect: jest.fn(),
-        first: jest.fn(),
-      };
-
-      mockDb.query.mockReturnValue(mockQueryBuilder);
-
-      mockQueryBuilder.collect
-        .mockResolvedValueOnce([]) // chats
-        .mockResolvedValueOnce(mockFiles) // files
-        .mockResolvedValueOnce([]) // notes
-        .mockResolvedValueOnce([]); // messages
-
-      mockQueryBuilder.first.mockResolvedValue(null);
-
-      const mockCtx = {
-        auth: mockAuth,
-        db: mockDb,
-        storage: mockStorage,
-        scheduler: mockScheduler,
-      };
-
-      // Should not throw
-      await expect(
-        deleteAllUserData.handler(mockCtx, {}),
-      ).resolves.not.toThrow();
-
-      // Verify warning was logged
-      expect(console.warn).toHaveBeenCalledWith(
-        "Failed to delete storage blob:",
-        "storage123",
-        expect.any(Error),
-      );
-
-      // Verify file record was still deleted
-      expect(mockDb.delete).toHaveBeenCalledWith("file1");
-    });
-
     it("should handle empty file list", async () => {
       const { deleteAllUserData } = await import("../userDeletion");
 
@@ -458,10 +350,6 @@ describe("userDeletion", () => {
 
       const mockDb = {
         query: jest.fn(),
-        delete: jest.fn(),
-      };
-
-      const mockStorage = {
         delete: jest.fn(),
       };
 
@@ -491,7 +379,6 @@ describe("userDeletion", () => {
       const mockCtx = {
         auth: mockAuth,
         db: mockDb,
-        storage: mockStorage,
         scheduler: mockScheduler,
       };
 
@@ -499,9 +386,6 @@ describe("userDeletion", () => {
 
       // Verify S3 batch deletion was NOT scheduled (no files)
       expect(mockScheduler.runAfter).not.toHaveBeenCalled();
-
-      // Verify storage delete was NOT called
-      expect(mockStorage.delete).not.toHaveBeenCalled();
     });
 
     it("should throw error if user is not authenticated", async () => {

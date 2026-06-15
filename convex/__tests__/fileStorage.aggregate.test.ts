@@ -162,7 +162,6 @@ describe("fileStorage - Aggregate Integration", () => {
             user_id: "other-user",
             name: "secret.txt",
             media_type: "text/plain",
-            storage_id: "storage-secret",
             s3_key: undefined,
           }),
         },
@@ -222,7 +221,6 @@ describe("fileStorage - Aggregate Integration", () => {
           is_attached: false,
         }),
       );
-      expect(mockCtx.db.insert.mock.calls[0][1].storage_id).toBeUndefined();
       expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(
         mockCtx,
         mockFile,
@@ -359,7 +357,6 @@ describe("fileStorage - Aggregate Integration", () => {
       expect(mockCtx.db.patch).toHaveBeenCalledWith(
         testFileId,
         expect.objectContaining({
-          storage_id: undefined,
           file_token_size: 100,
         }),
       );

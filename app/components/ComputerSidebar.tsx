@@ -1,7 +1,7 @@
 import React from "react";
 import Image from "next/image";
 import { createPortal } from "react-dom";
-import { useAction, useConvex } from "convex/react";
+import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   Eye,
@@ -74,7 +74,6 @@ const SidebarPreviewImage = ({
   file: FilePart & { page?: number };
   label: string;
 }) => {
-  const convex = useConvex();
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
@@ -112,10 +111,6 @@ const SidebarPreviewImage = ({
           if (url && fileUrlCache) {
             fileUrlCache.setCachedUrl(file.fileId, url);
           }
-        } else if (file.storageId) {
-          url = await convex.query(api.fileStorage.getFileDownloadUrl, {
-            storageId: file.storageId,
-          });
         }
 
         if (!cancelled) {
@@ -141,14 +136,7 @@ const SidebarPreviewImage = ({
     return () => {
       cancelled = true;
     };
-  }, [
-    convex,
-    file.fileId,
-    file.storageId,
-    file.url,
-    fileUrlCache,
-    getFileUrlAction,
-  ]);
+  }, [file.fileId, file.url, fileUrlCache, getFileUrlAction]);
 
   if (error) {
     return (
@@ -741,7 +729,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                       | Id<"files">
                                       | undefined,
                                     s3Key: file.s3Key,
-                                    storageId: file.storageId,
                                     name: file.name,
                                     filename: file.name,
                                     mediaType: file.mediaType,

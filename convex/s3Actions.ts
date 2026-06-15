@@ -196,16 +196,14 @@ export const generateS3UploadUrlAction = action({
 });
 
 /**
- * Generate download URL for a file (S3 presigned or Convex storage URL)
+ * Generate an S3 presigned download URL for a file.
  *
  * This action:
  * - Authenticates the user via ctx.auth
  * - Fetches the file record from database
  * - Verifies user has access to the file (ownership check)
- * - Generates appropriate URL based on storage type:
- *   - S3: Returns presigned URL (valid for 1 hour)
- *   - Convex: Returns Convex storage URL
- * - Enforces storage invariant (exactly one storage reference)
+ * - Requires the file to have an S3 object reference
+ * - Returns a presigned URL (valid for 1 hour)
  */
 export const getFileUrlAction = action({
   args: {
@@ -241,32 +239,12 @@ export const getFileUrlAction = action({
         );
       }
 
-      // Enforce storage invariant: exactly one storage reference
-      const hasS3Key = !!file.s3_key;
-      const hasStorageId = !!file.storage_id;
-
-      if (!hasS3Key && !hasStorageId) {
-        throw new Error("File has no storage reference");
+      if (!file.s3_key) {
+        throw new Error("File has no S3 storage reference");
       }
 
-      if (hasS3Key && hasStorageId) {
-        throw new Error(
-          "File has both S3 and Convex storage references (invalid state)",
-        );
-      }
-
-      // Generate appropriate URL based on storage type
-      if (file.s3_key) {
-        // S3 file: Generate presigned download URL (valid for 1 hour)
-        return await generateS3DownloadUrl(file.s3_key);
-      } else {
-        // Convex file: Get Convex storage URL
-        const url = await ctx.storage.getUrl(file.storage_id!);
-        if (!url) {
-          throw new Error("Failed to generate Convex storage URL");
-        }
-        return url;
-      }
+      // S3 file: Generate presigned download URL (valid for 1 hour)
+      return await generateS3DownloadUrl(file.s3_key);
     } catch (error) {
       convexLogger.error("file_get_url_failed", {
         userId: identity.subject,
@@ -290,7 +268,7 @@ export const getFileUrlAction = action({
  * This action:
  * - Authenticates via service key (for backend use)
  * - Accepts array of file IDs (max 50 files)
- * - Generates URLs for both S3 and Convex storage files
+ * - Generates S3 presigned URLs
  * - Returns array of URLs (matching order of fileIds, null for missing files)
  * - Handles partial failures gracefully
  */
@@ -340,13 +318,8 @@ export const getFileUrlsByFileIdsAction = action({
             return null;
           }
 
-          // Generate URL based on storage type
           if (file.s3_key) {
-            // S3 file: Generate presigned download URL
             return await generateS3DownloadUrl(file.s3_key);
-          } else if (file.storage_id) {
-            // Convex file: Get Convex storage URL
-            return await ctx.storage.getUrl(file.storage_id);
           }
 
           return null;
@@ -376,7 +349,7 @@ export const getFileUrlsByFileIdsAction = action({
  * - Accepts array of file IDs (max 50 files)
  * - Fetches file records using internal query
  * - Applies access control per file (skips files user doesn't own)
- * - Generates URLs for accessible files only (S3 presigned or Convex storage)
+ * - Generates S3 presigned URLs for accessible files only
  * - Processes S3 URLs in parallel for better performance
  * - Returns map of fileId -> url (only includes accessible files)
  * - Handles partial failures gracefully (skips failed files)
@@ -426,32 +399,13 @@ export const getFileUrlsBatchAction = action({
           continue;
         }
 
-        // Enforce storage invariant
-        const hasS3Key = !!file.s3_key;
-        const hasStorageId = !!file.storage_id;
-
-        // Skip if no storage reference
-        if (!hasS3Key && !hasStorageId) {
+        // Skip files that no longer have an S3 object reference.
+        if (!file.s3_key) {
           continue;
         }
 
-        // Skip if both storage references (invalid state)
-        if (hasS3Key && hasStorageId) {
-          continue;
-        }
-
-        // Generate URL based on storage type
-        if (file.s3_key) {
-          // S3 file: Generate presigned download URL
-          const url = await generateS3DownloadUrl(file.s3_key);
-          urlMap[fileId] = url;
-        } else if (file.storage_id) {
-          // Convex file: Get Convex storage URL
-          const url = await ctx.storage.getUrl(file.storage_id);
-          if (url) {
-            urlMap[fileId] = url;
-          }
-        }
+        const url = await generateS3DownloadUrl(file.s3_key);
+        urlMap[fileId] = url;
       } catch (error) {
         // Log error but continue processing other files (partial failure handling)
         convexLogger.error("file_batch_url_generation_failed", {
