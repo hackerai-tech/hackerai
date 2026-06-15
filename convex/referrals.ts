@@ -432,20 +432,18 @@ export const getUnreadRewardNotifications = query({
 
     const rewards = await ctx.db
       .query("referral_rewards")
-      .withIndex("by_referrer_user_id", (q) =>
-        q.eq("referrer_user_id", identity.subject),
+      .withIndex("by_referrer_notification", (q) =>
+        q
+          .eq("referrer_user_id", identity.subject)
+          .eq("reward_type", "referrer_conversion")
+          .eq("status", "awarded")
+          .eq("notification_seen_at", undefined),
       )
       .order("desc")
       .take(20);
 
     return rewards
-      .filter(
-        (reward) =>
-          reward.reward_type === "referrer_conversion" &&
-          reward.status === "awarded" &&
-          reward.amount_dollars > 0 &&
-          reward.notification_seen_at === undefined,
-      )
+      .filter((reward) => reward.amount_dollars > 0)
       .map((reward) => ({
         rewardId: reward._id,
         amountDollars: reward.amount_dollars,

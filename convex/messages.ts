@@ -1975,19 +1975,18 @@ export const getSharedMessages = query({
         return [];
       }
 
-      // Get all messages for this chat
+      // Get only messages frozen into the share. This keeps public share reads
+      // proportional to the shared snapshot instead of the full live chat.
       const messages = await ctx.db
         .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .withIndex("by_chat_id_and_update_time", (q) =>
+          q.eq("chat_id", args.chatId).lte("update_time", chat.share_date!),
+        )
         .order("asc")
         .collect();
 
-      // FROZEN CONTENT: Filter messages to only those created/updated before share_date
-      // This ensures new messages added after sharing are not visible
-      // Also exclude hidden messages (e.g. auto-continue rows)
-      const frozenMessages = messages.filter(
-        (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-      );
+      // FROZEN CONTENT: Exclude hidden messages (e.g. auto-continue rows).
+      const frozenMessages = messages.filter((msg) => msg.is_hidden !== true);
 
       // Strip sensitive data and replace files with placeholders
       return frozenMessages.map((msg) => ({

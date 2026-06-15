@@ -262,12 +262,14 @@ export const getUserSharedChats = query({
 
     const chats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_updated", (q) =>
-        q.eq("user_id", identity.subject),
+      .withIndex("by_user_and_share_date", (q) =>
+        q.eq("user_id", identity.subject).gt("share_date", 0),
       )
+      .order("desc")
       .collect();
 
-    // Filter and map to only shared chats
+    // Map only chats with complete share metadata. The index already excludes
+    // ordinary unshared chats, so this defensive check is cheap.
     return chats
       .filter((chat) => chat.share_id && chat.share_date)
       .map((chat) => ({
@@ -277,8 +279,7 @@ export const getUserSharedChats = query({
         share_id: chat.share_id!,
         share_date: chat.share_date!,
         update_time: chat.update_time,
-      }))
-      .sort((a, b) => b.share_date - a.share_date); // Most recent first
+      }));
   },
 });
 
@@ -316,16 +317,16 @@ export const forkSharedChat = mutation({
       throw new Error("Shared chat not found");
     }
 
-    // Get all messages up to share_date (frozen content)
+    // Get only messages up to share_date (frozen content)
     const messages = await ctx.db
       .query("messages")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+      .withIndex("by_chat_id_and_update_time", (q) =>
+        q.eq("chat_id", chat.id).lte("update_time", chat.share_date!),
+      )
       .order("asc")
       .collect();
 
-    const frozenMessages = messages.filter(
-      (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-    );
+    const frozenMessages = messages.filter((msg) => msg.is_hidden !== true);
 
     // Create new chat owned by the current user
     const newChatId = crypto.randomUUID();
@@ -385,8 +386,8 @@ export const unshareAllChats = mutation({
 
     const sharedChats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_updated", (q) =>
-        q.eq("user_id", identity.subject),
+      .withIndex("by_user_and_share_date", (q) =>
+        q.eq("user_id", identity.subject).gt("share_date", 0),
       )
       .collect();
 
