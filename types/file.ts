@@ -47,7 +47,6 @@ export interface FilePart {
   mediaType?: string;
   storage?: "s3" | "local-desktop";
   localAttachmentId?: string;
-  storageId?: string; // Storage ID for on-demand URL fetching (Convex files)
   s3Key?: string; // S3 key for on-demand URL fetching (S3 files)
 }
 
@@ -105,7 +104,6 @@ export interface FileDetails {
   name: string;
   mediaType?: string;
   url?: string | null;
-  storageId?: string;
   s3Key?: string;
 }
 

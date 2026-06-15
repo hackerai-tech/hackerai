@@ -89,7 +89,6 @@ Usage:
                 name: saved.name,
                 mediaType: saved.mediaType,
                 s3Key: saved.s3Key,
-                storageId: saved.storageId,
               });
 
               // Stream file metadata immediately so the client can show the file card
@@ -105,7 +104,6 @@ Usage:
                         name: saved.name,
                         mediaType: saved.mediaType,
                         s3Key: saved.s3Key,
-                        storageId: saved.storageId,
                       },
                     ],
                   },

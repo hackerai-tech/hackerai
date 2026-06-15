@@ -10,9 +10,8 @@ import { fileCountAggregate } from "./fileAggregate";
  * 1) Feedback records (referenced by messages)
  * 2) Messages (owned by user, reference chats and files)
  * 3) Chats (owned by user)
- * 4) Files + storage (owned by user, may be referenced by messages)
- *    - S3 files: Batch deleted using scheduled action
- *    - Convex storage files: Deleted directly
+ * 4) Files + S3 objects (owned by user, may be referenced by messages)
+ *    - S3 objects: Batch deleted using scheduled action
  * 5) Notes (owned by user)
  * 6) User customization (owned by user)
  *
@@ -98,7 +97,7 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 4: Delete files and storage blobs (safe since messages no longer reference them)
+      // Step 4: Delete files and S3 objects (safe since messages no longer reference them)
 
       // Collect S3 keys for batch deletion
       const s3Keys: string[] = [];
@@ -106,21 +105,8 @@ export const deleteAllUserData = mutation({
       await Promise.all(
         files.map(async (file) => {
           try {
-            // Handle S3 files
             if (file.s3_key) {
               s3Keys.push(file.s3_key);
-            }
-            // Handle Convex storage files
-            if (file.storage_id) {
-              try {
-                await ctx.storage.delete(file.storage_id);
-              } catch (e) {
-                console.warn(
-                  "Failed to delete storage blob:",
-                  file.storage_id,
-                  e,
-                );
-              }
             }
 
             // Delete from aggregate

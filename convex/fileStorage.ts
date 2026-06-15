@@ -4,7 +4,6 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
@@ -14,69 +13,9 @@ import { convexLogger } from "./lib/logger";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
-const LEGACY_CONVEX_PURGE_DEFAULT_LIMIT = 100;
-const LEGACY_CONVEX_PURGE_MAX_LIMIT = 500;
-const LEGACY_CONVEX_PURGE_SAMPLE_LIMIT = 20;
-
-function isMissingConvexStorageError(error: unknown): boolean {
-  return (
-    error instanceof Error && /^storage id .+ not found$/.test(error.message)
-  );
-}
-
-/**
- * Get download URL for a file by storageId (on-demand for non-image files)
- */
-export const getFileDownloadUrl = query({
-  args: {
-    storageId: v.string(),
-  },
-  returns: v.union(v.string(), v.null()),
-  handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthorized: User not authenticated",
-      });
-    }
-
-    // Direct lookup by storage_id using index
-    const file = await ctx.db
-      .query("files")
-      .withIndex("by_storage_id", (q) =>
-        q.eq("storage_id", args.storageId as Id<"_storage">),
-      )
-      .first();
-
-    // Stale message/file UI can outlive deleted storage rows. Treat missing as
-    // an unavailable URL instead of a Convex exception.
-    if (!file) {
-      convexLogger.warn("file_download_url_missing_file", {
-        user_id: user.subject,
-        storage_id: args.storageId,
-      });
-      return null;
-    }
-
-    if (file.user_id !== user.subject) {
-      convexLogger.warn("file_download_url_access_denied", {
-        user_id: user.subject,
-        file_id: file._id,
-        storage_id: args.storageId,
-      });
-      return null;
-    }
-
-    // Generate and return signed URL
-    return await ctx.storage.getUrl(args.storageId);
-  },
-});
 
 /**
  * Delete file from storage by file ID
- * Handles both S3 and Convex storage files
  */
 export const deleteFile = mutation({
   args: {
@@ -110,18 +49,14 @@ export const deleteFile = mutation({
       });
     }
 
-    // Delete from appropriate storage
+    // Delete from S3 storage when this row still has an object reference.
     if (file.s3_key) {
-      // Schedule S3 deletion using the cleanup action
       await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
         s3Key: file.s3_key,
       });
-    } else if (file.storage_id) {
-      // Delete from Convex storage
-      await ctx.storage.delete(file.storage_id);
     } else {
       console.warn(
-        `File ${args.fileId} has neither s3_key nor storage_id, skipping storage deletion`,
+        `File ${args.fileId} has no s3_key, skipping storage deletion`,
       );
     }
 
@@ -174,7 +109,6 @@ export const getFileMetadataByFileIds = query({
         fileId: v.id("files"),
         name: v.string(),
         mediaType: v.string(),
-        storageId: v.optional(v.id("_storage")),
         s3Key: v.optional(v.string()),
       }),
       v.null(),
@@ -199,7 +133,6 @@ export const getFileMetadataByFileIds = query({
         fileId: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        storageId: file.storage_id,
         s3Key: file.s3_key,
       };
     });
@@ -264,7 +197,6 @@ export const getFileContentByFileIds = query({
 
 /**
  * Internal mutation: purge unattached files older than cutoff
- * Handles both S3 and Convex storage files
  */
 export const purgeExpiredUnattachedFiles = internalMutation({
   args: {
@@ -286,20 +218,15 @@ export const purgeExpiredUnattachedFiles = internalMutation({
     let deletedCount = 0;
     for (const file of candidates) {
       try {
-        // Delete from appropriate storage
         if (file.s3_key) {
-          // Schedule S3 deletion using the cleanup action
           await ctx.scheduler.runAfter(
             0,
             internal.s3Cleanup.deleteS3ObjectAction,
             { s3Key: file.s3_key },
           );
-        } else if (file.storage_id) {
-          // Delete from Convex storage
-          await ctx.storage.delete(file.storage_id);
         } else {
           console.warn(
-            `File ${file._id} has neither s3_key nor storage_id, skipping storage deletion`,
+            `File ${file._id} has no s3_key, skipping storage deletion`,
           );
         }
       } catch (e) {
@@ -318,244 +245,6 @@ export const purgeExpiredUnattachedFiles = internalMutation({
 });
 
 /**
- * Admin mutation: purge legacy Convex storage blobs for files older than a cutoff.
- *
- * New uploads use S3, but older file rows can still point at Convex storage via
- * `storage_id`. This deletes those blobs in batches and clears the storage ID
- * from the file row so old chat metadata can survive without exposing a
- * long-lived Convex storage URL. Pass `deleteDatabaseRecords: true` only if you
- * intentionally want the file rows removed as well.
- */
-export const purgeLegacyConvexStorageFiles = mutation({
-  args: {
-    serviceKey: v.string(),
-    cutoffTimeMs: v.number(),
-    limit: v.optional(v.number()),
-    dryRun: v.optional(v.boolean()),
-    includeAttached: v.optional(v.boolean()),
-    deleteDatabaseRecords: v.optional(v.boolean()),
-  },
-  returns: v.object({
-    dryRun: v.boolean(),
-    cutoffTimeMs: v.number(),
-    limit: v.number(),
-    includeAttached: v.boolean(),
-    deleteDatabaseRecords: v.boolean(),
-    candidateCount: v.number(),
-    totalBytes: v.number(),
-    attachedCount: v.number(),
-    unattachedCount: v.number(),
-    deletedStorageCount: v.number(),
-    missingStorageCount: v.number(),
-    detachedRecordCount: v.number(),
-    deletedRecordCount: v.number(),
-    aggregateRemovedCount: v.number(),
-    aggregateFailedCount: v.number(),
-    failedCount: v.number(),
-    samples: v.array(
-      v.object({
-        fileId: v.id("files"),
-        userId: v.string(),
-        name: v.string(),
-        size: v.number(),
-        isAttached: v.boolean(),
-        creationTimeMs: v.number(),
-      }),
-    ),
-    failures: v.array(
-      v.object({
-        fileId: v.id("files"),
-        name: v.string(),
-        error: v.string(),
-      }),
-    ),
-  }),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    const limit = Math.min(
-      Math.max(Math.round(args.limit ?? LEGACY_CONVEX_PURGE_DEFAULT_LIMIT), 1),
-      LEGACY_CONVEX_PURGE_MAX_LIMIT,
-    );
-    const dryRun = args.dryRun ?? true;
-    const includeAttached = args.includeAttached ?? true;
-    const deleteDatabaseRecords = args.deleteDatabaseRecords ?? false;
-
-    const legacyQuery = ctx.db
-      .query("files")
-      .withIndex("by_storage_id", (q) => q.gt("storage_id", undefined))
-      .order("asc");
-
-    const candidateRows = includeAttached
-      ? await legacyQuery
-          .filter((q) =>
-            q.and(
-              q.eq(q.field("s3_key"), undefined),
-              q.lt(q.field("_creationTime"), args.cutoffTimeMs),
-            ),
-          )
-          .take(limit)
-      : await legacyQuery
-          .filter((q) =>
-            q.and(
-              q.eq(q.field("s3_key"), undefined),
-              q.lt(q.field("_creationTime"), args.cutoffTimeMs),
-              q.eq(q.field("is_attached"), false),
-            ),
-          )
-          .take(limit);
-
-    type LegacyConvexFile = (typeof candidateRows)[number] & {
-      storage_id: Id<"_storage">;
-    };
-
-    const candidates = candidateRows.filter(
-      (file): file is LegacyConvexFile =>
-        file.storage_id !== undefined && (includeAttached || !file.is_attached),
-    );
-
-    const totalBytes = candidates.reduce((sum, file) => sum + file.size, 0);
-    const attachedCount = candidates.filter((file) => file.is_attached).length;
-    const unattachedCount = candidates.length - attachedCount;
-    const samples = candidates
-      .slice(0, LEGACY_CONVEX_PURGE_SAMPLE_LIMIT)
-      .map((file) => ({
-        fileId: file._id,
-        userId: file.user_id,
-        name: file.name,
-        size: file.size,
-        isAttached: file.is_attached,
-        creationTimeMs: file._creationTime,
-      }));
-
-    let deletedStorageCount = 0;
-    let missingStorageCount = 0;
-    let detachedRecordCount = 0;
-    let deletedRecordCount = 0;
-    let aggregateRemovedCount = 0;
-    let aggregateFailedCount = 0;
-    const failures: Array<{
-      fileId: Id<"files">;
-      name: string;
-      error: string;
-    }> = [];
-
-    if (!dryRun) {
-      for (const file of candidates) {
-        try {
-          try {
-            await ctx.storage.delete(file.storage_id);
-            deletedStorageCount++;
-          } catch (error) {
-            if (!isMissingConvexStorageError(error)) {
-              throw error;
-            }
-
-            missingStorageCount++;
-            convexLogger.warn("legacy_convex_storage_already_missing", {
-              fileId: file._id,
-              userId: file.user_id,
-            });
-          }
-
-          try {
-            await fileCountAggregate.deleteIfExists(ctx, file);
-            aggregateRemovedCount++;
-          } catch (error) {
-            aggregateFailedCount++;
-            convexLogger.warn(
-              "legacy_convex_storage_aggregate_cleanup_failed",
-              {
-                fileId: file._id,
-                userId: file.user_id,
-                error:
-                  error instanceof Error
-                    ? {
-                        name: error.name,
-                        message: error.message,
-                        stack: error.stack,
-                      }
-                    : String(error),
-              },
-            );
-          }
-
-          if (deleteDatabaseRecords) {
-            await ctx.db.delete(file._id);
-            deletedRecordCount++;
-          } else {
-            await ctx.db.patch(file._id, { storage_id: undefined });
-            detachedRecordCount++;
-          }
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          failures.push({
-            fileId: file._id,
-            name: file.name,
-            error: message,
-          });
-          convexLogger.error("legacy_convex_storage_purge_failed", {
-            fileId: file._id,
-            userId: file.user_id,
-            error:
-              error instanceof Error
-                ? {
-                    name: error.name,
-                    message: error.message,
-                    stack: error.stack,
-                  }
-                : String(error),
-          });
-        }
-      }
-    }
-
-    const result = {
-      dryRun,
-      cutoffTimeMs: args.cutoffTimeMs,
-      limit,
-      includeAttached,
-      deleteDatabaseRecords,
-      candidateCount: candidates.length,
-      totalBytes,
-      attachedCount,
-      unattachedCount,
-      deletedStorageCount,
-      missingStorageCount,
-      detachedRecordCount,
-      deletedRecordCount,
-      aggregateRemovedCount,
-      aggregateFailedCount,
-      failedCount: failures.length,
-      samples,
-      failures,
-    };
-
-    convexLogger.info("legacy_convex_storage_purge_completed", {
-      dryRun,
-      cutoffTimeMs: args.cutoffTimeMs,
-      limit,
-      includeAttached,
-      deleteDatabaseRecords,
-      candidateCount: candidates.length,
-      totalBytes,
-      attachedCount,
-      unattachedCount,
-      deletedStorageCount,
-      missingStorageCount,
-      detachedRecordCount,
-      deletedRecordCount,
-      aggregateRemovedCount,
-      aggregateFailedCount,
-      failedCount: failures.length,
-    });
-
-    return result;
-  },
-});
-
-/**
  * Internal query to get a file by ID
  * Used by actions that need to verify file existence and ownership
  */
@@ -566,7 +255,6 @@ export const getFileById = internalQuery({
   returns: v.union(
     v.object({
       _id: v.id("files"),
-      storage_id: v.optional(v.id("_storage")),
       s3_key: v.optional(v.string()),
       user_id: v.string(),
       name: v.string(),
@@ -679,7 +367,6 @@ export const saveFileToDb = internalMutation({
       }
 
       await ctx.db.patch(existing._id, {
-        storage_id: undefined,
         name: args.name,
         media_type: args.mediaType,
         file_token_size: args.fileTokenSize,

@@ -622,7 +622,6 @@ export function extractSidebarContentFromMessage(
         mediaType: f.mediaType,
         fileId: f.fileId,
         s3Key: f.s3Key,
-        storageId: f.storageId,
       }));
 
       contentList.push({

@@ -808,7 +808,6 @@ export const getMessagesByChatId = query({
               name: v.string(),
               mediaType: v.optional(v.string()),
               url: v.optional(v.union(v.string(), v.null())),
-              storageId: v.optional(v.string()),
               s3Key: v.optional(v.string()),
             }),
           ),
@@ -868,7 +867,7 @@ export const getMessagesByChatId = query({
       // DON'T generate URLs here - they expire and get cached with the query!
       // Frontend will fetch URLs on-demand via actions (avoids stale cached URLs)
       // V8-SAFE: This query does NOT call generateS3DownloadUrl or any Node.js built-ins.
-      // Only file metadata (fileId, name, mediaType, s3Key, storageId) is returned.
+      // Only file metadata (fileId, name, mediaType, s3Key) is returned.
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
         if (file && file.user_id === user.subject) {
@@ -877,7 +876,6 @@ export const getMessagesByChatId = query({
             name: file.name,
             mediaType: file.media_type,
             // url: removed - generate on-demand to avoid caching expired URLs
-            storageId: file.storage_id,
             s3Key: file.s3_key,
           });
         }
@@ -1125,9 +1123,9 @@ export const deleteLastAssistantMessage = mutation({
         // Delete files and messages
         for (const msg of messagesToDelete) {
           if (msg.file_ids && msg.file_ids.length > 0) {
-            for (const storageId of msg.file_ids) {
+            for (const fileId of msg.file_ids) {
               try {
-                const file = await ctx.db.get(storageId);
+                const file = await ctx.db.get(fileId);
                 if (file) {
                   if (file.s3_key) {
                     await ctx.scheduler.runAfter(
@@ -1135,14 +1133,12 @@ export const deleteLastAssistantMessage = mutation({
                       internal.s3Cleanup.deleteS3ObjectAction,
                       { s3Key: file.s3_key },
                     );
-                  } else if (file.storage_id) {
-                    await ctx.storage.delete(file.storage_id);
                   }
                   await fileCountAggregate.deleteIfExists(ctx, file);
                   await ctx.db.delete(file._id);
                 }
               } catch (error) {
-                console.error(`Failed to delete file ${storageId}:`, error);
+                console.error(`Failed to delete file ${fileId}:`, error);
               }
             }
           }
@@ -1807,15 +1803,12 @@ export const regenerateWithNewContent = mutation({
         try {
           const file = await ctx.db.get(fileId);
           if (file) {
-            // Delete from appropriate storage
             if (file.s3_key) {
               await ctx.scheduler.runAfter(
                 0,
                 internal.s3Cleanup.deleteS3ObjectAction,
                 { s3Key: file.s3_key },
               );
-            } else if (file.storage_id) {
-              await ctx.storage.delete(file.storage_id);
             }
             // Delete from aggregate
             await fileCountAggregate.deleteIfExists(ctx, file);
@@ -1874,15 +1867,12 @@ export const regenerateWithNewContent = mutation({
             try {
               const file = await ctx.db.get(fileId);
               if (file) {
-                // Delete from appropriate storage
                 if (file.s3_key) {
                   await ctx.scheduler.runAfter(
                     0,
                     internal.s3Cleanup.deleteS3ObjectAction,
                     { s3Key: file.s3_key },
                   );
-                } else if (file.storage_id) {
-                  await ctx.storage.delete(file.storage_id);
                 }
                 // Delete from aggregate
                 await fileCountAggregate.deleteIfExists(ctx, file);
@@ -2014,7 +2004,7 @@ export const getSharedMessages = query({
             return {
               type: isImage ? "image" : "file",
               placeholder: true,
-              // SECURITY: Do NOT include url, storage_id, file_id, name, or mediaType
+              // SECURITY: Do NOT include url, file_id, name, or mediaType
             };
           }
           // Keep text parts as-is
@@ -2052,7 +2042,6 @@ export const getPreviewMessages = query({
             fileId: v.id("files"),
             name: v.string(),
             mediaType: v.optional(v.string()),
-            storageId: v.optional(v.string()),
             s3Key: v.optional(v.string()),
           }),
         ),
@@ -2110,7 +2099,6 @@ export const getPreviewMessages = query({
             fileId: fileIdArray[index],
             name: file.name,
             mediaType: file.media_type,
-            storageId: file.storage_id,
             s3Key: file.s3_key,
           });
         }
