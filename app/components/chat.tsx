@@ -40,7 +40,12 @@ import {
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode } from "@/types";
+import {
+  normalizeSelectedModelForSubscription,
+  type Todo,
+  type ChatMessage,
+  type ChatMode,
+} from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
@@ -268,8 +273,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const requestSelectedModel = normalizeSelectedModelForSubscription(
+    selectedModel,
+    subscription,
+  );
   // Use ref for model selection to avoid stale closures in auto-send
-  const selectedModelRef = useLatestRef(selectedModel);
+  const requestSelectedModelRef = useLatestRef(requestSelectedModel);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -1036,7 +1045,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 todos: todosRef.current,
                 temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
-                selectedModel: selectedModelRef.current,
+                selectedModel: requestSelectedModelRef.current,
               },
             },
           );
@@ -1062,7 +1071,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
-    selectedModelRef,
+    requestSelectedModelRef,
   ]);
 
   // Chat handlers
@@ -1175,7 +1184,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         todos={todos}
         temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
-        selectedModel={selectedModel}
+        selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
           chatData === undefined

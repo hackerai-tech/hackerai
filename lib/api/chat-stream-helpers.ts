@@ -892,16 +892,16 @@ export async function applyPrepareStepReminders(
 }
 
 /**
- * Free-tier agent mode is restricted to the local sandbox + auto model.
- * Throws ChatSDKError("forbidden:chat") if either gate fails.
+ * Free-tier agent mode is restricted to the local sandbox.
+ * Model overrides are normalized to auto before stream setup.
+ * Throws ChatSDKError("forbidden:chat") if the sandbox gate fails.
  */
 export function assertFreeAgentGates(args: {
   mode: ChatMode;
   subscription: SubscriptionTier;
   sandboxPreference: SandboxPreference | undefined;
-  rawSelectedModel: string | undefined;
 }): void {
-  const { mode, subscription, sandboxPreference, rawSelectedModel } = args;
+  const { mode, subscription, sandboxPreference } = args;
   if (!isAgentMode(mode) || subscription !== "free") return;
 
   const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
@@ -909,13 +909,6 @@ export function assertFreeAgentGates(args: {
     throw new ChatSDKError(
       "forbidden:chat",
       "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
-    );
-  }
-
-  if (rawSelectedModel && rawSelectedModel !== "auto") {
-    throw new ChatSDKError(
-      "forbidden:chat",
-      "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
     );
   }
 }
