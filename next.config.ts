@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
-const hasPostHogSourceMapApiKey = Boolean(process.env.POSTHOG_CLI_API_KEY);
-const hasPostHogSourceMapProjectId = Boolean(
-  process.env.POSTHOG_CLI_PROJECT_ID,
-);
+const postHogSourceMapApiKey = process.env.POSTHOG_CLI_API_KEY?.trim();
+const postHogSourceMapProjectId = process.env.POSTHOG_CLI_PROJECT_ID?.trim();
+const hasPostHogSourceMapApiKey = Boolean(postHogSourceMapApiKey);
+const hasPostHogSourceMapProjectId = Boolean(postHogSourceMapProjectId);
 const posthogSourceMapsEnabled =
   hasPostHogSourceMapApiKey && hasPostHogSourceMapProjectId;
 
