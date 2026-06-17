@@ -15,11 +15,10 @@ import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 
 // 50% is intentionally omitted: at the halfway mark there's no actionable
-// signal for the user, so an in-product banner is noise. The ladder matches
-// the codebase's pre-existing 80/95 warnings, plus 100% which drives the
-// abort. (Anthropic's Console alerts include 50% but deliver it via email,
-// not an in-product disruption — we don't have that channel.)
-export const BUDGET_THRESHOLDS = [80, 95, 100] as const;
+// signal for the user, so an in-product banner is noise. The ladder gives an
+// early heads-up at 75%, a stronger warning at 90%, and uses 100% for the
+// cutoff or extra-usage transition.
+export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
 
 export interface BudgetSnapshot {
   monthlyLimitPoints: number;

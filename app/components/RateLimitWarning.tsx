@@ -136,6 +136,7 @@ export const RateLimitWarning = ({
           capReason,
         })
       : null;
+  const showUsageCta = data.warningType === "extra-usage-active";
   const showUpgrade =
     data.warningType !== "extra-usage-active" &&
     shouldShowUpgradeCta({
@@ -207,6 +208,16 @@ export const RateLimitWarning = ({
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
             {extraUsageCta.label}
+          </Button>
+        )}
+        {showUsageCta && (
+          <Button
+            onClick={() => openSettingsDialog("Usage")}
+            size="sm"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+          >
+            View Usage
           </Button>
         )}
         {showUpgrade && (

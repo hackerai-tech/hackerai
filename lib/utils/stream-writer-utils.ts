@@ -115,7 +115,7 @@ export type RateLimitWarningData =
       limitDollars?: number;
       capReason?: LimitCapReason;
       // Mid-stream emits bypass localStorage dedup so threshold escalations
-      // (50→80→95→100) within a single stream always reach the client.
+      // (75→90→100) within a single stream always reach the client.
       midStream?: boolean;
       // Set when the response was cut off mid-stream because the bucket hit 0.
       cutOff?: boolean;

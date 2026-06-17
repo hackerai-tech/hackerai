@@ -29,8 +29,8 @@ const TOKEN_BUCKET_WARNING_KEY_PREFIX = "tokenBucketWarningShownAt_";
 
 /** Dedup interval per severity: show each tier at most once per this many hours */
 const SEVERITY_DEDUP_HOURS: Record<string, number> = {
-  info: 168, // 80% warning: once per week (effectively once per billing cycle)
-  warning: 0, // 95% warning: always show
+  info: 168, // 75% warning: once per week (effectively once per billing cycle)
+  warning: 0, // 90% warning: always show
 };
 
 /**
