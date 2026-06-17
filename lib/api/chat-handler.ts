@@ -644,13 +644,15 @@ export const createChatHandler = () => {
                   return;
                 }
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
 
                 // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
                 // non-clean streams. Each completed step reports authoritative cost with
@@ -684,6 +686,10 @@ export const createChatHandler = () => {
                     organizationId,
                     rateLimitInfo,
                   );
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,

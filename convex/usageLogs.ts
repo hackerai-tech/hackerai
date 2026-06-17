@@ -76,16 +76,29 @@ export const logUsage = mutation({
         ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
         : reportedModelCostDollars;
     const costDollars = modelCostDollars + nonModelCostDollars;
-    const includedUsageCostDollars = Number.isFinite(args.included_cost_dollars)
-      ? args.included_cost_dollars!
-      : args.type === "included"
-        ? costDollars
-        : 0;
-    const extraUsageCostDollars = Number.isFinite(args.extra_usage_cost_dollars)
-      ? args.extra_usage_cost_dollars!
-      : args.type === "extra"
-        ? costDollars
-        : 0;
+    const reportedCostDollars = reportedModelCostDollars + nonModelCostDollars;
+    const costBreakdownScale =
+      args.cost_source === "token_estimate" && reportedCostDollars > 0
+        ? costDollars / reportedCostDollars
+        : 1;
+    const includedCostDollars = Number.isFinite(args.included_cost_dollars)
+      ? args.included_cost_dollars! * costBreakdownScale
+      : undefined;
+    const extraCostDollars = Number.isFinite(args.extra_usage_cost_dollars)
+      ? args.extra_usage_cost_dollars! * costBreakdownScale
+      : undefined;
+    const includedUsageCostDollars =
+      includedCostDollars !== undefined
+        ? includedCostDollars
+        : args.type === "included"
+          ? costDollars
+          : 0;
+    const extraUsageCostDollars =
+      extraCostDollars !== undefined
+        ? extraCostDollars
+        : args.type === "extra"
+          ? costDollars
+          : 0;
     const costSource =
       args.cost_source === "token_estimate"
         ? "raw_token_estimate"

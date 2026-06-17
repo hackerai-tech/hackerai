@@ -555,6 +555,8 @@ export const deductUsage = async (
     throwRateLimitServiceNotConfigured();
   }
 
+  let lastKnownDeductionResult = emptyUsageDeductionResult();
+
   try {
     const { monthly, monthlyLimit } = createRateLimiter(
       redis,
@@ -579,6 +581,7 @@ export const deductUsage = async (
       includedDeltaPoints: number = 0,
       extraUsageDeltaPoints: number = 0,
       includedRefundPoints: number = 0,
+      extraUsageRefundPoints: number = 0,
     ): UsageDeductionResult => ({
       includedPointsDeducted: Math.max(
         0,
@@ -586,9 +589,14 @@ export const deductUsage = async (
           nonNegativePoints(includedDeltaPoints) -
           nonNegativePoints(includedRefundPoints),
       ),
-      extraUsagePointsDeducted:
-        initialExtraUsagePoints + nonNegativePoints(extraUsageDeltaPoints),
+      extraUsagePointsDeducted: Math.max(
+        0,
+        initialExtraUsagePoints +
+          nonNegativePoints(extraUsageDeltaPoints) -
+          nonNegativePoints(extraUsageRefundPoints),
+      ),
     });
+    lastKnownDeductionResult = buildDeductionResult();
 
     // Calculate actual cost - prefer provider cost if available.
     // Provider cost already includes non-model costs (sandbox/tools) when present.
@@ -621,12 +629,52 @@ export const deductUsage = async (
     // If we over-estimated (pre-deducted more than actual), refund the difference
     if (costDifference < 0) {
       const pointsToRefund = Math.abs(costDifference);
-      await refundBucketTokens(userId, subscription, pointsToRefund);
-      return buildDeductionResult(0, 0, pointsToRefund);
+      const extraUsageRefundTarget = Math.min(
+        pointsToRefund,
+        initialExtraUsagePoints,
+      );
+
+      if (extraUsageRefundTarget > 0) {
+        const isTeamPool = subscription === "team" && !!organizationId;
+        const refundResult = isTeamPool
+          ? await refundToTeamBalance(
+              organizationId!,
+              userId,
+              extraUsageRefundTarget,
+            )
+          : await refundToBalance(userId, extraUsageRefundTarget);
+
+        if (!refundResult.success) {
+          return lastKnownDeductionResult;
+        }
+
+        lastKnownDeductionResult = buildDeductionResult(
+          0,
+          0,
+          0,
+          extraUsageRefundTarget,
+        );
+      }
+
+      const includedRefundPoints = Math.min(
+        pointsToRefund - extraUsageRefundTarget,
+        initialIncludedPoints,
+      );
+      if (includedRefundPoints > 0) {
+        await refundBucketTokens(userId, subscription, includedRefundPoints);
+        lastKnownDeductionResult = buildDeductionResult(
+          0,
+          0,
+          includedRefundPoints,
+          extraUsageRefundTarget,
+        );
+      }
+
+      return lastKnownDeductionResult;
     }
 
     // If actual cost equals estimate, nothing more to do
-    if (costDifference === 0) return buildDeductionResult();
+    if (costDifference === 0) return lastKnownDeductionResult;
 
     // Otherwise, we need to charge the additional cost.
     // First, peek at remaining balance to avoid going negative.
@@ -640,6 +688,7 @@ export const deductUsage = async (
     // Deduct only what the bucket can cover
     if (fromBucket > 0) {
       await monthly.limiter.limit(monthly.key, { rate: fromBucket });
+      lastKnownDeductionResult = buildDeductionResult(fromBucket);
     }
 
     // Send overflow to extra usage if enabled
@@ -655,12 +704,16 @@ export const deductUsage = async (
         : await deductFromBalance(userId, fromExtraUsage);
       if (deductResult.success) {
         extraUsageDeducted = fromExtraUsage;
+        lastKnownDeductionResult = buildDeductionResult(
+          fromBucket,
+          extraUsageDeducted,
+        );
       }
     }
-    return buildDeductionResult(fromBucket, extraUsageDeducted);
+    return lastKnownDeductionResult;
   } catch (error) {
     console.error("Failed to deduct usage:", error);
-    return emptyUsageDeductionResult();
+    return lastKnownDeductionResult;
   }
 };
 

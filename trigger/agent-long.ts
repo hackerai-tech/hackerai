@@ -1108,13 +1108,15 @@ export const agentLongTask = task({
                 }
                 if (!usageTracker.hasUsage) return;
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
                 const providerCost =
                   usageTracker.modelProviderCost > 0
                     ? usageTracker.providerCost
@@ -1138,6 +1140,10 @@ export const agentLongTask = task({
                     organizationId,
                     rateLimitInfo,
                   );
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,

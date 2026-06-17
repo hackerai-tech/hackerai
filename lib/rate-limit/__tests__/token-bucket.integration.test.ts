@@ -402,6 +402,70 @@ describe("token-bucket async functions", () => {
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
+    it("should refund mixed over-estimation from extra usage before included usage", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+      const estimatedInputTokens = 7600;
+      const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+      const providerCostDollars = 0.004;
+
+      expect(estimatedCost).toBe(50);
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        5000,
+        500,
+        undefined,
+        providerCostDollars,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 17,
+          extraUsagePointsDeducted: 33,
+        },
+      );
+
+      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 10);
+      expect(mockHincrbyFn).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 23,
+      });
+    });
+
+    it("should preserve the initial deduction split when final deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+      const consoleSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mockLimitFn.mockRejectedValueOnce(new Error("upstash unavailable"));
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        7600,
+        5000,
+        500,
+        undefined,
+        0.006,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 17,
+          extraUsagePointsDeducted: 33,
+        },
+      );
+
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 33,
+      });
+      consoleSpy.mockRestore();
+    });
+
     it("should refund when token-based actual cost is less than estimated", async () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
