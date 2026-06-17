@@ -87,6 +87,16 @@ export const logUsage = mutation({
     const extraCostDollars = Number.isFinite(args.extra_usage_cost_dollars)
       ? args.extra_usage_cost_dollars! * costBreakdownScale
       : undefined;
+
+    if (
+      args.type === "mixed" &&
+      (includedCostDollars === undefined || extraCostDollars === undefined)
+    ) {
+      throw new Error(
+        "Mixed usage logs require included and extra usage cost breakdowns",
+      );
+    }
+
     const includedUsageCostDollars =
       includedCostDollars !== undefined
         ? includedCostDollars

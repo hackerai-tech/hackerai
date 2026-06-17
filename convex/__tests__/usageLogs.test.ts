@@ -79,4 +79,35 @@ describe("usageLogs", () => {
     expect(unitEconomicsDelta.includedUsageCostDollars).toBeCloseTo(7.2);
     expect(unitEconomicsDelta.extraUsageCostDollars).toBeCloseTo(4.8);
   });
+
+  it("rejects mixed usage logs without a complete cost breakdown", async () => {
+    const { logUsage } = await import("../usageLogs");
+    const ctx: any = {
+      db: {
+        insert: jest.fn(async () => "usage-id"),
+      },
+    };
+
+    await expect(
+      (logUsage as any).handler(ctx, {
+        serviceKey: "test-service-key",
+        user_id: "user_1",
+        model: "model-sonnet-4.6",
+        type: "mixed",
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        cost_dollars: 12,
+        included_cost_dollars: 7.2,
+        model_cost_dollars: 10,
+        non_model_cost_dollars: 2,
+        cost_source: "raw_token_estimate",
+      }),
+    ).rejects.toThrow(
+      "Mixed usage logs require included and extra usage cost breakdowns",
+    );
+
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    expect(mockApplyUnitEconomicsDelta).not.toHaveBeenCalled();
+  });
 });

@@ -440,6 +440,12 @@ describe("token-bucket async functions", () => {
       const consoleSpy = jest
         .spyOn(console, "error")
         .mockImplementation(() => {});
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 10,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
       mockLimitFn.mockRejectedValueOnce(new Error("upstash unavailable"));
 
       const result = await deductUsage(

@@ -673,7 +673,7 @@ export const createChatHandler = () => {
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  const billingBreakdown = await deductUsage(
+                  const deductionResult = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -686,6 +686,11 @@ export const createChatHandler = () => {
                     organizationId,
                     rateLimitInfo,
                   );
+                  const billingBreakdown =
+                    deductionResult.includedPointsDeducted > 0 ||
+                    deductionResult.extraUsagePointsDeducted > 0
+                      ? deductionResult
+                      : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({
                     ...usageRecordArgs,
                     billingBreakdown,
