@@ -263,6 +263,11 @@ E2B_TEMPLATE=terminal-agent-sandbox
 # NEXT_PUBLIC_POSTHOG_KEY=phc_
 # NEXT_PUBLIC_POSTHOG_HOST=https://app.posthog.com
 # NEXT_PUBLIC_POSTHOG_TRACK_FREE_USERS=true
+# Required in CI/production builds to upload source maps for readable stack traces.
+# Personal API key with the Source map upload preset.
+# POSTHOG_CLI_API_KEY=phx_
+# POSTHOG_CLI_PROJECT_ID=
+# POSTHOG_CLI_HOST=https://us.posthog.com
 
 # =============================================================================
 # PAYMENTS (Optional - Stripe)
