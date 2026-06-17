@@ -19,6 +19,8 @@ interface UpgradeConfirmationDialogProps {
   quantity?: number;
   source?: string;
   surface?: string;
+  reason?: string;
+  limitType?: string;
 }
 
 // Safely validate and format unix seconds into a display date
@@ -50,6 +52,8 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   quantity,
   source,
   surface,
+  reason,
+  limitType,
 }) => {
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -89,6 +93,8 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
             checkoutAttemptId,
             source,
             surface,
+            reason,
+            limitType,
           }),
         });
 
@@ -128,7 +134,17 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     };
 
     fetchDetails();
-  }, [isOpen, targetPlan, price, quantity, checkoutAttemptId, source, surface]);
+  }, [
+    isOpen,
+    targetPlan,
+    price,
+    quantity,
+    checkoutAttemptId,
+    source,
+    surface,
+    reason,
+    limitType,
+  ]);
 
   const proratedCredit = details?.proratedCredit || 0;
   const additionalCredit = (details as any)?.additionalCredit || 0;
@@ -157,6 +173,8 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           checkoutAttemptId,
           source,
           surface,
+          reason,
+          limitType,
           fromTier: details.currentPlan,
         }),
       });

@@ -103,7 +103,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
       if (data.subscription === "free") {
-        return `You've reached your free monthly usage limit and this response was cut off. Upgrade to keep Agent running with higher limits. Resets ${timeString}.`;
+        return `You've reached your free monthly usage limit and this response was cut off. Upgrade for higher limits. Resets ${timeString}.`;
       }
       if (data.capReason === "extra_usage_cap") {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
@@ -111,7 +111,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
     if (data.subscription === "free") {
-      return `You've reached your free monthly usage limit. Upgrade for higher Agent limits and cloud agents. Resets ${timeString}.`;
+      return `You've reached your free monthly usage limit. Upgrade for higher limits. Resets ${timeString}.`;
     }
 
     return `You've reached your monthly usage limit. It resets ${timeString}.`;

@@ -61,7 +61,7 @@ type PricingIntentCopy = {
   ultraButtonText: string;
 };
 
-function getPricingIntentCopy(
+export function getPricingIntentCopy(
   context: PricingDialogContext | undefined,
   subscription: string,
 ): PricingIntentCopy | null {
@@ -70,27 +70,6 @@ function getPricingIntentCopy(
   const source = context?.source;
   const limitType = context?.limitType;
   const reason = context?.reason;
-
-  if (
-    source === "limit_pressure" ||
-    source === "rate_limit_error" ||
-    limitType === "free_monthly" ||
-    limitType === "daily_requests" ||
-    reason === "free_monthly_exhausted" ||
-    reason === "daily_requests_exhausted"
-  ) {
-    return {
-      title: "Keep Agent running",
-      description:
-        "Upgrade to continue today with higher usage limits, cloud agents, file uploads, and stronger models for heavier security work.",
-      proDescription: "Continue Agent runs with higher limits",
-      proPlusDescription: "More room for heavier Agent work",
-      ultraDescription: "Maximum usage for intensive testing",
-      proButtonText: "Continue with Pro",
-      proPlusButtonText: "Keep going with Pro+",
-      ultraButtonText: "Scale up with Ultra",
-    };
-  }
 
   if (source === "agent_mode_gate") {
     return {
@@ -103,6 +82,27 @@ function getPricingIntentCopy(
       proButtonText: "Use cloud Agent",
       proPlusButtonText: "Get more Agent usage",
       ultraButtonText: "Get Ultra",
+    };
+  }
+
+  if (
+    source === "limit_pressure" ||
+    source === "rate_limit_error" ||
+    limitType === "free_monthly" ||
+    limitType === "daily_requests" ||
+    reason === "free_monthly_exhausted" ||
+    reason === "daily_requests_exhausted"
+  ) {
+    return {
+      title: "Keep working",
+      description:
+        "Upgrade to continue today with higher usage limits, file uploads, and stronger models for heavier security work.",
+      proDescription: "Continue with higher limits",
+      proPlusDescription: "More room for heavier work",
+      ultraDescription: "Maximum usage for intensive testing",
+      proButtonText: "Continue with Pro",
+      proPlusButtonText: "Keep going with Pro+",
+      ultraButtonText: "Scale up with Ultra",
     };
   }
 
@@ -486,8 +486,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
         planName={pendingUpgrade?.planName || ""}
         price={pendingUpgrade?.price || 0}
         targetPlan={pendingUpgrade?.plan || ""}
-        source="plan_card"
+        source={context?.source ?? "plan_card"}
         surface="pricing_dialog"
+        reason={context?.reason}
+        limitType={context?.limitType}
       />
 
       <Dialog open={isOpen} onOpenChange={onClose}>
