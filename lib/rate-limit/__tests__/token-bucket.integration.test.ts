@@ -320,7 +320,10 @@ describe("token-bucket async functions", () => {
 
       await expect(
         deductUsage("user-123", "pro", 1000, 1200, 500),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 0,
+      });
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
@@ -397,6 +400,76 @@ describe("token-bucket async functions", () => {
       );
       // Should NOT call limiter to deduct more
       expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("should refund mixed over-estimation from extra usage before included usage", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+      const estimatedInputTokens = 7600;
+      const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+      const providerCostDollars = 0.004;
+
+      expect(estimatedCost).toBe(50);
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        5000,
+        500,
+        undefined,
+        providerCostDollars,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 17,
+          extraUsagePointsDeducted: 33,
+        },
+      );
+
+      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 10);
+      expect(mockHincrbyFn).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 23,
+      });
+    });
+
+    it("should preserve the initial deduction split when final deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+      const consoleSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 10,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      mockLimitFn.mockRejectedValueOnce(new Error("upstash unavailable"));
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        7600,
+        5000,
+        500,
+        undefined,
+        0.006,
+        undefined,
+        0,
+        undefined,
+        {
+          pointsDeducted: 17,
+          extraUsagePointsDeducted: 33,
+        },
+      );
+
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 33,
+      });
+      consoleSpy.mockRestore();
     });
 
     it("should refund when token-based actual cost is less than estimated", async () => {
@@ -641,7 +714,7 @@ describe("token-bucket async functions", () => {
       // Estimated 1000 input = 7 points (with 1.3x), actual provider cost = $0.005 = 50 points
       // Difference = 50 - 7 = 43 additional needed
       // Bucket has 10, so fromBucket=10, fromExtraUsage=33
-      await deductUsage(
+      const result = await deductUsage(
         "user-123",
         "pro",
         1000,
@@ -662,6 +735,10 @@ describe("token-bucket async functions", () => {
       );
       // Should deduct the overflow (33) from extra usage
       expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 33,
+      });
     });
 
     it("should not call extra usage when bucket covers the full amount", async () => {

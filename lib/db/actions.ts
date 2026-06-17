@@ -1325,6 +1325,10 @@ export async function logUsageRecord({
   subscription,
   model,
   type,
+  includedCostDollars,
+  extraUsageCostDollars,
+  includedPointsDeducted,
+  extraUsagePointsDeducted,
   inputTokens,
   outputTokens,
   totalTokens,
@@ -1342,7 +1346,11 @@ export async function logUsageRecord({
   mode?: ChatMode;
   subscription?: SubscriptionTier;
   model: string;
-  type: "included" | "extra";
+  type: "included" | "extra" | "mixed";
+  includedCostDollars?: number;
+  extraUsageCostDollars?: number;
+  includedPointsDeducted?: number;
+  extraUsagePointsDeducted?: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -1364,6 +1372,10 @@ export async function logUsageRecord({
       subscription,
       model,
       type,
+      included_cost_dollars: includedCostDollars,
+      extra_usage_cost_dollars: extraUsageCostDollars,
+      included_points_deducted: includedPointsDeducted,
+      extra_usage_points_deducted: extraUsagePointsDeducted,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,

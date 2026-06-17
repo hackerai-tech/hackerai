@@ -1108,13 +1108,15 @@ export const agentLongTask = task({
                 }
                 if (!usageTracker.hasUsage) return;
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
                 const providerCost =
                   usageTracker.modelProviderCost > 0
                     ? usageTracker.providerCost
@@ -1125,7 +1127,7 @@ export const agentLongTask = task({
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const deductionResult = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -1136,7 +1138,17 @@ export const agentLongTask = task({
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
+                  const billingBreakdown =
+                    deductionResult.includedPointsDeducted > 0 ||
+                    deductionResult.extraUsagePointsDeducted > 0
+                      ? deductionResult
+                      : undefined;
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,
@@ -1149,6 +1161,7 @@ export const agentLongTask = task({
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({

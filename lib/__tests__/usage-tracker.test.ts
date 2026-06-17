@@ -226,10 +226,21 @@ describe("UsageTracker", () => {
         remaining: 0,
         resetTime: new Date(),
         limit: 250000,
-        pointsDeducted: 100,
+        pointsDeducted: 0,
         extraUsagePointsDeducted: 50,
       });
       expect(result).toBe("extra");
+    });
+
+    it("should return 'mixed' when included and extra usage were both used", () => {
+      const result = tracker.resolveUsageType({
+        remaining: 0,
+        resetTime: new Date(),
+        limit: 250000,
+        pointsDeducted: 100,
+        extraUsagePointsDeducted: 50,
+      });
+      expect(result).toBe("mixed");
     });
 
     it("should return 'included' when no extra usage", () => {
@@ -251,6 +262,31 @@ describe("UsageTracker", () => {
         extraUsagePointsDeducted: 0,
       });
       expect(result).toBe("included");
+    });
+  });
+
+  describe("resolveCostBreakdown", () => {
+    it("splits cost proportionally across included and extra points", () => {
+      const result = tracker.resolveCostBreakdown(
+        3,
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+        {
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 50,
+        },
+      );
+
+      expect(result).toMatchObject({
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 50,
+      });
+      expect(result.includedCostDollars).toBeCloseTo(2);
+      expect(result.extraUsageCostDollars).toBeCloseTo(1);
     });
   });
 
@@ -348,6 +384,10 @@ describe("UsageTracker", () => {
         subscription: undefined,
         model: "auto",
         type: "included",
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
@@ -376,6 +416,32 @@ describe("UsageTracker", () => {
 
       expect(usage.costDollars).toBe(0.5);
       expect(usage.costSource).toBe("raw_token_estimate");
+    });
+
+    it("labels post-run overflow as mixed when final deduction uses extra usage", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "model-default",
+        configuredModelId: "model-config",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+        billingBreakdown: {
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 100,
+        },
+      });
+
+      expect(usage.type).toBe("mixed");
+      expect(usage.includedCostDollars).toBeCloseTo(0.25);
+      expect(usage.extraUsageCostDollars).toBeCloseTo(0.25);
     });
   });
 });

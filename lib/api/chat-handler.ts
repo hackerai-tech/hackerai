@@ -648,13 +648,15 @@ export const createChatHandler = () => {
                   return;
                 }
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
 
                 // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
                 // non-clean streams. Each completed step reports authoritative cost with
@@ -675,7 +677,7 @@ export const createChatHandler = () => {
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const deductionResult = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -686,7 +688,17 @@ export const createChatHandler = () => {
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
+                  const billingBreakdown =
+                    deductionResult.includedPointsDeducted > 0 ||
+                    deductionResult.extraUsagePointsDeducted > 0
+                      ? deductionResult
+                      : undefined;
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,
@@ -699,6 +711,7 @@ export const createChatHandler = () => {
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({

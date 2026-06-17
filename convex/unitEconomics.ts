@@ -422,6 +422,12 @@ export const rebuildEntityDailyRollups = mutation({
           ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
           : reportedModelCostDollars;
       const costDollars = modelCostDollars + nonModelCostDollars;
+      const includedUsageCostDollars =
+        log.included_cost_dollars ??
+        (log.type === "included" ? costDollars : 0);
+      const extraUsageCostDollars =
+        log.extra_usage_cost_dollars ??
+        (log.type === "extra" ? costDollars : 0);
       await applyUnitEconomicsDelta(ctx, {
         entityType: args.entityType as UnitEconomicsEntityType,
         entityId: args.entityId,
@@ -433,8 +439,8 @@ export const rebuildEntityDailyRollups = mutation({
         day: utcDay(log._creationTime),
         modelCostDollars,
         nonModelCostDollars,
-        includedUsageCostDollars: log.type === "included" ? costDollars : 0,
-        extraUsageCostDollars: log.type === "extra" ? costDollars : 0,
+        includedUsageCostDollars,
+        extraUsageCostDollars,
         usageRequestCount: 1,
         inputTokens: log.input_tokens,
         outputTokens: log.output_tokens,

@@ -13,9 +13,20 @@ interface StepUsage {
   raw?: { cost?: number };
 }
 
+export type UsageBillingType = "included" | "extra" | "mixed";
+
+export interface UsageBillingBreakdown {
+  includedPointsDeducted: number;
+  extraUsagePointsDeducted: number;
+}
+
 export interface UsageCostRecord {
   model: string;
-  type: "included" | "extra";
+  type: UsageBillingType;
+  includedCostDollars: number;
+  extraUsageCostDollars: number;
+  includedPointsDeducted: number;
+  extraUsagePointsDeducted: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -128,11 +139,79 @@ export class UsageTracker {
     return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
   }
 
-  resolveUsageType(rateLimitInfo: RateLimitInfo): "included" | "extra" {
-    return rateLimitInfo.extraUsagePointsDeducted &&
-      rateLimitInfo.extraUsagePointsDeducted > 0
-      ? "extra"
-      : "included";
+  getBillingBreakdown(
+    rateLimitInfo: RateLimitInfo,
+    billingBreakdown?: UsageBillingBreakdown,
+  ): UsageBillingBreakdown {
+    return {
+      includedPointsDeducted: Math.max(
+        0,
+        billingBreakdown?.includedPointsDeducted ??
+          rateLimitInfo.pointsDeducted ??
+          0,
+      ),
+      extraUsagePointsDeducted: Math.max(
+        0,
+        billingBreakdown?.extraUsagePointsDeducted ??
+          rateLimitInfo.extraUsagePointsDeducted ??
+          0,
+      ),
+    };
+  }
+
+  resolveUsageType(
+    rateLimitInfo: RateLimitInfo,
+    billingBreakdown?: UsageBillingBreakdown,
+  ): UsageBillingType {
+    const { includedPointsDeducted, extraUsagePointsDeducted } =
+      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    if (includedPointsDeducted > 0 && extraUsagePointsDeducted > 0) {
+      return "mixed";
+    }
+    return extraUsagePointsDeducted > 0 ? "extra" : "included";
+  }
+
+  resolveCostBreakdown(
+    costDollars: number,
+    rateLimitInfo: RateLimitInfo,
+    billingBreakdown?: UsageBillingBreakdown,
+  ): Pick<
+    UsageCostRecord,
+    | "includedCostDollars"
+    | "extraUsageCostDollars"
+    | "includedPointsDeducted"
+    | "extraUsagePointsDeducted"
+  > {
+    const { includedPointsDeducted, extraUsagePointsDeducted } =
+      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    const totalPoints = includedPointsDeducted + extraUsagePointsDeducted;
+
+    if (extraUsagePointsDeducted <= 0 || totalPoints <= 0) {
+      return {
+        includedCostDollars: costDollars,
+        extraUsageCostDollars: 0,
+        includedPointsDeducted,
+        extraUsagePointsDeducted,
+      };
+    }
+
+    if (includedPointsDeducted <= 0) {
+      return {
+        includedCostDollars: 0,
+        extraUsageCostDollars: costDollars,
+        includedPointsDeducted,
+        extraUsagePointsDeducted,
+      };
+    }
+
+    const extraUsageCostDollars =
+      costDollars * (extraUsagePointsDeducted / totalPoints);
+    return {
+      includedCostDollars: costDollars - extraUsageCostDollars,
+      extraUsageCostDollars,
+      includedPointsDeducted,
+      extraUsagePointsDeducted,
+    };
   }
 
   resolveModelName({
@@ -158,12 +237,14 @@ export class UsageTracker {
     responseModel,
     configuredModelId,
     rateLimitInfo,
+    billingBreakdown,
   }: {
     selectedModel: string;
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
+    billingBreakdown?: UsageBillingBreakdown;
   }): UsageCostRecord {
     const model = this.resolveModelName({
       selectedModelOverride,
@@ -172,15 +253,22 @@ export class UsageTracker {
       selectedModel,
     });
     const modelCostDollars = this.computeModelCostDollars(selectedModel);
+    const costDollars = modelCostDollars + this.nonModelCost;
+    const costBreakdown = this.resolveCostBreakdown(
+      costDollars,
+      rateLimitInfo,
+      billingBreakdown,
+    );
     return {
       model,
-      type: this.resolveUsageType(rateLimitInfo),
+      type: this.resolveUsageType(rateLimitInfo, billingBreakdown),
+      ...costBreakdown,
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       totalTokens: this.totalTokens || this.inputTokens + this.outputTokens,
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
-      costDollars: modelCostDollars + this.nonModelCost,
+      costDollars,
       modelCostDollars,
       nonModelCostDollars: this.nonModelCost,
       costSource:
@@ -200,6 +288,7 @@ export class UsageTracker {
     responseModel?: string;
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
+    billingBreakdown?: UsageBillingBreakdown;
   }) {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
@@ -211,6 +300,10 @@ export class UsageTracker {
       subscription: args.subscription,
       model: usage.model,
       type: usage.type,
+      includedCostDollars: usage.includedCostDollars,
+      extraUsageCostDollars: usage.extraUsageCostDollars,
+      includedPointsDeducted: usage.includedPointsDeducted,
+      extraUsagePointsDeducted: usage.extraUsagePointsDeducted,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,

@@ -340,7 +340,7 @@ export type RateLimitInfo = {
   limit: number;
   // Monthly token bucket details for paid users
   monthly?: { remaining: number; limit: number; resetTime: Date };
-  // Points deducted for potential refund on error (always = estimatedCost)
+  // Included-bucket points deducted for potential refund on error
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
