@@ -22,7 +22,7 @@ import type {
 } from "@/types";
 import {
   coerceSelectedModel,
-  normalizeSelectedModelForSubscription,
+  normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
@@ -186,8 +186,8 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
-      const selectedModelOverride: SelectedModel =
-        normalizeSelectedModelForSubscription(
+      const selectedModelOverride: SelectedModel | undefined =
+        normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );

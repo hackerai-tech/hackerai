@@ -15,7 +15,7 @@ import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceSelectedModel,
-  normalizeSelectedModelForSubscription,
+  normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
@@ -55,8 +55,8 @@ export async function POST(req: NextRequest) {
     } = await req.json();
 
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
-    const selectedModelOverride: SelectedModel =
-      normalizeSelectedModelForSubscription(
+    const selectedModelOverride: SelectedModel | undefined =
+      normalizeSelectedModelOverrideForSubscription(
         coerceSelectedModel(rawSelectedModel ?? null),
         subscription,
       );

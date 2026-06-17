@@ -1,4 +1,7 @@
-import { normalizeSelectedModelForSubscription } from "../chat";
+import {
+  normalizeSelectedModelForSubscription,
+  normalizeSelectedModelOverrideForSubscription,
+} from "../chat";
 
 describe("normalizeSelectedModelForSubscription", () => {
   it("forces free users to auto even when a paid model is stored", () => {
@@ -18,5 +21,31 @@ describe("normalizeSelectedModelForSubscription", () => {
     expect(normalizeSelectedModelForSubscription(undefined, "team")).toBe(
       "auto",
     );
+  });
+});
+
+describe("normalizeSelectedModelOverrideForSubscription", () => {
+  it("forces free users to auto even when no override was sent", () => {
+    expect(normalizeSelectedModelOverrideForSubscription(null, "free")).toBe(
+      "auto",
+    );
+    expect(
+      normalizeSelectedModelOverrideForSubscription(undefined, "free"),
+    ).toBe("auto");
+  });
+
+  it("preserves missing paid overrides as undefined", () => {
+    expect(
+      normalizeSelectedModelOverrideForSubscription(undefined, "pro"),
+    ).toBeUndefined();
+    expect(
+      normalizeSelectedModelOverrideForSubscription(null, "ultra"),
+    ).toBeUndefined();
+  });
+
+  it("preserves explicit paid overrides", () => {
+    expect(
+      normalizeSelectedModelOverrideForSubscription("hackerai-max", "team"),
+    ).toBe("hackerai-max");
   });
 });

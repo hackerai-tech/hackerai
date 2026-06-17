@@ -97,6 +97,14 @@ export function normalizeSelectedModelForSubscription(
   return model ?? "auto";
 }
 
+export function normalizeSelectedModelOverrideForSubscription(
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): SelectedModel | undefined {
+  if (subscription === "free") return "auto";
+  return model ?? undefined;
+}
+
 export interface SidebarFile {
   path: string;
   content: string;
