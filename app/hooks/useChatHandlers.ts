@@ -6,7 +6,11 @@ import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import type { ChatMessage, ChatStatus } from "@/types";
+import {
+  normalizeSelectedModelForSubscription,
+  type ChatMessage,
+  type ChatStatus,
+} from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -78,6 +82,10 @@ export const useChatHandlers = ({
     sandboxPreference,
     selectedModel,
   } = useGlobalState();
+  const requestSelectedModel = normalizeSelectedModelForSubscription(
+    selectedModel,
+    subscription,
+  );
 
   // Avoid stale closure on temporary flag
   const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
@@ -364,7 +372,7 @@ export const useChatHandlers = ({
               temporary: temporaryChatsEnabled,
               sandboxPreference,
 
-              selectedModel,
+              selectedModel: requestSelectedModel,
             },
           },
         );
@@ -380,7 +388,7 @@ export const useChatHandlers = ({
               temporary: temporaryChatsEnabled,
               sandboxPreference,
 
-              selectedModel,
+              selectedModel: requestSelectedModel,
             },
           },
         );
@@ -461,7 +469,7 @@ export const useChatHandlers = ({
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } else {
@@ -473,7 +481,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     }
@@ -505,7 +513,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } else {
@@ -529,7 +537,7 @@ export const useChatHandlers = ({
           temporary: true,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     }
@@ -645,7 +653,7 @@ export const useChatHandlers = ({
           temporary: false,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } else {
@@ -682,7 +690,7 @@ export const useChatHandlers = ({
           temporary: true,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     }
@@ -700,7 +708,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       },
     );
@@ -747,7 +755,7 @@ export const useChatHandlers = ({
           temporary: temporaryChatsEnabled,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } catch (error) {

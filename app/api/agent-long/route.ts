@@ -13,7 +13,10 @@ import {
 } from "@/lib/db/actions";
 import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
-import { coerceSelectedModel } from "@/types";
+import {
+  coerceSelectedModel,
+  normalizeSelectedModelForSubscription,
+} from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
@@ -51,10 +54,12 @@ export async function POST(req: NextRequest) {
       isAutoContinue?: boolean;
     } = await req.json();
 
-    const selectedModelOverride: SelectedModel | undefined =
-      coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
-
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+    const selectedModelOverride: SelectedModel =
+      normalizeSelectedModelForSubscription(
+        coerceSelectedModel(rawSelectedModel ?? null),
+        subscription,
+      );
     await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
     const triggerRegion = getTriggerRegionForVercelRequest(req);
@@ -63,7 +68,6 @@ export async function POST(req: NextRequest) {
       mode: "agent",
       subscription,
       sandboxPreference,
-      rawSelectedModel,
     });
 
     const requestMessages = Array.isArray(messages) ? messages : [];

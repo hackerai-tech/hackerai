@@ -6,7 +6,14 @@ import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
-import { coerceSelectedModel } from "../types/chat";
+import {
+  coerceSelectedModel,
+  normalizeSelectedModelForSubscription,
+} from "../types/chat";
+import {
+  parseEntitlements,
+  resolveSubscriptionTier,
+} from "../lib/auth/entitlements";
 import { convexLogger } from "./lib/logger";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
@@ -348,8 +355,14 @@ export const updateChatPreferences = mutation({
       // with a value the load path will silently rewrite later. Unknown ids
       // are dropped (skipped) rather than written verbatim.
       const coerced = coerceSelectedModel(args.selectedModel);
-      if (coerced !== null) {
-        patch.selected_model = coerced;
+      const subscription = resolveSubscriptionTier(
+        parseEntitlements(user.entitlements),
+      );
+      if (coerced !== null || subscription === "free") {
+        patch.selected_model = normalizeSelectedModelForSubscription(
+          coerced,
+          subscription,
+        );
       }
     }
     if (args.mode !== undefined) {

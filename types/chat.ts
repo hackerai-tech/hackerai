@@ -89,6 +89,14 @@ export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   );
 }
 
+export function normalizeSelectedModelForSubscription(
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): SelectedModel {
+  if (subscription === "free") return "auto";
+  return model ?? "auto";
+}
+
 export interface SidebarFile {
   path: string;
   content: string;

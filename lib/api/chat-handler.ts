@@ -20,7 +20,10 @@ import type {
   SelectedModel,
   RateLimitInfo,
 } from "@/types";
-import { coerceSelectedModel } from "@/types";
+import {
+  coerceSelectedModel,
+  normalizeSelectedModelForSubscription,
+} from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
@@ -174,9 +177,6 @@ export const createChatHandler = () => {
       } = await req.json();
       outerChatId = chatId;
 
-      const selectedModelOverride: SelectedModel | undefined =
-        coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
-
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,
@@ -186,6 +186,11 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
+      const selectedModelOverride: SelectedModel =
+        normalizeSelectedModelForSubscription(
+          coerceSelectedModel(rawSelectedModel ?? null),
+          subscription,
+        );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
       if (subscription === "free") {
@@ -208,7 +213,6 @@ export const createChatHandler = () => {
         mode,
         subscription,
         sandboxPreference,
-        rawSelectedModel,
       });
 
       // Pre-emptive abort fires before Vercel's hard request timeout so we

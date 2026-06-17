@@ -136,4 +136,14 @@ describe("ModelSelector", () => {
       screen.getByText(/long requests can use around \$10 of usage/i),
     ).toBeVisible();
   });
+
+  it("does not display a stale paid model as selected for free users", () => {
+    mockSubscription = "free";
+
+    render(
+      <ModelSelector value="hackerai-pro" onChange={jest.fn()} mode="agent" />,
+    );
+
+    expect(screen.getByRole("button", { name: /^Auto$/i })).toBeVisible();
+  });
 });
