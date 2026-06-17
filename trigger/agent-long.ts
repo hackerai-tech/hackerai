@@ -73,7 +73,10 @@ import {
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
 } from "@/lib/utils/sandbox-file-utils";
-import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
+import {
+  getEmptyProcessedMessagesCause,
+  getEmptyProcessedMessagesMetadata,
+} from "@/lib/utils/local-attachment-messages";
 import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
@@ -156,6 +159,106 @@ const getNumberMetadata = (
   return typeof value === "number" ? value : undefined;
 };
 
+type TriggerMetadataPrimitive = boolean | number | string;
+
+const EMPTY_AFTER_PROCESSING_TRIGGER_METADATA_KEYS = [
+  ["processing_input_message_count", "processingInputMessageCount"],
+  ["processing_input_user_message_count", "processingInputUserMessageCount"],
+  [
+    "processing_input_assistant_message_count",
+    "processingInputAssistantMessageCount",
+  ],
+  [
+    "processing_input_system_message_count",
+    "processingInputSystemMessageCount",
+  ],
+  [
+    "processing_input_other_role_message_count",
+    "processingInputOtherRoleMessageCount",
+  ],
+  [
+    "processing_input_empty_parts_message_count",
+    "processingInputEmptyPartsMessageCount",
+  ],
+  ["processing_input_part_count", "processingInputPartCount"],
+  ["processing_input_text_part_count", "processingInputTextPartCount"],
+  [
+    "processing_input_nonempty_text_part_count",
+    "processingInputNonemptyTextPartCount",
+  ],
+  ["processing_input_file_part_count", "processingInputFilePartCount"],
+  ["processing_input_file_with_url_count", "processingInputFileWithUrlCount"],
+  [
+    "processing_input_file_with_file_id_count",
+    "processingInputFileWithFileIdCount",
+  ],
+  [
+    "processing_input_local_desktop_file_part_count",
+    "processingInputLocalDesktopFilePartCount",
+  ],
+  [
+    "processing_input_local_desktop_file_with_local_path_count",
+    "processingInputLocalDesktopFileWithLocalPathCount",
+  ],
+  [
+    "processing_input_local_desktop_file_missing_local_path_count",
+    "processingInputLocalDesktopFileMissingLocalPathCount",
+  ],
+  ["processing_input_ui_only_part_count", "processingInputUiOnlyPartCount"],
+  [
+    "processing_input_step_start_part_count",
+    "processingInputStepStartPartCount",
+  ],
+  [
+    "processing_input_reasoning_part_count",
+    "processingInputReasoningPartCount",
+  ],
+  [
+    "processing_input_nonempty_reasoning_part_count",
+    "processingInputNonemptyReasoningPartCount",
+  ],
+  ["processing_input_tool_part_count", "processingInputToolPartCount"],
+  ["processing_input_data_part_count", "processingInputDataPartCount"],
+  ["processing_input_other_part_count", "processingInputOtherPartCount"],
+  ["processing_input_regenerate", "processingInputRegenerate"],
+  ["processing_input_auto_continue", "processingInputAutoContinue"],
+  ["processing_input_temporary", "processingInputTemporary"],
+  ["processing_input_sandbox_preference", "processingInputSandboxPreference"],
+] as const;
+
+const getPrimitiveMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): TriggerMetadataPrimitive | undefined => {
+  const value = metadata?.[key];
+  if (
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return value;
+  }
+  return undefined;
+};
+
+const getEmptyAfterProcessingTriggerMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, TriggerMetadataPrimitive> | undefined => {
+  if (metadata?.empty_after_processing !== true) return undefined;
+
+  const diagnostics: Record<string, TriggerMetadataPrimitive> = {
+    emptyAfterProcessing: true,
+  };
+  for (const [
+    sourceKey,
+    targetKey,
+  ] of EMPTY_AFTER_PROCESSING_TRIGGER_METADATA_KEYS) {
+    const value = getPrimitiveMetadata(metadata, sourceKey);
+    if (value !== undefined) diagnostics[targetKey] = value;
+  }
+  return diagnostics;
+};
+
 const OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS = [
   /rate limiting service .*not configured/i,
   /rate limiting service unavailable/i,
@@ -189,6 +292,8 @@ type AgentLongErrorSummary = {
   maxTokens?: number;
   fileIdsCount?: number;
   largestFileToken?: number;
+  emptyAfterProcessing?: boolean;
+  emptyAfterProcessingMetadata?: Record<string, TriggerMetadataPrimitive>;
 };
 
 const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
@@ -279,7 +384,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
               ? "empty_prompt"
               : errorMetadata?.truncation_dropped_all_messages === true
                 ? "input_too_large"
-                : "chat_error",
+                : errorMetadata?.empty_after_processing === true
+                  ? "empty_after_processing"
+                  : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -315,6 +422,10 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       maxTokens: getNumberMetadata(errorMetadata, "max_tokens"),
       fileIdsCount: getNumberMetadata(errorMetadata, "file_ids_count"),
       largestFileToken: getNumberMetadata(errorMetadata, "largest_file_token"),
+      emptyAfterProcessing:
+        errorMetadata?.empty_after_processing === true || undefined,
+      emptyAfterProcessingMetadata:
+        getEmptyAfterProcessingTriggerMetadata(errorMetadata),
     };
   }
 
@@ -415,6 +526,13 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("fileIdsCount", summary.fileIdsCount);
   if (summary.largestFileToken != null)
     metadata.set("largestFileToken", summary.largestFileToken);
+  if (summary.emptyAfterProcessingMetadata) {
+    for (const [key, value] of Object.entries(
+      summary.emptyAfterProcessingMetadata,
+    )) {
+      metadata.set(key, value);
+    }
+  }
 
   const errorTags = [`error_${summary.category}`];
   if (summary.code) {
@@ -422,18 +540,31 @@ const recordAgentLongFailureForDashboard = async (
   }
   await tags.add(errorTags);
 
+  const { emptyAfterProcessingMetadata, ...summaryLogFields } = summary;
   const logFields = {
     chatId: context.chatId,
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
-    ...summary,
+    ...summaryLogFields,
+    ...emptyAfterProcessingMetadata,
   };
-  if (summary.category === "chat_not_found") {
-    triggerLogger.warn("[agent-long] run ended because chat is missing", {
-      ...logFields,
-      status: runStatus,
-    });
+  const isExpectedUserCorrectableError =
+    summary.category === "chat_not_found" ||
+    summary.category === "empty_prompt" ||
+    summary.category === "input_too_large" ||
+    summary.category === "empty_after_processing";
+
+  if (isExpectedUserCorrectableError) {
+    triggerLogger.warn(
+      summary.category === "chat_not_found"
+        ? "[agent-long] run ended because chat is missing"
+        : "[agent-long] run ended with user-correctable request error",
+      {
+        ...logFields,
+        status: runStatus,
+      },
+    );
   } else {
     triggerLogger.error("[agent-long] run failed", logFields);
   }
@@ -761,6 +892,12 @@ export const agentLongTask = task({
         throw new ChatSDKError(
           "bad_request:api",
           getEmptyProcessedMessagesCause(messagesForProcessing),
+          getEmptyProcessedMessagesMetadata(messagesForProcessing, {
+            regenerate: !!regenerate,
+            isAutoContinue: !!isAutoContinue,
+            isTemporary: !!temporary,
+            sandboxPreference,
+          }),
         );
       }
 

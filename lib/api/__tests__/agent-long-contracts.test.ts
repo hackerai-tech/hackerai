@@ -47,6 +47,11 @@ const dbActionsSrc = fs.readFileSync(
   "utf8",
 );
 
+const chatHandlerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../chat-handler.ts"),
+  "utf8",
+);
+
 describe("agent-long-transport — direct UI stream reader", () => {
   test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
     expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
@@ -341,6 +346,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(guardIdx).toBeGreaterThan(-1);
     expect(emptyPayloadIdx).toBeGreaterThan(guardIdx);
     expect(triggerIdx).toBeGreaterThan(emptyPayloadIdx);
+  });
+
+  test("empty-after-processing agent-long errors have their own diagnostics", () => {
+    expect(taskSrc).toMatch(/getEmptyProcessedMessagesMetadata/);
+    expect(chatHandlerSrc).toMatch(/getEmptyProcessedMessagesMetadata/);
+    expect(taskSrc).toMatch(
+      /errorMetadata\?\.empty_after_processing\s*===\s*true/,
+    );
+    expect(taskSrc).toMatch(/"empty_after_processing"/);
+    expect(taskSrc).toMatch(/emptyAfterProcessing/);
+    expect(taskSrc).toMatch(/processingInputMessageCount/);
+    expect(taskSrc).toMatch(/processingInputUiOnlyPartCount/);
+    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
   test("agent-long passes Vercel-derived region to Trigger.dev", () => {
