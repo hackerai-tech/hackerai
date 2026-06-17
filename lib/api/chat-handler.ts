@@ -95,7 +95,10 @@ import {
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
 } from "@/lib/utils/sandbox-file-utils";
-import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
+import {
+  getEmptyProcessedMessagesCause,
+  getEmptyProcessedMessagesMetadata,
+} from "@/lib/utils/local-attachment-messages";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import {
@@ -288,6 +291,12 @@ export const createChatHandler = () => {
         throw new ChatSDKError(
           "bad_request:api",
           getEmptyProcessedMessagesCause(truncatedMessages),
+          getEmptyProcessedMessagesMetadata(truncatedMessages, {
+            regenerate: !!regenerate,
+            isAutoContinue: !!isAutoContinue,
+            isTemporary: !!temporary,
+            sandboxPreference,
+          }),
         );
       }
 

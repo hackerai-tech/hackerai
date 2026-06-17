@@ -641,6 +641,18 @@ describe("createChatLogger ChatSDKError metadata", () => {
           parts_size_kb: 551,
           part_count: 288,
           tool_part_count: 99,
+          empty_after_processing: true,
+          processing_input_message_count: 2,
+          processing_input_part_count: 4,
+          processing_input_text_part_count: 1,
+          processing_input_nonempty_text_part_count: 0,
+          processing_input_ui_only_part_count: 1,
+          processing_input_regenerate: false,
+          processing_input_sandbox_preference: "desktop",
+          processing_input_part_types: {
+            text: 1,
+            "data-summarization": 1,
+          },
         },
       );
 
@@ -656,11 +668,22 @@ describe("createChatLogger ChatSDKError metadata", () => {
         parts_size_kb: 551,
         part_count: 288,
         tool_part_count: 99,
+        empty_after_processing: true,
+        processing_input_message_count: 2,
+        processing_input_part_count: 4,
+        processing_input_text_part_count: 1,
+        processing_input_nonempty_text_part_count: 0,
+        processing_input_ui_only_part_count: 1,
+        processing_input_regenerate: false,
+        processing_input_sandbox_preference: "desktop",
       });
       expect(wideEvent.error.metadata).not.toHaveProperty("db_error_data");
       expect(wideEvent.error.metadata).not.toHaveProperty("part_types");
       expect(wideEvent.error.metadata).not.toHaveProperty("usage_keys");
       expect(wideEvent.error.metadata).not.toHaveProperty("parts_size_bytes");
+      expect(wideEvent.error.metadata).not.toHaveProperty(
+        "processing_input_part_types",
+      );
     } finally {
       logSpy.mockRestore();
     }
