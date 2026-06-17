@@ -185,7 +185,13 @@ export const createTools = (
   const tools = buildTools();
 
   const getSandbox = () => sandbox;
-  const ensureSandbox = async () => {
+  const ensureSandbox = async (options?: {
+    refresh?: boolean;
+    reason?: string;
+  }) => {
+    if (options?.refresh) {
+      await sandboxManager.resetSandbox?.(options.reason);
+    }
     const { sandbox: ensured } = await sandboxManager.getSandbox();
     return ensured;
   };

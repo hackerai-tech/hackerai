@@ -591,6 +591,35 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(sandbox);
   }
 
+  async resetSandbox(reason?: string): Promise<void> {
+    const sandbox = this.sandbox;
+    this.sandbox = null;
+    this.isLocal = false;
+    this.currentConnectionId = null;
+    this.currentConnectionName = null;
+
+    if (!sandbox) return;
+
+    if (sandbox instanceof CentrifugoSandbox) {
+      await sandbox.close().catch((error) => {
+        console.warn(
+          `[${this.userID}] Failed to close local sandbox during reset${reason ? ` (${reason})` : ""}:`,
+          error,
+        );
+      });
+      return;
+    }
+
+    try {
+      await sandbox.kill();
+    } catch (error) {
+      console.warn(
+        `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`,
+        error,
+      );
+    }
+  }
+
   /**
    * Get expected sandbox context for the system prompt based on preference
    * without initializing the sandbox. Returns null for E2B (uses default prompt).

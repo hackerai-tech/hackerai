@@ -26,6 +26,8 @@ export type SandboxFilePathRewrite = {
 type SandboxUploadResult = {
   failedCount: number;
   pathRewrites: SandboxFilePathRewrite[];
+  failureDetails?: SandboxUploadFailureDetail[];
+  retriedWithFreshSandbox?: boolean;
 };
 
 type SandboxCommandResult = {
@@ -34,6 +36,29 @@ type SandboxCommandResult = {
   exitCode: number;
   error?: string;
 };
+
+type SandboxUploadFailureDetail = {
+  kind: SandboxFile["kind"];
+  localPath: string;
+  error: string;
+  transientSandboxCommand: boolean;
+  url?: string;
+  urlLength?: number;
+  protocol?: string;
+};
+
+type SandboxRefreshOptions = {
+  refresh?: boolean;
+  reason?: string;
+};
+
+type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
+
+type UploadSandboxFilesOptions = {
+  retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
+};
+
+const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 
 const logLocalAttachmentDebug = (
   event: string,
@@ -77,22 +102,56 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
   };
 };
 
+const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
+  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out)\b/i;
+const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
+  /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
+const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;
+const SANDBOX_COMMAND_RETRY_BASE_DELAY_MS = 750;
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isTransientSandboxCommandError = (error: unknown): boolean => {
+  const message = errorMessage(error);
+  if (WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)) return false;
+  return TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN.test(message);
+};
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 const runSandboxCommand = async (
   sandbox: any,
   command: string,
 ): Promise<SandboxCommandResult> => {
-  try {
-    const result = await sandbox.commands.run(command);
-    return {
-      stdout: result?.stdout ?? "",
-      stderr: result?.stderr ?? "",
-      exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
-    };
-  } catch (error) {
-    const commandResult = commandErrorToResult(error);
-    if (commandResult) return commandResult;
-    throw error;
+  for (let attempt = 1; attempt <= SANDBOX_COMMAND_MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await sandbox.commands.run(command);
+      return {
+        stdout: result?.stdout ?? "",
+        stderr: result?.stderr ?? "",
+        exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
+      };
+    } catch (error) {
+      const commandResult = commandErrorToResult(error);
+      if (commandResult) return commandResult;
+
+      if (
+        attempt === SANDBOX_COMMAND_MAX_ATTEMPTS ||
+        !isTransientSandboxCommandError(error)
+      ) {
+        throw error;
+      }
+
+      console.warn(
+        `[sandbox-command] transient command channel failure on attempt ${attempt}/${SANDBOX_COMMAND_MAX_ATTEMPTS}, retrying: ${errorMessage(error)}`,
+      );
+      await delay(SANDBOX_COMMAND_RETRY_BASE_DELAY_MS * attempt);
+    }
   }
+
+  throw new Error("Sandbox command failed without returning a result");
 };
 
 /**
@@ -560,43 +619,38 @@ const describeSandboxFileForLog = (file: SandboxFile) => {
   };
 };
 
-const redactSandboxUploadError = (
+const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
-): string => {
-  const message = error instanceof Error ? error.message : String(error);
-  if (file.kind !== "localPath") return message;
-  return message.split(file.path).join("[redacted-local-path]");
-};
+): SandboxUploadFailureDetail => {
+  const summary: SandboxUploadFailureDetail = {
+    kind: file.kind,
+    localPath: file.localPath,
+    error: redactSandboxUploadError(file, error),
+    transientSandboxCommand: isTransientSandboxCommandError(error),
+  };
 
-/**
- * Uploads files to the sandbox environment in parallel
- * - Downloads files directly from S3 URLs using curl in the sandbox
- * - Avoids Convex size limits by not piping data through mutations
- * - Returns the exact count of failed uploads; sandbox-acquisition failures
- *   count as all-files-failed since nothing can be downloaded
- */
-export const uploadSandboxFiles = async (
-  sandboxFiles: SandboxFile[],
-  ensureSandbox: () => Promise<any>,
-): Promise<SandboxUploadResult> => {
-  if (sandboxFiles.length === 0) return { failedCount: 0, pathRewrites: [] };
-
-  logLocalAttachmentDebug("sandbox-staging-start", {
-    totalCount: sandboxFiles.length,
-    localPathCount: sandboxFiles.filter((file) => file.kind === "localPath")
-      .length,
-    urlCount: sandboxFiles.filter((file) => file.kind === "url").length,
-  });
-
-  let sandbox: any;
-  try {
-    sandbox = await ensureSandbox();
-  } catch (e) {
-    console.error("Failed to acquire sandbox for upload:", e);
-    return { failedCount: sandboxFiles.length, pathRewrites: [] };
+  if (file.kind === "url") {
+    summary.url = safeUrlForLog(file.url);
+    summary.urlLength = file.url.length;
+    summary.protocol = file.url.split("://")[0];
   }
 
+  return summary;
+};
+
+const shouldRetryWithFreshSandbox = (
+  options: UploadSandboxFilesOptions | undefined,
+): boolean => {
+  const value = options?.retryWithFreshSandboxOnTransientFailure;
+  if (typeof value === "function") return value();
+  return value === true;
+};
+
+const uploadSandboxFilesOnce = async (
+  sandboxFiles: SandboxFile[],
+  sandbox: any,
+): Promise<SandboxUploadResult> => {
   const results = await Promise.allSettled(
     sandboxFiles.map((file) => stageSandboxFile(sandbox, file)),
   );
@@ -622,6 +676,135 @@ export const uploadSandboxFiles = async (
   const pathRewrites = results.flatMap((result) =>
     result.status === "fulfilled" && result.value ? [result.value] : [],
   );
+  const failureDetails = failedIndices.map((i) =>
+    summarizeSandboxUploadFailure(
+      sandboxFiles[i],
+      (results[i] as PromiseRejectedResult).reason,
+    ),
+  );
 
-  return { failedCount: failedIndices.length, pathRewrites };
+  return {
+    failedCount: failedIndices.length,
+    pathRewrites,
+    ...(failureDetails.length > 0 ? { failureDetails } : {}),
+  };
+};
+
+const hasTransientSandboxCommandFailure = (
+  result: SandboxUploadResult,
+): boolean =>
+  result.failureDetails?.some((detail) => detail.transientSandboxCommand) ??
+  false;
+
+export const getSandboxUploadFailureMetadata = (
+  result: SandboxUploadResult,
+): Record<string, unknown> | undefined => {
+  const failure = result.failureDetails?.[0];
+  if (!failure && !result.retriedWithFreshSandbox) return undefined;
+
+  const cause = failure?.error
+    ? failure.error.length > MAX_UPLOAD_FAILURE_CAUSE_LENGTH
+      ? `${failure.error.slice(0, MAX_UPLOAD_FAILURE_CAUSE_LENGTH)}...`
+      : failure.error
+    : undefined;
+
+  return {
+    ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
+    ...(cause ? { upload_failure_cause: cause } : {}),
+    ...(failure?.transientSandboxCommand !== undefined
+      ? {
+          upload_failure_transient_sandbox_command:
+            failure.transientSandboxCommand,
+        }
+      : {}),
+    ...(failure?.protocol ? { upload_failure_protocol: failure.protocol } : {}),
+    ...(typeof failure?.urlLength === "number"
+      ? { upload_failure_url_length: failure.urlLength }
+      : {}),
+    ...(result.retriedWithFreshSandbox !== undefined
+      ? {
+          upload_retried_with_fresh_sandbox: result.retriedWithFreshSandbox,
+        }
+      : {}),
+  };
+};
+
+const redactSandboxUploadError = (
+  file: SandboxFile,
+  error: unknown,
+): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (file.kind !== "localPath") return message;
+  return message.split(file.path).join("[redacted-local-path]");
+};
+
+/**
+ * Uploads files to the sandbox environment in parallel
+ * - Downloads files directly from S3 URLs using curl in the sandbox
+ * - Avoids Convex size limits by not piping data through mutations
+ * - Returns the exact count of failed uploads; sandbox-acquisition failures
+ *   count as all-files-failed since nothing can be downloaded
+ */
+export const uploadSandboxFiles = async (
+  sandboxFiles: SandboxFile[],
+  ensureSandbox: EnsureSandboxForUpload,
+  options?: UploadSandboxFilesOptions,
+): Promise<SandboxUploadResult> => {
+  if (sandboxFiles.length === 0) return { failedCount: 0, pathRewrites: [] };
+
+  logLocalAttachmentDebug("sandbox-staging-start", {
+    totalCount: sandboxFiles.length,
+    localPathCount: sandboxFiles.filter((file) => file.kind === "localPath")
+      .length,
+    urlCount: sandboxFiles.filter((file) => file.kind === "url").length,
+  });
+
+  let sandbox: any;
+  try {
+    sandbox = await ensureSandbox();
+  } catch (e) {
+    console.error("Failed to acquire sandbox for upload:", e);
+    return {
+      failedCount: sandboxFiles.length,
+      pathRewrites: [],
+      failureDetails: sandboxFiles.map((file) =>
+        summarizeSandboxUploadFailure(file, e),
+      ),
+    };
+  }
+
+  const firstResult = await uploadSandboxFilesOnce(sandboxFiles, sandbox);
+
+  if (
+    firstResult.failedCount > 0 &&
+    hasTransientSandboxCommandFailure(firstResult) &&
+    shouldRetryWithFreshSandbox(options)
+  ) {
+    console.warn(
+      "[sandbox-upload] transient command channel failure while staging attachments; refreshing sandbox and retrying all attachments",
+    );
+    try {
+      const refreshedSandbox = await ensureSandbox({
+        refresh: true,
+        reason: "attachment_staging_transient_command_failure",
+      });
+      const retryResult = await uploadSandboxFilesOnce(
+        sandboxFiles,
+        refreshedSandbox,
+      );
+      return { ...retryResult, retriedWithFreshSandbox: true };
+    } catch (error) {
+      console.error("Failed to refresh sandbox for upload retry:", error);
+      return {
+        failedCount: sandboxFiles.length,
+        pathRewrites: [],
+        failureDetails: sandboxFiles.map((file) =>
+          summarizeSandboxUploadFailure(file, error),
+        ),
+        retriedWithFreshSandbox: true,
+      };
+    }
+  }
+
+  return firstResult;
 };

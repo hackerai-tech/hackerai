@@ -69,6 +69,7 @@ import {
   writeUploadCompleteStatus,
 } from "@/lib/utils/stream-writer-utils";
 import {
+  getSandboxUploadFailureMetadata,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -98,6 +99,7 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
+  SandboxBootInfo,
 } from "@/types";
 import {
   createAgentStream,
@@ -157,6 +159,14 @@ const getNumberMetadata = (
 ) => {
   const value = metadata?.[key];
   return typeof value === "number" ? value : undefined;
+};
+
+const getBooleanMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+) => {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
 };
 
 type TriggerMetadataPrimitive = boolean | number | string;
@@ -294,6 +304,12 @@ type AgentLongErrorSummary = {
   largestFileToken?: number;
   emptyAfterProcessing?: boolean;
   emptyAfterProcessingMetadata?: Record<string, TriggerMetadataPrimitive>;
+  uploadFailureKind?: string;
+  uploadFailureCause?: string;
+  uploadFailureTransientSandboxCommand?: boolean;
+  uploadFailureProtocol?: string;
+  uploadFailureUrlLength?: number;
+  uploadRetriedWithFreshSandbox?: boolean;
 };
 
 const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
@@ -426,6 +442,30 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata?.empty_after_processing === true || undefined,
       emptyAfterProcessingMetadata:
         getEmptyAfterProcessingTriggerMetadata(errorMetadata),
+      uploadFailureKind: getStringMetadata(
+        errorMetadata,
+        "upload_failure_kind",
+      ),
+      uploadFailureCause: getStringMetadata(
+        errorMetadata,
+        "upload_failure_cause",
+      ),
+      uploadFailureTransientSandboxCommand: getBooleanMetadata(
+        errorMetadata,
+        "upload_failure_transient_sandbox_command",
+      ),
+      uploadFailureProtocol: getStringMetadata(
+        errorMetadata,
+        "upload_failure_protocol",
+      ),
+      uploadFailureUrlLength: getNumberMetadata(
+        errorMetadata,
+        "upload_failure_url_length",
+      ),
+      uploadRetriedWithFreshSandbox: getBooleanMetadata(
+        errorMetadata,
+        "upload_retried_with_fresh_sandbox",
+      ),
     };
   }
 
@@ -532,6 +572,26 @@ const recordAgentLongFailureForDashboard = async (
     )) {
       metadata.set(key, value);
     }
+  }
+  if (summary.uploadFailureKind)
+    metadata.set("uploadFailureKind", summary.uploadFailureKind);
+  if (summary.uploadFailureCause)
+    metadata.set("uploadFailureCause", summary.uploadFailureCause);
+  if (summary.uploadFailureTransientSandboxCommand != null) {
+    metadata.set(
+      "uploadFailureTransientSandboxCommand",
+      summary.uploadFailureTransientSandboxCommand,
+    );
+  }
+  if (summary.uploadFailureProtocol)
+    metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
+  if (summary.uploadFailureUrlLength != null)
+    metadata.set("uploadFailureUrlLength", summary.uploadFailureUrlLength);
+  if (summary.uploadRetriedWithFreshSandbox != null) {
+    metadata.set(
+      "uploadRetriedWithFreshSandbox",
+      summary.uploadRetriedWithFreshSandbox,
+    );
   }
 
   const errorTags = [`error_${summary.category}`];
@@ -1028,6 +1088,7 @@ export const agentLongTask = task({
               rateLimitInfo,
             });
 
+            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             const {
               tools,
               ensureSandbox,
@@ -1059,7 +1120,10 @@ export const agentLongTask = task({
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
               subscription,
-              (info) => chatLogger?.setSandboxBoot(info),
+              (info) => {
+                uploadSandboxBootPath ??= info.path;
+                chatLogger?.setSandboxBoot(info);
+              },
               undefined,
               selectedModel,
             );
@@ -1114,6 +1178,10 @@ export const agentLongTask = task({
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
+                  {
+                    retryWithFreshSandboxOnTransientFailure: () =>
+                      uploadSandboxBootPath === "reuse_existing",
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -1124,6 +1192,7 @@ export const agentLongTask = task({
                 const uploadError = new ChatSDKError(
                   "bad_request:stream",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadFailureMetadata(uploadResult),
                 );
                 await usageRefundTracker.refund();
                 chatLogger?.emitChatError(uploadError);
