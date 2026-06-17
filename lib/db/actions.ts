@@ -1351,7 +1351,7 @@ export async function logUsageRecord({
   costDollars: number;
   modelCostDollars?: number;
   nonModelCostDollars?: number;
-  costSource?: "provider" | "token_estimate";
+  costSource?: "provider" | "token_estimate" | "raw_token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {

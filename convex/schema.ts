@@ -384,6 +384,13 @@ export default defineSchema({
   })
     .index("by_idempotency_key", ["idempotency_key"])
     .index("by_referrer_user_id", ["referrer_user_id"])
+    .index("by_referrer_notification", [
+      "referrer_user_id",
+      "reward_type",
+      "status",
+      "notification_seen_at",
+      "created_at",
+    ])
     .index("by_referred_user_id", ["referred_user_id"]),
 
   user_suspensions: defineTable({
@@ -518,7 +525,11 @@ export default defineSchema({
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
-      v.union(v.literal("provider"), v.literal("token_estimate")),
+      v.union(
+        v.literal("provider"),
+        v.literal("token_estimate"),
+        v.literal("raw_token_estimate"),
+      ),
     ),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema

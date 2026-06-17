@@ -48,7 +48,6 @@ interface MessageItemProps {
   messagesLength: number;
   lastAssistantMessageIndex: number | undefined;
   status: ChatStatus;
-  isHovered: boolean;
   isEditing: boolean;
   isMobile?: boolean;
   feedbackInputMessageId: string | null;
@@ -66,12 +65,10 @@ interface MessageItemProps {
     message: string;
   } | null;
   // Callbacks
-  onMouseEnter: (messageId: string) => void;
-  onMouseLeave: () => void;
   onStartEdit: (messageId: string) => void;
   onSaveEdit: (newContent: string, remainingFileIds: string[]) => Promise<void>;
   onCancelEdit: () => void;
-  onRegenerate: () => void;
+  onRegenerate: () => void | Promise<void>;
   onContinue?: () => void;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
@@ -88,7 +85,6 @@ function areMessageItemPropsEqual(
 ): boolean {
   // Always re-render if these change
   if (prev.status !== next.status) return false;
-  if (prev.isHovered !== next.isHovered) return false;
   if (prev.isEditing !== next.isEditing) return false;
   if (prev.isMobile !== next.isMobile) return false;
   if (prev.feedbackInputMessageId !== next.feedbackInputMessageId) return false;
@@ -142,7 +138,6 @@ export const MessageItem = memo(function MessageItem({
   messagesLength,
   lastAssistantMessageIndex,
   status,
-  isHovered,
   isEditing,
   isMobile,
   feedbackInputMessageId,
@@ -153,8 +148,6 @@ export const MessageItem = memo(function MessageItem({
   branchedFromChatId,
   branchedFromChatTitle,
   branchBoundaryIndex,
-  onMouseEnter,
-  onMouseLeave,
   onStartEdit,
   onSaveEdit,
   onCancelEdit,
@@ -169,6 +162,7 @@ export const MessageItem = memo(function MessageItem({
   showingLoadingIndicator,
   summarizationStatus,
 }: MessageItemProps) {
+  const [isHovered, setIsHovered] = useState(false);
   const [isUserMessageExpanded, setIsUserMessageExpanded] = useState(false);
   const isUser = message.role === "user";
   const isLastAssistantMessage =
@@ -299,8 +293,12 @@ export const MessageItem = memo(function MessageItem({
 
   // Stable event handlers
   const handleMouseEnter = useCallback(() => {
-    onMouseEnter(message.id);
-  }, [onMouseEnter, message.id]);
+    if (!isMobile) setIsHovered(true);
+  }, [isMobile]);
+
+  const handleMouseLeave = useCallback(() => {
+    if (!isMobile) setIsHovered(false);
+  }, [isMobile]);
 
   const handleEdit = useCallback(() => {
     onStartEdit(message.id);
@@ -341,9 +339,9 @@ export const MessageItem = memo(function MessageItem({
     <Fragment>
       <div
         data-testid={isUser ? "user-message" : "assistant-message"}
-        className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
+        className={`message-row flex flex-col ${isUser ? "items-end" : "items-start"}`}
         onMouseEnter={handleMouseEnter}
-        onMouseLeave={onMouseLeave}
+        onMouseLeave={handleMouseLeave}
       >
         {isEditing && isUser ? (
           <div className="w-full">

@@ -27,7 +27,7 @@ import { useDataStreamState } from "./DataStreamProvider";
 interface MessagesProps {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  onRegenerate: () => void;
+  onRegenerate: () => void | Promise<void>;
   onRetry: () => void;
   onContinue?: () => void;
   onReconnect?: () => void;
@@ -156,9 +156,6 @@ export const Messages = ({
     return -1;
   }, [messages]);
 
-  // Track hover state for all messages
-  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
-
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -205,15 +202,6 @@ export const Messages = ({
 
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
-  }, []);
-
-  // Memoized mouse event handlers
-  const handleMouseEnter = useCallback((messageId: string) => {
-    setHoveredMessageId(messageId);
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    setHoveredMessageId(null);
   }, []);
 
   // Handler to show all files for a specific message
@@ -276,7 +264,7 @@ export const Messages = ({
     const scrollElement = scrollRef.current;
     if (!scrollElement) return;
 
-    scrollElement.addEventListener("scroll", handleScroll);
+    scrollElement.addEventListener("scroll", handleScroll, { passive: true });
     return () => scrollElement.removeEventListener("scroll", handleScroll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleScroll]);
@@ -306,7 +294,6 @@ export const Messages = ({
               messagesLength={visibleMessages.length}
               lastAssistantMessageIndex={lastAssistantMessageIndex}
               status={status}
-              isHovered={hoveredMessageId === message.id}
               isEditing={editingMessageId === message.id}
               isMobile={isMobile}
               feedbackInputMessageId={feedbackInputMessageId}
@@ -317,8 +304,6 @@ export const Messages = ({
               branchedFromChatId={branchedFromChatId}
               branchedFromChatTitle={branchedFromChatTitle}
               branchBoundaryIndex={branchBoundaryIndex}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
               onStartEdit={handleStartEdit}
               onSaveEdit={handleSaveEdit}
               onCancelEdit={handleCancelEdit}

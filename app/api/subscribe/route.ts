@@ -5,7 +5,7 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import {
   REFERRAL_COOKIE_NAME,
@@ -21,8 +21,6 @@ import {
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -69,7 +67,7 @@ export const POST = async (req: NextRequest) => {
       isValidReferralCode(referralCode)
     ) {
       try {
-        const attribution = await convex.mutation(
+        const attribution = await getConvexClient().mutation(
           api.referrals.attributeReferredSignup,
           {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -337,7 +335,7 @@ export const POST = async (req: NextRequest) => {
 
     if (referralConfig.enabled) {
       try {
-        const referralSession = await convex.mutation(
+        const referralSession = await getConvexClient().mutation(
           api.referrals.recordReferralCheckoutSession,
           {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

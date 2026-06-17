@@ -2,7 +2,11 @@ import { mutation, query } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { applyUnitEconomicsDelta, utcDay } from "./unitEconomicsLib";
+import {
+  applyUnitEconomicsDelta,
+  LEGACY_USAGE_COST_MULTIPLIER,
+  utcDay,
+} from "./unitEconomicsLib";
 
 const typeValidator = v.union(v.literal("included"), v.literal("extra"));
 
@@ -39,19 +43,35 @@ export const logUsage = mutation({
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
-      v.union(v.literal("provider"), v.literal("token_estimate")),
+      v.union(
+        v.literal("provider"),
+        v.literal("token_estimate"),
+        v.literal("raw_token_estimate"),
+      ),
     ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const modelCostDollars = Number.isFinite(args.model_cost_dollars)
-      ? args.model_cost_dollars!
-      : args.cost_dollars;
     const nonModelCostDollars = Number.isFinite(args.non_model_cost_dollars)
       ? args.non_model_cost_dollars!
       : 0;
+    const reportedModelCostDollars = Number.isFinite(args.model_cost_dollars)
+      ? args.model_cost_dollars!
+      : Math.max(0, args.cost_dollars - nonModelCostDollars);
+    // Older app builds sent token_estimate costs after applying the 1.3 usage
+    // multiplier. Normalize those at ingestion so unit economics tracks raw
+    // model cost even during staggered deploys.
+    const modelCostDollars =
+      args.cost_source === "token_estimate"
+        ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
+        : reportedModelCostDollars;
+    const costDollars = modelCostDollars + nonModelCostDollars;
+    const costSource =
+      args.cost_source === "token_estimate"
+        ? "raw_token_estimate"
+        : args.cost_source;
     const now = Date.now();
 
     await ctx.db.insert("usage_logs", {
@@ -68,19 +88,18 @@ export const logUsage = mutation({
       cache_read_tokens: args.cache_read_tokens,
       cache_write_tokens: args.cache_write_tokens,
       total_tokens: args.total_tokens,
-      cost_dollars: args.cost_dollars,
+      cost_dollars: costDollars,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
-      cost_source: args.cost_source,
+      cost_source: costSource,
     });
 
     const commonDelta = {
       day: utcDay(now),
       modelCostDollars,
       nonModelCostDollars,
-      includedUsageCostDollars:
-        args.type === "included" ? args.cost_dollars : 0,
-      extraUsageCostDollars: args.type === "extra" ? args.cost_dollars : 0,
+      includedUsageCostDollars: args.type === "included" ? costDollars : 0,
+      extraUsageCostDollars: args.type === "extra" ? costDollars : 0,
       usageRequestCount: 1,
       inputTokens: args.input_tokens,
       outputTokens: args.output_tokens,
@@ -125,14 +144,6 @@ export const getDailyUsageSummary = query({
     }
     const userId = identity.subject;
     const days = Math.min(Math.max(Math.round(args.days ?? 7), 1), 30);
-    const startDate = Date.now() - days * 24 * 60 * 60 * 1000;
-
-    const logs = await ctx.db
-      .query("usage_logs")
-      .withIndex("by_user", (q) =>
-        q.eq("user_id", userId).gte("_creationTime", startDate),
-      )
-      .collect();
 
     // Aggregate by day (UTC), zero-filling missing days
     const dailyMap = new Map<string, number>();
@@ -142,9 +153,23 @@ export const getDailyUsageSummary = query({
       d.setUTCDate(d.getUTCDate() - i);
       dailyMap.set(d.toISOString().slice(0, 10), 0);
     }
-    for (const log of logs) {
-      const day = new Date(log._creationTime).toISOString().slice(0, 10);
-      dailyMap.set(day, (dailyMap.get(day) ?? 0) + log.cost_dollars);
+
+    const dayKeys = Array.from(dailyMap.keys());
+    const rollups = await ctx.db
+      .query("unit_economics_daily")
+      .withIndex("by_user_day", (q) =>
+        q
+          .eq("user_id", userId)
+          .gte("day", dayKeys[0])
+          .lte("day", dayKeys[dayKeys.length - 1]),
+      )
+      .collect();
+
+    for (const row of rollups) {
+      dailyMap.set(
+        row.day,
+        row.included_usage_cost_dollars + row.extra_usage_cost_dollars,
+      );
     }
 
     return Array.from(dailyMap.entries())

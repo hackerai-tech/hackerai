@@ -1,12 +1,10 @@
 import { after, NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import type { Event } from "@workos-inc/node";
 import { api } from "@/convex/_generated/api";
 import { workos } from "@/app/api/workos";
 import { captureUserSignedUp } from "@/lib/analytics/user-signup";
 import { phLogger } from "@/lib/posthog/server";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const runtime = "nodejs";
 
@@ -66,7 +64,7 @@ export async function POST(req: NextRequest) {
 
   let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    const result = await convex.mutation(
+    const result = await getConvexClient().mutation(
       api.extraUsage.claimWebhookProcessing,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -106,7 +104,7 @@ export async function POST(req: NextRequest) {
   after(() => phLogger.flush());
 
   try {
-    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
+    await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
     });

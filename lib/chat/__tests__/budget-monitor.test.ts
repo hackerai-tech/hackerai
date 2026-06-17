@@ -20,6 +20,58 @@ const baseSnapshot: BudgetSnapshot = {
 };
 
 describe("BudgetMonitor", () => {
+  it("emits the first budget warning at 75% usage", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        monthlyRemainingAtStart: 30,
+      },
+      writer,
+      "pro",
+    );
+
+    const decision = monitor.checkAfterStep(0.0005);
+
+    expect(decision).toBe("continue");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "token-bucket",
+          remainingPercent: 25,
+          severity: "info",
+        }),
+      }),
+    );
+  });
+
+  it("emits the stronger budget warning at 90% usage", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        monthlyRemainingAtStart: 15,
+      },
+      writer,
+      "pro",
+    );
+
+    const decision = monitor.checkAfterStep(0.0005);
+
+    expect(decision).toBe("continue");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "token-bucket",
+          remainingPercent: 10,
+          severity: "warning",
+        }),
+      }),
+    );
+  });
+
   it("aborts with extra_usage_cap when overflow would exceed the monthly extra-usage cap", () => {
     const writer = makeWriter();
     const monitor = new BudgetMonitor(

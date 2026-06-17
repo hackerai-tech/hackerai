@@ -23,6 +23,8 @@ export type PaidStartConversionType =
   | "free_to_paid"
   | "paid_subscription_start";
 
+export const LEGACY_USAGE_COST_MULTIPLIER = 1.3;
+
 export function utcDay(timestampMs: number): string {
   return new Date(timestampMs).toISOString().slice(0, 10);
 }

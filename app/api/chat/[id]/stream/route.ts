@@ -3,7 +3,7 @@ import { createUIMessageStream, JsonToSseTransformStream } from "ai";
 import { ChatSDKError } from "@/lib/errors";
 import type { ChatMessage } from "@/types/chat";
 import { getStreamContext } from "@/lib/api/chat-handler";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import {
   createCancellationSubscriber,
@@ -37,14 +37,12 @@ export async function GET(
   } catch (error) {
     return new ChatSDKError("unauthorized:chat").toResponse();
   }
-
-  const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
   // Load chat and enforce ownership
   let chat: any | null = null;
   try {
-    chat = await convex.query(api.chats.getChatById, {
+    chat = await getConvexClient().query(api.chats.getChatById, {
       serviceKey,
       id: chatId,
     });
@@ -72,7 +70,7 @@ export async function GET(
   // replay instead of hitting the ack-timeout (~5s) again.
   const clearStaleActiveStream = async () => {
     try {
-      await convex.mutation(api.chatStreams.prepareForNewStream, {
+      await getConvexClient().mutation(api.chatStreams.prepareForNewStream, {
         serviceKey,
         chatId,
       });
@@ -238,7 +236,7 @@ export async function GET(
 
   // Fallback: if no resumable stream, attempt to replay the most recent assistant message
   try {
-    const mostRecentMessage = await convex.query(
+    const mostRecentMessage = await getConvexClient().query(
       api.messages.getLastAssistantMessage,
       {
         serviceKey,

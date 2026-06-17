@@ -1975,19 +1975,24 @@ export const getSharedMessages = query({
         return [];
       }
 
-      // Get all messages for this chat
+      // Read the chat's messages via the existing per-chat index, then apply
+      // the frozen-share cutoff locally to avoid a production-wide backfill.
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .order("asc")
         .collect();
 
-      // FROZEN CONTENT: Filter messages to only those created/updated before share_date
-      // This ensures new messages added after sharing are not visible
-      // Also exclude hidden messages (e.g. auto-continue rows)
-      const frozenMessages = messages.filter(
-        (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-      );
+      // FROZEN CONTENT: Exclude hidden messages (e.g. auto-continue rows).
+      const frozenMessages = messages
+        .filter(
+          (msg) =>
+            msg.update_time <= chat.share_date! && msg.is_hidden !== true,
+        )
+        .sort(
+          (a, b) =>
+            a.update_time - b.update_time || a._creationTime - b._creationTime,
+        );
 
       // Strip sensitive data and replace files with placeholders
       return frozenMessages.map((msg) => ({

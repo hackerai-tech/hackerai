@@ -4,6 +4,7 @@ import { validateServiceKey } from "./lib/utils";
 import {
   applyPaidStartMixDelta,
   applyUnitEconomicsDelta,
+  LEGACY_USAGE_COST_MULTIPLIER,
   recordPaidStartEventInternal,
   recordRevenueEventInternal,
   utcDay,
@@ -412,8 +413,15 @@ export const rebuildEntityDailyRollups = mutation({
             .take(maxRows);
 
     for (const log of usageRows) {
-      const modelCostDollars = log.model_cost_dollars ?? log.cost_dollars;
       const nonModelCostDollars = log.non_model_cost_dollars ?? 0;
+      const reportedModelCostDollars =
+        log.model_cost_dollars ??
+        Math.max(0, log.cost_dollars - nonModelCostDollars);
+      const modelCostDollars =
+        log.cost_source === "token_estimate"
+          ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
+          : reportedModelCostDollars;
+      const costDollars = modelCostDollars + nonModelCostDollars;
       await applyUnitEconomicsDelta(ctx, {
         entityType: args.entityType as UnitEconomicsEntityType,
         entityId: args.entityId,
@@ -425,9 +433,8 @@ export const rebuildEntityDailyRollups = mutation({
         day: utcDay(log._creationTime),
         modelCostDollars,
         nonModelCostDollars,
-        includedUsageCostDollars:
-          log.type === "included" ? log.cost_dollars : 0,
-        extraUsageCostDollars: log.type === "extra" ? log.cost_dollars : 0,
+        includedUsageCostDollars: log.type === "included" ? costDollars : 0,
+        extraUsageCostDollars: log.type === "extra" ? costDollars : 0,
         usageRequestCount: 1,
         inputTokens: log.input_tokens,
         outputTokens: log.output_tokens,

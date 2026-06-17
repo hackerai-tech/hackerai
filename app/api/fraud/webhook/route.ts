@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 type SuspensionCategory =
   | "early_fraud_warning"
@@ -214,7 +212,7 @@ async function suspendCustomerUsers({
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
 
   for (const userId of userIds) {
-    await convex.mutation(api.userSuspensions.upsertActive, {
+    await getConvexClient().mutation(api.userSuspensions.upsertActive, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       userId,
       category,
@@ -450,7 +448,7 @@ export async function POST(req: NextRequest) {
   // attempt doesn't permanently block Stripe's retries.
   let claimState: "acquired" | "already_processed" | "claim_held";
   try {
-    const result = await convex.mutation(
+    const result = await getConvexClient().mutation(
       api.extraUsage.claimWebhookProcessing,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -503,7 +501,7 @@ export async function POST(req: NextRequest) {
   // the fraud signal arrived. Replacement subs and new cards added after
   // the event are skipped.
   try {
-    await convex.mutation(api.extraUsage.finalizeWebhookProcessing, {
+    await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
     });

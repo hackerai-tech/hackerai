@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { workos } from "../../workos";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../team-auth";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
  * GET /api/team/extra-usage
@@ -17,7 +15,7 @@ export const GET = async (req: NextRequest) => {
     if (!guard.ok) return guard.response;
 
     const [adminView, memberships] = await Promise.all([
-      convex.query(api.teamExtraUsage.getTeamExtraUsageAdminView, {
+      getConvexClient().query(api.teamExtraUsage.getTeamExtraUsageAdminView, {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         organizationId: guard.organizationId,
       }),
@@ -93,15 +91,18 @@ export const POST = async (req: NextRequest) => {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
-    await convex.mutation(api.teamExtraUsage.updateTeamExtraUsageSettings, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      organizationId: guard.organizationId,
-      enabled: body.enabled,
-      autoReloadEnabled: body.autoReloadEnabled,
-      autoReloadThresholdDollars: body.autoReloadThresholdDollars,
-      autoReloadAmountDollars: body.autoReloadAmountDollars,
-      monthlyCapDollars: body.monthlyCapDollars,
-    });
+    await getConvexClient().mutation(
+      api.teamExtraUsage.updateTeamExtraUsageSettings,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        organizationId: guard.organizationId,
+        enabled: body.enabled,
+        autoReloadEnabled: body.autoReloadEnabled,
+        autoReloadThresholdDollars: body.autoReloadThresholdDollars,
+        autoReloadAmountDollars: body.autoReloadAmountDollars,
+        monthlyCapDollars: body.monthlyCapDollars,
+      },
+    );
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {

@@ -1,6 +1,6 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 import { phLogger } from "@/lib/posthog/server";
@@ -8,8 +8,6 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
  * POST /api/extra-usage/webhook
@@ -84,23 +82,26 @@ export async function POST(req: NextRequest) {
       // Session so this path and the post-checkout confirm redirect (which uses
       // the same key) can race without double-crediting.
       try {
-        const result = await convex.mutation(api.extraUsage.addCredits, {
-          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-          userId,
-          amountDollars,
-          idempotencyKey: `cs_${session.id}`,
-          legacyIdempotencyKey: event.id, // Guards retries of pre-deploy webhooks that stored `evt_<id>`
-          revenueSource: "extra_usage_purchase",
-          stripeCustomerId:
-            typeof session.customer === "string"
-              ? session.customer
-              : session.customer?.id,
-          stripeCheckoutSessionId: session.id,
-          stripePaymentIntentId:
-            typeof session.payment_intent === "string"
-              ? session.payment_intent
-              : session.payment_intent?.id,
-        });
+        const result = await getConvexClient().mutation(
+          api.extraUsage.addCredits,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            userId,
+            amountDollars,
+            idempotencyKey: `cs_${session.id}`,
+            legacyIdempotencyKey: event.id, // Guards retries of pre-deploy webhooks that stored `evt_<id>`
+            revenueSource: "extra_usage_purchase",
+            stripeCustomerId:
+              typeof session.customer === "string"
+                ? session.customer
+                : session.customer?.id,
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId:
+              typeof session.payment_intent === "string"
+                ? session.payment_intent
+                : session.payment_intent?.id,
+          },
+        );
 
         if (result.alreadyProcessed) {
           console.log(
