@@ -671,7 +671,7 @@ export const createChatHandler = () => {
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const billingBreakdown = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -682,6 +682,7 @@ export const createChatHandler = () => {
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
                   usageTracker.log({
                     userId,
@@ -695,6 +696,7 @@ export const createChatHandler = () => {
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({

@@ -1125,7 +1125,7 @@ export const agentLongTask = task({
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const billingBreakdown = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -1136,6 +1136,7 @@ export const agentLongTask = task({
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
                   usageTracker.log({
                     userId,
@@ -1149,6 +1150,7 @@ export const agentLongTask = task({
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({

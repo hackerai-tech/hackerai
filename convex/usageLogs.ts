@@ -8,7 +8,11 @@ import {
   utcDay,
 } from "./unitEconomicsLib";
 
-const typeValidator = v.union(v.literal("included"), v.literal("extra"));
+const typeValidator = v.union(
+  v.literal("included"),
+  v.literal("extra"),
+  v.literal("mixed"),
+);
 
 const cleanModelName = (model: string): string =>
   model
@@ -40,6 +44,10 @@ export const logUsage = mutation({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
+    included_cost_dollars: v.optional(v.number()),
+    extra_usage_cost_dollars: v.optional(v.number()),
+    included_points_deducted: v.optional(v.number()),
+    extra_usage_points_deducted: v.optional(v.number()),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
@@ -68,6 +76,16 @@ export const logUsage = mutation({
         ? reportedModelCostDollars / LEGACY_USAGE_COST_MULTIPLIER
         : reportedModelCostDollars;
     const costDollars = modelCostDollars + nonModelCostDollars;
+    const includedUsageCostDollars = Number.isFinite(args.included_cost_dollars)
+      ? args.included_cost_dollars!
+      : args.type === "included"
+        ? costDollars
+        : 0;
+    const extraUsageCostDollars = Number.isFinite(args.extra_usage_cost_dollars)
+      ? args.extra_usage_cost_dollars!
+      : args.type === "extra"
+        ? costDollars
+        : 0;
     const costSource =
       args.cost_source === "token_estimate"
         ? "raw_token_estimate"
@@ -89,6 +107,10 @@ export const logUsage = mutation({
       cache_write_tokens: args.cache_write_tokens,
       total_tokens: args.total_tokens,
       cost_dollars: costDollars,
+      included_cost_dollars: includedUsageCostDollars,
+      extra_usage_cost_dollars: extraUsageCostDollars,
+      included_points_deducted: args.included_points_deducted,
+      extra_usage_points_deducted: args.extra_usage_points_deducted,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
@@ -98,8 +120,8 @@ export const logUsage = mutation({
       day: utcDay(now),
       modelCostDollars,
       nonModelCostDollars,
-      includedUsageCostDollars: args.type === "included" ? costDollars : 0,
-      extraUsageCostDollars: args.type === "extra" ? costDollars : 0,
+      includedUsageCostDollars,
+      extraUsageCostDollars,
       usageRequestCount: 1,
       inputTokens: args.input_tokens,
       outputTokens: args.output_tokens,
@@ -212,13 +234,21 @@ export const getUserUsageLogs = query({
         _id: log._id,
         _creationTime: log._creationTime,
         model: cleanModelName(log.model),
-        type: log.type as "included" | "extra",
+        type: log.type as "included" | "extra" | "mixed",
         input_tokens: log.input_tokens,
         output_tokens: log.output_tokens,
         cache_read_tokens: log.cache_read_tokens,
         cache_write_tokens: log.cache_write_tokens,
         total_tokens: log.total_tokens,
         cost_dollars: log.cost_dollars,
+        included_cost_dollars:
+          log.included_cost_dollars ??
+          (log.type === "included" ? log.cost_dollars : 0),
+        extra_usage_cost_dollars:
+          log.extra_usage_cost_dollars ??
+          (log.type === "extra" ? log.cost_dollars : 0),
+        included_points_deducted: log.included_points_deducted,
+        extra_usage_points_deducted: log.extra_usage_points_deducted,
         model_cost_dollars: log.model_cost_dollars,
         non_model_cost_dollars: log.non_model_cost_dollars,
         cost_source: log.cost_source,

@@ -62,6 +62,35 @@ const formatTimestamp = (ms: number): string => {
   });
 };
 
+type UsageLogBilling = {
+  type: "included" | "extra" | "mixed";
+  cost_dollars: number;
+  included_cost_dollars?: number;
+  extra_usage_cost_dollars?: number;
+  included_points_deducted?: number;
+  extra_usage_points_deducted?: number;
+};
+
+const getUsageCostBreakdown = (log: UsageLogBilling) => ({
+  includedCost:
+    log.included_cost_dollars ??
+    (log.type === "included" ? log.cost_dollars : 0),
+  extraUsageCost:
+    log.extra_usage_cost_dollars ??
+    (log.type === "extra" ? log.cost_dollars : 0),
+});
+
+const getUsageBillingLabel = (log: UsageLogBilling): string => {
+  const hasIncludedPoints = (log.included_points_deducted ?? 0) > 0;
+  const hasExtraUsagePoints = (log.extra_usage_points_deducted ?? 0) > 0;
+
+  if (log.type === "mixed" || (hasIncludedPoints && hasExtraUsagePoints)) {
+    return "Included + Extra";
+  }
+  if (log.type === "extra" || hasExtraUsagePoints) return "Extra";
+  return "Included";
+};
+
 const UsageLogsTable = () => {
   const [preset, setPreset] = useState<Preset>("30d");
   const [customRange, setCustomRange] = useState<DateRange | undefined>();
@@ -121,18 +150,25 @@ const UsageLogsTable = () => {
       "Output",
       "Total Tokens",
       "Cost",
+      "Included Cost",
+      "Extra Usage Cost",
     ];
-    const rows = results.map((log) => [
-      new Date(log._creationTime).toISOString(),
-      log.type === "included" ? "Included" : "Extra Usage",
-      log.model,
-      (log.cache_read_tokens ?? 0).toString(),
-      (log.cache_write_tokens ?? 0).toString(),
-      log.input_tokens.toString(),
-      log.output_tokens.toString(),
-      log.total_tokens.toString(),
-      formatCost(log.cost_dollars),
-    ]);
+    const rows = results.map((log) => {
+      const { includedCost, extraUsageCost } = getUsageCostBreakdown(log);
+      return [
+        new Date(log._creationTime).toISOString(),
+        getUsageBillingLabel(log),
+        log.model,
+        (log.cache_read_tokens ?? 0).toString(),
+        (log.cache_write_tokens ?? 0).toString(),
+        log.input_tokens.toString(),
+        log.output_tokens.toString(),
+        log.total_tokens.toString(),
+        formatCost(log.cost_dollars),
+        formatCost(includedCost),
+        formatCost(extraUsageCost),
+      ];
+    });
 
     const csvContent = [headers, ...rows]
       .map((row) => row.join(","))
@@ -269,34 +305,45 @@ const UsageLogsTable = () => {
                 </td>
               </tr>
             ) : (
-              results.map((log) => (
-                <tr
-                  key={log._id}
-                  className="border-b last:border-b-0 hover:bg-muted/30 transition-colors"
-                >
-                  <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    {formatTimestamp(log._creationTime)}
-                  </td>
-                  <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    {log.type === "included" ? "Included" : "Extra"}
-                  </td>
-                  <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    {log.model}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                    <TokenBreakdownTooltip
-                      totalTokens={log.total_tokens}
-                      inputTokens={log.input_tokens}
-                      outputTokens={log.output_tokens}
-                      cacheReadTokens={log.cache_read_tokens}
-                      cacheWriteTokens={log.cache_write_tokens}
-                    />
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                    {formatCost(log.cost_dollars)}
-                  </td>
-                </tr>
-              ))
+              results.map((log) => {
+                const billingLabel = getUsageBillingLabel(log);
+                const { includedCost, extraUsageCost } =
+                  getUsageCostBreakdown(log);
+                return (
+                  <tr
+                    key={log._id}
+                    className="border-b last:border-b-0 hover:bg-muted/30 transition-colors"
+                  >
+                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
+                      {formatTimestamp(log._creationTime)}
+                    </td>
+                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
+                      {billingLabel}
+                    </td>
+                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
+                      {log.model}
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                      <TokenBreakdownTooltip
+                        totalTokens={log.total_tokens}
+                        inputTokens={log.input_tokens}
+                        outputTokens={log.output_tokens}
+                        cacheReadTokens={log.cache_read_tokens}
+                        cacheWriteTokens={log.cache_write_tokens}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                      <div>{formatCost(log.cost_dollars)}</div>
+                      {billingLabel === "Included + Extra" ? (
+                        <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground/80">
+                          Included {formatCost(includedCost)} + Extra{" "}
+                          {formatCost(extraUsageCost)}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
