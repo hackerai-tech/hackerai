@@ -14,8 +14,53 @@ type PricingRedirectAnalytics = {
   cta_text?: string;
 };
 
+export type PricingDialogContext = {
+  surface?: string;
+  source?: string;
+  fromTier?: SubscriptionTier;
+  reason?: string;
+  limitType?: string;
+};
+
+const PRICING_CONTEXT_PARAMS = {
+  surface: "pricing_surface",
+  source: "pricing_source",
+  fromTier: "pricing_from_tier",
+  reason: "pricing_reason",
+  limitType: "pricing_limit_type",
+} as const;
+
+const readPricingContext = (): PricingDialogContext => {
+  const params = new URLSearchParams(window.location.search);
+  const fromTier = params.get(PRICING_CONTEXT_PARAMS.fromTier);
+
+  return {
+    surface: params.get(PRICING_CONTEXT_PARAMS.surface) ?? undefined,
+    source: params.get(PRICING_CONTEXT_PARAMS.source) ?? undefined,
+    fromTier:
+      fromTier === "free" ||
+      fromTier === "pro" ||
+      fromTier === "pro-plus" ||
+      fromTier === "ultra" ||
+      fromTier === "team"
+        ? fromTier
+        : undefined,
+    reason: params.get(PRICING_CONTEXT_PARAMS.reason) ?? undefined,
+    limitType: params.get(PRICING_CONTEXT_PARAMS.limitType) ?? undefined,
+  };
+};
+
+const clearPricingContextParams = (url: URL) => {
+  for (const key of Object.values(PRICING_CONTEXT_PARAMS)) {
+    url.searchParams.delete(key);
+  }
+};
+
 export const usePricingDialog = (subscription?: SubscriptionTier) => {
   const [showPricing, setShowPricing] = useState(false);
+  const [pricingContext, setPricingContext] = useState<PricingDialogContext>(
+    {},
+  );
   const capturedPricingViewRef = useRef(false);
 
   useEffect(() => {
@@ -38,13 +83,22 @@ export const usePricingDialog = (subscription?: SubscriptionTier) => {
       setShowPricing(shouldShow);
       if (!shouldShow) {
         capturedPricingViewRef.current = false;
+        setPricingContext({});
         return;
       }
+
+      const context = readPricingContext();
+      setPricingContext(context);
 
       if (!capturedPricingViewRef.current) {
         if (
           captureAuthenticatedEvent("pricing_viewed", {
             subscription,
+            surface: context.surface,
+            source: context.source,
+            from_tier: context.fromTier,
+            reason: context.reason,
+            limit_type: context.limitType,
           })
         ) {
           capturedPricingViewRef.current = true;
@@ -67,12 +121,16 @@ export const usePricingDialog = (subscription?: SubscriptionTier) => {
     setShowPricing(false);
     // Remove hash from URL
     if (window.location.hash === "#pricing") {
+      const url = new URL(window.location.href);
+      clearPricingContextParams(url);
+      url.hash = "";
       window.history.replaceState(
         null,
         document.title || "",
-        window.location.pathname + window.location.search,
+        `${url.pathname}${url.search}`,
       );
     }
+    setPricingContext({});
   };
 
   const openPricing = () => {
@@ -80,13 +138,19 @@ export const usePricingDialog = (subscription?: SubscriptionTier) => {
     if (subscription === "ultra" || subscription === "team") {
       return;
     }
-    window.location.hash = "pricing";
+
+    const url = new URL(window.location.href);
+    clearPricingContextParams(url);
+    url.hash = "pricing";
+    window.history.pushState(null, document.title || "", url.toString());
+    window.dispatchEvent(new Event("hashchange"));
   };
 
   return {
     showPricing,
     handleClosePricing,
     openPricing,
+    pricingContext,
   };
 };
 
@@ -102,5 +166,29 @@ export const redirectToPricing = (analytics: PricingRedirectAnalytics = {}) => {
     ...(analytics.limit_type && { limit_type: analytics.limit_type }),
     ...(analytics.cta_text && { cta_text: analytics.cta_text }),
   });
-  window.location.hash = "pricing";
+
+  const url = new URL(window.location.href);
+  clearPricingContextParams(url);
+  if (analytics.surface) {
+    url.searchParams.set(PRICING_CONTEXT_PARAMS.surface, analytics.surface);
+  }
+  if (analytics.source) {
+    url.searchParams.set(PRICING_CONTEXT_PARAMS.source, analytics.source);
+  }
+  if (analytics.from_tier) {
+    url.searchParams.set(PRICING_CONTEXT_PARAMS.fromTier, analytics.from_tier);
+  }
+  if (analytics.reason) {
+    url.searchParams.set(PRICING_CONTEXT_PARAMS.reason, analytics.reason);
+  }
+  if (analytics.limit_type) {
+    url.searchParams.set(
+      PRICING_CONTEXT_PARAMS.limitType,
+      analytics.limit_type,
+    );
+  }
+  url.hash = "pricing";
+
+  window.history.pushState(null, document.title || "", url.toString());
+  window.dispatchEvent(new Event("hashchange"));
 };

@@ -12,7 +12,8 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
   const chatId = params.id;
   const { subscription } = useGlobalState();
-  const { showPricing, handleClosePricing } = usePricingDialog(subscription);
+  const { showPricing, handleClosePricing, pricingContext } =
+    usePricingDialog(subscription);
 
   return (
     <>
@@ -36,7 +37,11 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
         </div>
       </Unauthenticated>
 
-      <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
+      <PricingDialog
+        isOpen={showPricing}
+        onClose={handleClosePricing}
+        context={pricingContext}
+      />
     </>
   );
 }

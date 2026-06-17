@@ -9,13 +9,23 @@ const mockListPrices = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockCreatePreview = jest.fn();
 const mockUpdateSubscription = jest.fn();
+const mockPostHogEvent = jest.fn();
+const mockPostHogFlush = jest.fn();
 
 jest.mock("next/server", () => ({
+  after: jest.fn((callback: () => void) => callback()),
   NextResponse: {
     json: jest.fn((body: unknown, init?: ResponseInit) => ({
       status: init?.status ?? 200,
       json: async () => body,
     })),
+  },
+}));
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: {
+    event: mockPostHogEvent,
+    flush: mockPostHogFlush,
   },
 }));
 
@@ -195,5 +205,106 @@ describe("POST /api/subscription-details", () => {
       status: "active",
       limit: 1,
     });
+  });
+
+  it("persists subscription-change attribution in metadata and analytics", async () => {
+    mockListPrices.mockResolvedValueOnce({
+      data: [
+        {
+          id: "price_ultra",
+          unit_amount: 10000,
+          recurring: { interval: "month", interval_count: 1 },
+          currency: "usd",
+        },
+      ],
+    } as never);
+    mockListSubscriptions.mockResolvedValueOnce({
+      data: [
+        {
+          id: "sub_123",
+          metadata: { existing: "metadata" },
+          default_payment_method: null,
+          items: {
+            data: [
+              {
+                id: "si_123",
+                price: {
+                  id: "price_pro",
+                  unit_amount: 2000,
+                  product: "prod_pro",
+                  recurring: { interval: "month" },
+                },
+              },
+            ],
+          },
+          current_period_start: 1_700_000_000,
+          current_period_end: 1_702_592_000,
+        },
+      ],
+    } as never);
+    mockCreatePreview.mockResolvedValueOnce({
+      amount_due: 8000,
+      lines: {
+        data: [{ amount: 10000 }, { amount: -2000 }],
+      },
+    } as never);
+    mockUpdateSubscription.mockResolvedValueOnce({
+      id: "sub_123",
+      latest_invoice: null,
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      makeRequest({
+        plan: "ultra-monthly-plan",
+        confirm: true,
+        checkoutAttemptId: "ca_paid_limit_123",
+        source: "limit_pressure",
+        surface: "pricing_dialog",
+        reason: "monthly_exhausted",
+        limitType: "monthly",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(mockUpdateSubscription).toHaveBeenCalledWith(
+      "sub_123",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          existing: "metadata",
+          checkoutAttemptId: "ca_paid_limit_123",
+          checkoutSource: "limit_pressure",
+          checkoutSurface: "pricing_dialog",
+          checkoutReason: "monthly_exhausted",
+          checkoutLimitType: "monthly",
+          checkoutType: "subscription_change",
+        }),
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_started",
+      expect.objectContaining({
+        checkout_attempt_id: "ca_paid_limit_123",
+        checkout_type: "subscription_change",
+        source: "limit_pressure",
+        surface: "pricing_dialog",
+        reason: "monthly_exhausted",
+        limit_type: "monthly",
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_succeeded",
+      expect.objectContaining({
+        checkout_attempt_id: "ca_paid_limit_123",
+        checkout_type: "subscription_change",
+        source: "limit_pressure",
+        surface: "pricing_dialog",
+        reason: "monthly_exhausted",
+        limit_type: "monthly",
+      }),
+    );
   });
 });

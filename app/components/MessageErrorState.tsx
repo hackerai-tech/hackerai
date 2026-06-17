@@ -13,6 +13,7 @@ import {
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
   getExtraUsageLimitCta,
+  getLimitTypeForCapReason,
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
 
@@ -84,6 +85,12 @@ export const MessageErrorState = ({
   const isPaidUser = subscription !== "free";
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
   const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
+  const limitType = getLimitTypeForCapReason(capReason);
+  const upgradeCtaText =
+    subscription === "free" &&
+    (limitType === "daily_requests" || limitType === "free_monthly")
+      ? "Keep going"
+      : "Upgrade Plan";
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
 
   useEffect(() => {
@@ -96,9 +103,17 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: "Upgrade Plan",
+      limit_type: limitType,
+      cta_text: upgradeCtaText,
     });
-  }, [canUpgrade, capReason, isRateLimitError, subscription]);
+  }, [
+    canUpgrade,
+    capReason,
+    isRateLimitError,
+    limitType,
+    subscription,
+    upgradeCtaText,
+  ]);
 
   useEffect(() => {
     if (
@@ -201,11 +216,12 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     reason: capReason,
-                    cta_text: "Upgrade Plan",
+                    limit_type: limitType,
+                    cta_text: upgradeCtaText,
                   })
                 }
               >
-                Upgrade Plan
+                {upgradeCtaText}
               </Button>
             )}
           </>

@@ -46,6 +46,10 @@ export const POST = async (req: NextRequest) => {
       createCheckoutAttemptId();
     const checkoutSource = normalizePaidFunnelLabel(body?.source);
     const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
+    const checkoutReason = normalizePaidFunnelLabel(body?.reason);
+    const checkoutLimitType = normalizePaidFunnelLabel(
+      body?.limitType ?? body?.limit_type,
+    );
     const fromTier = paidFunnelTierFromUnknown(body?.fromTier);
     const posthogSessionId = req.headers.get("x-posthog-session-id");
     // Get user ID from authenticated session
@@ -304,6 +308,8 @@ export const POST = async (req: NextRequest) => {
         checkoutAttemptId,
         ...(checkoutSource && { checkoutSource }),
         ...(checkoutSurface && { checkoutSurface }),
+        ...(checkoutReason && { checkoutReason }),
+        ...(checkoutLimitType && { checkoutLimitType }),
         checkoutType: "new_subscription",
       },
       subscription_data: {
@@ -314,6 +320,8 @@ export const POST = async (req: NextRequest) => {
           checkoutAttemptId,
           ...(checkoutSource && { checkoutSource }),
           ...(checkoutSurface && { checkoutSurface }),
+          ...(checkoutReason && { checkoutReason }),
+          ...(checkoutLimitType && { checkoutLimitType }),
           checkoutType: "new_subscription",
         },
       },
@@ -381,6 +389,8 @@ export const POST = async (req: NextRequest) => {
         quantity,
         surface: checkoutSurface,
         source: checkoutSource,
+        reason: checkoutReason,
+        limit_type: checkoutLimitType,
         checkout_amount_dollars:
           selectedPrice.unit_amount != null
             ? (selectedPrice.unit_amount * quantity) / 100
