@@ -264,6 +264,7 @@ describe("desktop-local sandbox file helpers", () => {
   });
 
   it("retries transient E2B command-channel handshake timeouts", async () => {
+    jest.useFakeTimers();
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -278,7 +279,7 @@ describe("desktop-local sandbox file helpers", () => {
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
 
     try {
-      const result = await uploadSandboxFiles(
+      const pendingResult = uploadSandboxFiles(
         [
           {
             kind: "url",
@@ -290,15 +291,19 @@ describe("desktop-local sandbox file helpers", () => {
           commands: { run },
         }),
       );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
 
       expect(result).toEqual({ failedCount: 0, pathRewrites: [] });
       expect(run).toHaveBeenCalledTimes(3);
     } finally {
+      jest.useRealTimers();
       consoleWarnSpy.mockRestore();
     }
   });
 
   it("refreshes the sandbox once after exhausted transient upload command failures", async () => {
+    jest.useFakeTimers();
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -318,7 +323,7 @@ describe("desktop-local sandbox file helpers", () => {
     }));
 
     try {
-      const result = await uploadSandboxFiles(
+      const pendingResult = uploadSandboxFiles(
         [
           {
             kind: "url",
@@ -329,6 +334,8 @@ describe("desktop-local sandbox file helpers", () => {
         ensureSandbox,
         { retryWithFreshSandboxOnTransientFailure: true },
       );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
 
       expect(result).toEqual({
         failedCount: 0,
@@ -343,12 +350,14 @@ describe("desktop-local sandbox file helpers", () => {
         reason: "attachment_staging_transient_command_failure",
       });
     } finally {
+      jest.useRealTimers();
       consoleWarnSpy.mockRestore();
       consoleErrorSpy.mockRestore();
     }
   });
 
   it("returns redacted metadata for transient upload command failures", async () => {
+    jest.useFakeTimers();
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -362,7 +371,7 @@ describe("desktop-local sandbox file helpers", () => {
       );
 
     try {
-      const result = await uploadSandboxFiles(
+      const pendingResult = uploadSandboxFiles(
         [
           {
             kind: "url",
@@ -374,6 +383,8 @@ describe("desktop-local sandbox file helpers", () => {
           commands: { run },
         }),
       );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
 
       expect(result.failedCount).toBe(1);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
@@ -385,7 +396,51 @@ describe("desktop-local sandbox file helpers", () => {
         String(getSandboxUploadFailureMetadata(result)?.upload_failure_cause),
       ).toContain("Request handshake timed out");
     } finally {
+      jest.useRealTimers();
       consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("does not refresh the sandbox for wrapped curl download timeouts", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const run = jest.fn(async (command: string) => {
+      if (command.includes("df -h /home/user")) {
+        return {
+          exitCode: 0,
+          stdout: "Filesystem Size Used Avail Use% Mounted on\n",
+          stderr: "",
+        };
+      }
+
+      return { exitCode: 28, stdout: "", stderr: "curl: (28) ETIMEDOUT" };
+    });
+    const ensureSandbox = jest.fn(async () => ({
+      commands: { run },
+    }));
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_kind: "url",
+        upload_failure_transient_sandbox_command: false,
+      });
+    } finally {
       consoleErrorSpy.mockRestore();
     }
   });

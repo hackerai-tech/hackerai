@@ -103,15 +103,20 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
 };
 
 const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
-  /request handshake timed out|handshake timed out after \d+ms|connection reset|socket hang up|ECONNRESET|ETIMEDOUT/i;
+  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out)\b/i;
+const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
+  /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
 const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;
 const SANDBOX_COMMAND_RETRY_BASE_DELAY_MS = 750;
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const isTransientSandboxCommandError = (error: unknown): boolean =>
-  TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN.test(errorMessage(error));
+const isTransientSandboxCommandError = (error: unknown): boolean => {
+  const message = errorMessage(error);
+  if (WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)) return false;
+  return TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN.test(message);
+};
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
