@@ -167,12 +167,12 @@ export function sendRateLimitWarnings(
         subscription,
       });
     } else {
-      // Paid users without extra usage: warn at 80% and 95%
+      // Paid users without extra usage: warn at 75% and 90%
       const usedPercent =
         100 -
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
 
-      if (usedPercent >= 80) {
+      if (usedPercent >= 75) {
         emitTokenBucketThresholdWarning(writer, {
           usedPercent,
           projectedUsedPoints:
@@ -216,7 +216,7 @@ export function emitTokenBucketThresholdWarning(
 ): void {
   const remainingPercent = Math.max(0, Math.round(100 - ctx.usedPercent));
   const severity: "info" | "warning" =
-    ctx.usedPercent >= 95 ? "warning" : "info";
+    ctx.usedPercent >= 90 ? "warning" : "info";
   writeRateLimitWarning(writer, {
     warningType: "token-bucket",
     bucketType: "monthly",
@@ -492,6 +492,8 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const ASK_MEDIUM_REASONING_MODELS = [
+  "ask-model",
+  "model-gemini-3-flash",
   "model-deepseek-v4-pro",
   "model-sonnet-4.6",
   "model-opus-4.6",
@@ -576,6 +578,8 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const isGemini3Flash =
+    modelName === "ask-model" || modelName === "model-gemini-3-flash";
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning = isReasoningModel
     ? {
@@ -583,7 +587,11 @@ export function buildProviderOptions(
         ...(isDeepSeekV4 && { effort: "xhigh" }),
       }
     : mode === "ask" && isAskMediumReasoningModel(modelName)
-      ? { enabled: true, effort: "medium" }
+      ? {
+          enabled: true,
+          effort: "medium",
+          ...(isGemini3Flash && { exclude: true }),
+        }
       : { enabled: false };
 
   return {
