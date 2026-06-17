@@ -170,6 +170,12 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorCategory",
   "providerStatusCode",
   "providerErrorRetriable",
+  "upload_failure_kind",
+  "upload_failure_cause",
+  "upload_failure_transient_sandbox_command",
+  "upload_failure_protocol",
+  "upload_failure_url_length",
+  "upload_retried_with_fresh_sandbox",
 ] as const;
 
 const compactChatErrorMetadata = (

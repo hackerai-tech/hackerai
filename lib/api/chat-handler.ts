@@ -19,6 +19,7 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
+  SandboxBootInfo,
 } from "@/types";
 import {
   coerceSelectedModel,
@@ -90,6 +91,7 @@ import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
+  getSandboxUploadFailureMetadata,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
@@ -412,6 +414,7 @@ export const createChatHandler = () => {
               rateLimitInfo,
             });
 
+            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             const {
               tools,
               getSandbox,
@@ -446,7 +449,10 @@ export const createChatHandler = () => {
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
               subscription,
-              (info) => chatLogger?.setSandboxBoot(info),
+              (info) => {
+                uploadSandboxBootPath ??= info.path;
+                chatLogger?.setSandboxBoot(info);
+              },
               (info) => chatLogger?.setCaidoReady(info),
               selectedModel,
             );
@@ -508,6 +514,10 @@ export const createChatHandler = () => {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
+                  {
+                    retryWithFreshSandboxOnTransientFailure: () =>
+                      uploadSandboxBootPath === "reuse_existing",
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -518,6 +528,7 @@ export const createChatHandler = () => {
                 const uploadError = new ChatSDKError(
                   "bad_request:stream",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadFailureMetadata(uploadResult),
                 );
                 // Errors thrown from execute are caught by createUIMessageStream's
                 // onError and never reach the outer catch, so refund / timeout

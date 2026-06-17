@@ -2,6 +2,7 @@ jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
 import {
+  getSandboxUploadFailureMetadata,
   prepareLocalDesktopAttachmentsForTrigger,
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
@@ -259,6 +260,133 @@ describe("desktop-local sandbox file helpers", () => {
       expect(fallbackCurlAttempts).toHaveLength(1);
     } finally {
       consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("retries transient E2B command-channel handshake timeouts", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("2: [unknown] Request handshake timed out after 60000ms"),
+      )
+      .mockRejectedValueOnce(
+        new Error("2: [unknown] Request handshake timed out after 60000ms"),
+      )
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        async () => ({
+          commands: { run },
+        }),
+      );
+
+      expect(result).toEqual({ failedCount: 0, pathRewrites: [] });
+      expect(run).toHaveBeenCalledTimes(3);
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("refreshes the sandbox once after exhausted transient upload command failures", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const firstRun = jest
+      .fn()
+      .mockRejectedValue(
+        new Error("2: [unknown] Request handshake timed out after 60000ms"),
+      );
+    const refreshedRun = jest
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const ensureSandbox = jest.fn(async (options?: { refresh?: boolean }) => ({
+      commands: { run: options?.refresh ? refreshedRun : firstRun },
+    }));
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+
+      expect(result).toEqual({
+        failedCount: 0,
+        pathRewrites: [],
+        retriedWithFreshSandbox: true,
+      });
+      expect(firstRun).toHaveBeenCalledTimes(3);
+      expect(refreshedRun).toHaveBeenCalledTimes(1);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(ensureSandbox.mock.calls[1][0]).toMatchObject({
+        refresh: true,
+        reason: "attachment_staging_transient_command_failure",
+      });
+    } finally {
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("returns redacted metadata for transient upload command failures", async () => {
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValue(
+        new Error("2: [unknown] Request handshake timed out after 60000ms"),
+      );
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png?X-Amz-Signature=secret",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        async () => ({
+          commands: { run },
+        }),
+      );
+
+      expect(result.failedCount).toBe(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_kind: "url",
+        upload_failure_transient_sandbox_command: true,
+        upload_failure_protocol: "https",
+      });
+      expect(
+        String(getSandboxUploadFailureMetadata(result)?.upload_failure_cause),
+      ).toContain("Request handshake timed out");
+    } finally {
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
     }
   });
 

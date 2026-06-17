@@ -25,6 +25,7 @@ export interface SandboxInfo {
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
+  resetSandbox?(reason?: string): Promise<void>;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this

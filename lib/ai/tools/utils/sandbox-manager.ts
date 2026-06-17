@@ -84,4 +84,19 @@ export class DefaultSandboxManager implements SandboxManager {
     this.sandbox = sandbox;
     this.setSandboxCallback(sandbox);
   }
+
+  async resetSandbox(reason?: string): Promise<void> {
+    const sandbox = this.sandbox;
+    this.sandbox = null;
+    if (!sandbox) return;
+
+    try {
+      await sandbox.kill();
+    } catch (error) {
+      console.warn(
+        `[${this.userID}] Failed to kill sandbox during reset${reason ? ` (${reason})` : ""}:`,
+        error,
+      );
+    }
+  }
 }
