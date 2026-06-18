@@ -37,6 +37,7 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
@@ -53,6 +54,10 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import {
+  PAID_FUNNEL_EVENTS,
+  paidFunnelProperties,
+} from "@/lib/analytics/paid-funnel";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -630,14 +635,52 @@ export const createChatHandler = () => {
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
                 : freeMonthlyBudgetSnapshot);
-            const budgetMonitor = effectiveBudgetSnapshot
-              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
-              : null;
             const isReasoningModel = isAgentMode(mode);
 
             const streamStartTime = Date.now();
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const agentRunSpendCap = getProAgentRunSpendCap({
+              snapshot: effectiveBudgetSnapshot,
+              subscription,
+              mode,
+            });
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(
+                  effectiveBudgetSnapshot,
+                  writer,
+                  subscription,
+                  {
+                    agentRunSpendCap,
+                    onAgentRunSpendCapHit: (hit) => {
+                      phLogger.event(
+                        PAID_FUNNEL_EVENTS.agentRunSpendCapHit,
+                        paidFunnelProperties({
+                          userId,
+                          subscription_tier: subscription,
+                          mode,
+                          chat_id: chatId,
+                          endpoint,
+                          selected_model: selectedModel,
+                          selected_model_override: selectedModelOverride,
+                          configured_model_slug: configuredModelId,
+                          cap_reason: "agent_run_spend_cap",
+                          run_cost_dollars: hit.runCostDollars,
+                          run_cap_dollars: hit.runCapDollars,
+                          monthly_remaining_dollars:
+                            hit.monthlyRemainingDollars,
+                          cap_basis: hit.capBasis,
+                          $set: {
+                            subscription_tier: subscription,
+                            last_agent_run_spend_cap_hit_at:
+                              new Date().toISOString(),
+                          },
+                        }),
+                      );
+                    },
+                  },
+                )
+              : null;
 
             let isRetryWithFallback = false;
             const isAutoModel = [
@@ -825,6 +868,7 @@ export const createChatHandler = () => {
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
+                state.stoppedDueToAgentRunSpendCap = false;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 // Discard the failed primary leg's model usage so the user is
@@ -917,6 +961,7 @@ export const createChatHandler = () => {
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
+                        state.stoppedDueToAgentRunSpendCap = false;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;

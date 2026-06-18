@@ -3,6 +3,7 @@ import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { Button } from "@/components/ui/button";
+import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
@@ -52,6 +53,10 @@ export const FinishReasonNotice = ({
       return <>Reached the context limit for this conversation.</>;
     }
 
+    if (finishReason === "agent-run-spend-cap") {
+      return <>Paused at the Pro Agent per-run safety cap.</>;
+    }
+
     return null;
   };
 
@@ -70,6 +75,15 @@ export const FinishReasonNotice = ({
             variant="outline"
             onClick={() => {
               setHasContinued(true);
+              if (finishReason === "agent-run-spend-cap") {
+                captureAgentRunSpendCapContinueClick({
+                  surface: "finish_reason_notice",
+                  source: "agent_run_spend_cap",
+                  finish_reason: finishReason,
+                  mode: mode ?? "agent",
+                  cap_reason: "agent_run_spend_cap",
+                });
+              }
               onContinue();
             }}
           >

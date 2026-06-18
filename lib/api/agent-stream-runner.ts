@@ -40,6 +40,7 @@ import {
   TOKEN_EXHAUSTION_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
   BUDGET_EXHAUSTION_FINISH_REASON,
+  AGENT_RUN_SPEND_CAP_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
   detectDoomLoop,
@@ -107,6 +108,7 @@ export type AgentStreamState = {
   stoppedDueToElapsedTimeout: boolean;
   stoppedDueToDoomLoop: boolean;
   stoppedDueToBudgetExhaustion: boolean;
+  stoppedDueToAgentRunSpendCap: boolean;
 };
 
 export function initAgentStreamState(
@@ -126,6 +128,7 @@ export function initAgentStreamState(
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
     stoppedDueToBudgetExhaustion: false,
+    stoppedDueToAgentRunSpendCap: false,
   };
 }
 
@@ -630,11 +633,13 @@ export async function createAgentStream(
         }
       }
 
-      if (
-        ctx.budgetMonitor?.checkAfterStep(
-          ctx.usageTracker.computeCostDollars(modelName),
-        ) === "abort"
-      ) {
+      const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
+        ctx.usageTracker.computeCostDollars(modelName),
+      );
+      if (budgetDecision === "abort-agent-run-spend-cap") {
+        state.stoppedDueToAgentRunSpendCap = true;
+        ctx.abortController.abort();
+      } else if (budgetDecision === "abort") {
         state.stoppedDueToBudgetExhaustion = true;
         ctx.abortController.abort();
       }
@@ -651,6 +656,8 @@ export async function createAgentStream(
         state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
       } else if (state.stoppedDueToDoomLoop) {
         state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
+      } else if (state.stoppedDueToAgentRunSpendCap) {
+        state.streamFinishReason = AGENT_RUN_SPEND_CAP_FINISH_REASON;
       } else if (state.stoppedDueToBudgetExhaustion) {
         state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
       } else {

@@ -128,6 +128,18 @@ export type RateLimitWarningData =
       subscription: SubscriptionTier;
       capReason?: LimitCapReason;
       midStream?: boolean;
+    }
+  | {
+      // Pro Agent users: per-run spend cap paused the current run.
+      warningType: "agent-run-spend-cap";
+      resetTime: string;
+      subscription: "pro";
+      mode: "agent";
+      runCostDollars: number;
+      runCapDollars: number;
+      monthlyRemainingDollars: number;
+      capBasis: "fixed_5_dollars" | "remaining_25_percent";
+      midStream?: boolean;
     };
 
 // Unified rate limit warning notification

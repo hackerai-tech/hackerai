@@ -3,6 +3,7 @@ import "server-only";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ExtraUsageConfig,
+  ChatMode,
   RateLimitInfo,
   SubscriptionTier,
 } from "@/types";
@@ -19,6 +20,22 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
 // early heads-up at 75%, a stronger warning at 90%, and uses 100% for the
 // cutoff or extra-usage transition.
 export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
+export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
+export const PRO_AGENT_RUN_REMAINING_FRACTION_CAP = 0.25;
+
+export type AgentRunSpendCapBasis = "fixed_5_dollars" | "remaining_25_percent";
+
+export interface AgentRunSpendCap {
+  capDollars: number;
+  basis: AgentRunSpendCapBasis;
+}
+
+export interface AgentRunSpendCapHit {
+  runCostDollars: number;
+  runCapDollars: number;
+  monthlyRemainingDollars: number;
+  capBasis: AgentRunSpendCapBasis;
+}
 
 export interface BudgetSnapshot {
   monthlyLimitPoints: number;
@@ -61,6 +78,38 @@ export function captureBudgetSnapshot(args: {
   };
 }
 
+export function getProAgentRunSpendCap(args: {
+  snapshot: BudgetSnapshot | null;
+  subscription: SubscriptionTier;
+  mode: ChatMode;
+}): AgentRunSpendCap | null {
+  const { snapshot, subscription, mode } = args;
+  if (!snapshot || subscription !== "pro" || mode !== "agent") return null;
+
+  const monthlyRemainingDollars =
+    snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
+  if (monthlyRemainingDollars <= 0) {
+    return {
+      capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
+      basis: "fixed_5_dollars",
+    };
+  }
+
+  const remainingFractionCap =
+    monthlyRemainingDollars * PRO_AGENT_RUN_REMAINING_FRACTION_CAP;
+  if (remainingFractionCap <= PRO_AGENT_RUN_SPEND_CAP_DOLLARS) {
+    return {
+      capDollars: remainingFractionCap,
+      basis: "remaining_25_percent",
+    };
+  }
+
+  return {
+    capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
+    basis: "fixed_5_dollars",
+  };
+}
+
 /**
  * Mid-stream budget enforcement. State lives on the monitor; the hook point
  * in chat-handler stays thin.
@@ -71,11 +120,16 @@ export function captureBudgetSnapshot(args: {
  */
 export class BudgetMonitor {
   private highestThresholdEmitted: number;
+  private hasEmittedAgentRunSpendCap = false;
 
   constructor(
     private readonly snapshot: BudgetSnapshot,
     private readonly writer: UIMessageStreamWriter,
     private readonly subscription: SubscriptionTier,
+    private readonly options: {
+      agentRunSpendCap?: AgentRunSpendCap | null;
+      onAgentRunSpendCapHit?: (hit: AgentRunSpendCapHit) => void;
+    } = {},
   ) {
     const startUsedPercent =
       ((snapshot.monthlyLimitPoints - snapshot.monthlyRemainingAtStart) /
@@ -85,11 +139,44 @@ export class BudgetMonitor {
       BUDGET_THRESHOLDS.filter((t) => startUsedPercent >= t).pop() ?? 0;
   }
 
-  checkAfterStep(currentCostDollars: number): "continue" | "abort" {
+  checkAfterStep(
+    currentCostDollars: number,
+  ): "continue" | "abort" | "abort-agent-run-spend-cap" {
     const { snapshot } = this;
     const usedSinceStartPoints = Math.ceil(
       currentCostDollars * POINTS_PER_DOLLAR,
     );
+    const agentRunSpendCap = this.options.agentRunSpendCap;
+    if (
+      agentRunSpendCap &&
+      !this.hasEmittedAgentRunSpendCap &&
+      currentCostDollars >= agentRunSpendCap.capDollars
+    ) {
+      this.hasEmittedAgentRunSpendCap = true;
+      const monthlyRemainingDollars =
+        snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
+      const hit: AgentRunSpendCapHit = {
+        runCostDollars: Math.round(currentCostDollars * 100) / 100,
+        runCapDollars: Math.round(agentRunSpendCap.capDollars * 100) / 100,
+        monthlyRemainingDollars:
+          Math.round(monthlyRemainingDollars * 100) / 100,
+        capBasis: agentRunSpendCap.basis,
+      };
+      writeRateLimitWarning(this.writer, {
+        warningType: "agent-run-spend-cap",
+        subscription: "pro",
+        mode: "agent",
+        resetTime: snapshot.monthlyResetTime.toISOString(),
+        runCostDollars: hit.runCostDollars,
+        runCapDollars: hit.runCapDollars,
+        monthlyRemainingDollars: hit.monthlyRemainingDollars,
+        capBasis: hit.capBasis,
+        midStream: true,
+      });
+      this.options.onAgentRunSpendCapHit?.(hit);
+      return "abort-agent-run-spend-cap";
+    }
+
     const projectedUsedPoints =
       snapshot.monthlyLimitPoints -
       snapshot.monthlyRemainingAtStart +

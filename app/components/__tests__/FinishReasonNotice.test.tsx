@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, jest } from "@jest/globals";
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+
 import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
@@ -209,6 +210,7 @@ describe("FinishReasonNotice", () => {
       "length",
       "context-limit",
       "preemptive-timeout",
+      "agent-run-spend-cap",
     ])("renders the Continue button for finishReason=%s", (finishReason) => {
       const onContinue = jest.fn();
       renderNotice(
@@ -218,6 +220,25 @@ describe("FinishReasonNotice", () => {
       expect(
         screen.getByRole("button", { name: /continue/i }),
       ).toBeInTheDocument();
+    });
+
+    it("renders the Pro Agent run cap notice and invokes Continue", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "agent-run-spend-cap",
+          mode: "agent",
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      expect(
+        screen.getByText(/Paused at the Pro Agent per-run safety cap/i),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+      expect(onContinue).toHaveBeenCalledTimes(1);
     });
   });
 
