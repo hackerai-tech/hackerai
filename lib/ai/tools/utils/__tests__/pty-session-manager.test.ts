@@ -436,6 +436,44 @@ describe("PtySessionManager", () => {
       expect(manager.get("chat-a", s2.sessionId)).toBeUndefined();
       expect(manager.get("chat-b", s3.sessionId)).toBe(s3);
     });
+
+    it("treats already-gone kill failures as successful cleanup", async () => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const debugSpy = jest
+        .spyOn(console, "debug")
+        .mockImplementation(() => {});
+      const handle = makeFakeHandle();
+      handle.kill.mockRejectedValueOnce(
+        Object.assign(new Error("no such process"), { code: "ESRCH" }),
+      );
+      const session = await manager.create("chat-a", {
+        createHandle: makeCreateHandleFactory(handle),
+        cols: 80,
+        rows: 24,
+      });
+
+      const closeAllPromise = manager.closeAll("chat-a");
+      await Promise.resolve();
+      await Promise.resolve();
+      jest.advanceTimersByTime(2100);
+      await closeAllPromise;
+
+      expect(handle.kill).toHaveBeenCalled();
+      expect(manager.get("chat-a", session.sessionId)).toBeUndefined();
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.stringContaining("session already gone"),
+        expect.any(Error),
+      );
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("[pty-session-manager] kill failed"),
+        expect.anything(),
+      );
+
+      debugSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
   });
 
   describe("constants", () => {

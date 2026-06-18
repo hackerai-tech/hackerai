@@ -16,6 +16,7 @@ import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -292,7 +293,11 @@ export class HybridSandboxManager implements SandboxManager {
   private async closeCurrentSandbox(): Promise<void> {
     if (this.sandbox instanceof CentrifugoSandbox) {
       await this.sandbox.close().catch((err) => {
-        console.warn(`[${this.userID}] Failed to close sandbox:`, err);
+        if (isExpectedAlreadyGoneCleanupError(err)) {
+          console.debug(`[${this.userID}] Sandbox was already closed:`, err);
+        } else {
+          console.warn(`[${this.userID}] Failed to close sandbox:`, err);
+        }
       });
     }
   }
@@ -602,10 +607,12 @@ export class HybridSandboxManager implements SandboxManager {
 
     if (sandbox instanceof CentrifugoSandbox) {
       await sandbox.close().catch((error) => {
-        console.warn(
-          `[${this.userID}] Failed to close local sandbox during reset${reason ? ` (${reason})` : ""}:`,
-          error,
-        );
+        const message = `[${this.userID}] Failed to close local sandbox during reset${reason ? ` (${reason})` : ""}:`;
+        if (isExpectedAlreadyGoneCleanupError(error)) {
+          console.debug(message, error);
+        } else {
+          console.warn(message, error);
+        }
       });
       return;
     }
@@ -613,10 +620,12 @@ export class HybridSandboxManager implements SandboxManager {
     try {
       await sandbox.kill();
     } catch (error) {
-      console.warn(
-        `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`,
-        error,
-      );
+      const message = `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`;
+      if (isExpectedAlreadyGoneCleanupError(error)) {
+        console.debug(message, error);
+      } else {
+        console.warn(message, error);
+      }
     }
   }
 

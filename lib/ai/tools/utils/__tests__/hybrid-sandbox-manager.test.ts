@@ -181,3 +181,49 @@ describe("HybridSandboxManager browser automation prompt", () => {
     expect(context).not.toContain("command -v agent-browser");
   });
 });
+
+describe("HybridSandboxManager reset cleanup", () => {
+  let warnSpy: jest.SpyInstance;
+  let debugSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    debugSpy = jest.spyOn(console, "debug").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    debugSpy.mockRestore();
+  });
+
+  it("downgrades already-gone E2B sandbox reset failures", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+    );
+    const sandbox = {
+      kill: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("sandbox not_found"), { status: 404 }),
+        ),
+    };
+
+    manager.setSandbox(sandbox as any);
+    await manager.resetSandbox("test");
+
+    expect(sandbox.kill).toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to kill E2B sandbox during reset"),
+      expect.any(Error),
+    );
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Failed to kill E2B sandbox during reset"),
+      expect.anything(),
+    );
+  });
+});

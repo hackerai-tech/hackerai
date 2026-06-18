@@ -51,6 +51,11 @@ import {
   pruneToolOutputs,
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
+import {
+  isProviderMultimodalToolResultRejectionError,
+  toolResultsContainImageViewResult,
+  uiMessagesContainImageViewResult,
+} from "@/lib/chat/multimodal-tool-result-recovery";
 import { isAnthropicModel } from "@/lib/ai/providers";
 import {
   FREE_MAX_OUTPUT_TOKENS,
@@ -94,6 +99,8 @@ export type AgentStreamState = {
   responseModel: string | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** True when a provider rejected an image-bearing tool result. */
+  providerRejectedMultimodalToolResults: boolean;
   /** Stop-condition flags set by the respective onFired callbacks. */
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
@@ -114,6 +121,7 @@ export function initAgentStreamState(
     streamUsage: undefined,
     responseModel: undefined,
     providerError: undefined,
+    providerRejectedMultimodalToolResults: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
@@ -123,31 +131,6 @@ export function initAgentStreamState(
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
-
-const isImageViewOutput = (output: unknown): boolean => {
-  if (!isRecord(output)) return false;
-
-  return (
-    output.action === "view" &&
-    output.kind === "image" &&
-    typeof output.mediaType === "string" &&
-    output.mediaType.startsWith("image/")
-  );
-};
-
-const uiMessagesContainImageViewResult = (messages: UIMessage[]): boolean =>
-  messages.some((message) =>
-    message.parts?.some((part) => {
-      if (!isRecord(part) || part.type !== "tool-file") return false;
-      return isImageViewOutput(part.output);
-    }),
-  );
-
-const toolResultsContainImageViewResult = (toolResults: unknown[]): boolean =>
-  toolResults.some((toolResult) => {
-    if (!isRecord(toolResult) || toolResult.toolName !== "file") return false;
-    return isImageViewOutput(toolResult.output);
-  });
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -733,6 +716,12 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      if (
+        streamHasImageViewResults &&
+        isProviderMultimodalToolResultRejectionError(error)
+      ) {
+        state.providerRejectedMultimodalToolResults = true;
+      }
       const overflowKind = classifyProviderOverflowError(error);
       if (overflowKind) {
         state.stoppedDueToTokenExhaustion = true;

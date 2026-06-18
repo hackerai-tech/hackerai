@@ -1,6 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 
@@ -10,6 +11,18 @@ const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause in
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
 const MAX_CREATE_RETRIES = 3;
+
+const logSandboxKillFailure = (
+  userID: string,
+  message: string,
+  error: unknown,
+): void => {
+  if (isExpectedAlreadyGoneCleanupError(error)) {
+    console.debug(`[${userID}] ${message}:`, error);
+  } else {
+    console.warn(`[${userID}] ${message}:`, error);
+  }
+};
 
 /**
  * Current sandbox version identifier.
@@ -86,7 +99,7 @@ export const ensureSandboxConnection = async (
       try {
         await Sandbox.kill(existingSandbox.sandboxId);
       } catch (killError) {
-        console.warn(`[${userID}] Failed to kill old sandbox:`, killError);
+        logSandboxKillFailure(userID, "Failed to kill old sandbox", killError);
       }
       createPath = "create_after_version_mismatch";
       // Skip to creating new sandbox
@@ -115,8 +128,9 @@ export const ensureSandboxConnection = async (
           try {
             await Sandbox.kill(existingSandbox.sandboxId);
           } catch (killError) {
-            console.warn(
-              `[${userID}] Failed to clean up expired sandbox:`,
+            logSandboxKillFailure(
+              userID,
+              "Failed to clean up expired sandbox",
               killError,
             );
           }
@@ -130,8 +144,9 @@ export const ensureSandboxConnection = async (
           try {
             await Sandbox.kill(existingSandbox.sandboxId);
           } catch (killError) {
-            console.warn(
-              `[${userID}] Failed to clean up broken sandbox:`,
+            logSandboxKillFailure(
+              userID,
+              "Failed to clean up broken sandbox",
               killError,
             );
           }

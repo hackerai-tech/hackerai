@@ -10,6 +10,7 @@
  */
 
 import type { PtyHandle } from "./e2b-pty-adapter";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -180,6 +181,13 @@ export class PtySessionManager {
       try {
         await handle.kill();
       } catch (killErr) {
+        if (isExpectedAlreadyGoneCleanupError(killErr)) {
+          console.debug(
+            "[pty-session-manager] orphan already gone pid=" + handle.pid + ":",
+            killErr,
+          );
+          throw wiringErr;
+        }
         console.error(
           "[pty-session-manager] orphan kill failed pid=" + handle.pid + ":",
           killErr,
@@ -340,10 +348,17 @@ export class PtySessionManager {
     try {
       await session.handle.kill();
     } catch (err) {
-      console.error(
-        "[pty-session-manager] kill failed pid=" + session.pid + ":",
-        err,
-      );
+      if (isExpectedAlreadyGoneCleanupError(err)) {
+        console.debug(
+          "[pty-session-manager] session already gone pid=" + session.pid + ":",
+          err,
+        );
+      } else {
+        console.error(
+          "[pty-session-manager] kill failed pid=" + session.pid + ":",
+          err,
+        );
+      }
     }
 
     await Promise.race([
