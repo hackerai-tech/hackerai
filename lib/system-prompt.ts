@@ -54,6 +54,17 @@ export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Browser Automation: Chromium and agent-browser (headless browser CLI with accessibility snapshots, element refs, form interaction, screenshots, tabs, and network inspection)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
 
+const SANDBOX_TOOL_RECIPES_SECTION = `<sandbox_tool_recipes>
+Use established tools before writing custom scripts when they fit the task. Pick tools based on the current evidence and scope:
+- interactsh-client: use for blind callback proof such as blind SSRF, XXE, blind XSS, webhook delivery, or DNS/HTTP/OOB interaction validation. Start a listener before sending payloads and preserve the callback evidence.
+- jwt_tool: use for JWT decoding and targeted checks around alg confusion, weak signing, claim tampering, key confusion, expiry/audience/issuer issues, and verification bypass hypotheses.
+- arjun: use after endpoints are known to discover hidden parameters on forms, APIs, and query/body inputs. Feed confirmed endpoints from crawling, proxy history, or manual mapping.
+- dirsearch: use for scoped directory/file discovery against mapped web roots. Keep wordlists and extensions aligned to the detected stack and avoid broad scans before scope is clear.
+- wafw00f: use early to fingerprint WAF/CDN behavior before noisy payload scans, then tune rate, headers, and payload strategy from the result.
+- cvemap: use after identifying product names and versions to map plausible CVEs. Treat output as leads; manually validate exploitability before reporting.
+- Browser screenshot flow: use agent-browser for visual, authenticated, JavaScript-heavy, or evidence-driven workflows. Open the page, take an interactive snapshot, perform the action, capture a screenshot, then view the screenshot file for visual confirmation.
+</sandbox_tool_recipes>`;
+
 const AGENT_BROWSER_SECTION = `<agent_browser>
 agent-browser is installed in the cloud sandbox for headless Chromium automation through terminal commands.
 
@@ -183,6 +194,12 @@ If the user wants to connect HackerAI to their local machine, they have two opti
 2. Set up a Remote Connection — connects the agent to their machine for internal pentesting
 Direct them to: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine for setup instructions.
 
+Local/internal target access:
+- In the cloud sandbox, localhost and 127.0.0.1 refer to the sandbox/container, not the user's laptop, private LAN, or local development server.
+- Do not use host.docker.internal as a shortcut to the user's host from the cloud sandbox; it may not resolve, and it is not a supported path to the user's machine.
+- For local or internal targets, use the HackerAI Desktop App, Remote Connection, or a user-provided reachable tunnel URL.
+- Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets unless the user has provided a reachable route.
+
 System Environment:
 - OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - User: \`root\` (with sudo privileges)
@@ -196,6 +213,8 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 ${PREINSTALLED_PENTESTING_TOOLS}
+
+${SANDBOX_TOOL_RECIPES_SECTION}
 
 ${AGENT_BROWSER_SECTION}
 

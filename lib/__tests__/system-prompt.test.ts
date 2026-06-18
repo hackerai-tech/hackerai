@@ -120,6 +120,55 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("file tool's view action");
   });
 
+  it("adds compact cloud sandbox tool recipes for solo security workflows", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<sandbox_tool_recipes>");
+    expect(prompt).toContain("interactsh-client: use for blind callback proof");
+    expect(prompt).toContain("blind SSRF, XXE, blind XSS");
+    expect(prompt).toContain("jwt_tool: use for JWT decoding");
+    expect(prompt).toContain("arjun: use after endpoints are known");
+    expect(prompt).toContain(
+      "dirsearch: use for scoped directory/file discovery",
+    );
+    expect(prompt).toContain("wafw00f: use early to fingerprint WAF/CDN");
+    expect(prompt).toContain("cvemap: use after identifying product names");
+    expect(prompt).toContain("Browser screenshot flow: use agent-browser");
+  });
+
+  it("clarifies cloud sandbox cannot directly reach local host aliases", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "localhost and 127.0.0.1 refer to the sandbox/container, not the user's laptop",
+    );
+    expect(prompt).toContain(
+      "Do not use host.docker.internal as a shortcut to the user's host from the cloud sandbox",
+    );
+    expect(prompt).toContain(
+      "use the HackerAI Desktop App, Remote Connection, or a user-provided reachable tunnel URL",
+    );
+    expect(prompt).toContain(
+      "Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets",
+    );
+  });
+
   it("does not describe a command sandbox in ask mode", async () => {
     const prompt = await systemPrompt(
       "user_123",
@@ -134,6 +183,30 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("This chat has no terminal command environment.");
     expect(prompt).not.toContain(
       "For the default cloud sandbox, commands run in an isolated container",
+    );
+    expect(prompt).not.toContain("<sandbox_tool_recipes>");
+    expect(prompt).not.toContain("interactsh-client: use for blind callback");
+  });
+
+  it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {
+    const localHostContext = `You are executing commands on Linux 6.8 (x64) in DANGEROUS MODE.
+Commands run directly on the host OS "labbox" without Docker isolation.`;
+
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      localHostContext,
+    );
+
+    expect(prompt).toContain(localHostContext);
+    expect(prompt).not.toContain("<sandbox_tool_recipes>");
+    expect(prompt).not.toContain("interactsh-client: use for blind callback");
+    expect(prompt).not.toContain(
+      "agent-browser is installed in the cloud sandbox",
     );
   });
 });
