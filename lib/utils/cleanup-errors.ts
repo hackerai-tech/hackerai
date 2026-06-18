@@ -9,10 +9,9 @@ const CLEANUP_ALREADY_GONE_PATTERNS = [
 ] as const;
 
 const CLEANUP_MISSING_RESOURCE_PATTERNS = [
-  /\bnot[_\s-]?found\b/i,
   /\bno such (?:process|file|session|container|sandbox)\b/i,
-  /\bdoes not exist\b/i,
-  /\b(?:process|session|container|sandbox).{0,60}(?:not found|deleted|gone|removed)\b/i,
+  /\b(?:process|file|session|container|sandbox).{0,60}(?:not[_\s-]?found|does not exist|deleted|gone|removed)\b/i,
+  /\b(?:not[_\s-]?found|does not exist|deleted|gone|removed).{0,60}(?:process|file|session|container|sandbox)\b/i,
 ] as const;
 
 const collectCleanupErrorText = (

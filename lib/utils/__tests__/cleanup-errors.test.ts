@@ -55,4 +55,15 @@ describe("isExpectedAlreadyGoneCleanupError", () => {
       isExpectedAlreadyGoneCleanupError(new Error("network timeout")),
     ).toBe(false);
   });
+
+  it("does not treat generic not-found errors as missing cleanup resources", () => {
+    expect(
+      isExpectedMissingResourceCleanupError(new Error("project not found")),
+    ).toBe(false);
+    expect(
+      isExpectedMissingResourceCleanupError(
+        new Error("api key does not exist"),
+      ),
+    ).toBe(false);
+  });
 });
