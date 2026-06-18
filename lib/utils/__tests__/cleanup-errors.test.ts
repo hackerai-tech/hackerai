@@ -1,4 +1,7 @@
-import { isExpectedAlreadyGoneCleanupError } from "../cleanup-errors";
+import {
+  isExpectedAlreadyGoneCleanupError,
+  isExpectedMissingResourceCleanupError,
+} from "../cleanup-errors";
 
 describe("isExpectedAlreadyGoneCleanupError", () => {
   it("matches nested process and sandbox terminal-state errors", () => {
@@ -23,6 +26,21 @@ describe("isExpectedAlreadyGoneCleanupError", () => {
       isExpectedAlreadyGoneCleanupError(
         new Error("WebSocket channel already closed"),
       ),
+    ).toBe(true);
+    expect(
+      isExpectedMissingResourceCleanupError(
+        new Error("WebSocket channel already closed"),
+      ),
+    ).toBe(false);
+  });
+
+  it("distinguishes missing resources from generic closed transports", () => {
+    expect(
+      isExpectedMissingResourceCleanupError({
+        name: "NotFoundError",
+        status: 404,
+        responseBody: "sandbox not_found",
+      }),
     ).toBe(true);
   });
 

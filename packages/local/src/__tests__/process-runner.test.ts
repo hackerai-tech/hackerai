@@ -74,4 +74,25 @@ describe("ProcessRunner cleanup", () => {
     expect(runner.isRunning("session-1")).toBe(false);
     runner.dispose();
   });
+
+  it("catches unexpected SIGKILL errors during escalation", () => {
+    const proc = makePtyProcess();
+    proc.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") {
+        throw new Error("permission denied");
+      }
+    });
+    mockSpawn.mockReturnValue(proc);
+    const errorListener = jest.fn();
+
+    const runner = new ProcessRunner();
+    runner.on("error", errorListener);
+    runner.run("session-1", "sleep 10");
+
+    expect(runner.stop("session-1")).toBe(true);
+    expect(() => jest.advanceTimersByTime(5_000)).not.toThrow();
+
+    expect(errorListener).toHaveBeenCalledWith("session-1", expect.any(Error));
+    runner.dispose();
+  });
 });

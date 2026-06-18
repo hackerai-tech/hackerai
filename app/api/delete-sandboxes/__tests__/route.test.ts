@@ -106,4 +106,21 @@ describe("POST /api/delete-sandboxes", () => {
       expect.any(Error),
     );
   });
+
+  it("does not count transport-closure failures as deleted sandboxes", async () => {
+    mockSandboxes(["sbx_unknown"]);
+    mockSandboxKill.mockRejectedValueOnce(
+      new Error("kill transport channel already closed"),
+    );
+
+    const response = await POST({} as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to delete sandboxes" });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to kill sandbox sbx_unknown:",
+      expect.any(Error),
+    );
+  });
 });

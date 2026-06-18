@@ -3,6 +3,7 @@ import {
   getImageToolResultOmittedText,
   isProviderMultimodalToolResultRejectionError,
   omitImageViewToolResultsForProviderRetry,
+  omitTrailingStepStartAssistantMessage,
   toolResultsContainImageViewResult,
   uiMessagesContainImageViewResult,
 } from "../multimodal-tool-result-recovery";
@@ -99,6 +100,22 @@ describe("multimodal tool result recovery", () => {
 
     expect(result.omittedCount).toBe(0);
     expect(result.messages).toBe(messages);
+  });
+
+  it("removes a trailing transient step-start assistant message", () => {
+    const messages = [
+      makeImageViewMessage(),
+      {
+        id: "assistant-step",
+        role: "assistant",
+        parts: [{ type: "step-start" }],
+      },
+    ] as unknown as UIMessage[];
+
+    const trimmed = omitTrailingStepStartAssistantMessage(messages);
+
+    expect(trimmed).toHaveLength(1);
+    expect(trimmed[0]).toBe(messages[0]);
   });
 
   it("classifies provider 4xx image tool-output rejections", () => {

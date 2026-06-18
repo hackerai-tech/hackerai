@@ -88,6 +88,21 @@ export function omitImageViewToolResultsForProviderRetry(
   };
 }
 
+export const omitTrailingStepStartAssistantMessage = (
+  messages: UIMessage[],
+): UIMessage[] => {
+  const lastMessage = messages.at(-1);
+  if (
+    lastMessage?.role !== "assistant" ||
+    lastMessage.parts?.length !== 1 ||
+    lastMessage.parts[0]?.type !== "step-start"
+  ) {
+    return messages;
+  }
+
+  return messages.slice(0, -1);
+};
+
 const MULTIMODAL_REJECTION_PATTERNS = [
   /image[-_\s]?data/i,
   /input[_\s-]?image/i,

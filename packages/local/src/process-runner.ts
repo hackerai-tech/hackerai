@@ -199,12 +199,20 @@ export class ProcessRunner {
     }
 
     const timer = setTimeout(() => {
-      if (this.activeProcesses.has(sessionId)) {
+      if (!this.activeProcesses.has(sessionId)) {
+        this.clearKillTimer(sessionId);
+        return;
+      }
+
+      try {
         if (this.killProcess(sessionId, proc, "SIGKILL")) {
           this.activeProcesses.delete(sessionId);
           this.outputBuffers.delete(sessionId);
-          this.clearKillTimer(sessionId);
         }
+      } catch {
+        // killProcess already emitted the error event.
+      } finally {
+        this.clearKillTimer(sessionId);
       }
     }, SIGTERM_GRACE_MS);
     this.killTimers.set(sessionId, timer);

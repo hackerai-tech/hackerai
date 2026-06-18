@@ -123,7 +123,10 @@ import {
   initAgentStreamState,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
-import { omitImageViewToolResultsForProviderRetry } from "@/lib/chat/multimodal-tool-result-recovery";
+import {
+  omitImageViewToolResultsForProviderRetry,
+  omitTrailingStepStartAssistantMessage,
+} from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
@@ -922,7 +925,10 @@ export const createChatHandler = () => {
                           ? selectedModel
                           : fallbackModel;
                         if (shouldRetryWithoutImageToolResults) {
-                          state.finalMessages = imageRecovery.messages;
+                          state.finalMessages =
+                            omitTrailingStepStartAssistantMessage(
+                              imageRecovery.messages,
+                            );
                         } else {
                           // Discard the failed primary leg's model usage so the
                           // user is only billed for the fallback. Non-model spend

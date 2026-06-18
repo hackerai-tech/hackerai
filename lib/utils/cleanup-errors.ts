@@ -8,6 +8,13 @@ const CLEANUP_ALREADY_GONE_PATTERNS = [
   /\bESRCH\b/i,
 ] as const;
 
+const CLEANUP_MISSING_RESOURCE_PATTERNS = [
+  /\bnot[_\s-]?found\b/i,
+  /\bno such (?:process|file|session|container|sandbox)\b/i,
+  /\bdoes not exist\b/i,
+  /\b(?:process|session|container|sandbox).{0,60}(?:not found|deleted|gone|removed)\b/i,
+] as const;
+
 const collectCleanupErrorText = (
   error: unknown,
   seen = new WeakSet<object>(),
@@ -49,4 +56,14 @@ export const isExpectedAlreadyGoneCleanupError = (error: unknown): boolean => {
   const text = collectCleanupErrorText(error).join(" ");
   if (!text) return false;
   return CLEANUP_ALREADY_GONE_PATTERNS.some((pattern) => pattern.test(text));
+};
+
+export const isExpectedMissingResourceCleanupError = (
+  error: unknown,
+): boolean => {
+  const text = collectCleanupErrorText(error).join(" ");
+  if (!text) return false;
+  return CLEANUP_MISSING_RESOURCE_PATTERNS.some((pattern) =>
+    pattern.test(text),
+  );
 };

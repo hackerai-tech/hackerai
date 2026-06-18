@@ -114,7 +114,10 @@ import {
 } from "@/lib/chat/agent-long-heartbeat";
 import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
-import { omitImageViewToolResultsForProviderRetry } from "@/lib/chat/multimodal-tool-result-recovery";
+import {
+  omitImageViewToolResultsForProviderRetry,
+  omitTrailingStepStartAssistantMessage,
+} from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
@@ -1546,7 +1549,21 @@ export const agentLongTask = task({
                           ? selectedModel
                           : fallbackModel;
                         if (shouldRetryWithoutImageToolResults) {
-                          state.finalMessages = imageRecovery.messages;
+                          const normalizedRetryMessages = imageRecovery.messages
+                            .map((message) =>
+                              message.role === "assistant"
+                                ? stripAgentLongHeartbeatParts(message)
+                                : message,
+                            )
+                            .filter(
+                              (message) =>
+                                message.role !== "assistant" ||
+                                (message.parts?.length ?? 0) > 0,
+                            );
+                          state.finalMessages =
+                            omitTrailingStepStartAssistantMessage(
+                              normalizedRetryMessages,
+                            );
                         } else {
                           usageTracker.resetModelLeg();
                         }

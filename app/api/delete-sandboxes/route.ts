@@ -1,7 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
-import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import { isExpectedMissingResourceCleanupError } from "@/lib/utils/cleanup-errors";
 
 export const maxDuration = 60;
 
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
         await Sandbox.kill(sandbox.sandboxId);
         killed++;
       } catch (error) {
-        if (isExpectedAlreadyGoneCleanupError(error)) {
+        if (isExpectedMissingResourceCleanupError(error)) {
           alreadyGone++;
           console.debug(
             `Sandbox ${sandbox.sandboxId} was already gone during delete`,
