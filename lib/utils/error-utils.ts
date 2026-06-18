@@ -365,7 +365,7 @@ const getProviderMessageText = (details: Record<string, unknown>): string => {
 };
 
 const PROVIDER_CONTENT_BLOCK_PATTERN =
-  /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
+  /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
 
 export const isProviderContentBlockedDetails = (
   details: Record<string, unknown>,

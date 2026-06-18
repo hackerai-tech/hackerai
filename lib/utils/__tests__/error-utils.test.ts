@@ -400,6 +400,18 @@ describe("provider error classification", () => {
     expect(isProviderContentBlockedError(err)).toBe(true);
   });
 
+  it("classifies output blocks from content filtering policy", () => {
+    const err = apiCallError({
+      statusCode: 403,
+      message: "Output blocked by content filtering policy",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "content_blocked",
+    );
+    expect(isProviderContentBlockedError(err)).toBe(true);
+  });
+
   it("does not classify moderation service failures as content blocks", () => {
     const err = apiCallError({
       statusCode: 503,
