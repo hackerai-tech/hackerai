@@ -100,7 +100,9 @@ export function parseRateLimitWarning(
       runCapDollars < 0 ||
       !isNumber(monthlyRemainingDollars) ||
       monthlyRemainingDollars < 0 ||
-      (capBasis !== "fixed_5_dollars" && capBasis !== "remaining_25_percent")
+      (capBasis !== "fixed_5_dollars" &&
+        capBasis !== "remaining_25_percent" &&
+        capBasis !== "remaining_exhausted")
     ) {
       return null;
     }

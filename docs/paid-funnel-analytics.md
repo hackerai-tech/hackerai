@@ -57,6 +57,8 @@ Paid funnel events use stable snake_case event names. Most events include
 - `cap_reason`, `limit_type`, `reset_timestamp`: limit-pressure context.
 - `run_cost_dollars`, `run_cap_dollars`, `monthly_remaining_dollars`,
   `cap_basis`: Pro Agent per-run spend-cap context.
+  `cap_basis` is one of `fixed_5_dollars`, `remaining_25_percent`, or
+  `remaining_exhausted`.
 - `primary_cta`, `eligible_ctas`, `upgrade_available`,
   `add_credit_available`: monetization paths shown or available for that
   limit pressure moment.

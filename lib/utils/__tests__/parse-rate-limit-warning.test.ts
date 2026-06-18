@@ -65,4 +65,31 @@ describe("parseRateLimitWarning", () => {
       ),
     ).toBeNull();
   });
+
+  it.each([
+    { capBasis: "unknown_basis" },
+    { runCostDollars: -1 },
+    { runCapDollars: -1 },
+    { monthlyRemainingDollars: -1 },
+    { runCostDollars: Number.NaN },
+    { runCapDollars: Number.POSITIVE_INFINITY },
+    { monthlyRemainingDollars: Number.NEGATIVE_INFINITY },
+  ])("rejects invalid spend-cap payload: %o", (overrides) => {
+    expect(
+      parseRateLimitWarning(
+        {
+          warningType: "agent-run-spend-cap",
+          subscription: "pro",
+          mode: "agent",
+          resetTime: "2026-06-30T00:00:00.000Z",
+          runCostDollars: 5.2,
+          runCapDollars: 5,
+          monthlyRemainingDollars: 18,
+          capBasis: "fixed_5_dollars",
+          ...overrides,
+        },
+        { hasUserDismissed: false },
+      ),
+    ).toBeNull();
+  });
 });

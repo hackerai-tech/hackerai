@@ -138,7 +138,10 @@ export type RateLimitWarningData =
       runCostDollars: number;
       runCapDollars: number;
       monthlyRemainingDollars: number;
-      capBasis: "fixed_5_dollars" | "remaining_25_percent";
+      capBasis:
+        | "fixed_5_dollars"
+        | "remaining_25_percent"
+        | "remaining_exhausted";
       midStream?: boolean;
     };
 

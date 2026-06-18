@@ -23,7 +23,10 @@ export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
 export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
 export const PRO_AGENT_RUN_REMAINING_FRACTION_CAP = 0.25;
 
-export type AgentRunSpendCapBasis = "fixed_5_dollars" | "remaining_25_percent";
+export type AgentRunSpendCapBasis =
+  | "fixed_5_dollars"
+  | "remaining_25_percent"
+  | "remaining_exhausted";
 
 export interface AgentRunSpendCap {
   capDollars: number;
@@ -90,8 +93,8 @@ export function getProAgentRunSpendCap(args: {
     snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
   if (monthlyRemainingDollars <= 0) {
     return {
-      capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
-      basis: "fixed_5_dollars",
+      capDollars: 0,
+      basis: "remaining_exhausted",
     };
   }
 

@@ -239,6 +239,22 @@ describe("getProAgentRunSpendCap", () => {
     });
   });
 
+  it("uses a zero cap when no monthly usage remains", () => {
+    expect(
+      getProAgentRunSpendCap({
+        snapshot: {
+          ...baseSnapshot,
+          monthlyRemainingAtStart: 0,
+        },
+        subscription: "pro",
+        mode: "agent",
+      }),
+    ).toEqual({
+      capDollars: 0,
+      basis: "remaining_exhausted",
+    });
+  });
+
   it("does not cap non-Pro tiers or Ask mode", () => {
     expect(
       getProAgentRunSpendCap({
