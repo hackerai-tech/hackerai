@@ -328,18 +328,36 @@ describe("captureUsageCost", () => {
 });
 
 describe("createChatLogger provider stream termination", () => {
-  it("logs provider safety blocks as non-retryable content blocks", () => {
+  it("logs provider safety blocks as errors with provider and model context", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const phErrorSpy = jest
+      .spyOn(phLogger, "error")
+      .mockImplementation(() => {});
 
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_content_blocked",
         endpoint: "/api/chat",
       });
-      const err = Object.assign(new Error("PROHIBITED_CONTENT"), {
-        statusCode: 403,
-      });
+      const err = Object.assign(
+        new Error("Output blocked by content filtering policy"),
+        {
+          statusCode: 403,
+          responseBody: JSON.stringify({
+            id: "gen-content-blocked",
+            error: {
+              code: 403,
+              message: "Provider returned error",
+              metadata: {
+                provider_name: "Anthropic Vertex",
+                raw: "Output blocked by content filtering policy",
+              },
+            },
+          }),
+        },
+      );
 
       chatLogger.recordProviderError(err, {
         mode: "ask",
@@ -348,11 +366,31 @@ describe("createChatLogger provider stream termination", () => {
       });
       chatLogger.emitUnexpectedError(err);
 
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
       const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
 
+      expect(warnOutput).not.toContain("Provider content blocked");
       expect(errorOutput).toContain("Provider content blocked");
       expect(errorOutput).toContain("provider_content_blocked");
+      expect(errorOutput).toContain('"provider_name":"Anthropic Vertex"');
+      expect(errorOutput).toContain('"configured_model":"ask-model-free"');
+      expect(errorOutput).toContain(
+        '"requested_model_slug":"deepseek/deepseek-v4-flash"',
+      );
+      expect(phErrorSpy).toHaveBeenCalledWith(
+        "Provider content blocked",
+        expect.objectContaining({
+          event: "provider_content_blocked",
+          providerErrorCategory: "content_blocked",
+          provider_name: "Anthropic Vertex",
+          provider_name_source: "openrouter_error_metadata",
+          configured_model: "ask-model-free",
+          requested_model_slug: "deepseek/deepseek-v4-flash",
+          model_provider_slug: "deepseek",
+          openrouter_generation_id: "gen-content-blocked",
+        }),
+      );
       expect(wideEvent.error).toMatchObject({
         type: "ProviderContentBlocked",
         retriable: false,
@@ -361,10 +399,18 @@ describe("createChatLogger provider stream termination", () => {
         category: "content_blocked",
         status_code: 403,
         retriable: false,
+        provider_name: "Anthropic Vertex",
+        provider_name_source: "openrouter_error_metadata",
+        configured_model: "ask-model-free",
+        requested_model_slug: "deepseek/deepseek-v4-flash",
+        model_provider_slug: "deepseek",
+        openrouter_generation_id: "gen-content-blocked",
       });
     } finally {
+      warnSpy.mockRestore();
       errorSpy.mockRestore();
       logSpy.mockRestore();
+      phErrorSpy.mockRestore();
     }
   });
 

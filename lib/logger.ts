@@ -228,6 +228,12 @@ export interface ChatWideEvent {
     reason?: string;
     message?: string;
     retriable?: boolean;
+    provider_name?: string;
+    provider_name_source?: string;
+    configured_model?: string;
+    requested_model_slug?: string;
+    model_provider_slug?: string;
+    openrouter_generation_id?: string;
     // Per-attempt breakdown when the SDK retried internally. Each entry is one
     // upstream call. Lets you tell consistent-500 from a mixed cascade and
     // gives you provider request IDs to file support tickets with.
@@ -236,6 +242,7 @@ export interface ChatWideEvent {
       message: string;
       error_name?: string;
       request_id?: string;
+      provider_name?: string;
     }>;
   };
 }
@@ -618,6 +625,12 @@ export class WideEventBuilder {
     reason?: string;
     message?: string;
     retriable?: boolean;
+    providerName?: string;
+    providerNameSource?: string;
+    configuredModel?: string;
+    requestedModelSlug?: string;
+    modelProviderSlug?: string;
+    openrouterGenerationId?: string;
     attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
     this.event.had_provider_error = true;
@@ -628,6 +641,12 @@ export class WideEventBuilder {
       reason: details.reason,
       message: details.message,
       retriable: details.retriable,
+      provider_name: details.providerName,
+      provider_name_source: details.providerNameSource,
+      configured_model: details.configuredModel,
+      requested_model_slug: details.requestedModelSlug,
+      model_provider_slug: details.modelProviderSlug,
+      openrouter_generation_id: details.openrouterGenerationId,
       attempts: details.attempts,
     };
     return this;
