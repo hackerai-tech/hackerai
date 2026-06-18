@@ -134,7 +134,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("<sandbox_tool_recipes>");
     expect(prompt).toContain("interactsh-client: use for blind callback proof");
     expect(prompt).toContain("blind SSRF, XXE, blind XSS");
-    expect(prompt).toContain("jwt_tool: use for JWT decoding");
+    expect(prompt).toContain("jwt-tool (jwt_tool): use for JWT decoding");
     expect(prompt).toContain("arjun: use after endpoints are known");
     expect(prompt).toContain(
       "dirsearch: use for scoped directory/file discovery",

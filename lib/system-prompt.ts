@@ -50,14 +50,14 @@ export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
 - Vulnerability Assessment: nuclei (vulnerability scanner with templates), trivy (container/dependency scanner), zaproxy (OWASP ZAP), vulnx/cvemap (CVE vulnerability mapping)
 - Forensics: binwalk, foremost (file carving)
 - Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
-- Specialized: jwt_tool (JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
+- Specialized: jwt-tool (wrapper for jwt_tool; JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
 - Browser Automation: Chromium and agent-browser (headless browser CLI with accessibility snapshots, element refs, form interaction, screenshots, tabs, and network inspection)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
 
 const SANDBOX_TOOL_RECIPES_SECTION = `<sandbox_tool_recipes>
 Use established tools before writing custom scripts when they fit the task. Pick tools based on the current evidence and scope:
 - interactsh-client: use for blind callback proof such as blind SSRF, XXE, blind XSS, webhook delivery, or DNS/HTTP/OOB interaction validation. Start a listener before sending payloads and preserve the callback evidence.
-- jwt_tool: use for JWT decoding and targeted checks around alg confusion, weak signing, claim tampering, key confusion, expiry/audience/issuer issues, and verification bypass hypotheses.
+- jwt-tool (jwt_tool): use for JWT decoding and targeted checks around alg confusion, weak signing, claim tampering, key confusion, expiry/audience/issuer issues, and verification bypass hypotheses.
 - arjun: use after endpoints are known to discover hidden parameters on forms, APIs, and query/body inputs. Feed confirmed endpoints from crawling, proxy history, or manual mapping.
 - dirsearch: use for scoped directory/file discovery against mapped web roots. Keep wordlists and extensions aligned to the detected stack and avoid broad scans before scope is clear.
 - wafw00f: use early to fingerprint WAF/CDN behavior before noisy payload scans, then tune rate, headers, and payload strategy from the result.
