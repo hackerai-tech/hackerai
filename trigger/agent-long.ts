@@ -114,6 +114,7 @@ import {
 } from "@/lib/chat/agent-long-heartbeat";
 import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
+import { omitImageViewToolResultsForProviderRetry } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
@@ -1513,15 +1514,27 @@ export const agentLongTask = task({
                               isTerminalProviderStreamError(state),
                           },
                         );
+                      const imageRecovery =
+                        state.providerRejectedMultimodalToolResults
+                          ? omitImageViewToolResultsForProviderRetry(
+                              finishedMessages,
+                            )
+                          : { messages: finishedMessages, omittedCount: 0 };
+                      const shouldRetryWithoutImageToolResults =
+                        imageRecovery.omittedCount > 0 && !isAborted;
 
                       if (
-                        shouldRetryWithFallback &&
+                        (shouldRetryWithFallback ||
+                          shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
                         !isAborted &&
-                        isAutoModel
+                        (isAutoModel || shouldRetryWithoutImageToolResults)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.streamFinishReason = undefined;
+                        state.providerError = undefined;
+                        state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
@@ -1529,8 +1542,15 @@ export const agentLongTask = task({
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                        usageTracker.resetModelLeg();
-                        const retryResult = await createStream(fallbackModel);
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : fallbackModel;
+                        if (shouldRetryWithoutImageToolResults) {
+                          state.finalMessages = imageRecovery.messages;
+                        } else {
+                          usageTracker.resetModelLeg();
+                        }
+                        const retryResult = await createStream(retryModel);
                         const retryMessageId = generateId();
 
                         writer.merge(

@@ -54,6 +54,17 @@ const SIGTERM_GRACE_MS = 5_000;
 export const NODE_PTY_UNAVAILABLE_MESSAGE =
   "Interactive terminal sessions are unavailable because node-pty could not be loaded. Non-interactive commands still work.";
 
+const isExpectedAlreadyStoppedKillError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  const text = [record.name, record.message, record.code]
+    .filter((value) => typeof value === "string" || typeof value === "number")
+    .join(" ");
+  return /\b(?:ESRCH|already (?:exited|gone|killed|stopped)|no such process|not[_\s-]?found)\b/i.test(
+    text,
+  );
+};
+
 export function isPtyAvailable(): boolean {
   try {
     require("node-pty");
@@ -183,13 +194,17 @@ export class ProcessRunner {
       return false;
     }
 
-    proc.kill("SIGTERM");
+    if (!this.killProcess(sessionId, proc, "SIGTERM")) {
+      return false;
+    }
 
     const timer = setTimeout(() => {
       if (this.activeProcesses.has(sessionId)) {
-        proc.kill("SIGKILL");
-        this.activeProcesses.delete(sessionId);
-        this.outputBuffers.delete(sessionId);
+        if (this.killProcess(sessionId, proc, "SIGKILL")) {
+          this.activeProcesses.delete(sessionId);
+          this.outputBuffers.delete(sessionId);
+          this.clearKillTimer(sessionId);
+        }
       }
     }, SIGTERM_GRACE_MS);
     this.killTimers.set(sessionId, timer);
@@ -247,6 +262,31 @@ export class ProcessRunner {
   private flushAll(): void {
     for (const sessionId of this.outputBuffers.keys()) {
       this.flush(sessionId);
+    }
+  }
+
+  private killProcess(
+    sessionId: string,
+    proc: PtyProcess,
+    signal: string,
+  ): boolean {
+    try {
+      proc.kill(signal);
+      return true;
+    } catch (error) {
+      if (!isExpectedAlreadyStoppedKillError(error)) {
+        this.emit(
+          "error",
+          sessionId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      }
+
+      this.activeProcesses.delete(sessionId);
+      this.outputBuffers.delete(sessionId);
+      this.clearKillTimer(sessionId);
+      return false;
     }
   }
 

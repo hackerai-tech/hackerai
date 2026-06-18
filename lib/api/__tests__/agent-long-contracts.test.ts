@@ -252,8 +252,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "hasTerminalProviderStreamError:",
       retryDecisionIdx,
     );
+    const retryModelIdx = taskSrc.indexOf(
+      "const retryModel = shouldRetryWithoutImageToolResults",
+      terminalProviderErrorIdx,
+    );
     const fallbackIdx = taskSrc.indexOf(
-      "const retryResult = await createStream(fallbackModel)",
+      "const retryResult = await createStream(retryModel)",
       terminalProviderErrorIdx,
     );
 
@@ -261,7 +265,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(partsIdx).toBeGreaterThan(helperImportIdx);
     expect(retryDecisionIdx).toBeGreaterThan(partsIdx);
     expect(terminalProviderErrorIdx).toBeGreaterThan(retryDecisionIdx);
-    expect(fallbackIdx).toBeGreaterThan(terminalProviderErrorIdx);
+    expect(retryModelIdx).toBeGreaterThan(terminalProviderErrorIdx);
+    expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
   test("outer catch checks live usage tracker before refunding", () => {

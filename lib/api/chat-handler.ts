@@ -123,6 +123,7 @@ import {
   initAgentStreamState,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
+import { omitImageViewToolResultsForProviderRetry } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
@@ -865,10 +866,21 @@ export const createChatHandler = () => {
                     const hasOnlyStepStart =
                       lastAssistantMessage?.parts?.length === 1 &&
                       lastAssistantMessage.parts[0]?.type === "step-start";
+                    const imageRecovery =
+                      state.providerRejectedMultimodalToolResults
+                        ? omitImageViewToolResultsForProviderRetry(messages)
+                        : { messages, omittedCount: 0 };
+                    const shouldRetryWithoutImageToolResults =
+                      imageRecovery.omittedCount > 0 && !isAborted;
 
-                    if (hasOnlyStepStart) {
+                    if (
+                      hasOnlyStepStart ||
+                      shouldRetryWithoutImageToolResults
+                    ) {
                       phLogger.warn(
-                        "Stream finished incomplete - triggering fallback",
+                        shouldRetryWithoutImageToolResults
+                          ? "Provider rejected image tool output - retrying without images"
+                          : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -881,13 +893,23 @@ export const createChatHandler = () => {
                           parts: lastAssistantMessage?.parts,
                           isRetryWithFallback,
                           assistantMessageId,
+                          imageToolResultsOmitted: imageRecovery.omittedCount,
                         },
                       );
 
-                      // Retry with fallback model if not already retrying (only for auto models)
-                      if (!isRetryWithFallback && !isAborted && isAutoModel) {
+                      // Retry with fallback model for incomplete streams. For
+                      // image-tool rejection, retry the same selected model
+                      // after replacing image outputs with text placeholders.
+                      if (
+                        !isRetryWithFallback &&
+                        !isAborted &&
+                        (isAutoModel || shouldRetryWithoutImageToolResults)
+                      ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.streamFinishReason = undefined;
+                        state.providerError = undefined;
+                        state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
@@ -896,12 +918,19 @@ export const createChatHandler = () => {
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
-                        // Discard the failed primary leg's model usage so the
-                        // user is only billed for the fallback. Non-model spend
-                        // (sandbox/tools) is preserved.
-                        usageTracker.resetModelLeg();
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : fallbackModel;
+                        if (shouldRetryWithoutImageToolResults) {
+                          state.finalMessages = imageRecovery.messages;
+                        } else {
+                          // Discard the failed primary leg's model usage so the
+                          // user is only billed for the fallback. Non-model spend
+                          // (sandbox/tools) is preserved.
+                          usageTracker.resetModelLeg();
+                        }
 
-                        const retryResult = await createStream(fallbackModel);
+                        const retryResult = await createStream(retryModel);
                         const retryMessageId = generateId();
 
                         writer.merge(
@@ -1082,7 +1111,7 @@ export const createChatHandler = () => {
                                   originalModel: selectedModel,
                                   originalAssistantMessageId:
                                     assistantMessageId,
-                                  fallbackModel,
+                                  fallbackModel: retryModel,
                                   fallbackAssistantMessageId: retryMessageId,
                                   fallbackDurationMs:
                                     Date.now() - fallbackStartTime,
@@ -1105,6 +1134,12 @@ export const createChatHandler = () => {
                                   isTemporary: temporary,
                                   paidAskMode:
                                     mode === "ask" && subscription !== "free",
+                                  retryReason:
+                                    shouldRetryWithoutImageToolResults
+                                      ? "image_tool_result_rejection"
+                                      : "incomplete_stream",
+                                  imageToolResultsOmitted:
+                                    imageRecovery.omittedCount,
                                 });
 
                                 // Deduct accumulated usage (includes both original + retry streams)
