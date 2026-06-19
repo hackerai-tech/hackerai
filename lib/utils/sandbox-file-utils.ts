@@ -103,7 +103,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
 };
 
 const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
-  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out)\b/i;
+  /\b(?:request handshake timed out(?: after \d+ms)?|sandbox command(?: request| channel| transport)? timed out|command (?:channel|transport) timed out|deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
   /\bfailed to (?:download|copy) file:|curl:\s*\(|\bexitCode:\s*\d+\b/i;
 const SANDBOX_COMMAND_MAX_ATTEMPTS = 3;

@@ -15,7 +15,7 @@ export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
     case "hackerai-standard":
       return mode && isAgentMode(mode) ? "medium" : "low";
     case "hackerai-pro":
-      return mode && isAgentMode(mode) ? "high" : "medium";
+      return "high";
     case "hackerai-max":
       return "very-high";
     default:

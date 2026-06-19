@@ -309,7 +309,7 @@ const buildSSEResponseFromRun = (
             }
             if (chunkType === "finish") {
               // The task writes a few data chunks after `finish`
-              // (message-metadata, final context usage, auto-continue).
+              // (message-metadata, auto-continue).
               // Drain that short tail so the browser receives them.
               sawTerminalChunk = true;
               sawFinishChunk = true;

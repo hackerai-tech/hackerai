@@ -319,6 +319,7 @@ export const ShareDialog = ({
                                         name: file.name,
                                         filename: file.name,
                                         mediaType: file.mediaType,
+                                        sizeBytes: file.sizeBytes,
                                       }}
                                       partIndex={fileIndex}
                                       messageId={message.id}

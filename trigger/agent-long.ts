@@ -29,7 +29,6 @@ import {
   estimatePreflightInputTokens,
   buildExtraUsageConfig,
   computeContextUsage,
-  writeContextUsage,
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
@@ -1092,6 +1091,7 @@ export const agentLongTask = task({
               subscription,
               mode,
               rateLimitInfo,
+              extraUsageConfig,
             });
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
@@ -1140,6 +1140,7 @@ export const agentLongTask = task({
                 name: string;
                 mediaType: string;
                 s3Key?: string;
+                sizeBytes?: number;
               }>,
             ) => {
               if (!fileMetadata || fileMetadata.length === 0) return;
@@ -1969,15 +1970,6 @@ export const agentLongTask = task({
                         }
 
                         sendFileMetadataToStream(accumulatedFiles);
-                      }
-
-                      if (contextUsageOn) {
-                        writeContextUsage(writer, {
-                          usedTokens:
-                            state.ctxUsage.usedTokens +
-                            usageTracker.streamOutputTokens,
-                          maxTokens: state.ctxUsage.maxTokens,
-                        });
                       }
 
                       // Don't auto-continue on elapsed timeout. Runs that hit

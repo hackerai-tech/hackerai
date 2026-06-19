@@ -20,6 +20,22 @@ type StorageUsage = {
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = Doc<"files"> | null;
 
+const serviceFileUrlInfoValidator = v.object({
+  url: v.string(),
+  sizeBytes: v.number(),
+  mediaType: v.string(),
+  name: v.string(),
+});
+
+type ServiceFileUrlInfo = {
+  url: string;
+  sizeBytes: number;
+  mediaType: string;
+  name: string;
+};
+
+const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
+
 const getIdentityEntitlements = (identity: unknown) => {
   if (
     !identity ||
@@ -271,6 +287,10 @@ export const getFileUrlAction = action({
  * - Generates S3 presigned URLs
  * - Returns array of URLs (matching order of fileIds, null for missing files)
  * - Handles partial failures gracefully
+ *
+ * Keep this return shape string-only for deploy skew compatibility with older
+ * workers. New callers that need file metadata should use
+ * getFileUrlInfosByFileIdsAction.
  */
 export const getFileUrlsByFileIdsAction = action({
   args: {
@@ -287,10 +307,9 @@ export const getFileUrlsByFileIdsAction = action({
     }
 
     // Enforce batch size limit
-    const MAX_BATCH_SIZE = 50;
-    if (args.fileIds.length > MAX_BATCH_SIZE) {
+    if (args.fileIds.length > MAX_SERVICE_FILE_URL_BATCH_SIZE) {
       throw new Error(
-        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+        `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
 
@@ -304,17 +323,7 @@ export const getFileUrlsByFileIdsAction = action({
             { fileId },
           );
 
-          // Return null if file not found
           if (!file || file.user_id !== args.userId) {
-            return null;
-          }
-
-          if (file.user_id !== args.userId) {
-            convexLogger.warn("file_batch_url_access_denied", {
-              fileId,
-              caller: "service",
-              userId: args.userId,
-            });
             return null;
           }
 
@@ -330,6 +339,69 @@ export const getFileUrlsByFileIdsAction = action({
             error:
               error instanceof Error
                 ? { name: error.name, message: error.message }
+                : String(error),
+          });
+          return null;
+        }
+      }),
+    );
+
+    return urls;
+  },
+});
+
+/**
+ * Metadata-aware service URL lookup for workers that need trusted DB file
+ * attributes before sending provider-visible media URLs.
+ */
+export const getFileUrlInfosByFileIdsAction = action({
+  args: {
+    serviceKey: v.string(),
+    userId: v.optional(v.string()),
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(v.union(serviceFileUrlInfoValidator, v.null())),
+  handler: async (ctx, args): Promise<Array<ServiceFileUrlInfo | null>> => {
+    validateServiceKey(args.serviceKey);
+    if (!args.userId) {
+      throw new Error("Missing userId for service file URL fetch");
+    }
+
+    if (args.fileIds.length > MAX_SERVICE_FILE_URL_BATCH_SIZE) {
+      throw new Error(
+        `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+      );
+    }
+
+    const urls: Array<ServiceFileUrlInfo | null> = await Promise.all(
+      args.fileIds.map(async (fileId): Promise<ServiceFileUrlInfo | null> => {
+        try {
+          const file: FileRecord = await ctx.runQuery(
+            internal.fileStorage.getFileById,
+            { fileId },
+          );
+
+          if (!file || file.user_id !== args.userId) {
+            return null;
+          }
+
+          if (file.s3_key) {
+            return {
+              url: await generateS3DownloadUrl(file.s3_key),
+              sizeBytes: file.size,
+              mediaType: file.media_type,
+              name: file.name,
+            };
+          }
+
+          return null;
+        } catch (error) {
+          convexLogger.error("file_batch_url_info_generation_failed", {
+            fileId,
+            caller: "service",
+            error:
+              error instanceof Error
+                ? { message: error.message, name: error.name }
                 : String(error),
           });
           return null;
@@ -369,10 +441,9 @@ export const getFileUrlsBatchAction = action({
     }
 
     // Enforce batch size limit
-    const MAX_BATCH_SIZE = 50;
-    if (args.fileIds.length > MAX_BATCH_SIZE) {
+    if (args.fileIds.length > MAX_SERVICE_FILE_URL_BATCH_SIZE) {
       throw new Error(
-        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+        `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
 

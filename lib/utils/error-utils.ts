@@ -174,6 +174,8 @@ const PROVIDER_CONTEXT_OVERFLOW_PATTERNS = [
 ] as const;
 
 const PROVIDER_MEDIA_OVERFLOW_PATTERNS = [
+  /downloaded image content cannot exceed/i,
+  /image content cannot exceed/i,
   /image(?: file)? too large/i,
   /media(?: file)? too large/i,
   /attachment(?: file)? too large/i,

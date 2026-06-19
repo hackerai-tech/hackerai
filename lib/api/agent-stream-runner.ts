@@ -28,7 +28,6 @@ import {
   addCacheBreakpointToLastUserMessage,
   applyPrepareStepReminders,
   runSummarizationStep,
-  writeContextUsage,
   getFallbackSlugs,
   isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
@@ -623,14 +622,6 @@ export async function createAgentStream(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
-
-        if (ctx.contextUsageOn) {
-          writeContextUsage(ctx.writer, {
-            usedTokens:
-              state.ctxUsage.usedTokens + ctx.usageTracker.streamOutputTokens,
-            maxTokens: state.ctxUsage.maxTokens,
-          });
-        }
       }
 
       const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
