@@ -47,7 +47,6 @@ import {
   type ChatMode,
 } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
-import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -78,7 +77,6 @@ interface StreamingEphemeralState {
     message: string;
   } | null;
   rateLimitWarning: RateLimitWarningData | null;
-  contextUsage: ContextUsageData;
 }
 
 type StreamingAction =
@@ -94,14 +92,12 @@ type StreamingAction =
       type: "SET_RATE_LIMIT_WARNING";
       payload: StreamingEphemeralState["rateLimitWarning"];
     }
-  | { type: "SET_CONTEXT_USAGE"; payload: ContextUsageData }
   | { type: "RESET_ON_FINISH" };
 
 const initialStreamingState: StreamingEphemeralState = {
   uploadStatus: null,
   summarizationStatus: null,
   rateLimitWarning: null,
-  contextUsage: { usedTokens: 0, maxTokens: 0 },
 };
 
 function streamingReducer(
@@ -117,8 +113,6 @@ function streamingReducer(
       return { ...state, summarizationStatus: action.payload };
     case "SET_RATE_LIMIT_WARNING":
       return { ...state, rateLimitWarning: action.payload };
-    case "SET_CONTEXT_USAGE":
-      return { ...state, contextUsage: action.payload };
     case "RESET_ON_FINISH":
       if (state.uploadStatus === null && state.summarizationStatus === null)
         return state;
@@ -207,8 +201,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingReducer,
     initialStreamingState,
   );
-  const { uploadStatus, summarizationStatus, rateLimitWarning, contextUsage } =
-    streamingState;
+  const { uploadStatus, summarizationStatus, rateLimitWarning } = streamingState;
 
   const {
     input,
@@ -537,11 +530,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           });
           break;
         }
-        case "data-context-usage": {
-          const usage = dataPart.data as ContextUsageData;
-          dispatchStreaming({ type: "SET_CONTEXT_USAGE", payload: usage });
-          break;
-        }
         case "data-title": {
           const titleData = dataPart.data as { chatTitle?: string };
           if (titleData?.chatTitle) {
@@ -664,10 +652,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setStreamedTitle(null);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      dispatchStreaming({
-        type: "SET_CONTEXT_USAGE",
-        payload: { usedTokens: 0, maxTokens: 0 },
-      });
       // Clear DataStreamProvider state so stale parts from the previous chat
       // don't feed into useAutoResume/useAutoContinue in the next conversation.
       setDataStream([]);
@@ -1295,7 +1279,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
-                            contextUsage={contextUsage}
                           />
                         </div>
                       )}
@@ -1326,7 +1309,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
-                    contextUsage={contextUsage}
                   />
                 )}
             </div>

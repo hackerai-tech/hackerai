@@ -29,7 +29,6 @@ import {
   estimatePreflightInputTokens,
   buildExtraUsageConfig,
   computeContextUsage,
-  writeContextUsage,
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
@@ -1941,15 +1940,6 @@ export const agentLongTask = task({
                         }
 
                         sendFileMetadataToStream(accumulatedFiles);
-                      }
-
-                      if (contextUsageOn) {
-                        writeContextUsage(writer, {
-                          usedTokens:
-                            state.ctxUsage.usedTokens +
-                            usageTracker.streamOutputTokens,
-                          maxTokens: state.ctxUsage.maxTokens,
-                        });
                       }
 
                       // Don't auto-continue on elapsed timeout. Runs that hit

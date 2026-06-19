@@ -7,25 +7,15 @@ import {
   SubmitStopButton,
   type SubmitStopButtonProps,
 } from "./SubmitStopButton";
-import {
-  ContextUsageIndicator,
-  type ContextUsageData,
-} from "@/app/components/ContextUsageIndicator";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
-  contextUsage?: ContextUsageData;
-  showContextIndicator?: boolean;
-  contextUsageVariant?: "tooltip" | "compact-popover";
 }
 
 export function ChatInputToolbar({
   onAttachClick,
-  contextUsage,
-  showContextIndicator = false,
-  contextUsageVariant = "tooltip",
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
@@ -46,12 +36,6 @@ export function ChatInputToolbar({
         />
       ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
-        {showContextIndicator && contextUsage && (
-          <ContextUsageIndicator
-            {...contextUsage}
-            variant={contextUsageVariant}
-          />
-        )}
         <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>
     </div>
