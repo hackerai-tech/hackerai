@@ -1,6 +1,7 @@
 import {
   redactSensitiveErrorMessage,
   stringifyRedactedError,
+  stripControlSequencesFromErrorMessage,
 } from "../error-redaction";
 
 describe("error redaction", () => {
@@ -37,5 +38,21 @@ describe("error redaction", () => {
     expect(redacted).toContain('STRIPE_SECRET_KEY="[Redacted]"');
     expect(redacted).not.toContain("super-secret");
     expect(redacted).not.toContain("stripe-secret");
+  });
+
+  it("strips ANSI escapes and control bytes before redacting secrets", () => {
+    const esc = String.fromCharCode(0x1b);
+    const bell = String.fromCharCode(0x07);
+    const message = `${esc}[31mtoken=secret-value${bell}`;
+
+    expect(stripControlSequencesFromErrorMessage(message)).toBe(
+      "token=secret-value",
+    );
+
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).toBe('token="[Redacted]"');
+    expect(redacted).not.toContain(esc);
+    expect(redacted).not.toContain(bell);
+    expect(redacted).not.toContain("secret-value");
   });
 });

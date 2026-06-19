@@ -228,6 +228,15 @@ describe("supportsMultimodalToolResults", () => {
     ).toBe(true);
   });
 
+  it("allows multimodal fallback keys and slugs used after image tool results", () => {
+    expect(supportsMultimodalToolResults("fallback-gemini-3.5-flash")).toBe(
+      true,
+    );
+    expect(supportsMultimodalToolResults("google/gemini-3.5-flash")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
+    expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
+  });
+
   it("still rejects text-only DeepSeek routes", () => {
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
