@@ -15,6 +15,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { ProviderPromptPressure } from "./provider-pressure";
 
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
@@ -58,6 +59,7 @@ export interface CheckAndSummarizeOptions {
   modelMessages?: ModelMessage[];
   transcriptMessages?: UIMessage[];
   maxTokensOverride?: number;
+  providerPromptPressure?: ProviderPromptPressure | null;
 }
 
 /**
@@ -171,6 +173,7 @@ export const checkAndSummarizeIfNeeded = async ({
   modelMessages,
   transcriptMessages,
   maxTokensOverride,
+  providerPromptPressure,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -189,19 +192,22 @@ export const checkAndSummarizeIfNeeded = async ({
   }
 
   // Check token threshold on full messages (including summary) to determine need
+  const effectiveMaxTokensOverride =
+    providerPromptPressure?.summarizationMaxTokensOverride ?? maxTokensOverride;
   const maxTokens = resolveSummarizationMaxTokens(
     subscription,
-    maxTokensOverride,
+    effectiveMaxTokensOverride,
   );
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   if (
+    !providerPromptPressure &&
     !isAboveTokenThreshold(
       uiMessages,
       subscription,
       fileTokens,
       systemPromptTokens,
       providerInputTokens,
-      maxTokens,
+      effectiveMaxTokensOverride,
     )
   ) {
     return NO_SUMMARIZATION(uiMessages);
@@ -270,6 +276,7 @@ export const checkAndSummarizeIfNeeded = async ({
       languageModel,
       usage: summarizationUsage,
       transcriptPath: savedPath,
+      reason: providerPromptPressure ? "provider_pressure" : undefined,
     });
 
     await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);

@@ -45,7 +45,7 @@ export interface SummarizationUsage {
 }
 
 export interface SummaryPersistenceMetadata {
-  reason: "token_threshold" | "provider_input_threshold";
+  reason: "token_threshold" | "provider_input_threshold" | "provider_pressure";
   promptVersion: string;
   model?: string;
   status: "completed";
@@ -661,17 +661,20 @@ export const buildSummaryPersistenceMetadata = ({
   languageModel,
   usage,
   transcriptPath,
+  reason,
 }: {
   providerInputTokens: number;
   threshold: number;
   languageModel: LanguageModel;
   usage?: SummarizationUsage;
   transcriptPath?: string | null;
+  reason?: SummaryPersistenceMetadata["reason"];
 }): SummaryPersistenceMetadata => ({
   reason:
-    providerInputTokens > threshold
+    reason ??
+    (providerInputTokens > threshold
       ? "provider_input_threshold"
-      : "token_threshold",
+      : "token_threshold"),
   promptVersion: SUMMARY_PROMPT_VERSION,
   model: getLanguageModelIdentifier(languageModel),
   status: "completed",

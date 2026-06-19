@@ -43,6 +43,7 @@ import {
   type EnsureSandbox,
   type SummarizationUsage,
 } from "@/lib/chat/summarization";
+import type { ProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
@@ -359,6 +360,7 @@ export async function runSummarizationStep(options: {
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
   transcriptMessages?: UIMessage[];
+  providerPromptPressure?: ProviderPromptPressure | null;
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded({
@@ -380,6 +382,7 @@ export async function runSummarizationStep(options: {
       modelMessages: options.modelMessages,
       transcriptMessages: options.transcriptMessages,
       maxTokensOverride: options.ctxMaxTokens,
+      providerPromptPressure: options.providerPromptPressure,
     });
 
   if (!needsSummarization) {

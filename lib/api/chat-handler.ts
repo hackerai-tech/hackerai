@@ -127,6 +127,7 @@ import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
+import { shouldRetryProviderStreamWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
@@ -861,14 +862,20 @@ export const createChatHandler = () => {
                 onFinish: async ({ messages, isAborted }) => {
                   let retryScheduled = false;
                   try {
-                    // Check if stream finished with only step-start (indicates incomplete response)
                     const lastAssistantMessage = messages
                       .slice()
                       .reverse()
                       .find((m) => m.role === "assistant");
-                    const hasOnlyStepStart =
-                      lastAssistantMessage?.parts?.length === 1 &&
-                      lastAssistantMessage.parts[0]?.type === "step-start";
+                    const lastAssistantMessageParts =
+                      lastAssistantMessage?.parts ?? [];
+                    const shouldRetryWithFallback =
+                      shouldRetryProviderStreamWithFallback(
+                        lastAssistantMessageParts,
+                        {
+                          hasTerminalProviderStreamError:
+                            state.streamFinishReason === "error",
+                        },
+                      );
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
                         ? omitImageViewToolResultsForProviderRetry(messages)
@@ -877,13 +884,15 @@ export const createChatHandler = () => {
                       imageRecovery.omittedCount > 0 && !isAborted;
 
                     if (
-                      hasOnlyStepStart ||
+                      shouldRetryWithFallback ||
                       shouldRetryWithoutImageToolResults
                     ) {
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
-                          : "Stream finished incomplete - triggering fallback",
+                          : state.streamFinishReason === "error"
+                            ? "Provider stream errored before useful output - triggering fallback"
+                            : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -900,9 +909,10 @@ export const createChatHandler = () => {
                         },
                       );
 
-                      // Retry with fallback model for incomplete streams. For
-                      // image-tool rejection, retry the same selected model
-                      // after replacing image outputs with text placeholders.
+                      // Retry with fallback model for incomplete or reasoning-only
+                      // terminal provider streams. For image-tool rejection, retry
+                      // the same selected model after replacing image outputs with
+                      // text placeholders.
                       if (
                         !isRetryWithFallback &&
                         !isAborted &&
