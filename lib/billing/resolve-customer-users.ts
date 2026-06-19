@@ -2,18 +2,21 @@ import { stripe } from "@/app/api/stripe";
 import { workos } from "@/app/api/workos";
 import Stripe from "stripe";
 
+/** Why a Stripe customer could not be mapped to active WorkOS users. */
 export type CustomerUserResolutionReason =
   | "customer_deleted"
   | "missing_workos_organization_metadata"
   | "no_active_memberships"
   | "lookup_failed";
 
+/** Active WorkOS users for a Stripe customer, or a reason none were resolved. */
 export type CustomerUserResolution = {
   userIds: string[];
   orgId: string | null;
   reason?: CustomerUserResolutionReason;
 };
 
+/** Resolve active WorkOS user IDs for a Stripe customer. */
 export async function resolveUserIdsFromCustomer(
   customerId: string,
   logPrefix: string,
