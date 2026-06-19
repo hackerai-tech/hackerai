@@ -59,7 +59,6 @@ import {
   sendRateLimitWarnings,
   isProviderApiError,
   computeContextUsage,
-  writeContextUsage,
   isContextUsageEnabled,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
@@ -1500,16 +1499,6 @@ export const createChatHandler = () => {
                           : null,
                       });
                       await phLogger.flush();
-                    }
-
-                    // Send updated context usage with output tokens included
-                    if (contextUsageOn) {
-                      writeContextUsage(writer, {
-                        usedTokens:
-                          state.ctxUsage.usedTokens +
-                          usageTracker.streamOutputTokens,
-                        maxTokens: state.ctxUsage.maxTokens,
-                      });
                     }
 
                     if (

@@ -28,7 +28,6 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
-import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
 import {
@@ -297,6 +296,11 @@ export function isProviderApiError(error: unknown): boolean {
 /**
  * Compute total context usage from messages.
  */
+export interface ContextUsageData {
+  usedTokens: number;
+  maxTokens: number;
+}
+
 export function computeContextUsage(
   messages: UIMessage[],
   fileTokens: Record<Id<"files">, number>,
@@ -313,16 +317,6 @@ export function isContextUsageEnabled(
 ): boolean {
   if (subscription !== "free") return true;
   return mode === "agent";
-}
-
-/**
- * Write a context usage data stream part to the client.
- */
-export function writeContextUsage(
-  writer: UIMessageStreamWriter,
-  usage: ContextUsageData,
-): void {
-  writer.write({ type: "data-context-usage", data: usage });
 }
 
 export interface SummarizationStepResult {
@@ -387,10 +381,6 @@ export async function runSummarizationStep(options: {
         options.ctxMaxTokens,
       )
     : undefined;
-
-  if (contextUsage) {
-    writeContextUsage(options.writer, contextUsage);
-  }
 
   return {
     needsSummarization: true,

@@ -19,10 +19,6 @@ jest.mock("../SubmitStopButton", () => ({
   SubmitStopButton: () => <button type="button">Send</button>,
 }));
 
-jest.mock("@/app/components/ContextUsageIndicator", () => ({
-  ContextUsageIndicator: () => <div data-testid="context-usage-indicator" />,
-}));
-
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     selectedModel: "auto",
