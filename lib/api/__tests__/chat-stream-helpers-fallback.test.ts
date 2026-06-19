@@ -99,6 +99,30 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("keeps Anthropic multimodal agent fallback off text-only Kimi once image tool results exist", () => {
+    const opus = buildProviderOptions(
+      false,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+      {
+        hasMultimodalToolResults: true,
+      },
+    );
+    const sonnet = buildProviderOptions(
+      false,
+      "user-1",
+      "model-sonnet-4.6",
+      "agent",
+      { hasMultimodalToolResults: true },
+    );
+
+    expect(opus.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
+    expect(sonnet.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
+    expect(opus.openrouter.models).not.toContain(KIMI_SLUG);
+    expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
+  });
+
   it("falls back from auto agent Kimi to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
@@ -162,10 +186,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it.each([
-    "ask-model-free",
-    "model-deepseek-v4-flash",
-  ])(
+  it.each(["ask-model-free", "model-deepseek-v4-flash"])(
     "keeps reasoning disabled for auto/standard ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
