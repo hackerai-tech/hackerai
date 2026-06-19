@@ -48,6 +48,8 @@ export interface FilePart {
   storage?: "s3" | "local-desktop";
   localAttachmentId?: string;
   s3Key?: string; // S3 key for on-demand URL fetching (S3 files)
+  size?: number;
+  sizeBytes?: number;
 }
 
 // Props for FilePartRenderer component
@@ -105,6 +107,7 @@ export interface FileDetails {
   mediaType?: string;
   url?: string | null;
   s3Key?: string;
+  sizeBytes?: number;
 }
 
 /**

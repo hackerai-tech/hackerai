@@ -49,6 +49,20 @@ const streamBody = (...chunks: Uint8Array[]) => ({
   },
 });
 
+const fileUrlInfo = (
+  url: string,
+  overrides: Partial<{
+    sizeBytes: number;
+    mediaType: string;
+    name: string;
+  }> = {},
+) => ({
+  url,
+  sizeBytes: overrides.sizeBytes ?? 2 * 1024 * 1024,
+  mediaType: overrides.mediaType ?? "image/png",
+  name: overrides.name ?? "image.png",
+});
+
 describe("processMessageFiles image size guards", () => {
   const originalFetch = global.fetch;
   let consoleWarnSpy: jest.SpyInstance;
@@ -64,16 +78,15 @@ describe("processMessageFiles image size guards", () => {
     consoleWarnSpy.mockRestore();
   });
 
-  it("omits URL-backed images when HEAD shows provider download size over 30 MB", async () => {
-    mockConvexAction.mockResolvedValue(["https://storage.example/huge.png"]);
-    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
-      if (init?.method === "HEAD") {
-        return responseLike({
-          headers: { "content-length": String(40 * 1024 * 1024) },
-        });
-      }
-
-      throw new Error("Range probe should not run when HEAD has a size");
+  it("omits stored images when trusted file size is over the provider download limit", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/huge.png", {
+        sizeBytes: 40 * 1024 * 1024,
+        name: "huge.png",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => {
+      throw new Error("Trusted file size should avoid network probes");
     }) as any;
 
     const result = await processMessageFiles(
@@ -99,18 +112,15 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
-  it("omits images when resolved storage size exceeds stale message metadata", async () => {
+  it("omits images when trusted file size exceeds stale message metadata", async () => {
     mockConvexAction.mockResolvedValue([
-      "https://storage.example/stale-metadata.png",
+      fileUrlInfo("https://storage.example/stale-metadata.png", {
+        sizeBytes: 40 * 1024 * 1024,
+        name: "stale-metadata.png",
+      }),
     ]);
-    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
-      if (init?.method === "HEAD") {
-        return responseLike({
-          headers: { "content-length": String(40 * 1024 * 1024) },
-        });
-      }
-
-      throw new Error("Range probe should not run when HEAD has a size");
+    global.fetch = jest.fn(async () => {
+      throw new Error("Trusted file size should avoid network probes");
     }) as any;
 
     const result = await processMessageFiles(
@@ -136,16 +146,13 @@ describe("processMessageFiles image size guards", () => {
 
   it("keeps stored images when resolved storage size is within limit despite stale oversized metadata", async () => {
     mockConvexAction.mockResolvedValue([
-      "https://storage.example/actually-small.png",
+      fileUrlInfo("https://storage.example/actually-small.png", {
+        sizeBytes: 2 * 1024 * 1024,
+        name: "actually-small.png",
+      }),
     ]);
-    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
-      if (init?.method === "HEAD") {
-        return responseLike({
-          headers: { "content-length": String(2 * 1024 * 1024) },
-        });
-      }
-
-      throw new Error("Range probe should not run when HEAD has a size");
+    global.fetch = jest.fn(async () => {
+      throw new Error("Trusted file size should avoid network probes");
     }) as any;
 
     const result = await processMessageFiles(
@@ -173,7 +180,11 @@ describe("processMessageFiles image size guards", () => {
 
   it("omits URL-backed images when headers are inconclusive but the range probe exceeds 5 MB", async () => {
     mockConvexAction.mockResolvedValue([
-      "https://storage.example/unknown-size.png",
+      {
+        url: "https://storage.example/unknown-size.png",
+        mediaType: "image/png",
+        name: "unknown-size.png",
+      },
     ]);
     global.fetch = jest.fn(async (_url, init?: RequestInit) => {
       if (init?.method === "HEAD") {
@@ -206,12 +217,54 @@ describe("processMessageFiles image size guards", () => {
     });
   });
 
-  it("keeps URL-backed images when content-length is within the image limit", async () => {
-    mockConvexAction.mockResolvedValue(["https://storage.example/small.png"]);
+  it("omits stored images when trusted size is missing and probing is inconclusive", async () => {
+    mockConvexAction.mockResolvedValue([
+      {
+        url: "https://storage.example/no-size.png",
+        mediaType: "image/png",
+        name: "no-size.png",
+      },
+    ]);
+    global.fetch = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({});
+      }
+
+      return responseLike({ status: 200 });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_no_size",
+        name: "no-size.png",
+        url: "https://example.com/no-size.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(JSON.stringify(result.messages)).not.toContain(
+      "https://storage.example/no-size.png",
+    );
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "no-size.png" omitted: could not verify the image size before sending it to the model. Please reattach a smaller image or use Agent mode for large images.]',
+    });
+  });
+
+  it("keeps stored images when trusted file size is within the image limit", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/small.png", {
+        sizeBytes: 2 * 1024 * 1024,
+        name: "small.png",
+      }),
+    ]);
     global.fetch = jest.fn(async () => {
-      return responseLike({
-        headers: { "content-length": String(2 * 1024 * 1024) },
-      });
+      throw new Error("Trusted file size should avoid network probes");
     }) as any;
 
     const result = await processMessageFiles(
@@ -289,7 +342,12 @@ describe("processMessageFiles image size guards", () => {
   });
 
   it("stages oversized Agent images into the sandbox instead of sending them inline", async () => {
-    mockConvexAction.mockResolvedValue(["https://storage.example/large.png"]);
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/large.png", {
+        sizeBytes: 8 * 1024 * 1024,
+        name: "large.png",
+      }),
+    ]);
     global.fetch = jest.fn(async () => {
       throw new Error("Agent image with declared size should not be probed");
     }) as any;
@@ -348,7 +406,13 @@ describe("processMessageFiles image size guards", () => {
   });
 
   it("fetches ask-mode PDFs from the storage-resolved URL, not the client URL", async () => {
-    mockConvexAction.mockResolvedValue(["https://storage.example/trusted.pdf"]);
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/trusted.pdf", {
+        sizeBytes: 100,
+        mediaType: "application/pdf",
+        name: "trusted.pdf",
+      }),
+    ]);
     const fetchSpy = jest.fn(async () => ({
       ok: true,
       arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,

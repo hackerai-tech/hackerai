@@ -246,6 +246,7 @@ export interface SidebarSharedFiles {
     mediaType?: string;
     fileId?: string;
     s3Key?: string;
+    sizeBytes?: number;
   }>;
   requestedPaths: string[];
   isExecuting: boolean;

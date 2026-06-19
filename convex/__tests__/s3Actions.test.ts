@@ -1158,6 +1158,16 @@ describe("s3Actions", () => {
   });
 
   describe("getFileUrlsByFileIdsAction", () => {
+    const serviceUrlInfo = (
+      url: string,
+      file: { size: number; media_type: string; name: string },
+    ) => ({
+      url,
+      sizeBytes: file.size,
+      mediaType: file.media_type,
+      name: file.name,
+    });
+
     it("should generate URLs for multiple S3 files using service key", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
       const { validateServiceKey } = await import("../lib/utils");
@@ -1217,8 +1227,8 @@ describe("s3Actions", () => {
 
       expect(mockValidateServiceKey).toHaveBeenCalledWith("test-service-key");
       expect(result).toEqual([
-        "https://s3.amazonaws.com/file1-url",
-        "https://s3.amazonaws.com/file2-url",
+        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
+        serviceUrlInfo("https://s3.amazonaws.com/file2-url", mockFile2),
       ]);
     });
 
@@ -1311,7 +1321,10 @@ describe("s3Actions", () => {
         fileIds: [mockFile1Id, mockFile2Id],
       });
 
-      expect(result).toEqual(["https://s3.amazonaws.com/file1-url", null]);
+      expect(result).toEqual([
+        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
+        null,
+      ]);
     });
 
     it("should return null for files not found", async () => {
@@ -1444,9 +1457,9 @@ describe("s3Actions", () => {
 
       // File2 should return null due to error
       expect(result).toEqual([
-        "https://s3.amazonaws.com/file1-url",
+        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
         null,
-        "https://s3.amazonaws.com/file3-url",
+        serviceUrlInfo("https://s3.amazonaws.com/file3-url", mockFile3),
       ]);
     });
 

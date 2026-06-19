@@ -219,6 +219,8 @@ export const Messages = ({
             name: file.name,
             filename: file.name,
             mediaType: file.mediaType,
+            size: file.sizeBytes,
+            sizeBytes: file.sizeBytes,
           },
           partIndex: fileIndex,
           messageId: message.id,

@@ -505,7 +505,9 @@ export const FilePartRenderer = memo(
       prevProps.part.s3Key === nextProps.part.s3Key &&
       prevProps.part.name === nextProps.part.name &&
       prevProps.part.filename === nextProps.part.filename &&
-      prevProps.part.mediaType === nextProps.part.mediaType
+      prevProps.part.mediaType === nextProps.part.mediaType &&
+      prevProps.part.size === nextProps.part.size &&
+      prevProps.part.sizeBytes === nextProps.part.sizeBytes
     );
   },
 );

@@ -559,6 +559,7 @@ export const MessageItem = memo(function MessageItem({
                       name: savedFiles[savedFiles.length - 1].name,
                       filename: savedFiles[savedFiles.length - 1].name,
                       mediaType: savedFiles[savedFiles.length - 1].mediaType,
+                      sizeBytes: savedFiles[savedFiles.length - 1].sizeBytes,
                     }}
                     partIndex={savedFiles.length - 1}
                     messageId={message.id}
@@ -594,6 +595,7 @@ export const MessageItem = memo(function MessageItem({
                       name: file.name,
                       filename: file.name,
                       mediaType: file.mediaType,
+                      sizeBytes: file.sizeBytes,
                     }}
                     partIndex={fileIndex}
                     messageId={message.id}

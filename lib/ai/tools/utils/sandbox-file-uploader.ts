@@ -27,6 +27,7 @@ export type UploadedFileInfo = {
   name: string;
   mediaType: string;
   s3Key?: string;
+  sizeBytes: number;
 };
 
 /**
@@ -500,6 +501,7 @@ export async function uploadSandboxFileToConvex(args: {
       name,
       mediaType,
       s3Key,
+      sizeBytes: fileSize,
     } as UploadedFileInfo;
   } catch (error) {
     logger.error(
