@@ -1098,7 +1098,13 @@ export const saveLatestSummary = mutation({
     summaryUpToMessageId: v.string(),
     metadata: v.optional(
       v.object({
-        reason: v.optional(v.string()),
+        reason: v.optional(
+          v.union(
+            v.literal("token_threshold"),
+            v.literal("provider_input_threshold"),
+            v.literal("provider_pressure"),
+          ),
+        ),
         promptVersion: v.optional(v.string()),
         model: v.optional(v.string()),
         status: v.optional(v.string()),
