@@ -17,6 +17,7 @@ import type {
   ChatMode,
   ExtraUsageConfig,
   SandboxPreference,
+  SelectedModel,
   SubscriptionTier,
   Todo,
   UserCustomization,
@@ -469,6 +470,27 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
+
+const AUTO_MODEL_KEYS = new Set<string>([
+  "ask-model",
+  "ask-model-free",
+  "agent-model",
+  "agent-model-free",
+]);
+
+export function isAutoModelSelectionForRetry({
+  selectedModel,
+  selectedModelOverride,
+}: {
+  selectedModel: string;
+  selectedModelOverride?: SelectedModel | null;
+}): boolean {
+  return (
+    !selectedModelOverride ||
+    selectedModelOverride === "auto" ||
+    AUTO_MODEL_KEYS.has(selectedModel)
+  );
+}
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {

@@ -17,14 +17,13 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
     poweredBy:
-      "DeepSeek V4 Flash · switches to Gemini 3 Flash for images & PDFs",
+      "DeepSeek V4 Pro · switches to Gemini 3 Flash for images & PDFs",
   },
   {
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy:
-      "DeepSeek V4 Pro · switches to Claude Sonnet 4.6 for images & PDFs",
+    poweredBy: "Claude Sonnet 4.6",
   },
   {
     id: "hackerai-max",
