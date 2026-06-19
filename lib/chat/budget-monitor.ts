@@ -14,31 +14,18 @@ import {
 } from "@/lib/api/chat-stream-helpers";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import {
+  PRO_AGENT_RUN_REMAINING_FRACTION_CAP,
+  PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
+  type AgentRunSpendCap,
+  type AgentRunSpendCapHit,
+} from "@/lib/chat/agent-run-spend-cap";
 
 // 50% is intentionally omitted: at the halfway mark there's no actionable
 // signal for the user, so an in-product banner is noise. The ladder gives an
 // early heads-up at 75%, a stronger warning at 90%, and uses 100% for the
 // cutoff or extra-usage transition.
 export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
-export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
-export const PRO_AGENT_RUN_REMAINING_FRACTION_CAP = 0.25;
-
-export type AgentRunSpendCapBasis =
-  | "fixed_5_dollars"
-  | "remaining_25_percent"
-  | "remaining_exhausted";
-
-export interface AgentRunSpendCap {
-  capDollars: number;
-  basis: AgentRunSpendCapBasis;
-}
-
-export interface AgentRunSpendCapHit {
-  runCostDollars: number;
-  runCapDollars: number;
-  monthlyRemainingDollars: number;
-  capBasis: AgentRunSpendCapBasis;
-}
 
 export interface BudgetSnapshot {
   monthlyLimitPoints: number;

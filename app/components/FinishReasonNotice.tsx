@@ -4,6 +4,7 @@ import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { Button } from "@/components/ui/button";
 import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
+import { AGENT_RUN_SPEND_CAP_REASON } from "@/lib/chat/agent-run-spend-cap";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
@@ -78,10 +79,10 @@ export const FinishReasonNotice = ({
               if (finishReason === "agent-run-spend-cap") {
                 captureAgentRunSpendCapContinueClick({
                   surface: "finish_reason_notice",
-                  source: "agent_run_spend_cap",
+                  source: AGENT_RUN_SPEND_CAP_REASON,
                   finish_reason: finishReason,
                   mode: mode ?? "agent",
-                  cap_reason: "agent_run_spend_cap",
+                  cap_reason: AGENT_RUN_SPEND_CAP_REASON,
                 });
               }
               onContinue();

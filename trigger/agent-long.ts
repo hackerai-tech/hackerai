@@ -40,10 +40,7 @@ import {
   captureBudgetSnapshot,
   getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
-import {
-  PAID_FUNNEL_EVENTS,
-  paidFunnelProperties,
-} from "@/lib/analytics/paid-funnel";
+import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
   acquireFreeRunConcurrencyLock,
@@ -1303,30 +1300,17 @@ export const agentLongTask = task({
                   {
                     agentRunSpendCap,
                     onAgentRunSpendCapHit: (hit) => {
-                      phLogger.event(
-                        PAID_FUNNEL_EVENTS.agentRunSpendCapHit,
-                        paidFunnelProperties({
-                          userId,
-                          subscription_tier: subscription,
-                          mode,
-                          chat_id: chatId,
-                          endpoint: "/api/agent-long",
-                          selected_model: selectedModel,
-                          selected_model_override: selectedModelOverride,
-                          configured_model_slug: configuredModelId,
-                          cap_reason: "agent_run_spend_cap",
-                          run_cost_dollars: hit.runCostDollars,
-                          run_cap_dollars: hit.runCapDollars,
-                          monthly_remaining_dollars:
-                            hit.monthlyRemainingDollars,
-                          cap_basis: hit.capBasis,
-                          $set: {
-                            subscription_tier: subscription,
-                            last_agent_run_spend_cap_hit_at:
-                              new Date().toISOString(),
-                          },
-                        }),
-                      );
+                      captureAgentRunSpendCapHit({
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint: "/api/agent-long",
+                        selectedModel,
+                        selectedModelOverride,
+                        configuredModelSlug: configuredModelId,
+                        hit,
+                      });
                     },
                   },
                 )

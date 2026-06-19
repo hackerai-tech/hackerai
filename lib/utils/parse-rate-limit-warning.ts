@@ -1,6 +1,7 @@
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
 import { isChatMode, isSubscriptionTier } from "@/types/chat";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import { isAgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
 const WARNING_TYPES = [
   "sliding-window",
@@ -100,9 +101,7 @@ export function parseRateLimitWarning(
       runCapDollars < 0 ||
       !isNumber(monthlyRemainingDollars) ||
       monthlyRemainingDollars < 0 ||
-      (capBasis !== "fixed_5_dollars" &&
-        capBasis !== "remaining_25_percent" &&
-        capBasis !== "remaining_exhausted")
+      !isAgentRunSpendCapBasis(capBasis)
     ) {
       return null;
     }

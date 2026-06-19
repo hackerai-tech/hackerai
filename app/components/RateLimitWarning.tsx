@@ -6,6 +6,10 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  AGENT_RUN_SPEND_CAP_REASON,
+  type AgentRunSpendCapBasis,
+} from "@/lib/chat/agent-run-spend-cap";
+import {
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
@@ -55,10 +59,7 @@ export type RateLimitWarningData =
       runCostDollars: number;
       runCapDollars: number;
       monthlyRemainingDollars: number;
-      capBasis:
-        | "fixed_5_dollars"
-        | "remaining_25_percent"
-        | "remaining_exhausted";
+      capBasis: AgentRunSpendCapBasis;
       midStream?: boolean;
     };
 
@@ -209,10 +210,10 @@ export const RateLimitWarning = ({
     capturedAgentRunCapImpressionRef.current = true;
     captureAgentRunSpendCapImpression({
       surface: "rate_limit_warning",
-      source: "agent_run_spend_cap",
+      source: AGENT_RUN_SPEND_CAP_REASON,
       subscription_tier: data.subscription,
       mode: data.mode,
-      cap_reason: "agent_run_spend_cap",
+      cap_reason: AGENT_RUN_SPEND_CAP_REASON,
       run_cost_dollars: data.runCostDollars,
       run_cap_dollars: data.runCapDollars,
       monthly_remaining_dollars: data.monthlyRemainingDollars,

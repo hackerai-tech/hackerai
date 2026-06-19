@@ -3,6 +3,7 @@ import "server-only";
 import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
 // Upload status notifications
 export const writeUploadStartStatus = (
@@ -138,10 +139,7 @@ export type RateLimitWarningData =
       runCostDollars: number;
       runCapDollars: number;
       monthlyRemainingDollars: number;
-      capBasis:
-        | "fixed_5_dollars"
-        | "remaining_25_percent"
-        | "remaining_exhausted";
+      capBasis: AgentRunSpendCapBasis;
       midStream?: boolean;
     };
 
