@@ -189,10 +189,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it.each([
-    "ask-model-free",
-    "model-deepseek-v4-flash",
-  ])(
+  it.each(["ask-model-free", "model-deepseek-v4-flash"])(
     "keeps reasoning disabled for free/flash ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
@@ -212,7 +209,20 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each(["model-deepseek-v4-pro", "model-sonnet-4.6", "model-opus-4.6"])(
+  it("enables high reasoning for DeepSeek Pro ask mode", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-pro",
+      "ask",
+    );
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
+
+  it.each(["model-sonnet-4.6", "model-opus-4.6"])(
     "enables medium reasoning for ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
