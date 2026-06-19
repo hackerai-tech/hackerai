@@ -9,6 +9,9 @@ import {
   uploadSandboxFiles,
 } from "../sandbox-file-utils";
 
+const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
+  "[deadline_exceeded] the operation timed out: This error is likely due to exceeding 'timeoutMs' - the total time a long running request (like command execution or directory watch) can be active.";
+
 const makeLocalMessage = (): UIMessage =>
   ({
     id: "m1",
@@ -356,6 +359,54 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("refreshes the sandbox after production deadline_exceeded upload command timeouts", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const firstRun = jest
+      .fn()
+      .mockRejectedValue(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE));
+    const refreshedRun = jest
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const ensureSandbox = jest.fn(async (options?: { refresh?: boolean }) => ({
+      commands: { run: options?.refresh ? refreshedRun : firstRun },
+    }));
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
+
+      expect(result).toEqual({
+        failedCount: 0,
+        pathRewrites: [],
+        retriedWithFreshSandbox: true,
+      });
+      expect(firstRun).toHaveBeenCalledTimes(3);
+      expect(refreshedRun).toHaveBeenCalledTimes(1);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("returns redacted metadata for transient upload command failures", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest
@@ -395,6 +446,50 @@ describe("desktop-local sandbox file helpers", () => {
       expect(
         String(getSandboxUploadFailureMetadata(result)?.upload_failure_cause),
       ).toContain("Request handshake timed out");
+    } finally {
+      jest.useRealTimers();
+      consoleWarnSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("marks production deadline_exceeded upload command timeouts as transient", async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const run = jest
+      .fn()
+      .mockRejectedValue(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE));
+
+    try {
+      const pendingResult = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/screenshot.png?X-Amz-Signature=secret",
+            localPath: "/home/user/upload/screenshot.png",
+          },
+        ],
+        async () => ({
+          commands: { run },
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pendingResult;
+
+      expect(result.failedCount).toBe(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_kind: "url",
+        upload_failure_transient_sandbox_command: true,
+        upload_failure_protocol: "https",
+      });
+      expect(
+        String(getSandboxUploadFailureMetadata(result)?.upload_failure_cause),
+      ).toContain("[deadline_exceeded]");
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
