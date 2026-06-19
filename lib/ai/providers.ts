@@ -387,9 +387,9 @@ export function resolveTierToProviderKey(
     case "hackerai-standard":
       return isAgentMode(mode)
         ? "model-kimi-k2.7-code"
-        : "model-gemini-3-flash";
+        : "model-deepseek-v4-pro";
     case "hackerai-pro":
-      return isAgentMode(mode) ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
+      return "model-sonnet-4.6";
     case "hackerai-max":
       return "model-opus-4.6";
   }

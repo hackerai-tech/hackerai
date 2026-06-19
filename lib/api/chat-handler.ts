@@ -67,6 +67,7 @@ import {
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
+  isAutoModelSelectionForRetry,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -640,12 +641,10 @@ export const createChatHandler = () => {
               trackedProvider.languageModel(selectedModel).modelId;
 
             let isRetryWithFallback = false;
-            const isAutoModel = [
-              "ask-model",
-              "ask-model-free",
-              "agent-model",
-              "agent-model-free",
-            ].includes(selectedModel);
+            const isAutoModel = isAutoModelSelectionForRetry({
+              selectedModel,
+              selectedModelOverride,
+            });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;

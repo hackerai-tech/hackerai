@@ -37,11 +37,10 @@ export const getMaxStepsForUser = (
  * Selects the appropriate model based on mode and subscription.
  * @param mode - Chat mode (ask or agent)
  * @param hasImageOrPdf - Whether any message has an image or PDF attachment.
- *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Flash
- *   (text-only, much cheaper); when an image or PDF is present we promote to
- *   Gemini 3 Flash so vision/document parts are actually understood. Paid ASK
- *   Pro mirrors that shape with DeepSeek V4 Pro for text and Sonnet 4.6 for
- *   image/PDF prompts.
+ *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
+ *   (text-only, much cheaper than Claude); when an image or PDF is present we
+ *   promote to Gemini 3 Flash so vision/document parts are actually understood.
+ *   Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(
@@ -51,19 +50,21 @@ export function selectModel(
   hasImageOrPdf?: boolean,
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  // ASK takes the cheap DeepSeek text path for free users (always) and for
-  // paid users only when no image/PDF is attached — DeepSeek is text-only,
-  // so we promote to Gemini 3 Flash when vision/document parts are present.
-  const askUsesDeepSeek =
-    !isAgent && (subscription === "free" || !hasImageOrPdf);
+  // DeepSeek ask routes are text-only, so image/PDF prompts promote to Gemini
+  // unless the selected tier intentionally uses a multimodal model such as
+  // Sonnet or Opus.
+  const isFreeAsk = !isAgent && subscription === "free";
+  const isPaidAskText = !isAgent && subscription !== "free" && !hasImageOrPdf;
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
       : "agent-model"
-    : askUsesDeepSeek
+    : isFreeAsk
       ? "ask-model-free"
-      : "ask-model";
+      : isPaidAskText
+        ? "model-deepseek-v4-pro"
+        : "ask-model";
 
   // Free users always route through the auto router; paid users may pick a
   // tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
@@ -71,16 +72,15 @@ export function selectModel(
     return autoModel;
   }
 
-  // Paid ASK Standard mirrors the auto-route split, but uses the explicit
-  // `model-deepseek-v4-flash` / `model-gemini-3-flash` keys so any UI that
-  // reads `getModelDisplayName` shows the picked model rather than the
-  // auto-router label.
+  // Paid ASK Standard mirrors the auto-route split, but uses explicit keys so
+  // any UI that reads `getModelDisplayName` shows the picked model rather than
+  // the auto-router label.
   if (selectedModel === "hackerai-standard" && !isAgent) {
-    return askUsesDeepSeek ? "model-deepseek-v4-flash" : "model-gemini-3-flash";
+    return hasImageOrPdf ? "model-gemini-3-flash" : "model-deepseek-v4-pro";
   }
 
   if (selectedModel === "hackerai-pro" && !isAgent) {
-    return hasImageOrPdf ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
+    return "model-sonnet-4.6";
   }
 
   const providerKey = resolveTierToProviderKey(selectedModel, mode);
@@ -89,7 +89,7 @@ export function selectModel(
 
 /**
  * True if any message has an image or PDF file part. Used by selectModel
- * to decide whether the cheaper DeepSeek V4 Flash text route is viable.
+ * to decide whether the text-only DeepSeek ask route is viable.
  */
 function hasImageOrPdfAttachment(messages: UIMessage[]): boolean {
   return messages.some((msg) =>

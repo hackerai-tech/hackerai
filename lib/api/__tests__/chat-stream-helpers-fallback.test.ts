@@ -6,7 +6,10 @@
  * that the function fails closed (no fallback, no throw) for unknown keys.
  */
 
-import { buildProviderOptions } from "@/lib/api/chat-stream-helpers";
+import {
+  buildProviderOptions,
+  isAutoModelSelectionForRetry,
+} from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
   getNotes: jest.fn(),
@@ -186,8 +189,11 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it.each(["ask-model-free", "model-deepseek-v4-flash"])(
-    "keeps reasoning disabled for auto/standard ask mode model %s",
+  it.each([
+    "ask-model-free",
+    "model-deepseek-v4-flash",
+  ])(
+    "keeps reasoning disabled for free/flash ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
       expect(opts.openrouter.reasoning).toEqual({ enabled: false });
@@ -251,5 +257,48 @@ describe("buildProviderOptions fallback chain", () => {
       reasoning: { enabled: true },
       models: [GEMINI_3_5_SLUG, GROK_SLUG],
     });
+  });
+});
+
+describe("isAutoModelSelectionForRetry", () => {
+  it("keeps paid ask Auto retryable after it resolves to explicit DeepSeek Pro", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+        selectedModelOverride: "auto",
+      }),
+    ).toBe(true);
+  });
+
+  it("treats missing paid model override as Auto even with an explicit provider key", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat explicit paid Standard or Pro selections as Auto", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(false);
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-sonnet-4.6",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves retry behavior for legacy auto-router model keys", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "ask-model-free",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
   });
 });
