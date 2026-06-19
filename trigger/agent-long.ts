@@ -1089,6 +1089,7 @@ export const agentLongTask = task({
               subscription,
               mode,
               rateLimitInfo,
+              extraUsageConfig,
             });
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;

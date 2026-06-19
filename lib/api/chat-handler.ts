@@ -415,6 +415,7 @@ export const createChatHandler = () => {
               subscription,
               mode,
               rateLimitInfo,
+              extraUsageConfig,
             });
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;

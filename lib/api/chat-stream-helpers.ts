@@ -134,9 +134,10 @@ export function sendRateLimitWarnings(
       extraUsagePointsDeducted?: number;
       rateLimitSkipped?: boolean;
     };
+    extraUsageConfig?: ExtraUsageConfig;
   },
 ): void {
-  const { subscription, mode, rateLimitInfo } = options;
+  const { subscription, mode, rateLimitInfo, extraUsageConfig } = options;
 
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
@@ -154,16 +155,27 @@ export function sendRateLimitWarnings(
       });
     }
   } else if (rateLimitInfo.monthly) {
-    // Paid users with extra usage: warn when extra usage is being used
+    const canUseExtraUsage =
+      !!extraUsageConfig?.enabled &&
+      (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled) &&
+      (extraUsageConfig.monthlyRemainingDollars === undefined ||
+        extraUsageConfig.monthlyRemainingDollars > 0);
+    const isUsingExtraUsage =
+      !!rateLimitInfo.extraUsagePointsDeducted &&
+      rateLimitInfo.extraUsagePointsDeducted > 0;
+
+    // Paid users with extra usage: warn when credits are being used, including
+    // the edge case where the included bucket is empty before output starts.
     if (
-      rateLimitInfo.extraUsagePointsDeducted &&
-      rateLimitInfo.extraUsagePointsDeducted > 0
+      isUsingExtraUsage ||
+      (rateLimitInfo.monthly.remaining <= 0 && canUseExtraUsage)
     ) {
       writeRateLimitWarning(writer, {
         warningType: "extra-usage-active",
         bucketType: "monthly",
         resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
         subscription,
+        capReason: "extra_usage_active",
       });
     } else {
       // Paid users without extra usage: warn at 75% and 90%
