@@ -1227,8 +1227,48 @@ describe("s3Actions", () => {
 
       expect(mockValidateServiceKey).toHaveBeenCalledWith("test-service-key");
       expect(result).toEqual([
-        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
-        serviceUrlInfo("https://s3.amazonaws.com/file2-url", mockFile2),
+        "https://s3.amazonaws.com/file1-url",
+        "https://s3.amazonaws.com/file2-url",
+      ]);
+    });
+
+    it("should generate URL metadata for service callers that request file info", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      mockGenerateS3DownloadUrl.mockResolvedValue(
+        "https://s3.amazonaws.com/file1-url",
+      );
+
+      const { getFileUrlInfosByFileIdsAction } = await import("../s3Actions");
+      const mockFileId = "file1" as any;
+      const mockFile = {
+        _id: mockFileId,
+        s3_key: "users/user123/file1.pdf",
+        user_id: "user123",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile),
+      } as any;
+
+      const result = await getFileUrlInfosByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        userId: "user123",
+        fileIds: [mockFileId],
+      });
+
+      expect(result).toEqual([
+        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile),
       ]);
     });
 
@@ -1321,10 +1361,7 @@ describe("s3Actions", () => {
         fileIds: [mockFile1Id, mockFile2Id],
       });
 
-      expect(result).toEqual([
-        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
-        null,
-      ]);
+      expect(result).toEqual(["https://s3.amazonaws.com/file1-url", null]);
     });
 
     it("should return null for files not found", async () => {
@@ -1457,9 +1494,9 @@ describe("s3Actions", () => {
 
       // File2 should return null due to error
       expect(result).toEqual([
-        serviceUrlInfo("https://s3.amazonaws.com/file1-url", mockFile1),
+        "https://s3.amazonaws.com/file1-url",
         null,
-        serviceUrlInfo("https://s3.amazonaws.com/file3-url", mockFile3),
+        "https://s3.amazonaws.com/file3-url",
       ]);
     });
 

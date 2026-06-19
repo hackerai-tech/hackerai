@@ -396,7 +396,7 @@ const fetchFileUrls = async (
         ): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
           try {
             return await getConvexClient().action(
-              api.s3Actions.getFileUrlsByFileIdsAction,
+              api.s3Actions.getFileUrlInfosByFileIdsAction,
               {
                 serviceKey,
                 userId,
