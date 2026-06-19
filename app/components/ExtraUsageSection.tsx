@@ -11,6 +11,7 @@ import {
   BuyExtraUsageDialog,
   AdjustSpendingLimitDialog,
   AutoReloadDialog,
+  AutoReloadDisabledAlert,
 } from "@/app/components/extra-usage";
 import {
   captureAddCreditCtaClick,
@@ -352,14 +353,7 @@ const ExtraUsageSection = () => {
                   </button>
                 </p>
                 {!autoReloadEnabled && autoReloadDisabledReason && (
-                  <div
-                    role="alert"
-                    className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500"
-                  >
-                    Auto-reload was turned off because your card kept failing
-                    {`: ${autoReloadDisabledReason}`}. Update your payment
-                    method, then turn auto-reload back on.
-                  </div>
+                  <AutoReloadDisabledAlert reason={autoReloadDisabledReason} />
                 )}
               </div>
               <Button
