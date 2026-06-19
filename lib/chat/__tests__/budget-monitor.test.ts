@@ -101,16 +101,19 @@ describe("BudgetMonitor", () => {
 
   it("continues into extra usage when balance and monthly cap remaining cover overflow", () => {
     const writer = makeWriter();
-    const monitor = new BudgetMonitor(
-      {
-        ...baseSnapshot,
-        extraUsageAutoReload: false,
-        extraUsageBalanceAtStart: 1,
-        extraUsageMonthlyRemainingAtStart: 1,
-      },
-      writer,
-      "pro",
-    );
+    const snapshot = {
+      ...baseSnapshot,
+      extraUsageAutoReload: false,
+      extraUsageBalanceAtStart: 1,
+      extraUsageMonthlyRemainingAtStart: 1,
+    };
+    const monitor = new BudgetMonitor(snapshot, writer, "pro", {
+      agentRunSpendCap: getProAgentRunSpendCap({
+        snapshot,
+        subscription: "pro",
+        mode: "agent",
+      }),
+    });
 
     const decision = monitor.checkAfterStep(0.002);
 
@@ -203,28 +206,10 @@ describe("captureBudgetSnapshot", () => {
 });
 
 describe("getProAgentRunSpendCap", () => {
-  it("returns the lower of five dollars and 25 percent of remaining usage for Pro Agent", () => {
+  it("uses the fixed five dollar cap when included monthly usage can cover it", () => {
     const snapshot: BudgetSnapshot = {
       ...baseSnapshot,
       monthlyRemainingAtStart: 100_000,
-    };
-
-    expect(
-      getProAgentRunSpendCap({
-        snapshot,
-        subscription: "pro",
-        mode: "agent",
-      }),
-    ).toEqual({
-      capDollars: 2.5,
-      basis: "remaining_25_percent",
-    });
-  });
-
-  it("uses the fixed five dollar cap when remaining usage is high", () => {
-    const snapshot: BudgetSnapshot = {
-      ...baseSnapshot,
-      monthlyRemainingAtStart: 500_000,
     };
 
     expect(
@@ -239,20 +224,17 @@ describe("getProAgentRunSpendCap", () => {
     });
   });
 
-  it("uses a zero cap when no monthly usage remains", () => {
+  it("does not cap when included monthly usage cannot cover the fixed cap", () => {
     expect(
       getProAgentRunSpendCap({
         snapshot: {
           ...baseSnapshot,
-          monthlyRemainingAtStart: 0,
+          monthlyRemainingAtStart: 49_999,
         },
         subscription: "pro",
         mode: "agent",
       }),
-    ).toEqual({
-      capDollars: 0,
-      basis: "remaining_exhausted",
-    });
+    ).toBeNull();
   });
 
   it("does not cap non-Pro tiers or Ask mode", () => {

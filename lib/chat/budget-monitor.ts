@@ -15,7 +15,6 @@ import {
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
-  PRO_AGENT_RUN_REMAINING_FRACTION_CAP,
   PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
   type AgentRunSpendCap,
   type AgentRunSpendCapHit,
@@ -78,21 +77,7 @@ export function getProAgentRunSpendCap(args: {
 
   const monthlyRemainingDollars =
     snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
-  if (monthlyRemainingDollars <= 0) {
-    return {
-      capDollars: 0,
-      basis: "remaining_exhausted",
-    };
-  }
-
-  const remainingFractionCap =
-    monthlyRemainingDollars * PRO_AGENT_RUN_REMAINING_FRACTION_CAP;
-  if (remainingFractionCap <= PRO_AGENT_RUN_SPEND_CAP_DOLLARS) {
-    return {
-      capDollars: remainingFractionCap,
-      basis: "remaining_25_percent",
-    };
-  }
+  if (monthlyRemainingDollars < PRO_AGENT_RUN_SPEND_CAP_DOLLARS) return null;
 
   return {
     capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,

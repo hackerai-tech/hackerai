@@ -1,12 +1,7 @@
 export const AGENT_RUN_SPEND_CAP_REASON = "agent_run_spend_cap" as const;
 export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
-export const PRO_AGENT_RUN_REMAINING_FRACTION_CAP = 0.25;
 
-export const AGENT_RUN_SPEND_CAP_BASES = [
-  "fixed_5_dollars",
-  "remaining_25_percent",
-  "remaining_exhausted",
-] as const;
+export const AGENT_RUN_SPEND_CAP_BASES = ["fixed_5_dollars"] as const;
 
 export type AgentRunSpendCapBasis = (typeof AGENT_RUN_SPEND_CAP_BASES)[number];
 

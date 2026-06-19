@@ -68,6 +68,8 @@ describe("parseRateLimitWarning", () => {
 
   it.each([
     { capBasis: "unknown_basis" },
+    { capBasis: "remaining_25_percent" },
+    { capBasis: "remaining_exhausted" },
     { runCostDollars: -1 },
     { runCapDollars: -1 },
     { monthlyRemainingDollars: -1 },
