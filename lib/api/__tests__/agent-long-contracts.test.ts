@@ -269,6 +269,39 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("/api/chat provider stream errors with reasoning-only output can retry on fallback", () => {
+    const helperImportIdx = chatHandlerSrc.indexOf(
+      "shouldRetryProviderStreamWithFallback",
+    );
+    const partsIdx = chatHandlerSrc.indexOf(
+      "const lastAssistantMessageParts",
+      helperImportIdx,
+    );
+    const retryDecisionIdx = chatHandlerSrc.indexOf(
+      "shouldRetryProviderStreamWithFallback(",
+      partsIdx,
+    );
+    const terminalProviderErrorIdx = chatHandlerSrc.indexOf(
+      "hasTerminalProviderStreamError:",
+      retryDecisionIdx,
+    );
+    const retryModelIdx = chatHandlerSrc.indexOf(
+      "const retryModel = shouldRetryWithoutImageToolResults",
+      terminalProviderErrorIdx,
+    );
+    const fallbackIdx = chatHandlerSrc.indexOf(
+      "const retryResult = await createStream(retryModel)",
+      terminalProviderErrorIdx,
+    );
+
+    expect(helperImportIdx).toBeGreaterThan(-1);
+    expect(partsIdx).toBeGreaterThan(helperImportIdx);
+    expect(retryDecisionIdx).toBeGreaterThan(partsIdx);
+    expect(terminalProviderErrorIdx).toBeGreaterThan(retryDecisionIdx);
+    expect(retryModelIdx).toBeGreaterThan(terminalProviderErrorIdx);
+    expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
+  });
+
   test("outer catch checks live usage tracker before refunding", () => {
     const liveUsagePredicateIdx = taskSrc.indexOf(
       "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",

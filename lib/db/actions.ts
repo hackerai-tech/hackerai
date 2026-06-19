@@ -36,6 +36,10 @@ const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
 const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+type SummaryReason =
+  | "token_threshold"
+  | "provider_input_threshold"
+  | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -1103,7 +1107,7 @@ export async function saveChatSummary({
   summaryText: string;
   summaryUpToMessageId: string;
   metadata?: {
-    reason?: string;
+    reason?: SummaryReason;
     promptVersion?: string;
     model?: string;
     status?: string;

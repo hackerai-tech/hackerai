@@ -37,7 +37,7 @@ const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
   hasReasoningPart(parts) &&
   parts.every(isFallbackSafeProviderPart);
 
-export const shouldRetryAgentLongWithFallback = (
+export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
 ): boolean => {
@@ -52,3 +52,6 @@ export const shouldRetryAgentLongWithFallback = (
     isReasoningOnlyProviderOutput(parts)
   );
 };
+
+export const shouldRetryAgentLongWithFallback =
+  shouldRetryProviderStreamWithFallback;

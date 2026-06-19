@@ -64,6 +64,7 @@ import {
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
@@ -464,6 +465,7 @@ export async function createAgentStream(
         }
 
         if (!ctx.temporary && !ctx.summarizationTracker.hasSummarized) {
+          const providerPromptPressure = getProviderPromptPressure(messages);
           const result = await runSummarizationStep({
             messages: state.finalMessages,
             modelMessages: messages,
@@ -484,6 +486,7 @@ export async function createAgentStream(
             tools: ctx.tools,
             providerOptions: getStepProviderOptions(),
             transcriptMessages: state.transcriptSourceMessages,
+            providerPromptPressure,
           });
 
           if (result.needsSummarization && result.summarizedMessages) {

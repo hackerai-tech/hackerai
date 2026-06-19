@@ -7,6 +7,7 @@ import type {
   ToolSet,
 } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
+import type { ProviderPromptPressure } from "../provider-pressure";
 import {
   getSummarizationThresholdTokens,
   SUMMARIZATION_RESERVED_MAX_TOKENS,
@@ -102,6 +103,7 @@ const checkAndSummarizeForTest = (
   modelMessages?: ModelMessage[],
   transcriptMessages?: UIMessage[],
   maxTokensOverride?: number,
+  providerPromptPressure?: ProviderPromptPressure | null,
 ) =>
   checkAndSummarizeIfNeeded({
     uiMessages,
@@ -122,6 +124,7 @@ const checkAndSummarizeForTest = (
     modelMessages,
     transcriptMessages,
     maxTokensOverride,
+    providerPromptPressure,
   });
 
 /**
@@ -255,6 +258,39 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
+  });
+
+  it("should summarize below-token prompts when provider pressure is high", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Pressure summary" });
+
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "ask",
+      writer: mockWriter,
+      chatId: "chat-pressure",
+      chatSystemPrompt: "test-system-prompt",
+      providerPromptPressure: {
+        reason: "tool_result_count",
+        reasons: ["tool_result_count"],
+        toolResultCount: 101,
+        messageCount: 101,
+        summarizationMaxTokensOverride: 128_000,
+      },
+    });
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Pressure summary");
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-pressure",
+        metadata: expect.objectContaining({
+          reason: "provider_pressure",
+          promptVersion: SUMMARY_PROMPT_VERSION,
+        }),
+      }),
+    );
   });
 
   it("should ignore a zero max token override instead of summarizing every free ask message", async () => {
