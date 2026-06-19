@@ -2,13 +2,30 @@ import { stripe } from "@/app/api/stripe";
 import { workos } from "@/app/api/workos";
 import Stripe from "stripe";
 
+/** Why a Stripe customer could not be mapped to active WorkOS users. */
+export type CustomerUserResolutionReason =
+  | "customer_deleted"
+  | "missing_workos_organization_metadata"
+  | "no_active_memberships"
+  | "lookup_failed";
+
+/** Active WorkOS users for a Stripe customer, or a reason none were resolved. */
+export type CustomerUserResolution = {
+  userIds: string[];
+  orgId: string | null;
+  reason?: CustomerUserResolutionReason;
+};
+
+/** Resolve active WorkOS user IDs for a Stripe customer. */
 export async function resolveUserIdsFromCustomer(
   customerId: string,
   logPrefix: string,
-): Promise<{ userIds: string[]; orgId: string | null }> {
+): Promise<CustomerUserResolution> {
   try {
     const customerData = await stripe.customers.retrieve(customerId);
-    if (customerData.deleted) return { userIds: [], orgId: null };
+    if (customerData.deleted) {
+      return { userIds: [], orgId: null, reason: "customer_deleted" };
+    }
 
     const customer = customerData as Stripe.Customer;
     const orgId = customer.metadata?.workOSOrganizationId ?? null;
@@ -16,7 +33,11 @@ export async function resolveUserIdsFromCustomer(
       console.error(
         `[${logPrefix}] Customer ${customerId} missing workOSOrganizationId metadata`,
       );
-      return { userIds: [], orgId: null };
+      return {
+        userIds: [],
+        orgId: null,
+        reason: "missing_workos_organization_metadata",
+      };
     }
 
     const memberships = await workos.userManagement.listOrganizationMemberships(
@@ -31,7 +52,7 @@ export async function resolveUserIdsFromCustomer(
 
     if (userIds.length === 0) {
       console.error(`[${logPrefix}] No active memberships for org ${orgId}`);
-      return { userIds: [], orgId };
+      return { userIds: [], orgId, reason: "no_active_memberships" };
     }
 
     return { userIds, orgId };
@@ -40,6 +61,6 @@ export async function resolveUserIdsFromCustomer(
       `[${logPrefix}] Failed to resolve users for customer ${customerId}:`,
       error,
     );
-    return { userIds: [], orgId: null };
+    return { userIds: [], orgId: null, reason: "lookup_failed" };
   }
 }
