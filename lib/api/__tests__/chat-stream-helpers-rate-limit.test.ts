@@ -52,6 +52,32 @@ describe("sendRateLimitWarnings", () => {
     );
   });
 
+  it("shows extra usage active when auto-reload can cover overflow without prepaid balance", () => {
+    const writer = makeWriter();
+
+    sendRateLimitWarnings(writer, {
+      subscription: "pro",
+      mode: "ask",
+      rateLimitInfo: emptyMonthlyBucket,
+      extraUsageConfig: {
+        enabled: true,
+        hasBalance: false,
+        balanceDollars: 0,
+        autoReloadEnabled: true,
+      },
+    });
+
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "extra-usage-active",
+          capReason: "extra_usage_active",
+        }),
+      }),
+    );
+  });
+
   it("keeps the monthly-limit warning when extra usage is unavailable", () => {
     const writer = makeWriter();
 
