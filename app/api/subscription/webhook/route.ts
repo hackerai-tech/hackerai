@@ -1088,11 +1088,15 @@ async function handleSubscriptionDeleted(
   const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
   const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
 
-  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const { userIds, orgId, reason } =
+    await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
-    console.error(
-      `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId}`,
-    );
+    const message = `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId} (${reason ?? "unknown"})`;
+    if (reason === "customer_deleted") {
+      console.info(`${message}; likely account deletion cleanup`);
+    } else {
+      console.error(message);
+    }
     return;
   }
 
