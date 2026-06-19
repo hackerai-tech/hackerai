@@ -65,6 +65,9 @@ const defaultConnection = {
   name: "test-sandbox",
 };
 
+const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
+  "[deadline_exceeded] the operation timed out: This error is likely due to exceeding 'timeoutMs' - the total time a long running request (like command execution or directory watch) can be active.";
+
 function createSandbox(
   overrides?: Partial<typeof defaultConnection>,
 ): CentrifugoSandbox {
@@ -635,6 +638,39 @@ describe("CentrifugoSandbox", () => {
           timeoutMs: 120000,
         }),
       );
+    });
+
+    it("downloadFromUrl retries thrown command deadline timeouts", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const { sandbox } = createWindowsBashSandbox();
+      (sandbox as any).commands.run = jest
+        .fn()
+        .mockRejectedValueOnce(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE))
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+
+      try {
+        const promise = sandbox.files.downloadFromUrl(
+          "https://example.com/large.har",
+          "/tmp/hackerai-upload/large.har",
+        );
+
+        await jest.advanceTimersByTimeAsync(500);
+        await promise;
+
+        expect((sandbox as any).commands.run).toHaveBeenCalledTimes(2);
+        expect((sandbox as any).commands.run).toHaveBeenNthCalledWith(
+          2,
+          expect.stringContaining("curl -fsSL"),
+          expect.objectContaining({
+            displayName: "Downloading: large.har (retry 1)",
+            timeoutMs: 120000,
+          }),
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
     });
 
     it("ensureDirectory emits mkdir -p with MSYS path", async () => {
