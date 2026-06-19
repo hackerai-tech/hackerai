@@ -189,10 +189,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it.each([
-    "ask-model-free",
-    "model-deepseek-v4-flash",
-  ])(
+  it.each(["ask-model-free", "model-deepseek-v4-flash"])(
     "keeps reasoning disabled for free/flash ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");

@@ -37,7 +37,9 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
+import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
   acquireFreeRunConcurrencyLock,
@@ -1281,15 +1283,39 @@ export const agentLongTask = task({
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
                 : freeMonthlyBudgetSnapshot);
-            const budgetMonitor = effectiveBudgetSnapshot
-              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
-              : null;
-
             // Use task start time (not stream start time) so the soft stop
             // leaves cleanup grace before the plan-specific runtime cap.
             const streamStartTime = taskStartTime;
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const agentRunSpendCap = getProAgentRunSpendCap({
+              snapshot: effectiveBudgetSnapshot,
+              subscription,
+              mode,
+            });
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(
+                  effectiveBudgetSnapshot,
+                  writer,
+                  subscription,
+                  {
+                    agentRunSpendCap,
+                    onAgentRunSpendCapHit: (hit) => {
+                      captureAgentRunSpendCapHit({
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint: "/api/agent-long",
+                        selectedModel,
+                        selectedModelOverride,
+                        configuredModelSlug: configuredModelId,
+                        hit,
+                      });
+                    },
+                  },
+                )
+              : null;
 
             let isRetryWithFallback = false;
             const isAutoModel = [
@@ -1462,6 +1488,7 @@ export const agentLongTask = task({
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
+                state.stoppedDueToAgentRunSpendCap = false;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
@@ -1543,6 +1570,7 @@ export const agentLongTask = task({
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
+                        state.stoppedDueToAgentRunSpendCap = false;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;

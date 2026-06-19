@@ -201,7 +201,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingReducer,
     initialStreamingState,
   );
-  const { uploadStatus, summarizationStatus, rateLimitWarning } = streamingState;
+  const { uploadStatus, summarizationStatus, rateLimitWarning } =
+    streamingState;
 
   const {
     input,

@@ -1,11 +1,13 @@
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
 import { isChatMode, isSubscriptionTier } from "@/types/chat";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import { isAgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
 const WARNING_TYPES = [
   "sliding-window",
   "token-bucket",
   "extra-usage-active",
+  "agent-run-spend-cap",
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
 
@@ -84,6 +86,39 @@ export function parseRateLimitWarning(
   }
 
   const midStream = rawData.midStream === true;
+
+  if (warningType === "agent-run-spend-cap") {
+    const runCostDollars = rawData.runCostDollars;
+    const runCapDollars = rawData.runCapDollars;
+    const monthlyRemainingDollars = rawData.monthlyRemainingDollars;
+    const capBasis = rawData.capBasis;
+    if (
+      subscription !== "pro" ||
+      rawData.mode !== "agent" ||
+      !isNumber(runCostDollars) ||
+      runCostDollars < 0 ||
+      !isNumber(runCapDollars) ||
+      runCapDollars < 0 ||
+      !isNumber(monthlyRemainingDollars) ||
+      monthlyRemainingDollars < 0 ||
+      !isAgentRunSpendCapBasis(capBasis)
+    ) {
+      return null;
+    }
+
+    return {
+      warningType: "agent-run-spend-cap",
+      resetTime,
+      subscription,
+      mode: "agent",
+      runCostDollars,
+      runCapDollars,
+      monthlyRemainingDollars,
+      capBasis,
+      ...(midStream && { midStream: true }),
+    };
+  }
+
   const capReason =
     isString(rawData.capReason) && rawData.capReason.length > 0
       ? (rawData.capReason as LimitCapReason)

@@ -97,6 +97,24 @@ export function captureAddCreditCtaClick(properties: CtaAnalyticsProperties) {
   );
 }
 
+export function captureAgentRunSpendCapImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.agentRunSpendCapImpressed,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function captureAgentRunSpendCapContinueClick(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.agentRunSpendCapContinueClicked,
+    paidFunnelProperties(properties),
+  );
+}
+
 export function newCheckoutAttemptId() {
   return createCheckoutAttemptId();
 }

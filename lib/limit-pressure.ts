@@ -12,6 +12,7 @@ export type LimitCapReason =
   | "billing_unavailable"
   | "monthly_near_limit"
   | "extra_usage_active"
+  | "agent_run_spend_cap"
   | (string & {});
 
 export type LimitType =

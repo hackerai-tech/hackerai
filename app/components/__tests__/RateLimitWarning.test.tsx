@@ -6,6 +6,7 @@ import { RateLimitWarning } from "../RateLimitWarning";
 jest.mock("@/lib/analytics/client", () => ({
   captureAddCreditCtaClick: jest.fn(),
   captureAddCreditCtaImpression: jest.fn(),
+  captureAgentRunSpendCapImpression: jest.fn(),
   captureUpgradeCtaImpression: jest.fn(),
 }));
 
@@ -57,6 +58,34 @@ describe("RateLimitWarning", () => {
     );
 
     expect(screen.getByText(/free Agent requests/i)).toBeInTheDocument();
+  });
+
+  it("renders Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "agent-run-spend-cap",
+          resetTime: new Date(Date.now() + 60_000),
+          subscription: "pro",
+          mode: "agent",
+          runCostDollars: 5.24,
+          runCapDollars: 5,
+          monthlyRemainingDollars: 20,
+          capBasis: "fixed_5_dollars",
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
+      "$5.24",
+    );
+    expect(
+      screen.queryByRole("button", { name: /upgrade plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /add credits/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses extra usage copy when paid overflow credits are active", () => {

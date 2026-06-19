@@ -37,6 +37,7 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
@@ -53,6 +54,7 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -632,14 +634,39 @@ export const createChatHandler = () => {
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
                 : freeMonthlyBudgetSnapshot);
-            const budgetMonitor = effectiveBudgetSnapshot
-              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
-              : null;
             const isReasoningModel = isAgentMode(mode);
 
             const streamStartTime = Date.now();
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const agentRunSpendCap = getProAgentRunSpendCap({
+              snapshot: effectiveBudgetSnapshot,
+              subscription,
+              mode,
+            });
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(
+                  effectiveBudgetSnapshot,
+                  writer,
+                  subscription,
+                  {
+                    agentRunSpendCap,
+                    onAgentRunSpendCapHit: (hit) => {
+                      captureAgentRunSpendCapHit({
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint,
+                        selectedModel,
+                        selectedModelOverride,
+                        configuredModelSlug: configuredModelId,
+                        hit,
+                      });
+                    },
+                  },
+                )
+              : null;
 
             let isRetryWithFallback = false;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -825,6 +852,7 @@ export const createChatHandler = () => {
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
+                state.stoppedDueToAgentRunSpendCap = false;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 // Discard the failed primary leg's model usage so the user is
@@ -917,6 +945,7 @@ export const createChatHandler = () => {
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
+                        state.stoppedDueToAgentRunSpendCap = false;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;

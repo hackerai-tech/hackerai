@@ -6,6 +6,10 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  AGENT_RUN_SPEND_CAP_REASON,
+  type AgentRunSpendCapBasis,
+} from "@/lib/chat/agent-run-spend-cap";
+import {
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
@@ -13,6 +17,7 @@ import {
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
+  captureAgentRunSpendCapImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 
@@ -44,6 +49,17 @@ export type RateLimitWarningData =
       resetTime: Date;
       subscription: SubscriptionTier;
       capReason?: LimitCapReason;
+      midStream?: boolean;
+    }
+  | {
+      warningType: "agent-run-spend-cap";
+      resetTime: Date;
+      subscription: "pro";
+      mode: "agent";
+      runCostDollars: number;
+      runCapDollars: number;
+      monthlyRemainingDollars: number;
+      capBasis: AgentRunSpendCapBasis;
       midStream?: boolean;
     };
 
@@ -99,6 +115,10 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
   }
 
+  if (data.warningType === "agent-run-spend-cap") {
+    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue to keep working.`;
+  }
+
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
@@ -147,10 +167,14 @@ export const RateLimitWarning = ({
 }: RateLimitWarningProps) => {
   const capturedUpgradeImpressionRef = useRef(false);
   const capturedAddCreditImpressionRef = useRef(false);
+  const capturedAgentRunCapImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
   const capReason =
-    data.warningType === "sliding-window" ? undefined : data.capReason;
+    data.warningType === "sliding-window" ||
+    data.warningType === "agent-run-spend-cap"
+      ? undefined
+      : data.capReason;
   const extraUsageCta =
     data.warningType === "token-bucket"
       ? getExtraUsageLimitCta({
@@ -160,6 +184,7 @@ export const RateLimitWarning = ({
       : null;
   const showUsageCta = data.warningType === "extra-usage-active";
   const showUpgrade =
+    data.warningType !== "agent-run-spend-cap" &&
     data.warningType !== "extra-usage-active" &&
     shouldShowUpgradeCta({
       subscription: data.subscription,
@@ -168,14 +193,33 @@ export const RateLimitWarning = ({
   const limitType =
     data.warningType === "sliding-window"
       ? "daily_requests"
-      : data.warningType === "token-bucket"
-        ? getLimitTypeForCapReason(capReason)
-        : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
+      : data.warningType === "agent-run-spend-cap"
+        ? "monthly"
+        : data.warningType === "token-bucket"
+          ? getLimitTypeForCapReason(capReason)
+          : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
   const limitSeverity =
     data.warningType === "token-bucket" && data.remainingPercent === 0
       ? "hit"
       : "warning";
   const upgradeCtaText = getUpgradeCtaText(data, limitType);
+
+  useEffect(() => {
+    if (data.warningType !== "agent-run-spend-cap") return;
+    if (capturedAgentRunCapImpressionRef.current) return;
+    capturedAgentRunCapImpressionRef.current = true;
+    captureAgentRunSpendCapImpression({
+      surface: "rate_limit_warning",
+      source: AGENT_RUN_SPEND_CAP_REASON,
+      subscription_tier: data.subscription,
+      mode: data.mode,
+      cap_reason: AGENT_RUN_SPEND_CAP_REASON,
+      run_cost_dollars: data.runCostDollars,
+      run_cap_dollars: data.runCapDollars,
+      monthly_remaining_dollars: data.monthlyRemainingDollars,
+      cap_basis: data.capBasis,
+    });
+  }, [data]);
 
   useEffect(() => {
     if (!showUpgrade || capturedUpgradeImpressionRef.current) return;

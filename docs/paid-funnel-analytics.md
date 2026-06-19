@@ -19,6 +19,12 @@ Paid funnel events use stable snake_case event names. Most events include
 - `limit_hit`: a chat or agent request was blocked by a free or paid limit.
 - `monthly_cap_hit`: legacy paid-only monthly cap event kept for existing
   dashboards.
+- `agent_run_spend_cap_hit`: a Pro Agent run was paused by the per-run spend
+  cap.
+- `agent_run_spend_cap_impressed`: the client showed the per-run spend-cap
+  pause message.
+- `agent_run_spend_cap_continue_clicked`: the user explicitly continued after
+  a per-run spend-cap pause.
 - `add_credit_cta_impressed`: an add-credit prompt became visible.
 - `add_credit_cta_clicked`: a user clicked an add-credit prompt.
 - `add_credit_checkout_started`: an extra-usage credit checkout was created.
@@ -49,6 +55,9 @@ Paid funnel events use stable snake_case event names. Most events include
 - `amount_dollars`, `checkout_amount_dollars`, `revenue_dollars`: money fields
   in USD unless `currency` says otherwise.
 - `cap_reason`, `limit_type`, `reset_timestamp`: limit-pressure context.
+- `run_cost_dollars`, `run_cap_dollars`, `monthly_remaining_dollars`,
+  `cap_basis`: Pro Agent per-run spend-cap context.
+  `cap_basis` is currently `fixed_5_dollars`.
 - `primary_cta`, `eligible_ctas`, `upgrade_available`,
   `add_credit_available`: monetization paths shown or available for that
   limit pressure moment.
@@ -78,6 +87,9 @@ Paid funnel events use stable snake_case event names. Most events include
 - Limit pressure to paid/add-credit: `limit_hit -> upgrade_cta_clicked` and
   `limit_hit -> add_credit_checkout_succeeded`, grouped by `primary_cta`,
   `eligible_ctas`, and `cap_reason`.
+- Pro Agent cap to churn: `agent_run_spend_cap_hit -> subscription_cancelled`,
+  grouped by `agent_run_spend_cap_continue_clicked`, `cap_basis`, and
+  `cancellation_reason`.
 - Referral revenue:
   `referred_signup_attributed -> referred_user_paid_conversion`, grouped by
   `referral_code`.

@@ -14,6 +14,9 @@ export const PAID_FUNNEL_EVENTS = {
   cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
   cancellationCompleted: "cancellation_completed",
   limitHit: "limit_hit",
+  agentRunSpendCapHit: "agent_run_spend_cap_hit",
+  agentRunSpendCapImpressed: "agent_run_spend_cap_impressed",
+  agentRunSpendCapContinueClicked: "agent_run_spend_cap_continue_clicked",
 } as const;
 
 export type PaidFunnelPlan =

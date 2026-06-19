@@ -3,6 +3,7 @@ import "server-only";
 import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
 // Upload status notifications
 export const writeUploadStartStatus = (
@@ -127,6 +128,18 @@ export type RateLimitWarningData =
       resetTime: string;
       subscription: SubscriptionTier;
       capReason?: LimitCapReason;
+      midStream?: boolean;
+    }
+  | {
+      // Pro Agent users: per-run spend cap paused the current run.
+      warningType: "agent-run-spend-cap";
+      resetTime: string;
+      subscription: "pro";
+      mode: "agent";
+      runCostDollars: number;
+      runCapDollars: number;
+      monthlyRemainingDollars: number;
+      capBasis: AgentRunSpendCapBasis;
       midStream?: boolean;
     };
 

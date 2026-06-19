@@ -2,6 +2,7 @@ import { describe, expect, it, jest } from "@jest/globals";
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
   type BudgetSnapshot,
 } from "../budget-monitor";
 import type { ExtraUsageConfig, RateLimitInfo } from "@/types";
@@ -100,16 +101,19 @@ describe("BudgetMonitor", () => {
 
   it("continues into extra usage when balance and monthly cap remaining cover overflow", () => {
     const writer = makeWriter();
-    const monitor = new BudgetMonitor(
-      {
-        ...baseSnapshot,
-        extraUsageAutoReload: false,
-        extraUsageBalanceAtStart: 1,
-        extraUsageMonthlyRemainingAtStart: 1,
-      },
-      writer,
-      "pro",
-    );
+    const snapshot = {
+      ...baseSnapshot,
+      extraUsageAutoReload: false,
+      extraUsageBalanceAtStart: 1,
+      extraUsageMonthlyRemainingAtStart: 1,
+    };
+    const monitor = new BudgetMonitor(snapshot, writer, "pro", {
+      agentRunSpendCap: getProAgentRunSpendCap({
+        snapshot,
+        subscription: "pro",
+        mode: "agent",
+      }),
+    });
 
     const decision = monitor.checkAfterStep(0.002);
 
@@ -120,6 +124,47 @@ describe("BudgetMonitor", () => {
         data: expect.objectContaining({
           warningType: "extra-usage-active",
           capReason: "extra_usage_active",
+        }),
+      }),
+    );
+  });
+
+  it("aborts Pro Agent runs when the per-run spend cap is crossed", () => {
+    const writer = makeWriter();
+    const onAgentRunSpendCapHit = jest.fn();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        monthlyLimitPoints: 200_000,
+        monthlyRemainingAtStart: 100_000,
+      },
+      writer,
+      "pro",
+      {
+        agentRunSpendCap: { capDollars: 1, basis: "fixed_5_dollars" },
+        onAgentRunSpendCapHit,
+      },
+    );
+
+    const decision = monitor.checkAfterStep(1.25);
+
+    expect(decision).toBe("abort-agent-run-spend-cap");
+    expect(onAgentRunSpendCapHit).toHaveBeenCalledWith({
+      runCostDollars: 1.25,
+      runCapDollars: 1,
+      monthlyRemainingDollars: 10,
+      capBasis: "fixed_5_dollars",
+    });
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "agent-run-spend-cap",
+          subscription: "pro",
+          mode: "agent",
+          runCostDollars: 1.25,
+          runCapDollars: 1,
+          capBasis: "fixed_5_dollars",
         }),
       }),
     );
@@ -157,5 +202,55 @@ describe("captureBudgetSnapshot", () => {
       extraUsageAutoReload: true,
       extraUsageMonthlyRemainingAtStart: 3,
     });
+  });
+});
+
+describe("getProAgentRunSpendCap", () => {
+  it("uses the fixed five dollar cap when included monthly usage can cover it", () => {
+    const snapshot: BudgetSnapshot = {
+      ...baseSnapshot,
+      monthlyRemainingAtStart: 100_000,
+    };
+
+    expect(
+      getProAgentRunSpendCap({
+        snapshot,
+        subscription: "pro",
+        mode: "agent",
+      }),
+    ).toEqual({
+      capDollars: 5,
+      basis: "fixed_5_dollars",
+    });
+  });
+
+  it("does not cap when included monthly usage cannot cover the fixed cap", () => {
+    expect(
+      getProAgentRunSpendCap({
+        snapshot: {
+          ...baseSnapshot,
+          monthlyRemainingAtStart: 49_999,
+        },
+        subscription: "pro",
+        mode: "agent",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not cap non-Pro tiers or Ask mode", () => {
+    expect(
+      getProAgentRunSpendCap({
+        snapshot: baseSnapshot,
+        subscription: "pro-plus",
+        mode: "agent",
+      }),
+    ).toBeNull();
+    expect(
+      getProAgentRunSpendCap({
+        snapshot: baseSnapshot,
+        subscription: "pro",
+        mode: "ask",
+      }),
+    ).toBeNull();
   });
 });
