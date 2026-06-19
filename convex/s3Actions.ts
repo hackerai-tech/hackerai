@@ -20,6 +20,20 @@ type StorageUsage = {
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = Doc<"files"> | null;
 
+const serviceFileUrlInfoValidator = v.object({
+  url: v.string(),
+  sizeBytes: v.number(),
+  mediaType: v.string(),
+  name: v.string(),
+});
+
+type ServiceFileUrlInfo = {
+  url: string;
+  sizeBytes: number;
+  mediaType: string;
+  name: string;
+};
+
 const getIdentityEntitlements = (identity: unknown) => {
   if (
     !identity ||
@@ -269,7 +283,7 @@ export const getFileUrlAction = action({
  * - Authenticates via service key (for backend use)
  * - Accepts array of file IDs (max 50 files)
  * - Generates S3 presigned URLs
- * - Returns array of URLs (matching order of fileIds, null for missing files)
+ * - Returns array of URL metadata (matching order of fileIds, null for missing files)
  * - Handles partial failures gracefully
  */
 export const getFileUrlsByFileIdsAction = action({
@@ -278,8 +292,8 @@ export const getFileUrlsByFileIdsAction = action({
     userId: v.optional(v.string()),
     fileIds: v.array(v.id("files")),
   },
-  returns: v.array(v.union(v.string(), v.null())),
-  handler: async (ctx, args): Promise<Array<string | null>> => {
+  returns: v.array(v.union(serviceFileUrlInfoValidator, v.null())),
+  handler: async (ctx, args): Promise<Array<ServiceFileUrlInfo | null>> => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
     if (!args.userId) {
@@ -295,8 +309,8 @@ export const getFileUrlsByFileIdsAction = action({
     }
 
     // Get file records and generate URLs
-    const urls: Array<string | null> = await Promise.all(
-      args.fileIds.map(async (fileId): Promise<string | null> => {
+    const urls: Array<ServiceFileUrlInfo | null> = await Promise.all(
+      args.fileIds.map(async (fileId): Promise<ServiceFileUrlInfo | null> => {
         try {
           // Get file record using internal query
           const file: FileRecord = await ctx.runQuery(
@@ -319,7 +333,12 @@ export const getFileUrlsByFileIdsAction = action({
           }
 
           if (file.s3_key) {
-            return await generateS3DownloadUrl(file.s3_key);
+            return {
+              url: await generateS3DownloadUrl(file.s3_key),
+              sizeBytes: file.size,
+              mediaType: file.media_type,
+              name: file.name,
+            };
           }
 
           return null;

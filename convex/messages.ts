@@ -809,6 +809,7 @@ export const getMessagesByChatId = query({
               mediaType: v.optional(v.string()),
               url: v.optional(v.union(v.string(), v.null())),
               s3Key: v.optional(v.string()),
+              sizeBytes: v.optional(v.number()),
             }),
           ),
         ),
@@ -877,6 +878,7 @@ export const getMessagesByChatId = query({
             mediaType: file.media_type,
             // url: removed - generate on-demand to avoid caching expired URLs
             s3Key: file.s3_key,
+            sizeBytes: file.size,
           });
         }
       });
@@ -2048,6 +2050,7 @@ export const getPreviewMessages = query({
             name: v.string(),
             mediaType: v.optional(v.string()),
             s3Key: v.optional(v.string()),
+            sizeBytes: v.optional(v.number()),
           }),
         ),
       ),
@@ -2105,6 +2108,7 @@ export const getPreviewMessages = query({
             name: file.name,
             mediaType: file.media_type,
             s3Key: file.s3_key,
+            sizeBytes: file.size,
           });
         }
       });

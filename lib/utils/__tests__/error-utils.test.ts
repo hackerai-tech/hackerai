@@ -467,6 +467,20 @@ describe("provider error classification", () => {
     expect(getUserFriendlyProviderError(err)).toContain("attached media");
   });
 
+  it("classifies OpenRouter downloaded image size failures as media overflow", () => {
+    const err = apiCallError({
+      statusCode: 413,
+      responseBody: JSON.stringify({
+        error: {
+          message: "Downloaded image content cannot exceed 30MB",
+        },
+      }),
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("media");
+    expect(getUserFriendlyProviderError(err)).toContain("attached media");
+  });
+
   it("does not classify generic payload overflow as media-only", () => {
     const err = apiCallError({
       statusCode: 413,

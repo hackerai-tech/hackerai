@@ -20,7 +20,10 @@ export interface MessageRecord {
   fileDetails?: Array<{
     fileId: Id<"files">;
     name: string;
-    url: string | null;
+    mediaType?: string;
+    url?: string | null;
+    s3Key?: string;
+    sizeBytes?: number;
   }>;
 }
 

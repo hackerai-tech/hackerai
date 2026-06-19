@@ -5,6 +5,7 @@ export interface AccumulatedFileMetadata {
   name: string;
   mediaType: string;
   s3Key?: string;
+  sizeBytes?: number;
 }
 
 export class FileAccumulator {
