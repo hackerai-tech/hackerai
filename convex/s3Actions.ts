@@ -323,17 +323,7 @@ export const getFileUrlsByFileIdsAction = action({
             { fileId },
           );
 
-          // Return null if file not found
           if (!file || file.user_id !== args.userId) {
-            return null;
-          }
-
-          if (file.user_id !== args.userId) {
-            convexLogger.warn("file_batch_url_access_denied", {
-              fileId,
-              caller: "service",
-              userId: args.userId,
-            });
             return null;
           }
 
@@ -451,10 +441,9 @@ export const getFileUrlsBatchAction = action({
     }
 
     // Enforce batch size limit
-    const MAX_BATCH_SIZE = 50;
-    if (args.fileIds.length > MAX_BATCH_SIZE) {
+    if (args.fileIds.length > MAX_SERVICE_FILE_URL_BATCH_SIZE) {
       throw new Error(
-        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+        `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
 
