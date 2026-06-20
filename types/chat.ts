@@ -306,14 +306,19 @@ export interface Todo {
 
 export interface TodoBlockProps {
   todos: Todo[];
-  inputTodos?: Todo[];
+  inputTodos?: TodoWriteInput["todos"];
   blockId: string;
   messageId: string;
 }
 
 export interface TodoWriteInput {
   merge?: boolean;
-  todos?: Todo[];
+  todos?: Array<{
+    id: string;
+    content?: string;
+    status?: Todo["status"];
+    sourceMessageId?: string;
+  }>;
 }
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";

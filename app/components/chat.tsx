@@ -47,7 +47,6 @@ import {
   type ChatMode,
 } from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
-import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useParams, useRouter } from "next/navigation";
@@ -126,6 +125,37 @@ function streamingReducer(
   }
 }
 
+function getLatestTodoWriteOutput(messages: ChatMessage[]):
+  | {
+      key: string;
+      todos: Todo[];
+    }
+  | undefined {
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0;
+    messageIndex--
+  ) {
+    const message = messages[messageIndex];
+    const parts = message.parts || [];
+    for (let partIndex = parts.length - 1; partIndex >= 0; partIndex--) {
+      const part = parts[partIndex] as any;
+      const currentTodos = part?.output?.currentTodos;
+      if (
+        part?.type === "tool-todo_write" &&
+        part?.state === "output-available" &&
+        Array.isArray(currentTodos)
+      ) {
+        return {
+          key: `${message.id}:${part.toolCallId || partIndex}`,
+          todos: currentTodos as Todo[],
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
 // Renderless component that isolates dataStream state subscriptions
 // (useAutoResume + useAutoContinue) from the Chat component.
 // Without this boundary, Chat subscribes to DataStreamStateContext
@@ -201,7 +231,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingReducer,
     initialStreamingState,
   );
-  const { uploadStatus, summarizationStatus, rateLimitWarning } = streamingState;
+  const { uploadStatus, summarizationStatus, rateLimitWarning } =
+    streamingState;
 
   const {
     input,
@@ -211,9 +242,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatSidebarOpen,
     setChatSidebarOpen,
     initializeChat,
-    mergeTodos,
     setTodos,
-    replaceAssistantTodos,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -272,6 +301,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
   // Use ref for model selection to avoid stale closures in auto-send
   const requestSelectedModelRef = useLatestRef(requestSelectedModel);
+  const lastAppliedTodoOutputRef = useRef<string | null>(null);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -288,6 +318,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
     setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
@@ -566,35 +597,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onToolCall: ({ toolCall }) => {
-      if (toolCall.toolName === "todo_write" && toolCall.input) {
-        const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
-        if (!todoInput.todos) return;
-        // Determine last assistant message id to stamp/replace.
-        // Read via ref to avoid closing over the streaming messages array.
-        const currentMessages = messagesRef.current;
-        let lastAssistantId: string | undefined;
-        for (let i = currentMessages.length - 1; i >= 0; i--) {
-          if (currentMessages[i].role === "assistant") {
-            lastAssistantId = currentMessages[i].id;
-            break;
-          }
-        }
-
-        const treatAsMerge = shouldTreatAsMerge(
-          todoInput.merge,
-          todoInput.todos,
-        );
-
-        if (!treatAsMerge) {
-          // Fresh plan creation: replace assistant todos with new ones, stamp with current assistant id if present.
-          replaceAssistantTodos(todoInput.todos, lastAssistantId);
-        } else {
-          // Partial update: merge
-          mergeTodos(todoInput.todos);
-        }
-      }
-    },
     onFinish: () => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
@@ -629,6 +631,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;
   messagesRef.current = messages;
+
+  useEffect(() => {
+    const shouldApplyOutput =
+      status === "streaming" || status === "submitted" || !shouldFetchMessages;
+    if (!shouldApplyOutput) return;
+
+    const latestTodoOutput = getLatestTodoWriteOutput(
+      messages as ChatMessage[],
+    );
+    if (!latestTodoOutput) return;
+    if (lastAppliedTodoOutputRef.current === latestTodoOutput.key) return;
+
+    lastAppliedTodoOutputRef.current = latestTodoOutput.key;
+    setTodos(latestTodoOutput.todos);
+  }, [messages, setTodos, shouldFetchMessages, status]);
 
   // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.

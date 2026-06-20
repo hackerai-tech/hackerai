@@ -4,7 +4,10 @@ import { ListTodo, CircleArrowRight, ChevronsUpDown } from "lucide-react";
 import type { TodoBlockProps } from "@/types";
 import { useTodoBlockContext } from "@/app/contexts/TodoBlockContext";
 import { SharedTodoItem } from "@/components/ui/shared-todo-item";
-import { getTodoStats } from "@/lib/utils/todo-utils";
+import {
+  getTodoDisplayData,
+  getVisibleTodoBlockItems,
+} from "@/lib/utils/todo-utils";
 
 export const TodoBlock = ({
   todos,
@@ -26,28 +29,7 @@ export const TodoBlock = ({
   }, [messageId, blockId]); // Only depend on messageId and blockId to prevent infinite loops
 
   const todoData = useMemo(() => {
-    const byStatus = {
-      completed: todos.filter((t) => t.status === "completed"),
-      inProgress: todos.filter((t) => t.status === "in_progress"),
-      pending: todos.filter((t) => t.status === "pending"),
-      cancelled: todos.filter((t) => t.status === "cancelled"),
-    };
-
-    const stats = getTodoStats(todos);
-
-    const currentInProgress = byStatus.inProgress[0];
-    const lastCompleted = byStatus.completed[byStatus.completed.length - 1];
-    const hasProgress = stats.done > 0;
-    const allCompleted = stats.done === stats.total && stats.total > 0;
-
-    return {
-      byStatus,
-      stats,
-      currentInProgress,
-      lastCompleted,
-      hasProgress,
-      allCompleted,
-    };
+    return getTodoDisplayData(todos);
   }, [todos]);
 
   const headerContent = useMemo(() => {
@@ -89,69 +71,15 @@ export const TodoBlock = ({
     }
   };
 
-  const getVisibleTodos = () => {
-    const { hasProgress, stats, currentInProgress } = todoData;
-
-    if (!hasProgress || stats.done === 0) {
-      return todos;
-    }
-
-    if (showAllTodos) {
-      return todos;
-    }
-
-    // Show collapsed view: input todos + current in-progress
-    const visibleTodos = [];
-
-    // If we have inputTodos, show all of them (these are the todos being updated in this call)
-    if (inputTodos && inputTodos.length > 0) {
-      const inputTodoIds = new Set(inputTodos.map((t) => t.id));
-      const inputTodosFromCurrent = todos.filter((todo) =>
-        inputTodoIds.has(todo.id),
-      );
-      visibleTodos.push(...inputTodosFromCurrent);
-    } else {
-      // Fallback: show most recent completed/cancelled
-      const { lastCompleted, byStatus } = todoData;
-      const lastCancelled = byStatus.cancelled[byStatus.cancelled.length - 1];
-
-      let mostRecentAction = null;
-      if (lastCompleted && lastCancelled) {
-        const completedIndex = todos.findIndex(
-          (t) => t.id === lastCompleted.id,
-        );
-        const cancelledIndex = todos.findIndex(
-          (t) => t.id === lastCancelled.id,
-        );
-        mostRecentAction =
-          completedIndex > cancelledIndex ? lastCompleted : lastCancelled;
-      } else {
-        mostRecentAction = lastCompleted || lastCancelled;
-      }
-
-      if (mostRecentAction) {
-        visibleTodos.push(mostRecentAction);
-      }
-    }
-
-    // Always show current in-progress task if not already included
-    if (
-      currentInProgress &&
-      !visibleTodos.some((t) => t.id === currentInProgress.id)
-    ) {
-      visibleTodos.push(currentInProgress);
-    }
-
-    // If no in-progress and no visible todos yet, show next pending
-    if (!currentInProgress && visibleTodos.length === 0) {
-      const nextPending = todos.find((todo) => todo.status === "pending");
-      if (nextPending) {
-        visibleTodos.push(nextPending);
-      }
-    }
-
-    return visibleTodos;
-  };
+  const visibleTodos = useMemo(
+    () =>
+      getVisibleTodoBlockItems({
+        todos,
+        inputTodos,
+        showAllTodos,
+      }),
+    [inputTodos, showAllTodos, todos],
+  );
 
   return (
     <div className="flex-1 min-w-0">
@@ -199,7 +127,7 @@ export const TodoBlock = ({
         {/* Expanded list */}
         {isExpanded && (
           <div className="border-t border-border p-2 space-y-2">
-            {getVisibleTodos().map((todo) => (
+            {visibleTodos.map((todo) => (
               <SharedTodoItem key={todo.id} todo={todo} />
             ))}
           </div>
