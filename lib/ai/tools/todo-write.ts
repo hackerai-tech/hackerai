@@ -142,6 +142,9 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
             id: z.string().describe("Unique identifier for the todo item"),
             content: z
               .string()
+              .refine((value) => value.trim().length > 0, {
+                message: "Todo content cannot be blank",
+              })
               .optional()
               .describe("The description/content of the todo item"),
             status: z
@@ -152,7 +155,7 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
         )
         .min(1)
         .describe(
-          "Array of todo items to write to the workspace. For merge=false, every item must include content and status. For merge=true, existing items may be patched with partial updates, but new items must include content and status.",
+          "Array of todo items to write to the workspace. For merge=false, every item must include content and status and replaces the assistant-generated plan while preserving manually created todos. For merge=true, existing items may be patched with partial updates, but new items must include content and status.",
         ),
     }),
     execute: async ({
@@ -178,12 +181,29 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
               t.status === null,
           );
 
+        const existingTodoIds = new Set(
+          todoManager.getAllTodos().map((todo) => todo.id),
+        );
+        const todosWithSourceMessageId: Array<Partial<Todo> & { id: string }> =
+          assistantMessageId
+            ? todos.map((todo) => {
+                const isNewCompleteMergeTodo =
+                  shouldMerge &&
+                  !existingTodoIds.has(todo.id) &&
+                  typeof todo.content === "string" &&
+                  todo.content.trim() !== "" &&
+                  todo.status !== undefined;
+                const shouldStamp = !shouldMerge || isNewCompleteMergeTodo;
+
+                return shouldStamp
+                  ? { ...todo, sourceMessageId: assistantMessageId }
+                  : todo;
+              })
+            : todos;
+
         // Update backend state first (TodoManager handles deduplication)
         const updatedTodos = todoManager.setTodos(
-          // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
-          shouldMerge || !assistantMessageId
-            ? todos
-            : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
+          todosWithSourceMessageId,
           shouldMerge,
         );
 

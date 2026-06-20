@@ -74,6 +74,48 @@ describe("todo_write", () => {
     });
   });
 
+  it("stamps merge-created follow-up todos with the assistant message id", async () => {
+    const result = await runTool(
+      createTodoWrite(
+        makeContext([{ id: "1", content: "Plan test", status: "completed" }]),
+      ),
+      {
+        merge: true,
+        todos: [{ id: "2", content: "Follow up", status: "pending" }],
+      },
+    );
+
+    expect(result).toMatchObject({
+      counts: { completed: 1, total: 2 },
+      currentTodos: [
+        { id: "1", content: "Plan test", status: "completed" },
+        {
+          id: "2",
+          content: "Follow up",
+          status: "pending",
+          sourceMessageId: "assistant-1",
+        },
+      ],
+    });
+  });
+
+  it("returns a clear error for blank merge content", async () => {
+    const result = await runTool(
+      createTodoWrite(
+        makeContext([{ id: "1", content: "Plan test", status: "pending" }]),
+      ),
+      {
+        merge: true,
+        todos: [{ id: "1", content: "   " }],
+      },
+    );
+
+    expect(result).toEqual({
+      error:
+        'Failed to manage todos: Todo "1" is missing required content field',
+    });
+  });
+
   it("returns a clear error for partial new todos", async () => {
     const result = await runTool(createTodoWrite(makeContext()), {
       merge: true,

@@ -133,17 +133,29 @@ describe("todo-utils", () => {
       ).toThrow('Todo "1" must include content or status to update');
     });
 
-    it("deduplicates incoming todos by id and keeps the last payload", () => {
+    it("rejects blank content in merge updates", () => {
+      expect(() =>
+        applyTodoWriteUpdate({
+          currentTodos: [{ id: "1", content: "Task 1", status: "pending" }],
+          incomingTodos: [{ id: "1", content: "   " }],
+          merge: true,
+        }),
+      ).toThrow('Todo "1" is missing required content field');
+    });
+
+    it("deduplicates incoming todos by id and preserves last occurrence order", () => {
       const result = applyTodoWriteUpdate({
         currentTodos: [],
         incomingTodos: [
           { id: "1", content: "First", status: "pending" },
+          { id: "2", content: "Second", status: "pending" },
           { id: "1", content: "Last", status: "completed" },
         ],
         merge: false,
       });
 
       expect(result.todos).toEqual([
+        { id: "2", content: "Second", status: "pending" },
         { id: "1", content: "Last", status: "completed" },
       ]);
     });

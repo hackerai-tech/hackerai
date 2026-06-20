@@ -54,9 +54,24 @@ const hasTodoPatch = (candidate: TodoLike): boolean => {
   );
 };
 
+const hasBlankContent = (candidate: TodoLike): boolean => {
+  return candidate.content !== undefined && candidate.content.trim() === "";
+};
+
 export const dedupeTodosById = <T extends { id: string }>(
   todos: ReadonlyArray<T>,
-): T[] => Array.from(new Map(todos.map((todo) => [todo.id, todo])).values());
+): T[] => {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  for (const todo of [...todos].reverse()) {
+    if (seen.has(todo.id)) continue;
+    seen.add(todo.id);
+    deduped.push(todo);
+  }
+
+  return deduped.reverse();
+};
 
 export interface ApplyTodoWriteUpdateOptions {
   currentTodos: Todo[];
@@ -128,6 +143,11 @@ export const applyTodoWriteUpdate = ({
     if (!hasTodoPatch(newTodo)) {
       throw new TodoUpdateError(
         `Todo "${newTodo.id}" must include content or status to update`,
+      );
+    }
+    if (hasBlankContent(newTodo)) {
+      throw new TodoUpdateError(
+        `Todo "${newTodo.id}" is missing required content field`,
       );
     }
 
