@@ -97,6 +97,12 @@ describe("todo_write", () => {
         },
       ],
     });
+
+    const currentTodos = (
+      result as { currentTodos: Array<Record<string, unknown>> }
+    ).currentTodos;
+    expect(currentTodos[0].sourceMessageId).toBeUndefined();
+    expect(currentTodos[1]).toHaveProperty("sourceMessageId", "assistant-1");
   });
 
   it("returns a clear error for blank merge content", async () => {
