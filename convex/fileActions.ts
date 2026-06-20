@@ -34,7 +34,10 @@ import {
   isSupportedImageMediaType,
   validateUploadPolicy,
 } from "../lib/utils/upload-policy";
-import { validateImageBytes } from "../lib/utils/image-validation";
+import {
+  normalizeImageMediaType,
+  validateImageBytes,
+} from "../lib/utils/image-validation";
 import {
   FILE_TOKEN_PERCENT,
   MAX_TOKENS_PAID,
@@ -854,15 +857,17 @@ export const saveFile = action({
         }
 
         const file = await response.blob();
-        if (isSupportedImageMediaType(args.mediaType)) {
+        const normalizedMediaType =
+          normalizeImageMediaType(args.mediaType) ?? args.mediaType;
+        if (isSupportedImageMediaType(normalizedMediaType)) {
           const validation = validateImageBytes(
             new Uint8Array(await file.arrayBuffer()),
-            args.mediaType,
+            normalizedMediaType,
           );
           if (!validation.valid) {
             throw new ConvexError({
               code: "INVALID_IMAGE_BYTES",
-              message: `Image "${args.name}" could not be uploaded because it is not a valid ${args.mediaType} file.`,
+              message: `Image "${args.name}" could not be uploaded because it is not a valid ${normalizedMediaType} file.`,
             });
           }
         }

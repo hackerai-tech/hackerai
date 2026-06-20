@@ -252,6 +252,10 @@ const readResponseBytesWithLimit = async (
   limitBytes: number,
 ): Promise<Uint8Array | null> => {
   if (!response.body) {
+    const contentLength = parseContentLength(
+      response.headers.get("content-length"),
+    );
+    if (contentLength == null || contentLength > limitBytes) return null;
     if (typeof response.arrayBuffer !== "function") return null;
     const bytes = new Uint8Array(await response.arrayBuffer());
     return bytes.byteLength > limitBytes ? null : bytes;
@@ -571,7 +575,11 @@ const applyUrlsToFileParts = async (
           )
         : file.url;
 
-    const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
+    const normalizedMediaType =
+      normalizeImageMediaType(file.mediaType) ?? file.mediaType;
+    const isSupportedImage = isSupportedImageMediaType(
+      normalizedMediaType ?? "",
+    );
     const trustedImageSize =
       typeof file.sizeBytes === "number"
         ? ({ bytes: file.sizeBytes, source: "file_record" } as const)
@@ -602,7 +610,7 @@ const applyUrlsToFileParts = async (
       !shouldOmitImage &&
       !shouldOmitUnverifiedImage;
     const imageValidation = shouldValidateImage
-      ? await validateImageUrl(file.url, file.mediaType, imageLimit)
+      ? await validateImageUrl(file.url, normalizedMediaType, imageLimit)
       : null;
     const shouldOmitInvalidImage = imageValidation?.valid === false;
 

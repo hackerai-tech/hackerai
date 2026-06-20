@@ -324,6 +324,32 @@ describe("fileActions saveFile upload policy", () => {
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 
+  it("rejects invalid Ask image uploads declared with a media-type alias", async () => {
+    const { saveFile } = await import("../fileActions");
+    const ctx = makeCtx();
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      blob: async () => ({
+        arrayBuffer: async () => new TextEncoder().encode("not a jpeg").buffer,
+      }),
+    })) as any;
+
+    await expect(
+      saveFile.handler(ctx, {
+        s3Key: "users/user123/broken.jpg",
+        name: "broken.jpg",
+        mediaType: "image/jpg",
+        size: 1024,
+        mode: "ask",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({ code: "INVALID_IMAGE_BYTES" }),
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith("https://s3.example/download");
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
   it("accepts oversized Agent files as sandbox-only metadata without parsing", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();

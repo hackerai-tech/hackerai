@@ -345,6 +345,43 @@ describe("processMessageFiles image size guards", () => {
     });
   });
 
+  it("omits non-streaming image responses without a content length before reading bytes", async () => {
+    const arrayBuffer = jest.fn(async () => VALID_PNG_BYTES.buffer);
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/no-length.png", {
+        name: "no-length.png",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: () => null,
+      },
+      body: null,
+      arrayBuffer,
+    })) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_no_length",
+        name: "no-length.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "no-length.png" omitted: could not verify valid image bytes before sending it to the model. Please reattach or regenerate the image.]',
+    });
+  });
+
   it("corrects stored image media type when storage bytes disagree with stale metadata", async () => {
     mockConvexAction.mockResolvedValue([
       fileUrlInfo("https://storage.example/photo.jpg", {
