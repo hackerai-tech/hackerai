@@ -516,7 +516,28 @@ const fetchFileUrls = async (
               chunk_index: index,
               chunk_count: chunks.length,
             });
-            return chunk.map(() => null);
+
+            try {
+              return await getConvexClient().action(
+                api.s3Actions.getFileUrlsByFileIdsAction,
+                {
+                  serviceKey,
+                  userId,
+                  fileIds: chunk as Id<"files">[],
+                },
+              );
+            } catch (fallbackError) {
+              logger.warn("file_url_legacy_fetch_chunk_failed", {
+                event: "file_url_legacy_fetch_chunk_failed",
+                service: "chat-handler",
+                error: stringifyRedactedError(fallbackError),
+                file_count: fileIds.length,
+                chunk_file_count: chunk.length,
+                chunk_index: index,
+                chunk_count: chunks.length,
+              });
+              return chunk.map(() => null);
+            }
           }
         },
       ),

@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
       expirationTime: "6h",
     });
 
-    return NextResponse.json({ runId, publicAccessToken });
+    return NextResponse.json({ runId, publicAccessToken, chatId });
   } catch (error) {
     if (error instanceof ChatSDKError) return error.toResponse();
     console.error("[/api/agent-long/resume] failed:", error);

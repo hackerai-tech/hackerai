@@ -62,6 +62,44 @@ import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
+const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
+const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
+const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
+
+const getAgentLongPartFingerprint = (part: unknown): string => {
+  if (typeof part !== "object" || part === null) return String(part);
+  const typedPart = part as {
+    type?: unknown;
+    text?: unknown;
+    delta?: unknown;
+    state?: unknown;
+  };
+  const type = typeof typedPart.type === "string" ? typedPart.type : "unknown";
+  const textLength =
+    typeof typedPart.text === "string" ? typedPart.text.length : undefined;
+  const deltaLength =
+    typeof typedPart.delta === "string" ? typedPart.delta.length : undefined;
+  if (textLength !== undefined || deltaLength !== undefined) {
+    return `${type}:${textLength ?? 0}:${deltaLength ?? 0}:${typedPart.state ?? ""}`;
+  }
+
+  try {
+    return `${type}:${JSON.stringify(part).length}`;
+  } catch {
+    return type;
+  }
+};
+
+const getAgentLongMessageFingerprint = (messages: ChatMessage[]): string =>
+  messages
+    .map(
+      (message) =>
+        `${message.id}:${message.role}:${(message.parts ?? [])
+          .map(getAgentLongPartFingerprint)
+          .join(",")}`,
+    )
+    .join("|");
+
 const ComputerSidebar = dynamic(
   () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
   { ssr: false },
@@ -271,6 +309,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     selectedModel,
     subscription,
   );
+  const shouldUseAgentLong = shouldUseAgentLongForAgent({
+    mode: chatMode,
+    subscription,
+    isTauri: isTauriEnvironment(),
+  });
   // Use ref for model selection to avoid stale closures in auto-send
   const requestSelectedModelRef = useLatestRef(requestSelectedModel);
 
@@ -635,6 +678,101 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
   const statusRef = useRef(status);
   statusRef.current = status;
+
+  const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
+  const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
+  const agentLongLastMessageChangeAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    if (
+      agentLongMessageFingerprintRef.current === agentLongMessageFingerprint
+    ) {
+      return;
+    }
+    agentLongMessageFingerprintRef.current = agentLongMessageFingerprint;
+    agentLongLastMessageChangeAtRef.current = Date.now();
+  }, [agentLongMessageFingerprint]);
+
+  // Trigger.dev can finish and persist an Agent answer even if the realtime
+  // UI stream never delivers a terminal chunk to useChat. Reconcile against
+  // the app's authenticated resume endpoint so the first message in a new
+  // chat can leave "Working..." even before chatData is subscribed.
+  useEffect(() => {
+    if (
+      status !== "streaming" ||
+      !shouldUseAgentLong ||
+      temporaryChatsEnabled
+    ) {
+      return;
+    }
+
+    let stopped = false;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
+    const abortController = new AbortController();
+
+    const finishLocally = () => {
+      if (stopped) return;
+      stopped = true;
+      stop();
+      setIsAutoResuming(false);
+      setAwaitingServerChat(false);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+
+      if (!isExistingChatRef.current) {
+        window.history.replaceState({}, "", `/c/${chatId}`);
+        removeDraft("new");
+        setIsExistingChat(true);
+      }
+    };
+
+    const checkRunCompletion = async () => {
+      if (
+        Date.now() - agentLongLastMessageChangeAtRef.current <
+        AGENT_LONG_COMPLETION_QUIET_MS
+      ) {
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+          { method: "GET", signal: abortController.signal },
+        );
+        if (response.status === 204) {
+          finishLocally();
+        }
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          // Ignore transient polling failures; the underlying stream still owns
+          // the visible error state.
+        }
+      }
+    };
+
+    const pollDelay = setTimeout(() => {
+      void checkRunCompletion();
+      pollInterval = setInterval(() => {
+        void checkRunCompletion();
+      }, AGENT_LONG_COMPLETION_POLL_INTERVAL_MS);
+    }, AGENT_LONG_COMPLETION_POLL_DELAY_MS);
+
+    return () => {
+      stopped = true;
+      abortController.abort();
+      clearTimeout(pollDelay);
+      if (pollInterval !== undefined) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [
+    chatId,
+    isExistingChatRef,
+    setIsAutoResuming,
+    shouldUseAgentLong,
+    status,
+    stop,
+    temporaryChatsEnabled,
+  ]);
 
   // Ref bridge: StreamEffects exposes resetAutoContinueCount here
   const resetAutoContinueRef = useRef<(() => void) | null>(null);
