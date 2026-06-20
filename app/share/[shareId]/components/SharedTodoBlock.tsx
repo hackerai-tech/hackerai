@@ -4,6 +4,10 @@ import { useState, useMemo } from "react";
 import { ListTodo, CircleArrowRight, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SharedTodoItem } from "@/components/ui/shared-todo-item";
+import {
+  getTodoDisplayData,
+  getVisibleTodoBlockItems,
+} from "@/lib/utils/todo-utils";
 import type { Todo } from "@/types";
 
 interface SharedTodoBlockProps {
@@ -20,29 +24,11 @@ export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
   const [showAllTodos, setShowAllTodos] = useState(false);
 
   const todoData = useMemo(() => {
-    const byStatus = {
-      completed: todos.filter((t) => t.status === "completed"),
-      inProgress: todos.filter((t) => t.status === "in_progress"),
-      pending: todos.filter((t) => t.status === "pending"),
-      cancelled: todos.filter((t) => t.status === "cancelled"),
-    };
-
-    const done = byStatus.completed.length;
-    const total = todos.length;
-    const currentInProgress = byStatus.inProgress[0];
-    const hasProgress = done > 0;
-
-    return {
-      byStatus,
-      done,
-      total,
-      currentInProgress,
-      hasProgress,
-    };
+    return getTodoDisplayData(todos);
   }, [todos]);
 
   const headerContent = useMemo(() => {
-    const { currentInProgress, done, total } = todoData;
+    const { currentInProgress, stats } = todoData;
 
     // When collapsed, show current in-progress task if available
     if (!isExpanded && currentInProgress) {
@@ -51,18 +37,20 @@ export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
         icon: (
           <CircleArrowRight className="text-foreground" aria-hidden="true" />
         ),
-        showViewAll: total > 1 && done > 0,
+        showViewAll: stats.total > 1 && stats.done > 0,
       };
     }
 
     // When expanded OR no in-progress task, show list-todo icon with progress text
     const progressText =
-      done === 0 ? `To-dos (${total})` : `${done} of ${total} Done`;
+      stats.done === 0
+        ? `To-dos (${stats.total})`
+        : `${stats.done} of ${stats.total} Done`;
 
     return {
       text: progressText,
       icon: <ListTodo className="text-foreground" aria-hidden="true" />,
-      showViewAll: total > 1 && done > 0,
+      showViewAll: stats.total > 1 && stats.done > 0,
     };
   }, [todoData, isExpanded]);
 
@@ -78,55 +66,14 @@ export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
     }
   };
 
-  const getVisibleTodos = () => {
-    const { hasProgress, done, currentInProgress, byStatus } = todoData;
-
-    if (!hasProgress || done === 0) {
-      return todos;
-    }
-
-    if (showAllTodos) {
-      return todos;
-    }
-
-    // Show collapsed view: last completed + current in-progress
-    const visibleTodos: Todo[] = [];
-
-    const lastCompleted = byStatus.completed[byStatus.completed.length - 1];
-    const lastCancelled = byStatus.cancelled[byStatus.cancelled.length - 1];
-
-    let mostRecentAction = null;
-    if (lastCompleted && lastCancelled) {
-      const completedIndex = todos.findIndex((t) => t.id === lastCompleted.id);
-      const cancelledIndex = todos.findIndex((t) => t.id === lastCancelled.id);
-      mostRecentAction =
-        completedIndex > cancelledIndex ? lastCompleted : lastCancelled;
-    } else {
-      mostRecentAction = lastCompleted || lastCancelled;
-    }
-
-    if (mostRecentAction) {
-      visibleTodos.push(mostRecentAction);
-    }
-
-    // Always show current in-progress task if not already included
-    if (
-      currentInProgress &&
-      !visibleTodos.some((t) => t.id === currentInProgress.id)
-    ) {
-      visibleTodos.push(currentInProgress);
-    }
-
-    // If no in-progress and no visible todos yet, show next pending
-    if (!currentInProgress && visibleTodos.length === 0) {
-      const nextPending = todos.find((todo) => todo.status === "pending");
-      if (nextPending) {
-        visibleTodos.push(nextPending);
-      }
-    }
-
-    return visibleTodos;
-  };
+  const visibleTodos = useMemo(
+    () =>
+      getVisibleTodoBlockItems({
+        todos,
+        showAllTodos,
+      }),
+    [showAllTodos, todos],
+  );
 
   return (
     <div className="flex-1 min-w-0">
@@ -167,7 +114,7 @@ export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
         {/* Expanded list */}
         {isExpanded && (
           <div className="border-t border-border p-2 space-y-2">
-            {getVisibleTodos().map((todo) => (
+            {visibleTodos.map((todo) => (
               <SharedTodoItem key={todo.id} todo={todo} />
             ))}
           </div>

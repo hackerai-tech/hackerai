@@ -1,4 +1,5 @@
 import type { Todo } from "@/types/chat";
+import { applyTodoWriteUpdate } from "@/lib/utils/todo-utils";
 
 export interface TodoUpdate {
   id: string;
@@ -34,48 +35,16 @@ export class TodoManager {
     newTodos: (Partial<Todo> & { id: string })[],
     merge: boolean = false,
   ): Todo[] {
-    // Deduplicate incoming todos by id (keep last occurrence)
-    const uniqueTodos = Array.from(
-      new Map(newTodos.map((todo) => [todo.id, todo])).values(),
-    );
+    const result = applyTodoWriteUpdate({
+      currentTodos: this.todos,
+      incomingTodos: newTodos,
+      merge,
+    });
+
+    this.todos = result.todos;
 
     if (!merge) {
-      // Replace all assistant-sourced todos; preserve manual ones across runs
-      this.todos = this.todos.filter((t) => !t.sourceMessageId);
       this.hasCreatedPlanThisRun = true;
-    }
-
-    for (const todo of uniqueTodos) {
-      // Defensive check - should never happen with proper typing, but provides clear error
-      if (!todo.id) {
-        throw new Error("Todo must have an id");
-      }
-
-      const existingIndex = this.todos.findIndex((t) => t.id === todo.id);
-
-      if (existingIndex >= 0) {
-        // Update existing todo, preserve existing content if not provided
-        this.todos[existingIndex] = {
-          id: todo.id,
-          content: todo.content ?? this.todos[existingIndex].content,
-          status: todo.status ?? this.todos[existingIndex].status,
-          sourceMessageId:
-            todo.sourceMessageId ?? this.todos[existingIndex].sourceMessageId,
-        };
-      } else {
-        // Add new todo
-        // If it's the first time (not merge) and content is missing, throw error
-        if (!merge && !todo.content) {
-          throw new Error(`Content is required for new todos.`);
-        }
-
-        this.todos.push({
-          id: todo.id,
-          content: todo.content ?? "",
-          status: todo.status ?? "pending",
-          sourceMessageId: todo.sourceMessageId,
-        });
-      }
     }
 
     return this.getAllTodos();

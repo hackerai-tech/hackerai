@@ -1,12 +1,16 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   mergeTodos,
+  applyTodoWriteUpdate,
+  TodoUpdateError,
   hasPartialTodos,
   shouldTreatAsMerge,
   computeReplaceAssistantTodos,
   getBaseTodosForRequest,
   areTodosEqual,
   getTodoStats,
+  getVisibleTodoBlockItems,
+  getTodoPanelViewState,
   removeTodosBySourceMessage,
   removeTodosBySourceMessages,
 } from "../todo-utils";
@@ -61,6 +65,99 @@ describe("todo-utils", () => {
       expect(result[0].content).toBe("Task 1");
       expect(result[0].status).toBe("completed");
       expect(result[0].sourceMessageId).toBe("msg1");
+    });
+  });
+
+  describe("applyTodoWriteUpdate", () => {
+    it("replaces assistant todos, preserves manual todos, and stamps source message ids", () => {
+      const currentTodos: Todo[] = [
+        { id: "manual", content: "Manual", status: "pending" },
+        {
+          id: "old",
+          content: "Old assistant",
+          status: "pending",
+          sourceMessageId: "msg-old",
+        },
+      ];
+
+      const result = applyTodoWriteUpdate({
+        currentTodos,
+        incomingTodos: [
+          { id: "new", content: "New assistant", status: "in_progress" },
+        ],
+        merge: false,
+        sourceMessageId: "msg-new",
+      });
+
+      expect(result.todos).toEqual([
+        {
+          id: "new",
+          content: "New assistant",
+          status: "in_progress",
+          sourceMessageId: "msg-new",
+        },
+        { id: "manual", content: "Manual", status: "pending" },
+      ]);
+      expect(result.changed).toBe(true);
+    });
+
+    it("allows partial merge updates for existing todos", () => {
+      const result = applyTodoWriteUpdate({
+        currentTodos: [{ id: "1", content: "Task 1", status: "in_progress" }],
+        incomingTodos: [{ id: "1", status: "completed" }],
+        merge: true,
+      });
+
+      expect(result.todos).toEqual([
+        { id: "1", content: "Task 1", status: "completed" },
+      ]);
+    });
+
+    it("rejects partial merge updates for new todos", () => {
+      expect(() =>
+        applyTodoWriteUpdate({
+          currentTodos: [],
+          incomingTodos: [{ id: "new", status: "pending" }],
+          merge: true,
+        }),
+      ).toThrow(TodoUpdateError);
+    });
+
+    it("rejects no-op partial merge updates", () => {
+      expect(() =>
+        applyTodoWriteUpdate({
+          currentTodos: [{ id: "1", content: "Task 1", status: "pending" }],
+          incomingTodos: [{ id: "1" }],
+          merge: true,
+        }),
+      ).toThrow('Todo "1" must include content or status to update');
+    });
+
+    it("rejects blank content in merge updates", () => {
+      expect(() =>
+        applyTodoWriteUpdate({
+          currentTodos: [{ id: "1", content: "Task 1", status: "pending" }],
+          incomingTodos: [{ id: "1", content: "   " }],
+          merge: true,
+        }),
+      ).toThrow('Todo "1" is missing required content field');
+    });
+
+    it("deduplicates incoming todos by id and preserves last occurrence order", () => {
+      const result = applyTodoWriteUpdate({
+        currentTodos: [],
+        incomingTodos: [
+          { id: "1", content: "First", status: "pending" },
+          { id: "2", content: "Second", status: "pending" },
+          { id: "1", content: "Last", status: "completed" },
+        ],
+        merge: false,
+      });
+
+      expect(result.todos).toEqual([
+        { id: "2", content: "Second", status: "pending" },
+        { id: "1", content: "Last", status: "completed" },
+      ]);
     });
   });
 
@@ -228,6 +325,30 @@ describe("todo-utils", () => {
         total: 4,
         done: 2,
       });
+    });
+  });
+
+  describe("todo view helpers", () => {
+    it("treats cancelled as done for block visibility", () => {
+      const todos: Todo[] = [
+        { id: "1", content: "Completed", status: "completed" },
+        { id: "2", content: "Cancelled", status: "cancelled" },
+        { id: "3", content: "Current", status: "in_progress" },
+      ];
+
+      const visible = getVisibleTodoBlockItems({ todos });
+
+      expect(visible.map((todo) => todo.id)).toEqual(["2", "3"]);
+    });
+
+    it("marks an in-progress todo as paused when chat is ready", () => {
+      const state = getTodoPanelViewState(
+        [{ id: "1", content: "Current", status: "in_progress" }],
+        "ready",
+      );
+
+      expect(state.isPaused).toBe(true);
+      expect(state.currentTodoDisplayStatus).toBe("paused");
     });
   });
 

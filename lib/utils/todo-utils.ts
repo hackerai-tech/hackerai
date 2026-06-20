@@ -1,5 +1,12 @@
 import type { Todo } from "@/types";
 
+export class TodoUpdateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TodoUpdateError";
+  }
+}
+
 /**
  * Efficiently merges new todos with existing ones.
  * Only creates a new array if there are actual changes to prevent unnecessary re-renders.
@@ -12,46 +19,14 @@ export const mergeTodos = (
   currentTodos: Todo[],
   newTodos: ReadonlyArray<TodoLike>,
 ): Todo[] => {
-  let hasChanges = false;
-  const updatedTodos = [...currentTodos];
+  const result = applyTodoWriteUpdate({
+    currentTodos,
+    incomingTodos: newTodos,
+    merge: true,
+    allowPartialNewTodos: false,
+  });
 
-  for (const newTodo of newTodos) {
-    const existingIndex = updatedTodos.findIndex((t) => t.id === newTodo.id);
-
-    if (existingIndex >= 0) {
-      // Check if the todo actually changed
-      const existing = updatedTodos[existingIndex];
-      const merged: Todo = {
-        ...existing,
-        // Preserve existing fields when incoming values are undefined
-        content:
-          newTodo.content !== undefined ? newTodo.content : existing.content,
-        status: newTodo.status !== undefined ? newTodo.status : existing.status,
-        sourceMessageId:
-          newTodo.sourceMessageId !== undefined
-            ? newTodo.sourceMessageId
-            : existing.sourceMessageId,
-      };
-
-      if (
-        existing.content !== merged.content ||
-        existing.status !== merged.status ||
-        existing.sourceMessageId !== merged.sourceMessageId
-      ) {
-        updatedTodos[existingIndex] = merged;
-        hasChanges = true;
-      }
-    } else {
-      // Add new todo
-      if (isCompleteTodoLike(newTodo)) {
-        updatedTodos.push(newTodo);
-        hasChanges = true;
-      }
-    }
-  }
-
-  // Only return new array if there were actual changes
-  return hasChanges ? updatedTodos : currentTodos;
+  return result.changed ? result.todos : currentTodos;
 };
 
 /**
@@ -69,6 +44,147 @@ export type TodoLike = {
  */
 const isCompleteTodoLike = (candidate: TodoLike): candidate is Todo => {
   return candidate.content !== undefined && candidate.status !== undefined;
+};
+
+const hasTodoPatch = (candidate: TodoLike): boolean => {
+  return (
+    candidate.content !== undefined ||
+    candidate.status !== undefined ||
+    candidate.sourceMessageId !== undefined
+  );
+};
+
+const hasBlankContent = (candidate: TodoLike): boolean => {
+  return candidate.content !== undefined && candidate.content.trim() === "";
+};
+
+export const dedupeTodosById = <T extends { id: string }>(
+  todos: ReadonlyArray<T>,
+): T[] => {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+
+  for (const todo of [...todos].reverse()) {
+    if (seen.has(todo.id)) continue;
+    seen.add(todo.id);
+    deduped.push(todo);
+  }
+
+  return deduped.reverse();
+};
+
+export interface ApplyTodoWriteUpdateOptions {
+  currentTodos: Todo[];
+  incomingTodos: ReadonlyArray<TodoLike>;
+  merge: boolean;
+  sourceMessageId?: string;
+  preserveManualTodos?: boolean;
+  allowPartialNewTodos?: boolean;
+}
+
+export interface ApplyTodoWriteUpdateResult {
+  todos: Todo[];
+  stats: TodoStats;
+  changed: boolean;
+}
+
+export const applyTodoWriteUpdate = ({
+  currentTodos,
+  incomingTodos,
+  merge,
+  sourceMessageId,
+  preserveManualTodos = true,
+  allowPartialNewTodos = false,
+}: ApplyTodoWriteUpdateOptions): ApplyTodoWriteUpdateResult => {
+  const uniqueIncoming = dedupeTodosById(incomingTodos);
+
+  if (!merge) {
+    const fullTodos: Todo[] = uniqueIncoming.map((todo, index) => {
+      if (!todo.id) {
+        throw new TodoUpdateError(`Todo at index ${index} is missing id`);
+      }
+      if (!todo.content || todo.content.trim() === "") {
+        throw new TodoUpdateError(
+          `Todo at index ${index} is missing required content field`,
+        );
+      }
+      if (!todo.status) {
+        throw new TodoUpdateError(
+          `Todo at index ${index} is missing required status field`,
+        );
+      }
+      return {
+        id: todo.id,
+        content: todo.content,
+        status: todo.status,
+        sourceMessageId: sourceMessageId ?? todo.sourceMessageId,
+      };
+    });
+
+    const manualTodos = preserveManualTodos
+      ? currentTodos.filter((todo) => !todo.sourceMessageId)
+      : [];
+    const todos = [...fullTodos, ...manualTodos];
+
+    return {
+      todos,
+      stats: getTodoStats(todos),
+      changed: !areTodoListsEqual(currentTodos, todos),
+    };
+  }
+
+  const updatedTodos = [...currentTodos];
+
+  for (let i = 0; i < uniqueIncoming.length; i++) {
+    const newTodo = uniqueIncoming[i];
+    if (!newTodo.id) {
+      throw new TodoUpdateError(`Todo at index ${i} is missing id`);
+    }
+    if (!hasTodoPatch(newTodo)) {
+      throw new TodoUpdateError(
+        `Todo "${newTodo.id}" must include content or status to update`,
+      );
+    }
+    if (hasBlankContent(newTodo)) {
+      throw new TodoUpdateError(
+        `Todo "${newTodo.id}" is missing required content field`,
+      );
+    }
+
+    const existingIndex = updatedTodos.findIndex((t) => t.id === newTodo.id);
+
+    if (existingIndex >= 0) {
+      const existing = updatedTodos[existingIndex];
+      updatedTodos[existingIndex] = {
+        ...existing,
+        content:
+          newTodo.content !== undefined ? newTodo.content : existing.content,
+        status: newTodo.status !== undefined ? newTodo.status : existing.status,
+        sourceMessageId:
+          newTodo.sourceMessageId !== undefined
+            ? newTodo.sourceMessageId
+            : existing.sourceMessageId,
+      };
+      continue;
+    }
+
+    if (!isCompleteTodoLike(newTodo)) {
+      if (allowPartialNewTodos) {
+        continue;
+      }
+      throw new TodoUpdateError(
+        `Content and status are required for new todo "${newTodo.id}"`,
+      );
+    }
+
+    updatedTodos.push(newTodo);
+  }
+
+  return {
+    todos: updatedTodos,
+    stats: getTodoStats(updatedTodos),
+    changed: !areTodoListsEqual(currentTodos, updatedTodos),
+  };
 };
 
 /**
@@ -101,11 +217,12 @@ export const computeReplaceAssistantTodos = (
   incoming: Todo[],
   sourceMessageId?: string,
 ): Todo[] => {
-  const manual = currentTodos.filter((t) => !t.sourceMessageId);
-  const stamped = sourceMessageId
-    ? incoming.map((t) => ({ ...t, sourceMessageId }))
-    : incoming;
-  return [...stamped, ...manual];
+  return applyTodoWriteUpdate({
+    currentTodos,
+    incomingTodos: incoming,
+    merge: false,
+    sourceMessageId,
+  }).todos;
 };
 
 /**
@@ -127,15 +244,36 @@ export const getBaseTodosForRequest = (
 };
 
 /**
- * Checks if two todos are equal (same content and status)
+ * Checks if two todos have the same persisted display fields.
  */
 export const areTodosEqual = (todo1: Todo, todo2: Todo): boolean => {
-  return todo1.content === todo2.content && todo1.status === todo2.status;
+  return (
+    todo1.content === todo2.content &&
+    todo1.status === todo2.status &&
+    todo1.sourceMessageId === todo2.sourceMessageId
+  );
+};
+
+export const areTodoListsEqual = (todos1: Todo[], todos2: Todo[]): boolean => {
+  if (todos1.length !== todos2.length) return false;
+  return todos1.every(
+    (todo, index) =>
+      todo.id === todos2[index].id && areTodosEqual(todo, todos2[index]),
+  );
 };
 
 /**
  * Gets todo statistics for display purposes
  */
+export type TodoStats = {
+  completed: number;
+  inProgress: number;
+  pending: number;
+  cancelled: number;
+  total: number;
+  done: number;
+};
+
 export const getTodoStats = (todos: Todo[]) => {
   const completed = todos.filter((t) => t.status === "completed").length;
   const inProgress = todos.filter((t) => t.status === "in_progress").length;
@@ -151,6 +289,128 @@ export const getTodoStats = (todos: Todo[]) => {
     cancelled,
     total,
     done,
+  };
+};
+
+export const getTodoDisplayData = (todos: Todo[]) => {
+  const uniqueTodos = dedupeTodosById(todos);
+  const byStatus = {
+    completed: uniqueTodos.filter((t) => t.status === "completed"),
+    inProgress: uniqueTodos.filter((t) => t.status === "in_progress"),
+    pending: uniqueTodos.filter((t) => t.status === "pending"),
+    cancelled: uniqueTodos.filter((t) => t.status === "cancelled"),
+  };
+  const stats = getTodoStats(uniqueTodos);
+  const currentInProgress = byStatus.inProgress[0];
+  const lastCompleted = byStatus.completed[byStatus.completed.length - 1];
+  const lastCancelled = byStatus.cancelled[byStatus.cancelled.length - 1];
+  const lastDone = (() => {
+    if (!lastCompleted) return lastCancelled;
+    if (!lastCancelled) return lastCompleted;
+    const completedIndex = uniqueTodos.findIndex(
+      (todo) => todo.id === lastCompleted.id,
+    );
+    const cancelledIndex = uniqueTodos.findIndex(
+      (todo) => todo.id === lastCancelled.id,
+    );
+    return completedIndex > cancelledIndex ? lastCompleted : lastCancelled;
+  })();
+
+  return {
+    todos: uniqueTodos,
+    byStatus,
+    stats,
+    currentInProgress,
+    lastCompleted,
+    lastCancelled,
+    lastDone,
+    hasProgress: stats.done > 0,
+    allDone: stats.total > 0 && stats.done === stats.total,
+  };
+};
+
+export const getVisibleTodoBlockItems = ({
+  todos,
+  inputTodos,
+  showAllTodos = false,
+}: {
+  todos: Todo[];
+  inputTodos?: ReadonlyArray<TodoLike>;
+  showAllTodos?: boolean;
+}): Todo[] => {
+  const todoData = getTodoDisplayData(todos);
+  const { stats, currentInProgress, lastDone } = todoData;
+  const uniqueTodos = todoData.todos;
+
+  if (stats.done === 0 || showAllTodos) {
+    return uniqueTodos;
+  }
+
+  const visibleTodos: Todo[] = [];
+
+  if (inputTodos && inputTodos.length > 0) {
+    const inputTodoIds = new Set(inputTodos.map((t) => t.id));
+    visibleTodos.push(
+      ...uniqueTodos.filter((todo) => inputTodoIds.has(todo.id)),
+    );
+  } else if (lastDone) {
+    visibleTodos.push(lastDone);
+  }
+
+  if (
+    currentInProgress &&
+    !visibleTodos.some((todo) => todo.id === currentInProgress.id)
+  ) {
+    visibleTodos.push(currentInProgress);
+  }
+
+  if (!currentInProgress && visibleTodos.length === 0) {
+    const nextPending = uniqueTodos.find((todo) => todo.status === "pending");
+    if (nextPending) {
+      visibleTodos.push(nextPending);
+    }
+  }
+
+  return visibleTodos;
+};
+
+export const getTodoPanelViewState = (
+  todos: Todo[],
+  status?: "submitted" | "streaming" | "ready" | "error",
+) => {
+  const todoData = getTodoDisplayData(todos);
+  const { stats, todos: uniqueTodos } = todoData;
+  const hasTodos = uniqueTodos.length > 0;
+  const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
+
+  const currentTodoIndex = (() => {
+    const inProgressIdx = uniqueTodos.findIndex(
+      (todo) => todo.status === "in_progress",
+    );
+    if (inProgressIdx !== -1) return inProgressIdx;
+    for (let i = uniqueTodos.length - 1; i >= 0; i--) {
+      const todoStatus = uniqueTodos[i].status;
+      if (todoStatus === "completed" || todoStatus === "cancelled") return i;
+    }
+    return -1;
+  })();
+
+  const currentTodo =
+    currentTodoIndex !== -1 ? uniqueTodos[currentTodoIndex] : undefined;
+  const isPaused = status === "ready" && stats.inProgress > 0;
+  const currentTodoDisplayStatus: Todo["status"] | "paused" | undefined =
+    currentTodo && isPaused && currentTodo.status === "in_progress"
+      ? "paused"
+      : currentTodo?.status;
+
+  return {
+    ...todoData,
+    hasTodos,
+    hasActiveTodos,
+    currentTodoIndex,
+    currentTodo,
+    isPaused,
+    currentTodoDisplayStatus,
   };
 };
 
