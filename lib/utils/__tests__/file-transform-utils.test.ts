@@ -19,6 +19,19 @@ const makeMessage = (part: Record<string, unknown>) =>
     },
   ] as any;
 
+const VALID_PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
+    "base64",
+  ),
+);
+
+const MINIMAL_JPEG_BYTES = Uint8Array.from([
+  0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03, 0x01,
+  0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xda, 0x00, 0x0c, 0x03,
+  0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9,
+]);
+
 const responseLike = ({
   status = 200,
   headers = {},
@@ -152,7 +165,10 @@ describe("processMessageFiles image size guards", () => {
       }),
     ]);
     global.fetch = jest.fn(async () => {
-      throw new Error("Trusted file size should avoid network probes");
+      return responseLike({
+        headers: { "content-length": String(VALID_PNG_BYTES.byteLength) },
+        body: streamBody(VALID_PNG_BYTES),
+      });
     }) as any;
 
     const result = await processMessageFiles(
@@ -264,7 +280,10 @@ describe("processMessageFiles image size guards", () => {
       }),
     ]);
     global.fetch = jest.fn(async () => {
-      throw new Error("Trusted file size should avoid network probes");
+      return responseLike({
+        headers: { "content-length": String(VALID_PNG_BYTES.byteLength) },
+        body: streamBody(VALID_PNG_BYTES),
+      });
     }) as any;
 
     const result = await processMessageFiles(
@@ -287,6 +306,122 @@ describe("processMessageFiles image size guards", () => {
       name: "small.png",
       url: "https://storage.example/small.png",
     });
+  });
+
+  it("omits stored images whose storage URL does not return valid image bytes", async () => {
+    const notImageBytes = new TextEncoder().encode("<html>not an image</html>");
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/not-image.png", {
+        sizeBytes: notImageBytes.byteLength,
+        name: "not-image.png",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => {
+      return responseLike({
+        headers: { "content-length": String(notImageBytes.byteLength) },
+        body: streamBody(notImageBytes),
+      });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_not_image",
+        name: "not-image.png",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(JSON.stringify(result.messages)).not.toContain(
+      "https://storage.example/not-image.png",
+    );
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "not-image.png" omitted: could not verify valid image bytes before sending it to the model. Please reattach or regenerate the image.]',
+    });
+  });
+
+  it("corrects stored image media type when storage bytes disagree with stale metadata", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/photo.jpg", {
+        sizeBytes: MINIMAL_JPEG_BYTES.byteLength,
+        mediaType: "image/png",
+        name: "photo.jpg",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => {
+      return responseLike({
+        headers: { "content-length": String(MINIMAL_JPEG_BYTES.byteLength) },
+        body: streamBody(MINIMAL_JPEG_BYTES),
+      });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_jpeg",
+        name: "photo.jpg",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toMatchObject({
+      type: "file",
+      mediaType: "image/jpeg",
+      url: "https://storage.example/photo.jpg",
+    });
+  });
+
+  it("stages invalid Agent images into the sandbox without sending them inline to the provider", async () => {
+    const notImageBytes = new TextEncoder().encode("not a png");
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/broken.png", {
+        sizeBytes: notImageBytes.byteLength,
+        name: "broken.png",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => {
+      return responseLike({
+        headers: { "content-length": String(notImageBytes.byteLength) },
+        body: streamBody(notImageBytes),
+      });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_broken",
+        mediaType: "image/png",
+        name: "broken.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toEqual([
+      {
+        kind: "url",
+        url: "https://storage.example/broken.png",
+        localPath: "/home/user/upload/broken.png",
+      },
+    ]);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: '<attachment filename="broken.png" local_path="/home/user/upload/broken.png" />',
+      },
+    ]);
   });
 
   it("does not probe or convert inline URL file parts without fileId", async () => {

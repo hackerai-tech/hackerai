@@ -34,6 +34,7 @@ import {
   isSupportedImageMediaType,
   validateUploadPolicy,
 } from "../lib/utils/upload-policy";
+import { validateImageBytes } from "../lib/utils/image-validation";
 import {
   FILE_TOKEN_PERCENT,
   MAX_TOKENS_PAID,
@@ -853,6 +854,18 @@ export const saveFile = action({
         }
 
         const file = await response.blob();
+        if (isSupportedImageMediaType(args.mediaType)) {
+          const validation = validateImageBytes(
+            new Uint8Array(await file.arrayBuffer()),
+            args.mediaType,
+          );
+          if (!validation.valid) {
+            throw new ConvexError({
+              code: "INVALID_IMAGE_BYTES",
+              message: `Image "${args.name}" could not be uploaded because it is not a valid ${args.mediaType} file.`,
+            });
+          }
+        }
 
         // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
         const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
