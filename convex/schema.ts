@@ -1,6 +1,17 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+const retainedTailValidator = v.object({
+  start_message_id: v.string(),
+  start_part_index: v.number(),
+  budget_tokens: v.number(),
+  retained_tokens: v.number(),
+  retained_message_count: v.number(),
+  retained_part_count: v.number(),
+  projected_part_count: v.number(),
+  strategy: v.literal("token_budgeted_tail_v1"),
+});
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -68,12 +79,14 @@ export default defineSchema({
     cost: v.optional(v.number()),
     estimated_compacted_input_tokens: v.optional(v.number()),
     transcript_path: v.optional(v.string()),
+    retained_tail: v.optional(retainedTailValidator),
     previous_summaries: v.optional(
       v.array(
         v.object({
           summary_text: v.string(),
           summary_up_to_message_id: v.string(),
           summary_up_to_message_creation_time: v.optional(v.number()),
+          retained_tail: v.optional(retainedTailValidator),
         }),
       ),
     ),

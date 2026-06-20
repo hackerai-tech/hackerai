@@ -25,7 +25,6 @@ import {
 import {
   NO_SUMMARIZATION,
   isAboveTokenThreshold,
-  splitMessages,
   generateSummaryText,
   buildSummaryMessage,
   persistSummary,
@@ -35,6 +34,10 @@ import {
   resolveSummarizationMaxTokens,
 } from "./helpers";
 import type { SummarizationResult } from "./helpers";
+import {
+  getRetainedTailBudgetTokens,
+  selectRetainedTailForSummarization,
+} from "./retained-tail";
 
 export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
@@ -178,10 +181,12 @@ export const checkAndSummarizeIfNeeded = async ({
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
   let existingSummaryText: string | null = null;
+  let existingSummaryMessage: UIMessage | null = null;
 
   if (uiMessages.length > 0 && isSummaryMessage(uiMessages[0])) {
     realMessages = uiMessages.slice(1);
     existingSummaryText = extractSummaryText(uiMessages[0]);
+    existingSummaryMessage = uiMessages[0];
   } else {
     realMessages = uiMessages;
   }
@@ -213,11 +218,40 @@ export const checkAndSummarizeIfNeeded = async ({
     return NO_SUMMARIZATION(uiMessages);
   }
 
-  // Split only real messages so cutoff always references a DB message
-  const { messagesToSummarize, lastMessages } = splitMessages(realMessages);
+  const retainedTailBudget = getRetainedTailBudgetTokens(
+    summarizationThreshold,
+  );
+  let tailSelection = selectRetainedTailForSummarization(realMessages, {
+    budgetTokens: retainedTailBudget,
+    fileTokens,
+  });
 
-  const cutoffMessageId =
-    messagesToSummarize[messagesToSummarize.length - 1].id;
+  if (
+    tailSelection.headMessages.length === 0 &&
+    providerPromptPressure &&
+    !tailSelection.retainedTail?.projected_part_count
+  ) {
+    tailSelection = {
+      headMessages: realMessages,
+      tailMessages: [],
+      cutoffMessageId: realMessages.at(-1)?.id ?? null,
+    };
+  }
+
+  const hasSummarizableHead =
+    tailSelection.headMessages.length > 0 ||
+    existingSummaryMessage !== null ||
+    (tailSelection.retainedTail?.projected_part_count ?? 0) > 0;
+
+  if (!hasSummarizableHead || !tailSelection.cutoffMessageId) {
+    return NO_SUMMARIZATION(uiMessages);
+  }
+
+  const messagesToSummarize = existingSummaryMessage
+    ? [existingSummaryMessage, ...tailSelection.headMessages]
+    : tailSelection.headMessages;
+
+  const cutoffMessageId = tailSelection.cutoffMessageId;
 
   writeSummarizationStarted(writer);
 
@@ -225,7 +259,7 @@ export const checkAndSummarizeIfNeeded = async ({
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryText(
-      uiMessages,
+      messagesToSummarize,
       languageModel,
       mode,
       chatSystemPrompt,
@@ -233,7 +267,7 @@ export const checkAndSummarizeIfNeeded = async ({
       tools,
       providerOptions,
       abortSignal,
-      modelMessages,
+      undefined,
       getSummaryInputMaxTokens(maxTokens),
     );
 
@@ -244,7 +278,7 @@ export const checkAndSummarizeIfNeeded = async ({
         ? ensureSandbox()
             .then((sandbox) =>
               saveTranscriptToSandbox(
-                transcriptMessages ?? messagesToSummarize,
+                transcriptMessages ?? tailSelection.headMessages,
                 sandbox,
                 modelMessages,
               ),
@@ -276,6 +310,7 @@ export const checkAndSummarizeIfNeeded = async ({
       languageModel,
       usage: summarizationUsage,
       transcriptPath: savedPath,
+      retainedTail: tailSelection.retainedTail,
       reason: providerPromptPressure ? "provider_pressure" : undefined,
     });
 
@@ -283,7 +318,7 @@ export const checkAndSummarizeIfNeeded = async ({
 
     return {
       needsSummarization: true,
-      summarizedMessages: [summaryMessage, ...lastMessages],
+      summarizedMessages: [summaryMessage, ...tailSelection.tailMessages],
       cutoffMessageId,
       summaryText: finalSummaryText,
       summarizationUsage,

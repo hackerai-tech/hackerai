@@ -89,6 +89,17 @@ const CONVEX_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const MESSAGE_DOCUMENT_TARGET_BYTES = 960 * 1024;
 const MIN_SEARCH_CONTENT_CHARS = 256;
 
+type RetainedTailDoc = {
+  start_message_id: string;
+  start_part_index: number;
+  budget_tokens: number;
+  retained_tokens: number;
+  retained_message_count: number;
+  retained_part_count: number;
+  projected_part_count: number;
+  strategy: "token_budgeted_tail_v1";
+};
+
 const getMessageDocumentSize = (document: Record<string, unknown>): number =>
   getDocumentSize(document as Record<string, Value>);
 
@@ -217,6 +228,7 @@ const tryFallbackSummary = async (
   previousSummaries: {
     summary_text: string;
     summary_up_to_message_id: string;
+    retained_tail?: RetainedTailDoc;
   }[],
   earliestDeletedTime: number,
 ): Promise<boolean> => {
@@ -235,10 +247,25 @@ const tryFallbackSummary = async (
   // Find the first candidate whose cutoff message still exists and predates the deletion
   for (let i = 0; i < previousSummaries.length; i++) {
     const cutoffMsg = cutoffMessages[i];
-    if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
+    const retainedTailStartId =
+      previousSummaries[i].retained_tail?.start_message_id;
+    const retainedTailStartExists =
+      !retainedTailStartId ||
+      retainedTailStartId === previousSummaries[i].summary_up_to_message_id ||
+      !!(await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q: any) => q.eq("id", retainedTailStartId))
+        .first());
+
+    if (
+      cutoffMsg &&
+      retainedTailStartExists &&
+      cutoffMsg._creationTime < earliestDeletedTime
+    ) {
       await ctx.db.patch(summaryId, {
         summary_text: previousSummaries[i].summary_text,
         summary_up_to_message_id: previousSummaries[i].summary_up_to_message_id,
+        retained_tail: previousSummaries[i].retained_tail,
         previous_summaries: previousSummaries.slice(i + 1),
       });
       return true;
@@ -268,6 +295,7 @@ const checkAndInvalidateSummary = async (
     const previousSummaries: {
       summary_text: string;
       summary_up_to_message_id: string;
+      retained_tail?: RetainedTailDoc;
     }[] = summary.previous_summaries ?? [];
 
     const earliestDeletedTime = Math.min(
@@ -301,8 +329,45 @@ const checkAndInvalidateSummary = async (
       return;
     }
 
+    const retainedTailStartMessageId = summary.retained_tail?.start_message_id;
+    const retainedTailStartMessage =
+      retainedTailStartMessageId &&
+      retainedTailStartMessageId !== summary.summary_up_to_message_id
+        ? await ctx.db
+            .query("messages")
+            .withIndex("by_message_id", (q: any) =>
+              q.eq("id", retainedTailStartMessageId),
+            )
+            .first()
+        : retainedTailStartMessageId === summary.summary_up_to_message_id
+          ? cutoffMessage
+          : null;
+
+    if (retainedTailStartMessageId && !retainedTailStartMessage) {
+      const found = await tryFallbackSummary(
+        ctx,
+        chat.latest_summary_id,
+        previousSummaries,
+        earliestDeletedTime,
+      );
+      if (found) return;
+
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: undefined,
+      });
+      try {
+        await ctx.db.delete(chat.latest_summary_id);
+      } catch (error) {
+        console.error("[Messages] Failed to delete stale summary:", error);
+      }
+      return;
+    }
+
     const shouldInvalidate = deletedMessages.some(
-      (msg) => msg.creationTime <= cutoffMessage._creationTime,
+      (msg) =>
+        msg.creationTime <= cutoffMessage._creationTime ||
+        (retainedTailStartMessageId != null &&
+          msg.id === retainedTailStartMessageId),
     );
 
     if (shouldInvalidate) {

@@ -21,6 +21,11 @@ import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
+import {
+  projectMessagesToTokenBudget,
+  projectRetainedTailFromMessages,
+  type RetainedTailMetadata,
+} from "@/lib/chat/summarization/retained-tail";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import type { ChatMode } from "@/types/chat";
@@ -756,17 +761,9 @@ export async function getMessagesByChatId({
           // deleted assistant response must not leak back into the new run.
           if (latestSummary && !regenerate) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
-
-            // Find cutoff index once
-            const cutoffIndex = truncatedFromLoop.findIndex(
-              (m) => m.id === summaryUpToId,
-            );
-
-            // Keep messages that come after the cutoff
-            const messagesAfterCutoff =
-              cutoffIndex >= 0
-                ? truncatedFromLoop.slice(cutoffIndex + 1)
-                : truncatedFromLoop;
+            const availableChrono = [...fetchedDesc]
+              .reverse()
+              .concat(newMessages);
 
             // Create summary message, prepending resume preamble for agent modes
             const summaryPrefix =
@@ -791,14 +788,46 @@ export async function getMessagesByChatId({
               fileTokensFromLoop,
             );
             const budgetForMessages = maxTokens - summaryTokens;
-            const truncatedAfterCutoff =
-              budgetForMessages > 0
-                ? truncateMessagesToTokenLimit(
-                    messagesAfterCutoff,
-                    fileTokensFromLoop,
-                    budgetForMessages,
-                  )
-                : [];
+            const retainedTail = latestSummary.retained_tail as
+              | RetainedTailMetadata
+              | undefined;
+            let truncatedAfterCutoff: UIMessage[] = [];
+
+            if (budgetForMessages > 0 && retainedTail) {
+              truncatedAfterCutoff = projectRetainedTailFromMessages(
+                availableChrono,
+                retainedTail,
+                {
+                  budgetTokens: budgetForMessages,
+                  fileTokens: fileTokensFromLoop,
+                },
+              );
+
+              if (truncatedAfterCutoff.length === 0) {
+                truncatedAfterCutoff = projectMessagesToTokenBudget(
+                  availableChrono,
+                  {
+                    budgetTokens: budgetForMessages,
+                    fileTokens: fileTokensFromLoop,
+                  },
+                );
+              }
+            } else if (budgetForMessages > 0) {
+              // Legacy summaries only have a whole-message cutoff.
+              const cutoffIndex = truncatedFromLoop.findIndex(
+                (m) => m.id === summaryUpToId,
+              );
+              const messagesAfterCutoff =
+                cutoffIndex >= 0
+                  ? truncatedFromLoop.slice(cutoffIndex + 1)
+                  : truncatedFromLoop;
+              truncatedAfterCutoff = truncateMessagesToTokenLimit(
+                messagesAfterCutoff,
+                fileTokensFromLoop,
+                budgetForMessages,
+              );
+            }
+
             const truncatedWithSummary: UIMessage[] = [
               summaryMessage,
               ...truncatedAfterCutoff,
@@ -1119,6 +1148,7 @@ export async function saveChatSummary({
     cost?: number;
     estimatedCompactedInputTokens?: number;
     transcriptPath?: string;
+    retainedTail?: RetainedTailMetadata;
   };
 }) {
   try {

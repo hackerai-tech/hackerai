@@ -61,6 +61,22 @@ const USER_ID = "user-123";
 const CHAT_DOC_ID = "chat-doc-id" as Id<"chats">;
 const SUMMARY_DOC_ID = "summary-doc-id" as Id<"chat_summaries">;
 
+function makeRetainedTail(
+  overrides: Record<string, any> = {},
+): Record<string, any> {
+  return {
+    start_message_id: "msg-tail-start",
+    start_part_index: 0,
+    budget_tokens: 8000,
+    retained_tokens: 1200,
+    retained_message_count: 2,
+    retained_part_count: 4,
+    projected_part_count: 0,
+    strategy: "token_budgeted_tail_v1",
+    ...overrides,
+  };
+}
+
 function makeSummaryDoc(
   overrides: Record<string, any> = {},
 ): Record<string, any> {
@@ -128,6 +144,93 @@ describe("copyChatSummary", () => {
         prompt_version: "test-prompt-v1",
       }),
     );
+  });
+
+  it("remaps retained tail metadata for copied summary messages", async () => {
+    const { copyChatSummary } = await import("../lib/utils");
+    const mockDb = {
+      get: jest.fn<any>().mockResolvedValue(
+        makeSummaryDoc({
+          summary_up_to_message_id: "source-cutoff",
+          retained_tail: makeRetainedTail({
+            start_message_id: "source-tail",
+            start_part_index: 3,
+          }),
+          previous_summaries: [
+            {
+              summary_text: "previous",
+              summary_up_to_message_id: "source-prev-cutoff",
+              retained_tail: makeRetainedTail({
+                start_message_id: "source-prev-tail",
+                start_part_index: 1,
+              }),
+            },
+          ],
+        }),
+      ),
+      insert: jest.fn<any>().mockResolvedValue("new-summary-id"),
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await copyChatSummary(mockDb as any, {
+      sourceSummaryId: SUMMARY_DOC_ID,
+      targetChatDocId: "target-chat-doc-id" as Id<"chats">,
+      targetChatId: "target-chat-id",
+      messageIdMap: new Map([
+        ["source-cutoff", "target-cutoff"],
+        ["source-tail", "target-tail"],
+        ["source-prev-cutoff", "target-prev-cutoff"],
+        ["source-prev-tail", "target-prev-tail"],
+      ]),
+    });
+
+    expect(mockDb.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.objectContaining({
+        summary_up_to_message_id: "target-cutoff",
+        retained_tail: expect.objectContaining({
+          start_message_id: "target-tail",
+          start_part_index: 3,
+        }),
+        previous_summaries: [
+          expect.objectContaining({
+            summary_up_to_message_id: "target-prev-cutoff",
+            retained_tail: expect.objectContaining({
+              start_message_id: "target-prev-tail",
+              start_part_index: 1,
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("drops only retained tail metadata when copied tail start cannot be remapped", async () => {
+    const { copyChatSummary } = await import("../lib/utils");
+    const mockDb = {
+      get: jest.fn<any>().mockResolvedValue(
+        makeSummaryDoc({
+          summary_up_to_message_id: "source-cutoff",
+          retained_tail: makeRetainedTail({
+            start_message_id: "source-tail-not-copied",
+          }),
+        }),
+      ),
+      insert: jest.fn<any>().mockResolvedValue("new-summary-id"),
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await copyChatSummary(mockDb as any, {
+      sourceSummaryId: SUMMARY_DOC_ID,
+      targetChatDocId: "target-chat-doc-id" as Id<"chats">,
+      targetChatId: "target-chat-id",
+      messageIdMap: new Map([["source-cutoff", "target-cutoff"]]),
+    });
+
+    const insertedDoc = mockDb.insert.mock.calls[0][1];
+    expect(insertedDoc.summary_text).toBe("current summary");
+    expect(insertedDoc.summary_up_to_message_id).toBe("target-cutoff");
+    expect(insertedDoc.retained_tail).toBeUndefined();
   });
 });
 
@@ -244,6 +347,36 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     );
   });
 
+  it("should persist retained tail metadata on the latest summary", async () => {
+    const chat = makeChatDoc({ latest_summary_id: undefined });
+    setupSaveSummaryQueries(chat);
+    const retainedTail = makeRetainedTail({
+      start_message_id: "msg-9",
+      start_part_index: 2,
+      projected_part_count: 1,
+    });
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "new summary",
+      summaryUpToMessageId: "msg-8",
+      metadata: {
+        retainedTail,
+      },
+    });
+
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.objectContaining({
+        summary_up_to_message_id: "msg-8",
+        retained_tail: retainedTail,
+      }),
+    );
+  });
+
   it("should push old summary into previous_summaries[0] on second save", async () => {
     const chat = makeChatDoc();
     setupSaveSummaryQueries(chat);
@@ -278,6 +411,42 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       }),
     );
     expect(mockCtx.db.delete).not.toHaveBeenCalledWith(SUMMARY_DOC_ID);
+  });
+
+  it("should preserve old retained tail metadata in previous_summaries", async () => {
+    const chat = makeChatDoc();
+    setupSaveSummaryQueries(chat);
+    const oldRetainedTail = makeRetainedTail({
+      start_message_id: "msg-6",
+      start_part_index: 4,
+    });
+
+    const oldSummary = makeSummaryDoc({
+      summary_text: "old text",
+      summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
+      retained_tail: oldRetainedTail,
+      previous_summaries: [],
+    });
+    mockCtx.db.get.mockResolvedValue(oldSummary);
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "new summary",
+      summaryUpToMessageId: "msg-10",
+    });
+
+    const insertedDoc = mockCtx.db.insert.mock.calls[0][1];
+    expect(insertedDoc.previous_summaries[0]).toEqual(
+      expect.objectContaining({
+        summary_text: "old text",
+        summary_up_to_message_id: "msg-5",
+        retained_tail: oldRetainedTail,
+      }),
+    );
   });
 
   it("should preserve the chain: [old, ...old_previous_summaries]", async () => {
@@ -716,6 +885,55 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     });
   });
 
+  it("should preserve retained tail metadata when promoting a previous summary", async () => {
+    const assistantMsg = makeAssistantMessage({ _creationTime: 2000 });
+    const chatDoc = makeChatDoc();
+    const retainedTail = makeRetainedTail({
+      start_message_id: "msg-prev-1",
+      start_part_index: 2,
+    });
+    const summaryDoc = makeSummaryDoc({
+      summary_up_to_message_id: "msg-cutoff",
+      previous_summaries: [
+        {
+          summary_text: "fallback-text",
+          summary_up_to_message_id: "msg-prev-1",
+          retained_tail: retainedTail,
+        },
+      ],
+    });
+
+    const cutoffMsg = {
+      _id: "cutoff-doc",
+      id: "msg-cutoff",
+      _creationTime: 3000,
+    };
+    const prevCutoffMsg = {
+      _id: "prev-cutoff-doc",
+      id: "msg-prev-1",
+      _creationTime: 1000,
+    };
+
+    setupDbQueryChain({
+      assistantMessage: assistantMsg,
+      chatDoc,
+      cutoffMessage: cutoffMsg,
+      fallbackCutoffMessages: [prevCutoffMsg],
+    });
+    mockCtx.db.get.mockResolvedValue(summaryDoc);
+
+    const { deleteLastAssistantMessage } = await import("../messages");
+
+    await deleteLastAssistantMessage.handler(mockCtx, { chatId: CHAT_ID });
+
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
+      summary_text: "fallback-text",
+      summary_up_to_message_id: "msg-prev-1",
+      retained_tail: retainedTail,
+      previous_summaries: [],
+    });
+  });
+
   it("should skip invalid previous entries and promote a deeper valid one", async () => {
     const assistantMsg = makeAssistantMessage({ _creationTime: 2000 });
     const chatDoc = makeChatDoc();
@@ -855,6 +1073,45 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
       expect.objectContaining({ latest_summary_id: undefined }),
     );
 
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
+  });
+
+  it("should invalidate a partial-message summary when deleting its tail-start message", async () => {
+    const assistantMsg = makeAssistantMessage({
+      id: CUTOFF_MSG_ID,
+      _creationTime: 5000,
+    });
+    const chatDoc = makeChatDoc();
+    const summaryDoc = makeSummaryDoc({
+      summary_up_to_message_id: CUTOFF_MSG_ID,
+      retained_tail: makeRetainedTail({
+        start_message_id: CUTOFF_MSG_ID,
+        start_part_index: 2,
+      }),
+      previous_summaries: [],
+    });
+    const cutoffMsg = {
+      _id: "cutoff-doc",
+      id: CUTOFF_MSG_ID,
+      _creationTime: 5000,
+    };
+
+    setupDbQueryChain({
+      assistantMessage: assistantMsg,
+      chatDoc,
+      cutoffMessage: cutoffMsg,
+      fallbackCutoffMessages: [],
+    });
+    mockCtx.db.get.mockResolvedValue(summaryDoc);
+
+    const { deleteLastAssistantMessage } = await import("../messages");
+
+    await deleteLastAssistantMessage.handler(mockCtx, { chatId: CHAT_ID });
+
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      CHAT_DOC_ID,
+      expect.objectContaining({ latest_summary_id: undefined }),
+    );
     expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
   });
 

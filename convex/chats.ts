@@ -19,6 +19,28 @@ import { convexLogger } from "./lib/logger";
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
 
+const retainedTailValidator = v.object({
+  start_message_id: v.string(),
+  start_part_index: v.number(),
+  budget_tokens: v.number(),
+  retained_tokens: v.number(),
+  retained_message_count: v.number(),
+  retained_part_count: v.number(),
+  projected_part_count: v.number(),
+  strategy: v.literal("token_budgeted_tail_v1"),
+});
+
+type RetainedTailDoc = {
+  start_message_id: string;
+  start_part_index: number;
+  budget_tokens: number;
+  retained_tokens: number;
+  retained_message_count: number;
+  retained_part_count: number;
+  projected_part_count: number;
+  strategy: "token_budgeted_tail_v1";
+};
+
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
   messageId: string,
@@ -1116,6 +1138,7 @@ export const saveLatestSummary = mutation({
         cost: v.optional(v.number()),
         estimatedCompactedInputTokens: v.optional(v.number()),
         transcriptPath: v.optional(v.string()),
+        retainedTail: v.optional(retainedTailValidator),
       }),
     ),
   },
@@ -1169,6 +1192,7 @@ export const saveLatestSummary = mutation({
         summary_text: string;
         summary_up_to_message_id: string;
         summary_up_to_message_creation_time?: number;
+        retained_tail?: RetainedTailDoc;
       }[] = [];
 
       if (chat.latest_summary_id) {
@@ -1213,6 +1237,7 @@ export const saveLatestSummary = mutation({
             {
               summary_text: oldSummary.summary_text,
               summary_up_to_message_id: oldSummary.summary_up_to_message_id,
+              retained_tail: oldSummary.retained_tail,
               ...(previousSummaryCutoffCreationTime !== null
                 ? {
                     summary_up_to_message_creation_time:
@@ -1266,6 +1291,7 @@ export const saveLatestSummary = mutation({
           estimated_compacted_input_tokens:
             args.metadata?.estimatedCompactedInputTokens,
           transcript_path: args.metadata?.transcriptPath,
+          retained_tail: args.metadata?.retainedTail,
         }).filter(([, value]) => value !== undefined),
       );
 
@@ -1323,6 +1349,7 @@ export const getLatestSummaryForBackend = query({
     v.object({
       summary_text: v.string(),
       summary_up_to_message_id: v.string(),
+      retained_tail: v.optional(retainedTailValidator),
     }),
     v.null(),
   ),
@@ -1350,6 +1377,7 @@ export const getLatestSummaryForBackend = query({
       return {
         summary_text: summary.summary_text,
         summary_up_to_message_id: summary.summary_up_to_message_id,
+        retained_tail: summary.retained_tail,
       };
     } catch (error) {
       console.error("Failed to get latest summary:", error);

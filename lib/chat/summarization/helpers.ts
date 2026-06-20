@@ -34,6 +34,7 @@ import {
   AGENT_SUMMARIZATION_PROMPT,
   ASK_SUMMARIZATION_PROMPT,
 } from "./prompts";
+import type { RetainedTailMetadata } from "./retained-tail";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -56,6 +57,7 @@ export interface SummaryPersistenceMetadata {
   cost?: number;
   estimatedCompactedInputTokens?: number;
   transcriptPath?: string;
+  retainedTail?: RetainedTailMetadata;
 }
 
 export interface SummarizationResult {
@@ -661,6 +663,7 @@ export const buildSummaryPersistenceMetadata = ({
   languageModel,
   usage,
   transcriptPath,
+  retainedTail,
   reason,
 }: {
   providerInputTokens: number;
@@ -668,6 +671,7 @@ export const buildSummaryPersistenceMetadata = ({
   languageModel: LanguageModel;
   usage?: SummarizationUsage;
   transcriptPath?: string | null;
+  retainedTail?: RetainedTailMetadata;
   reason?: SummaryPersistenceMetadata["reason"];
 }): SummaryPersistenceMetadata => ({
   reason:
@@ -685,6 +689,7 @@ export const buildSummaryPersistenceMetadata = ({
   cost: usage?.cost,
   estimatedCompactedInputTokens: usage?.estimatedCompactedInputTokens,
   transcriptPath: transcriptPath ?? undefined,
+  retainedTail,
 });
 
 export const buildSummaryMessage = (
