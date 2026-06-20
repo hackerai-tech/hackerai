@@ -383,6 +383,43 @@ describe("processMessageFiles image size guards", () => {
     ]);
   });
 
+  it("falls back to legacy file URL action when metadata-aware action is not deployed", async () => {
+    mockConvexAction
+      .mockRejectedValueOnce(
+        new Error(
+          "Could not find public function for 's3Actions:getFileUrlInfosByFileIdsAction'.",
+        ),
+      )
+      .mockResolvedValueOnce(["https://storage.example/secret.txt"]);
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_secret",
+        mediaType: "text/plain",
+        name: "secret.txt",
+        size: 100,
+        url: "https://client.example/secret.txt",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(mockConvexAction).toHaveBeenCalledTimes(2);
+    expect(result.sandboxFiles).toEqual([
+      {
+        kind: "url",
+        url: "https://storage.example/secret.txt",
+        localPath: "/home/user/upload/secret.txt",
+      },
+    ]);
+    expect(JSON.stringify(result.messages)).not.toContain(
+      "https://client.example/secret.txt",
+    );
+  });
+
   it("does not stage a client-supplied URL when storage resolution fails", async () => {
     mockConvexAction.mockResolvedValue([null]);
 

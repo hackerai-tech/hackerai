@@ -37,6 +37,11 @@ const routeSrc = fs.readFileSync(
   "utf8",
 );
 
+const chatComponentSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/components/chat.tsx"),
+  "utf8",
+);
+
 const taskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
@@ -99,6 +104,41 @@ describe("agent-long-transport — direct UI stream reader", () => {
       /chunkType\s*===\s*"finish"[\s\S]{0,220}break;/,
     );
   });
+
+  test("completed runs drain briefly and then close normally when finish is missing", () => {
+    expect(transportSrc).toMatch(/COMPLETED_RUN_DRAIN_TIMEOUT_MS/);
+    expect(transportSrc).toMatch(/QUIET_STREAM_STATUS_POLL_INTERVAL_MS/);
+    expect(transportSrc).toMatch(/QUIET_STREAM_STATUS_POLL_AFTER_MS/);
+    expect(transportSrc).toMatch(/status\s*===\s*"COMPLETED"/);
+    expect(transportSrc).toMatch(/startCompletedRunDrainTimer\(\)/);
+    expect(transportSrc).toMatch(/runs\s*\.\s*retrieve\(runId\)/);
+    expect(transportSrc).toMatch(/pollResumeEndpointForTerminalRun/);
+    expect(transportSrc).toMatch(/\/api\/agent-long\/resume\?chatId=/);
+    expect(transportSrc).toMatch(/response\.status\s*===\s*204/);
+    expect(transportSrc).toMatch(/options\?\.chatId\s*\?\?\s*handle\.chatId/);
+    expect(transportSrc).toMatch(/completedRunDrainPromise/);
+    expect(transportSrc).toMatch(/completedRunDrainElapsed\s*=\s*true/);
+    expect(transportSrc).toMatch(/enqueueSyntheticFinish\(\)/);
+    expect(transportSrc).toMatch(
+      /completedRunDrainElapsed\s*=\s*true[\s\S]*enqueueSyntheticFinish\(\)[\s\S]*sawTerminalChunk\s*=\s*true[\s\S]*break;/,
+    );
+    expect(transportSrc).toMatch(
+      /userAborted\s*\|\|\s*timedOutAfterFinish\s*\|\|\s*completedRunDrainElapsed/,
+    );
+  });
+});
+
+describe("agent-long chat UI — completion reconciliation", () => {
+  test("polls the resume endpoint and clears useChat state after backend completion", () => {
+    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
+    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
+    expect(chatComponentSrc).toMatch(/\/api\/agent-long\/resume\?chatId=/);
+    expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
+    expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
+    expect(chatComponentSrc).toMatch(/stop\(\)/);
+    expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
+    expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+  });
 });
 
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
@@ -144,6 +184,12 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
   test("returns 204 when no active run ID is stored", () => {
     expect(resumeSrc).toMatch(/status:\s*204/);
   });
+
+  test("returns chat id with the public run handle", () => {
+    expect(resumeSrc).toMatch(
+      /NextResponse\.json\(\{\s*runId,\s*publicAccessToken,\s*chatId\s*\}\)/,
+    );
+  });
 });
 
 describe("agent-long task — Trigger.dev dashboard error visibility", () => {
@@ -188,6 +234,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(parallelIdx).toBeGreaterThan(-1);
     expect(tokenIdx).toBeGreaterThan(parallelIdx);
     expect(activeRunIdx).toBeGreaterThan(parallelIdx);
+  });
+
+  test("start route returns chat id with the public run handle", () => {
+    expect(routeSrc).toMatch(
+      /NextResponse\.json\(\{\s*runId:\s*handle\.id,\s*publicAccessToken,\s*chatId,/,
+    );
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
