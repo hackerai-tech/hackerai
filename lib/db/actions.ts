@@ -325,6 +325,27 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+export async function deleteChatForBackend({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("chats.deleteChatForBackend", error, {
+      chat_id: chatId,
+      user_id: userId,
+    });
+  }
+}
+
 export async function saveChat({
   id,
   userId,
