@@ -165,8 +165,22 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (Kimi K2.6) for paid ask when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
+    it("should return Kimi K2.7 Code for paid ask when an image is attached", () => {
+      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
+        "model-kimi-k2.7-code",
+      );
+    });
+
+    it("should return ask-model (Gemini) for paid ask when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
+        "ask-model",
+      );
+    });
+
+    it("should prefer ask-model (Gemini) when paid ask has both image and PDF attachments", () => {
+      expect(selectModel("ask", "pro", undefined, true, true)).toBe(
+        "ask-model",
+      );
     });
 
     it("should return ask-model-free for ask mode (free)", () => {
@@ -196,8 +210,8 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep HackerAI Pro on Sonnet 4.6 when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", true)).toBe(
+    it("should keep HackerAI Pro on Sonnet 4.6 when an image is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
         "model-sonnet-4.6",
       );
     });
@@ -208,8 +222,20 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to the Kimi K2.6 compatibility route when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true)).toBe(
+    it("should promote HackerAI Standard to Kimi K2.7 Code when an image is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
+        "model-kimi-k2.7-code",
+      );
+    });
+
+    it("should promote HackerAI Standard to Gemini 3 Flash when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
+        "model-gemini-3-flash",
+      );
+    });
+
+    it("should prefer Gemini 3 Flash for HackerAI Standard when image and PDF are both attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
         "model-gemini-3-flash",
       );
     });
@@ -274,8 +300,14 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image/PDF -> Kimi K2.6", () => {
-      expect(selectModel("ask", "pro", "auto", true)).toBe("ask-model");
+    it("should treat 'auto' as no override in ask mode with image -> Kimi K2.7 Code", () => {
+      expect(selectModel("ask", "pro", "auto", true, false)).toBe(
+        "model-kimi-k2.7-code",
+      );
+    });
+
+    it("should treat 'auto' as no override in ask mode with PDF -> Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", false, true)).toBe("ask-model");
     });
   });
 
@@ -286,7 +318,12 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", undefined)).toBe(
         "model-deepseek-v4-pro",
       );
-      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
+      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
+        "model-kimi-k2.7-code",
+      );
+      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
+        "ask-model",
+      );
     });
   });
 });

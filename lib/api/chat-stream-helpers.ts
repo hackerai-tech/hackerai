@@ -519,6 +519,8 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const ASK_MEDIUM_REASONING_MODELS = [
+  "ask-model",
+  "model-gemini-3-flash",
   "model-deepseek-v4-pro",
   "model-sonnet-4.6",
   "model-opus-4.6",
@@ -529,8 +531,7 @@ const isAskMediumReasoningModel = (modelName?: string): boolean =>
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const ASK_KIMI_REASONING_MODELS = [
-  "ask-model",
-  "model-gemini-3-flash",
+  "model-kimi-k2.7-code",
   "model-kimi-k2.6",
 ] as const satisfies readonly ModelName[];
 

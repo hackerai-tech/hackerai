@@ -7,19 +7,26 @@ import {
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("routes Gemini 3 Flash compatibility keys to Kimi K2.6", () => {
+  it("keeps Gemini and stale Kimi compatibility keys pointed at their active slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("moonshotai/kimi-k2.6");
+    ).toBe("google/gemini-3-flash-preview");
     expect(
       (
         myProvider.languageModel("model-gemini-3-flash") as {
           modelId: string;
         }
       ).modelId,
-    ).toBe("moonshotai/kimi-k2.6");
+    ).toBe("google/gemini-3-flash-preview");
+    expect(
+      (
+        myProvider.languageModel("model-kimi-k2.6") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("moonshotai/kimi-k2.7-code:exacto");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe(
-      "Moonshot Kimi K2.6",
+      "Google Gemini 3 Flash",
     );
   });
 });

@@ -21,16 +21,16 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
+const GEMINI_SLUG = "google/gemini-3-flash-preview";
 const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
-const KIMI_K2_6_SLUG = "moonshotai/kimi-k2.6";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 ask chain to Kimi K2.6", () => {
+  it("resolves Opus 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K2_6_SLUG],
+      models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
@@ -62,7 +62,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 ask chain to Kimi K2.6", () => {
+  it("resolves Sonnet 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -70,7 +70,7 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K2_6_SLUG],
+      models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
@@ -147,15 +147,15 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from free DeepSeek agent model to Kimi K2.6", () => {
+  it("falls back from free DeepSeek agent model to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model-free");
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K2_6_SLUG],
+      models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from explicit DeepSeek Pro ask model to Kimi K2.6", () => {
+  it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -163,12 +163,12 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K2_6_SLUG],
+      models: [GEMINI_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from the Kimi compatibility route to Grok", () => {
+  it("falls back from the Gemini PDF route to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
       models: [GROK_SLUG],
@@ -197,7 +197,19 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each(["ask-model", "model-gemini-3-flash", "model-kimi-k2.6"])(
+  it.each(["ask-model", "model-gemini-3-flash"])(
+    "enables hidden medium reasoning for Gemini ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "medium",
+        exclude: true,
+      });
+    },
+  );
+
+  it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
     "enables reasoning for Kimi ask mode route %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");

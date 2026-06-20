@@ -36,11 +36,12 @@ export const getMaxStepsForUser = (
 /**
  * Selects the appropriate model based on mode and subscription.
  * @param mode - Chat mode (ask or agent)
- * @param hasImageOrPdf - Whether any message has an image or PDF attachment.
+ * @param hasImageAttachment - Whether any message has an image attachment.
+ * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only, much cheaper than Claude); when an image or PDF is present we
- *   promote to the Kimi K2.6 compatibility route so vision/document parts are
- *   actually understood. Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro
+ *   (text-only, much cheaper than Claude); image-only prompts promote to Kimi
+ *   K2.7 Code, while prompts with PDFs promote to Gemini 3 Flash Preview for
+ *   native file support. Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro
  *   always uses Sonnet 4.6.
  * @returns Model name to use
  */
@@ -48,14 +49,23 @@ export function selectModel(
   mode: ChatMode,
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
-  hasImageOrPdf?: boolean,
+  hasImageAttachment?: boolean,
+  hasPdfAttachment?: boolean,
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  // DeepSeek ask routes are text-only, so image/PDF prompts promote to the
-  // Kimi K2.6 compatibility route unless the selected tier intentionally uses a
-  // multimodal model such as Sonnet or Opus.
+  // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
+  // media-capable route unless the selected tier intentionally uses a
+  // multimodal/file-capable model such as Sonnet or Opus. PDF wins over image
+  // when both are present because Kimi K2.7 Code is image-capable but not
+  // declared as file/PDF-capable by OpenRouter.
   const isFreeAsk = !isAgent && subscription === "free";
-  const isPaidAskText = !isAgent && subscription !== "free" && !hasImageOrPdf;
+  const hasAskImage = !isAgent && !!hasImageAttachment;
+  const hasAskPdf = !isAgent && !!hasPdfAttachment;
+  const paidAskMediaModel: ModelName = hasAskPdf
+    ? "ask-model"
+    : hasAskImage
+      ? "model-kimi-k2.7-code"
+      : "model-deepseek-v4-pro";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
@@ -63,9 +73,7 @@ export function selectModel(
       : "agent-model"
     : isFreeAsk
       ? "ask-model-free"
-      : isPaidAskText
-        ? "model-deepseek-v4-pro"
-        : "ask-model";
+      : paidAskMediaModel;
 
   // Free users always route through the auto router; paid users may pick a
   // tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
@@ -77,7 +85,11 @@ export function selectModel(
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
   if (selectedModel === "hackerai-standard" && !isAgent) {
-    return hasImageOrPdf ? "model-gemini-3-flash" : "model-deepseek-v4-pro";
+    return hasAskPdf
+      ? "model-gemini-3-flash"
+      : hasAskImage
+        ? "model-kimi-k2.7-code"
+        : "model-deepseek-v4-pro";
   }
 
   if (selectedModel === "hackerai-pro" && !isAgent) {
@@ -89,17 +101,26 @@ export function selectModel(
 }
 
 /**
- * True if any message has an image or PDF file part. Used by selectModel
- * to decide whether the text-only DeepSeek ask route is viable.
+ * Media file parts used by selectModel to decide whether the text-only
+ * DeepSeek ask route is viable.
  */
-function hasImageOrPdfAttachment(messages: UIMessage[]): boolean {
-  return messages.some((msg) =>
-    msg.parts?.some((part: any) => {
-      if (part.type !== "file") return false;
+function getMediaAttachmentRouting(messages: UIMessage[]): {
+  hasImage: boolean;
+  hasPdf: boolean;
+} {
+  let hasImage = false;
+  let hasPdf = false;
+
+  messages.forEach((msg) => {
+    msg.parts?.forEach((part: any) => {
+      if (part.type !== "file") return;
       const mediaType: string = part.mediaType ?? "";
-      return mediaType.startsWith("image/") || mediaType === "application/pdf";
-    }),
-  );
+      if (mediaType.startsWith("image/")) hasImage = true;
+      if (mediaType === "application/pdf") hasPdf = true;
+    });
+  });
+
+  return { hasImage, hasPdf };
 }
 
 /**
@@ -709,13 +730,17 @@ export async function processChatMessages({
   // This prevents "tool call id is duplicated" errors from providers
   const messagesWithoutDuplicates =
     removeDuplicateToolParts(messagesWithContent);
+  const mediaAttachmentRouting = getMediaAttachmentRouting(
+    messagesWithoutDuplicates,
+  );
 
   // Select the appropriate model early so we can make model-aware decisions below
   const selectedModel = selectModel(
     mode,
     subscription,
     modelOverride,
-    hasImageOrPdfAttachment(messagesWithoutDuplicates),
+    mediaAttachmentRouting.hasImage,
+    mediaAttachmentRouting.hasPdf,
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
