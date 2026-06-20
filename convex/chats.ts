@@ -19,6 +19,7 @@ import { convexLogger } from "./lib/logger";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -52,10 +53,29 @@ async function publishDeletionCancellation(ctx: MutationCtx, chatId: string) {
   }
 }
 
-async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
+async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
+  if (
+    chat.active_stream_id === undefined &&
+    chat.active_trigger_run_id === undefined &&
+    chat.canceled_at !== undefined
+  ) {
+    return;
+  }
+
   // Publish even when active_stream_id is not set yet; fast deletes can race
   // stream registration, and a no-listener cancellation message is harmless.
   await publishDeletionCancellation(ctx, chat.id);
+
+  await ctx.db.patch(chat._id, {
+    active_stream_id: undefined,
+    active_trigger_run_id: undefined,
+    canceled_at: Date.now(),
+    finish_reason: undefined,
+  });
+}
+
+async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
+  await prepareChatForDeletion(ctx, chat);
 
   // Delete all messages and their associated files
   const messages = await ctx.db
@@ -148,6 +168,8 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   if (!chat) {
     return false;
   }
+
+  await prepareChatForDeletion(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -1052,6 +1074,71 @@ export const getActiveTriggerRun = query({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     return chat?.active_trigger_run_id ?? null;
+  },
+});
+
+export const getActiveTriggerRunsForUser = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({
+    runs: v.array(
+      v.object({
+        chatId: v.string(),
+        triggerRunId: v.string(),
+      }),
+    ),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const requestedLimit = Math.floor(
+      args.limit ?? MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
+    );
+    const limit = Math.min(
+      Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 1, 1),
+      MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
+    );
+
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
+      )
+      .take(limit + 1);
+
+    return {
+      runs: chats.slice(0, limit).flatMap((chat) =>
+        chat.active_trigger_run_id
+          ? [
+              {
+                chatId: chat.id,
+                triggerRunId: chat.active_trigger_run_id,
+              },
+            ]
+          : [],
+      ),
+      hasMore: chats.length > limit,
+    };
+  },
+});
+
+/**
+ * Delete all chats for the authenticated backend user using the same bounded
+ * batch deleter as the client mutation.
+ */
+export const deleteAllChatsForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await deleteNextUserChatBatch(ctx, args.userId);
+    return null;
   },
 });
 
