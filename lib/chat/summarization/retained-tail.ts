@@ -265,7 +265,7 @@ const projectNewestTail = (
       if (!isUsefulTailPart(part)) continue;
 
       const projected = projectPartToBudget(part, remaining, fileTokens);
-      if (!projected) continue;
+      if (!projected) break;
 
       retainedParts.unshift(projected.part);
       retainedTokens += projected.tokens;

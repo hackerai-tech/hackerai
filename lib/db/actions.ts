@@ -804,8 +804,15 @@ export async function getMessagesByChatId({
               );
 
               if (truncatedAfterCutoff.length === 0) {
+                const cutoffIndex = availableChrono.findIndex(
+                  (m) => m.id === summaryUpToId,
+                );
+                const messagesAfterCutoff =
+                  cutoffIndex >= 0
+                    ? availableChrono.slice(cutoffIndex + 1)
+                    : availableChrono;
                 truncatedAfterCutoff = projectMessagesToTokenBudget(
-                  availableChrono,
+                  messagesAfterCutoff,
                   {
                     budgetTokens: budgetForMessages,
                     fileTokens: fileTokensFromLoop,

@@ -1,23 +1,13 @@
 import { GenericDatabaseWriter } from "convex/server";
 import type { DataModel } from "../_generated/dataModel";
 import { Id } from "../_generated/dataModel";
+import type { RetainedTailDoc } from "./retainedTail";
 
 export function validateServiceKey(serviceKey: string): void {
   if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }
-
-type RetainedTailDoc = {
-  start_message_id: string;
-  start_part_index: number;
-  budget_tokens: number;
-  retained_tokens: number;
-  retained_message_count: number;
-  retained_part_count: number;
-  projected_part_count: number;
-  strategy: "token_budgeted_tail_v1";
-};
 
 const remapRetainedTail = (
   retainedTail: RetainedTailDoc | undefined,

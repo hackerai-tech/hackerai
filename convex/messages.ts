@@ -1,4 +1,5 @@
 import { query, mutation, internalQuery } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
@@ -9,6 +10,7 @@ import {
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
+import type { RetainedTailDoc } from "./lib/retainedTail";
 
 /**
  * Extract text content from message parts for search and display
@@ -88,17 +90,6 @@ const getJsonSize = (value: unknown): number => {
 const CONVEX_DOCUMENT_MAX_BYTES = 1024 * 1024;
 const MESSAGE_DOCUMENT_TARGET_BYTES = 960 * 1024;
 const MIN_SEARCH_CONTENT_CHARS = 256;
-
-type RetainedTailDoc = {
-  start_message_id: string;
-  start_part_index: number;
-  budget_tokens: number;
-  retained_tokens: number;
-  retained_message_count: number;
-  retained_part_count: number;
-  projected_part_count: number;
-  strategy: "token_budgeted_tail_v1";
-};
 
 const getMessageDocumentSize = (document: Record<string, unknown>): number =>
   getDocumentSize(document as Record<string, Value>);
@@ -223,11 +214,12 @@ const getConvexErrorCode = (data: Value | undefined): string | undefined => {
  * Clears latest_summary_id if the summary's cutoff message was deleted
  */
 const tryFallbackSummary = async (
-  ctx: any,
+  ctx: MutationCtx,
   summaryId: Id<"chat_summaries">,
   previousSummaries: {
     summary_text: string;
     summary_up_to_message_id: string;
+    summary_up_to_message_creation_time?: number;
     retained_tail?: RetainedTailDoc;
   }[],
   earliestDeletedTime: number,
@@ -237,7 +229,7 @@ const tryFallbackSummary = async (
     previousSummaries.map((s) =>
       ctx.db
         .query("messages")
-        .withIndex("by_message_id", (q: any) =>
+        .withIndex("by_message_id", (q) =>
           q.eq("id", s.summary_up_to_message_id),
         )
         .first(),
@@ -254,7 +246,7 @@ const tryFallbackSummary = async (
       retainedTailStartId === previousSummaries[i].summary_up_to_message_id ||
       !!(await ctx.db
         .query("messages")
-        .withIndex("by_message_id", (q: any) => q.eq("id", retainedTailStartId))
+        .withIndex("by_message_id", (q) => q.eq("id", retainedTailStartId))
         .first());
 
     if (
@@ -265,6 +257,7 @@ const tryFallbackSummary = async (
       await ctx.db.patch(summaryId, {
         summary_text: previousSummaries[i].summary_text,
         summary_up_to_message_id: previousSummaries[i].summary_up_to_message_id,
+        summary_up_to_message_creation_time: cutoffMsg._creationTime,
         retained_tail: previousSummaries[i].retained_tail,
         previous_summaries: previousSummaries.slice(i + 1),
       });
@@ -275,7 +268,7 @@ const tryFallbackSummary = async (
 };
 
 const checkAndInvalidateSummary = async (
-  ctx: any,
+  ctx: MutationCtx,
   chatId: string,
   deletedMessages: { id: string; creationTime: number }[],
 ) => {
@@ -284,7 +277,7 @@ const checkAndInvalidateSummary = async (
   try {
     const chat = await ctx.db
       .query("chats")
-      .withIndex("by_chat_id", (q: any) => q.eq("id", chatId))
+      .withIndex("by_chat_id", (q) => q.eq("id", chatId))
       .first();
 
     if (!chat || !chat.latest_summary_id) return;
@@ -295,6 +288,7 @@ const checkAndInvalidateSummary = async (
     const previousSummaries: {
       summary_text: string;
       summary_up_to_message_id: string;
+      summary_up_to_message_creation_time?: number;
       retained_tail?: RetainedTailDoc;
     }[] = summary.previous_summaries ?? [];
 
@@ -304,7 +298,7 @@ const checkAndInvalidateSummary = async (
 
     const cutoffMessage = await ctx.db
       .query("messages")
-      .withIndex("by_message_id", (q: any) =>
+      .withIndex("by_message_id", (q) =>
         q.eq("id", summary.summary_up_to_message_id),
       )
       .first();
@@ -335,7 +329,7 @@ const checkAndInvalidateSummary = async (
       retainedTailStartMessageId !== summary.summary_up_to_message_id
         ? await ctx.db
             .query("messages")
-            .withIndex("by_message_id", (q: any) =>
+            .withIndex("by_message_id", (q) =>
               q.eq("id", retainedTailStartMessageId),
             )
             .first()

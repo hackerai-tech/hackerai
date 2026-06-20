@@ -881,6 +881,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
       summary_text: "fallback-text",
       summary_up_to_message_id: "msg-prev-1",
+      summary_up_to_message_creation_time: 1000,
       previous_summaries: [],
     });
   });
@@ -929,6 +930,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
       summary_text: "fallback-text",
       summary_up_to_message_id: "msg-prev-1",
+      summary_up_to_message_creation_time: 1000,
       retained_tail: retainedTail,
       previous_summaries: [],
     });
@@ -976,6 +978,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
       summary_text: "prev-1-text",
       summary_up_to_message_id: "msg-prev-1",
+      summary_up_to_message_creation_time: 500,
       previous_summaries: [],
     });
   });
@@ -1020,6 +1023,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
       summary_text: "first summary",
       summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 2000,
       previous_summaries: [],
     });
 

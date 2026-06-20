@@ -127,6 +127,36 @@ describe("retained tail selection", () => {
     ]);
   });
 
+  it("does not retain older parts past the contiguous suffix budget", () => {
+    const messages: UIMessage[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          { type: "text", text: "older candidate" },
+          {
+            type: "custom-large-part",
+            payload: "huge ".repeat(10_000),
+          } as any,
+          { type: "text", text: "latest" },
+        ],
+      },
+    ];
+
+    const result = selectRetainedTailForSummarization(messages, {
+      budgetTokens: safeCountTokens("latest"),
+    });
+
+    expect(result.retainedTail).toMatchObject({
+      start_message_id: "assistant-1",
+      start_part_index: 2,
+    });
+    expect(result.headMessages[0].parts).toEqual(messages[0].parts.slice(0, 2));
+    expect(result.tailMessages[0].parts).toEqual([
+      { type: "text", text: "latest" },
+    ]);
+  });
+
   it("reconstructs a persisted tail from start message and part index", () => {
     const messages: UIMessage[] = [
       textMessage("msg-1", "user", "summary-covered"),
