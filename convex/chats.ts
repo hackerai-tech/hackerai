@@ -1,5 +1,6 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
@@ -18,6 +19,7 @@ import { convexLogger } from "./lib/logger";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -37,6 +39,126 @@ async function scheduleDeleteAllChatsBatch(ctx: MutationCtx, userId: string) {
   });
 }
 
+async function publishDeletionCancellation(ctx: MutationCtx, chatId: string) {
+  try {
+    await ctx.scheduler.runAfter(0, internal.redisPubsub.publishCancellation, {
+      chatId,
+      skipSave: true,
+    });
+  } catch (error) {
+    console.error(
+      `Failed to publish cancellation for deleted chat ${chatId}:`,
+      error,
+    );
+  }
+}
+
+async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
+  if (
+    chat.active_stream_id === undefined &&
+    chat.active_trigger_run_id === undefined &&
+    chat.canceled_at !== undefined
+  ) {
+    return;
+  }
+
+  // Publish even when active_stream_id is not set yet; fast deletes can race
+  // stream registration, and a no-listener cancellation message is harmless.
+  await publishDeletionCancellation(ctx, chat.id);
+
+  await ctx.db.patch(chat._id, {
+    active_stream_id: undefined,
+    active_trigger_run_id: undefined,
+    canceled_at: Date.now(),
+    finish_reason: undefined,
+  });
+}
+
+async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
+  await prepareChatForDeletion(ctx, chat);
+
+  // Delete all messages and their associated files
+  const messages = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+    .collect();
+
+  for (const message of messages) {
+    // Skip deleting files for copied messages (they reference original chat files)
+    if (!message.source_message_id) {
+      // Clean up files associated with this message
+      if (message.file_ids && message.file_ids.length > 0) {
+        for (const fileId of message.file_ids) {
+          try {
+            const file = await ctx.db.get(fileId);
+            if (file) {
+              if (file.s3_key) {
+                await ctx.scheduler.runAfter(
+                  0,
+                  internal.s3Cleanup.deleteS3ObjectAction,
+                  { s3Key: file.s3_key },
+                );
+              }
+              // Delete from aggregate
+              await fileCountAggregate.deleteIfExists(ctx, file);
+              await ctx.db.delete(file._id);
+            }
+          } catch (error) {
+            console.error(`Failed to delete file ${fileId}:`, error);
+            // Continue with deletion even if file cleanup fails
+          }
+        }
+      }
+    }
+
+    // Clean up feedback associated with this message
+    if (message.feedback_id) {
+      try {
+        await ctx.db.delete(message.feedback_id);
+      } catch (error) {
+        console.error(
+          `Failed to delete feedback ${message.feedback_id}:`,
+          error,
+        );
+        // Continue with deletion even if feedback cleanup fails
+      }
+    }
+
+    await ctx.db.delete(message._id);
+  }
+
+  // Delete chat summaries
+  if (chat.latest_summary_id) {
+    try {
+      await ctx.db.delete(chat.latest_summary_id);
+    } catch (error) {
+      console.error(
+        `Failed to delete summary ${chat.latest_summary_id}:`,
+        error,
+      );
+      // Continue with deletion even if summary cleanup fails
+    }
+  }
+
+  // Delete all historical summaries for this chat
+  const summaries = await ctx.db
+    .query("chat_summaries")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+    .collect();
+
+  for (const summary of summaries) {
+    try {
+      await ctx.db.delete(summary._id);
+    } catch (error) {
+      console.error(`Failed to delete summary ${summary._id}:`, error);
+      // Continue with deletion even if summary cleanup fails
+    }
+  }
+
+  // Delete the chat itself
+  await ctx.db.delete(chat._id);
+}
+
 async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   const chat = await ctx.db
     .query("chats")
@@ -46,6 +168,8 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   if (!chat) {
     return false;
   }
+
+  await prepareChatForDeletion(ctx, chat);
 
   const messages = await ctx.db
     .query("messages")
@@ -739,86 +863,7 @@ export const deleteChat = mutation({
         });
       }
 
-      // Delete all messages and their associated files
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .collect();
-
-      for (const message of messages) {
-        // Skip deleting files for copied messages (they reference original chat files)
-        if (!message.source_message_id) {
-          // Clean up files associated with this message
-          if (message.file_ids && message.file_ids.length > 0) {
-            for (const fileId of message.file_ids) {
-              try {
-                const file = await ctx.db.get(fileId);
-                if (file) {
-                  if (file.s3_key) {
-                    await ctx.scheduler.runAfter(
-                      0,
-                      internal.s3Cleanup.deleteS3ObjectAction,
-                      { s3Key: file.s3_key },
-                    );
-                  }
-                  // Delete from aggregate
-                  await fileCountAggregate.deleteIfExists(ctx, file);
-                  await ctx.db.delete(file._id);
-                }
-              } catch (error) {
-                console.error(`Failed to delete file ${fileId}:`, error);
-                // Continue with deletion even if file cleanup fails
-              }
-            }
-          }
-        }
-
-        // Clean up feedback associated with this message
-        if (message.feedback_id) {
-          try {
-            await ctx.db.delete(message.feedback_id);
-          } catch (error) {
-            console.error(
-              `Failed to delete feedback ${message.feedback_id}:`,
-              error,
-            );
-            // Continue with deletion even if feedback cleanup fails
-          }
-        }
-
-        await ctx.db.delete(message._id);
-      }
-
-      // Delete chat summaries
-      if (chat.latest_summary_id) {
-        try {
-          await ctx.db.delete(chat.latest_summary_id);
-        } catch (error) {
-          console.error(
-            `Failed to delete summary ${chat.latest_summary_id}:`,
-            error,
-          );
-          // Continue with deletion even if summary cleanup fails
-        }
-      }
-
-      // Delete all historical summaries for this chat
-      const summaries = await ctx.db
-        .query("chat_summaries")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .collect();
-
-      for (const summary of summaries) {
-        try {
-          await ctx.db.delete(summary._id);
-        } catch (error) {
-          console.error(`Failed to delete summary ${summary._id}:`, error);
-          // Continue with deletion even if summary cleanup fails
-        }
-      }
-
-      // Delete the chat itself
-      await ctx.db.delete(chat._id);
+      await deleteChatDocument(ctx, chat);
 
       return null;
     } catch (error) {
@@ -826,6 +871,40 @@ export const deleteChat = mutation({
       // Avoid surfacing errors to the client; treat as a no-op
       return null;
     }
+  },
+});
+
+/**
+ * Delete a chat from a trusted server route after ownership is verified.
+ */
+export const deleteChatForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      return null;
+    }
+
+    if (chat.user_id !== args.userId) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+
+    await deleteChatDocument(ctx, chat);
+    return null;
   },
 });
 
@@ -995,6 +1074,71 @@ export const getActiveTriggerRun = query({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     return chat?.active_trigger_run_id ?? null;
+  },
+});
+
+export const getActiveTriggerRunsForUser = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({
+    runs: v.array(
+      v.object({
+        chatId: v.string(),
+        triggerRunId: v.string(),
+      }),
+    ),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const requestedLimit = Math.floor(
+      args.limit ?? MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
+    );
+    const limit = Math.min(
+      Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 1, 1),
+      MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
+    );
+
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
+      )
+      .take(limit + 1);
+
+    return {
+      runs: chats.slice(0, limit).flatMap((chat) =>
+        chat.active_trigger_run_id
+          ? [
+              {
+                chatId: chat.id,
+                triggerRunId: chat.active_trigger_run_id,
+              },
+            ]
+          : [],
+      ),
+      hasMore: chats.length > limit,
+    };
+  },
+});
+
+/**
+ * Delete all chats for the authenticated backend user using the same bounded
+ * batch deleter as the client mutation.
+ */
+export const deleteAllChatsForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await deleteNextUserChatBatch(ctx, args.userId);
+    return null;
   },
 });
 

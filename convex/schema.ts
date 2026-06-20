@@ -44,6 +44,10 @@ export default defineSchema({
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_user_and_active_trigger_run", [
+      "user_id",
+      "active_trigger_run_id",
+    ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {

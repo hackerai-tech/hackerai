@@ -325,6 +325,60 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+export async function deleteChatForBackend({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("chats.deleteChatForBackend", error, {
+      chat_id: chatId,
+      user_id: userId,
+    });
+  }
+}
+
+export async function getActiveTriggerRunsForUser({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    return await getConvexClient().query(
+      api.chats.getActiveTriggerRunsForUser,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+  } catch (error) {
+    throw databaseError("chats.getActiveTriggerRunsForUser", error, {
+      user_id: userId,
+    });
+  }
+}
+
+export async function deleteAllChatsForBackend({ userId }: { userId: string }) {
+  try {
+    await getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
+      serviceKey,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("chats.deleteAllChatsForBackend", error, {
+      user_id: userId,
+    });
+  }
+}
+
 export async function saveChat({
   id,
   userId,
