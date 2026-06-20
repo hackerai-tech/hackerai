@@ -25,7 +25,7 @@ config({ path: resolve(process.cwd(), ".env.local") });
 
 import { extractRetryAttempts } from "../lib/utils/error-utils";
 
-const VALID_SLUG = "google/gemini-3-flash-preview";
+const VALID_SLUG = "moonshotai/kimi-k2.6";
 const INVALID_SLUG = "anthropic/this-model-does-not-exist-please-fail";
 
 function classify(id: string | undefined): string {

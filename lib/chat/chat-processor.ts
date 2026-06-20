@@ -39,8 +39,9 @@ export const getMaxStepsForUser = (
  * @param hasImageOrPdf - Whether any message has an image or PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only, much cheaper than Claude); when an image or PDF is present we
- *   promote to Gemini 3 Flash so vision/document parts are actually understood.
- *   Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
+ *   promote to the Kimi K2.6 compatibility route so vision/document parts are
+ *   actually understood. Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro
+ *   always uses Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(
@@ -50,9 +51,9 @@ export function selectModel(
   hasImageOrPdf?: boolean,
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  // DeepSeek ask routes are text-only, so image/PDF prompts promote to Gemini
-  // unless the selected tier intentionally uses a multimodal model such as
-  // Sonnet or Opus.
+  // DeepSeek ask routes are text-only, so image/PDF prompts promote to the
+  // Kimi K2.6 compatibility route unless the selected tier intentionally uses a
+  // multimodal model such as Sonnet or Opus.
   const isFreeAsk = !isAgent && subscription === "free";
   const isPaidAskText = !isAgent && subscription !== "free" && !hasImageOrPdf;
 

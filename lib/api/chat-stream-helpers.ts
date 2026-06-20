@@ -519,8 +519,6 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const ASK_MEDIUM_REASONING_MODELS = [
-  "ask-model",
-  "model-gemini-3-flash",
   "model-deepseek-v4-pro",
   "model-sonnet-4.6",
   "model-opus-4.6",
@@ -529,6 +527,16 @@ const ASK_MEDIUM_REASONING_MODELS = [
 const isAskMediumReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+
+const ASK_KIMI_REASONING_MODELS = [
+  "ask-model",
+  "model-gemini-3-flash",
+  "model-kimi-k2.6",
+] as const satisfies readonly ModelName[];
+
+const isAskKimiReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
@@ -605,21 +613,24 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const isGemini3Flash =
-    modelName === "ask-model" || modelName === "model-gemini-3-flash";
+  const isGemini3Flash = modelId?.startsWith("google/gemini-3-flash") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning = isReasoningModel
     ? {
         enabled: true,
         ...(isDeepSeekV4 && { effort: "xhigh" }),
       }
-    : mode === "ask" && isAskMediumReasoningModel(modelName)
+    : mode === "ask" && isAskKimiReasoningModel(modelName)
       ? {
           enabled: true,
-          effort: "medium",
-          ...(isGemini3Flash && { exclude: true }),
         }
-      : { enabled: false };
+      : mode === "ask" && isAskMediumReasoningModel(modelName)
+        ? {
+            enabled: true,
+            effort: "medium",
+            ...(isGemini3Flash && { exclude: true }),
+          }
+        : { enabled: false };
 
   return {
     openrouter: {

@@ -1,8 +1,28 @@
 import {
+  getModelDisplayName,
+  myProvider,
   sanitizeOpenRouterRequestForGeminiFunctionResponses,
   sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
+
+describe("provider registry", () => {
+  it("routes Gemini 3 Flash compatibility keys to Kimi K2.6", () => {
+    expect(
+      (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
+    ).toBe("moonshotai/kimi-k2.6");
+    expect(
+      (
+        myProvider.languageModel("model-gemini-3-flash") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("moonshotai/kimi-k2.6");
+    expect(getModelDisplayName("model-gemini-3-flash")).toBe(
+      "Moonshot Kimi K2.6",
+    );
+  });
+});
 
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
