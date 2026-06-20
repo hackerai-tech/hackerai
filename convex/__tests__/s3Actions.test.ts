@@ -546,7 +546,7 @@ describe("s3Actions", () => {
       ).rejects.toThrow("Unauthenticated");
     });
 
-    it("should throw error for file not found", async () => {
+    it("should return null for file not found", async () => {
       const { getFileUrlAction } = await import("../s3Actions");
 
       const mockCtx = {
@@ -562,10 +562,10 @@ describe("s3Actions", () => {
 
       await expect(
         getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
-      ).rejects.toThrow("File not found");
+      ).resolves.toBeNull();
     });
 
-    it("should throw error for access denied", async () => {
+    it("should return null for access denied", async () => {
       const { getFileUrlAction } = await import("../s3Actions");
 
       const mockFileId = "file123" as any;
@@ -594,10 +594,10 @@ describe("s3Actions", () => {
 
       await expect(
         getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
-      ).rejects.toThrow("Access denied");
+      ).resolves.toBeNull();
     });
 
-    it("should throw error for file with no S3 storage reference", async () => {
+    it("should return null for file with no S3 storage reference", async () => {
       const { getFileUrlAction } = await import("../s3Actions");
 
       const mockFileId = "file123" as any;
@@ -626,7 +626,7 @@ describe("s3Actions", () => {
 
       await expect(
         getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
-      ).rejects.toThrow("File has no S3 storage reference");
+      ).resolves.toBeNull();
     });
 
     it("should handle S3 download URL generation errors", async () => {
