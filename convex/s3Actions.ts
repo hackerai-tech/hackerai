@@ -218,15 +218,16 @@ export const generateS3UploadUrlAction = action({
  * - Authenticates the user via ctx.auth
  * - Fetches the file record from database
  * - Verifies user has access to the file (ownership check)
- * - Requires the file to have an S3 object reference
+ * - Returns null when the file is missing, inaccessible, or no longer has an
+ *   S3 object reference
  * - Returns a presigned URL (valid for 1 hour)
  */
 export const getFileUrlAction = action({
   args: {
     fileId: v.id("files"),
   },
-  returns: v.string(),
-  handler: async (ctx, args): Promise<string> => {
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args): Promise<string | null> => {
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -245,18 +246,16 @@ export const getFileUrlAction = action({
       );
 
       if (!file) {
-        throw new Error("File not found");
+        return null;
       }
 
       // Verify user has access to this file
       if (file.user_id !== identity.subject) {
-        throw new Error(
-          "Access denied: You do not have permission to access this file",
-        );
+        return null;
       }
 
       if (!file.s3_key) {
-        throw new Error("File has no S3 storage reference");
+        return null;
       }
 
       // S3 file: Generate presigned download URL (valid for 1 hour)

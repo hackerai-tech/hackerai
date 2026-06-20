@@ -96,6 +96,12 @@ const FilePartRendererComponent = ({
         setUrlError(null);
         try {
           const url = await getFileUrlAction({ fileId: part.fileId });
+          if (!url) {
+            setFileUrl(null);
+            setUrlError("File not available");
+            return;
+          }
+
           setFileUrl(url);
           // Cache the fetched URL
           if (cache) {

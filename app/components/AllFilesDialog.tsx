@@ -268,7 +268,8 @@ const AllFilesDialog = ({
       await Promise.all(
         filesToDownload.map(async ({ file, index }) => {
           try {
-            let url = fileUrls.get(index) || file.part.url;
+            let url: string | null | undefined =
+              fileUrls.get(index) || file.part.url;
 
             // Fetch URL if not already available
             if (!url) {
