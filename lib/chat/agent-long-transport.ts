@@ -224,7 +224,7 @@ const buildSSEResponseFromRun = (
             if (!chatId) return;
             const response = await fetchWithErrorHandlers(
               `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
-              { method: "GET" },
+              { method: "GET", signal: readAbortController?.signal },
             );
             if (response.status === 204) {
               handleRunStatus("COMPLETED");
