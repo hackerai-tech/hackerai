@@ -59,12 +59,19 @@ const chat = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("DELETE /api/chat/[id]", () => {
+  let errorSpy: jest.SpiedFunction<typeof console.error>;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
     mockGetChatById.mockResolvedValue(chat() as never);
     mockRunsCancel.mockResolvedValue(undefined as never);
     mockDeleteChatForBackend.mockResolvedValue(undefined as never);
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
   });
 
   it("cancels an active Trigger run before deleting the chat", async () => {
@@ -90,19 +97,16 @@ describe("DELETE /api/chat/[id]", () => {
     expect(calls).toEqual(["cancel", "delete"]);
   });
 
-  it("still deletes when the stored Trigger run is already terminal", async () => {
+  it("does not delete when Trigger cancellation fails", async () => {
     const { DELETE } = await import("../route");
-    mockRunsCancel.mockRejectedValue(new Error("already terminal") as never);
+    mockRunsCancel.mockRejectedValue(
+      new Error("Trigger API unavailable") as never,
+    );
 
     const response = await DELETE(request, paramsFor());
-    const body = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(body).toEqual({ deleted: true, canceledTriggerRun: false });
-    expect(mockDeleteChatForBackend).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      userId: "user-1",
-    });
+    expect(response.status).toBe(500);
+    expect(mockDeleteChatForBackend).not.toHaveBeenCalled();
   });
 
   it("deletes without calling Trigger when there is no active run", async () => {

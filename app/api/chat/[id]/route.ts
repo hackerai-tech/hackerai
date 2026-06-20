@@ -32,13 +32,8 @@ export async function DELETE(
     let canceledTriggerRun = false;
 
     if (triggerRunId) {
-      try {
-        await runs.cancel(triggerRunId);
-        canceledTriggerRun = true;
-      } catch {
-        // Best-effort: the run may already be terminal. Delete still proceeds
-        // while the chat row is present for ownership and run-id verification.
-      }
+      await runs.cancel(triggerRunId);
+      canceledTriggerRun = true;
     }
 
     await deleteChatForBackend({ chatId, userId });
