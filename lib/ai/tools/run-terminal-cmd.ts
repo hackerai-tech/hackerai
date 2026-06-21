@@ -33,6 +33,7 @@ import {
   type PtySession,
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
+import { writeSandboxFallbackEvent } from "./utils/sandbox-fallback";
 import {
   waitForOutput,
   capOutput,
@@ -213,6 +214,14 @@ In using these tools, adhere to the following guidelines:
       if (interactive) {
         try {
           const { sandbox } = await sandboxManager.getSandbox();
+          const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
+          if (fallbackInfo?.occurred) {
+            writeSandboxFallbackEvent(
+              writer,
+              fallbackInfo,
+              `sandbox-fallback-${toolCallId}`,
+            );
+          }
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -360,11 +369,11 @@ In using these tools, adhere to the following guidelines:
         // Check for sandbox fallback and notify frontend
         const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
         if (fallbackInfo?.occurred) {
-          writer.write({
-            type: "data-sandbox-fallback",
-            id: `sandbox-fallback-${toolCallId}`,
-            data: fallbackInfo,
-          });
+          writeSandboxFallbackEvent(
+            writer,
+            fallbackInfo,
+            `sandbox-fallback-${toolCallId}`,
+          );
         }
 
         // Bail early if sandbox was already marked unavailable by any tool

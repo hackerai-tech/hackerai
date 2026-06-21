@@ -18,6 +18,10 @@ import {
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
 import {
+  getSandboxFallbackPromptReminder,
+  prepareSandboxContextForPrompt,
+} from "../sandbox-fallback";
+import {
   getConnectionIdFromPresenceClient,
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
@@ -179,6 +183,146 @@ describe("HybridSandboxManager browser automation prompt", () => {
 
     expect(context).toContain("where agent-browser && agent-browser --version");
     expect(context).not.toContain("command -v agent-browser");
+  });
+});
+
+describe("HybridSandboxManager prompt-time fallback", () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    mockConvexQuery.mockReset();
+    mockConvexMutation.mockReset();
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it("records a desktop-to-cloud fallback before the first tool call", async () => {
+    mockConvexQuery.mockResolvedValue([]);
+
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    const context = await manager.getSandboxContextForPrompt();
+    const fallbackInfo = manager.consumeFallbackInfo();
+
+    expect(context).toBeNull();
+    expect(fallbackInfo).toMatchObject({
+      occurred: true,
+      reason: "no_local_connections",
+      requestedPreference: "desktop",
+      actualSandbox: "e2b",
+      actualSandboxName: "Cloud",
+    });
+    expect(manager.consumeFallbackInfo()).toBeNull();
+  });
+
+  it("does not record a cloud fallback for free users without a local connection", async () => {
+    mockConvexQuery.mockResolvedValue([]);
+
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "free",
+    );
+
+    await manager.getSandboxContextForPrompt();
+
+    expect(manager.consumeFallbackInfo()).toBeNull();
+  });
+
+  it("records a fallback when the selected local connection is unavailable", async () => {
+    mockConvexQuery.mockResolvedValue([
+      makeConnection({
+        connectionId: "remote-conn",
+        name: "Lab VM",
+        isDesktop: false,
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.8",
+          hostname: "lab-vm",
+        },
+      }),
+    ]);
+
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    const context = await manager.getSandboxContextForPrompt();
+
+    expect(context).toContain("Hostname: lab-vm");
+    expect(manager.consumeFallbackInfo()).toMatchObject({
+      occurred: true,
+      reason: "connection_unavailable",
+      requestedPreference: "desktop",
+      actualSandbox: "remote-conn",
+      actualSandboxName: "Lab VM",
+    });
+  });
+
+  it("builds a cloud reminder that blocks host-drive assumptions", () => {
+    const reminder = getSandboxFallbackPromptReminder({
+      occurred: true,
+      reason: "no_local_connections",
+      requestedPreference: "desktop",
+      actualSandbox: "e2b",
+      actualSandboxName: "Cloud",
+    });
+
+    expect(reminder).toContain("using the Cloud sandbox");
+    expect(reminder).toContain(
+      "cannot access the user's Windows/macOS/Linux host files",
+    );
+    expect(reminder).toContain("drives such as C: or Z:");
+    expect(reminder).toContain("reconnect Desktop or a Remote Connection");
+  });
+
+  it("emits the fallback stream part during prompt preparation", async () => {
+    const fallbackInfo = {
+      occurred: true,
+      reason: "no_local_connections" as const,
+      requestedPreference: "desktop" as const,
+      actualSandbox: "e2b" as const,
+      actualSandboxName: "Cloud",
+    };
+    const writer = { write: jest.fn() };
+
+    const result = await prepareSandboxContextForPrompt({
+      sandboxManager: {
+        getSandboxContextForPrompt: jest.fn().mockResolvedValue(null),
+        consumeFallbackInfo: jest.fn(() => fallbackInfo),
+      },
+      writer: writer as any,
+      eventId: "sandbox-fallback-test",
+    });
+
+    expect(result).toEqual({
+      sandboxContext: null,
+      fallbackInfo,
+    });
+    expect(writer.write).toHaveBeenCalledWith({
+      type: "data-sandbox-fallback",
+      id: "sandbox-fallback-test",
+      data: fallbackInfo,
+    });
   });
 });
 

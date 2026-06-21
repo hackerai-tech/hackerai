@@ -109,6 +109,10 @@ import {
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
 import {
+  getSandboxFallbackPromptReminder,
+  prepareSandboxContextForPrompt,
+} from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
@@ -1153,21 +1157,21 @@ export const agentLongTask = task({
               });
             };
 
-            let sandboxContext: string | null = null;
-            if ("getSandboxContextForPrompt" in sandboxManager) {
-              try {
-                sandboxContext = await (
-                  sandboxManager as {
-                    getSandboxContextForPrompt: () => Promise<string | null>;
-                  }
-                ).getSandboxContextForPrompt();
-              } catch (err) {
+            const sandboxPromptContext = await prepareSandboxContextForPrompt({
+              sandboxManager,
+              writer,
+              eventId: `sandbox-fallback-${assistantMessageId}`,
+              onContextError: (err) => {
                 console.warn(
                   "[agent-long] Failed to get sandbox context:",
                   err,
                 );
-              }
-            }
+              },
+            });
+            const sandboxContext = sandboxPromptContext.sandboxContext;
+            const sandboxFallbackReminder = getSandboxFallbackPromptReminder(
+              sandboxPromptContext.fallbackInfo,
+            );
 
             if (sandboxFiles && sandboxFiles.length > 0) {
               writeUploadStartStatus(
@@ -1246,6 +1250,13 @@ export const agentLongTask = task({
               : { usedTokens: 0, maxTokens: 0 };
 
             let finalMessages = processedMessages;
+
+            if (sandboxFallbackReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                sandboxFallbackReminder,
+              );
+            }
 
             const resumeContext = regenerate
               ? ""
