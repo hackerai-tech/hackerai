@@ -1148,12 +1148,6 @@ export async function saveChatSummary({
     model?: string;
     status?: string;
     error?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    cost?: number;
-    estimatedCompactedInputTokens?: number;
     transcriptPath?: string;
     retainedTail?: RetainedTailMetadata;
   };

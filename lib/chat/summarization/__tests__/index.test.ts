@@ -664,9 +664,6 @@ describe("checkAndSummarizeIfNeeded", () => {
           promptVersion: SUMMARY_PROMPT_VERSION,
           model: "test-model",
           status: "completed",
-          inputTokens: 0,
-          outputTokens: 0,
-          estimatedCompactedInputTokens: expect.any(Number),
           retainedTail: expect.objectContaining({
             start_message_id: "msg-4",
             start_part_index: 0,
@@ -675,6 +672,17 @@ describe("checkAndSummarizeIfNeeded", () => {
         }),
       }),
     );
+    const saveSummaryCall =
+      mockSaveChatSummary.mock.calls[mockSaveChatSummary.mock.calls.length - 1];
+    const persistedMetadata = saveSummaryCall?.[0].metadata as
+      | Record<string, unknown>
+      | undefined;
+    expect(persistedMetadata?.inputTokens).toBeUndefined();
+    expect(persistedMetadata?.outputTokens).toBeUndefined();
+    expect(persistedMetadata?.cacheReadTokens).toBeUndefined();
+    expect(persistedMetadata?.cacheWriteTokens).toBeUndefined();
+    expect(persistedMetadata?.cost).toBeUndefined();
+    expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
   });
 
   it("should skip database persistence for temporary chats", async () => {

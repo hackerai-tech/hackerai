@@ -308,7 +308,6 @@ export const checkAndSummarizeIfNeeded = async ({
       providerInputTokens,
       threshold: summarizationThreshold,
       languageModel,
-      usage: summarizationUsage,
       transcriptPath: savedPath,
       retainedTail: tailSelection.retainedTail,
       reason: providerPromptPressure ? "provider_pressure" : undefined,

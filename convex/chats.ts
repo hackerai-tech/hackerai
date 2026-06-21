@@ -22,6 +22,14 @@ import { convexLogger } from "./lib/logger";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const CHAT_SUMMARY_TELEMETRY_FIELDS = [
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "cost",
+  "estimated_compacted_input_tokens",
+] as const;
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -1113,6 +1121,8 @@ export const saveLatestSummary = mutation({
         model: v.optional(v.string()),
         status: v.optional(v.string()),
         error: v.optional(v.string()),
+        // Accepted for deploy-skew compatibility with older workers, but no
+        // longer persisted on chat_summaries.
         inputTokens: v.optional(v.number()),
         outputTokens: v.optional(v.number()),
         cacheReadTokens: v.optional(v.number()),
@@ -1265,13 +1275,6 @@ export const saveLatestSummary = mutation({
           model: args.metadata?.model,
           status: args.metadata?.status ?? "completed",
           error: args.metadata?.error,
-          input_tokens: args.metadata?.inputTokens,
-          output_tokens: args.metadata?.outputTokens,
-          cache_read_tokens: args.metadata?.cacheReadTokens,
-          cache_write_tokens: args.metadata?.cacheWriteTokens,
-          cost: args.metadata?.cost,
-          estimated_compacted_input_tokens:
-            args.metadata?.estimatedCompactedInputTokens,
           transcript_path: args.metadata?.transcriptPath,
           retained_tail: args.metadata?.retainedTail,
         }).filter(([, value]) => value !== undefined),
@@ -1315,6 +1318,66 @@ export const saveLatestSummary = mutation({
       });
       throw error;
     }
+  },
+});
+
+/**
+ * Batch cleanup for legacy summary telemetry fields.
+ *
+ * Run repeatedly in production with the returned cursor until isDone is true,
+ * then the optional telemetry columns can be removed from the schema in a
+ * follow-up deploy.
+ */
+export const cleanupChatSummaryTelemetry = mutation({
+  args: {
+    serviceKey: v.string(),
+    paginationOpts: paginationOptsValidator,
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    patched: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const result = await ctx.db
+      .query("chat_summaries")
+      .order("asc")
+      .paginate(args.paginationOpts);
+
+    let matched = 0;
+    let patched = 0;
+    for (const summary of result.page) {
+      const hasTelemetry = CHAT_SUMMARY_TELEMETRY_FIELDS.some(
+        (field) => summary[field] !== undefined,
+      );
+      if (!hasTelemetry) continue;
+
+      matched++;
+      if (args.dryRun === true) continue;
+
+      await ctx.db.patch(summary._id, {
+        input_tokens: undefined,
+        output_tokens: undefined,
+        cache_read_tokens: undefined,
+        cache_write_tokens: undefined,
+        cost: undefined,
+        estimated_compacted_input_tokens: undefined,
+      });
+      patched++;
+    }
+
+    return {
+      scanned: result.page.length,
+      matched,
+      patched,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
   },
 });
 

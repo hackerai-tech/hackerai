@@ -60,6 +60,20 @@ const CHAT_ID = "chat-001";
 const USER_ID = "user-123";
 const CHAT_DOC_ID = "chat-doc-id" as Id<"chats">;
 const SUMMARY_DOC_ID = "summary-doc-id" as Id<"chat_summaries">;
+const SUMMARY_TELEMETRY_FIELDS = [
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "cost",
+  "estimated_compacted_input_tokens",
+] as const;
+
+function expectNoSummaryTelemetry(doc: Record<string, any>): void {
+  for (const field of SUMMARY_TELEMETRY_FIELDS) {
+    expect(doc[field]).toBeUndefined();
+  }
+}
 
 function makeRetainedTail(
   overrides: Record<string, any> = {},
@@ -323,9 +337,6 @@ describe("saveLatestSummary — previous_summaries chain", () => {
         promptVersion: "test-prompt-v1",
         model: "test-model",
         status: "completed",
-        inputTokens: 100,
-        outputTokens: 20,
-        estimatedCompactedInputTokens: 90,
         transcriptPath: "/tmp/agent-transcripts/test.json",
       },
     });
@@ -339,12 +350,117 @@ describe("saveLatestSummary — previous_summaries chain", () => {
         prompt_version: "test-prompt-v1",
         model: "test-model",
         status: "completed",
-        input_tokens: 100,
-        output_tokens: 20,
-        estimated_compacted_input_tokens: 90,
         transcript_path: "/tmp/agent-transcripts/test.json",
       }),
     );
+    const insertedDoc = mockCtx.db.insert.mock.calls[0][1];
+    expectNoSummaryTelemetry(insertedDoc);
+  });
+
+  it("should accept legacy summary telemetry metadata without writing it", async () => {
+    const chat = makeChatDoc({ latest_summary_id: undefined });
+    setupSaveSummaryQueries(chat);
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "new summary",
+      summaryUpToMessageId: "msg-10",
+      metadata: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 5,
+        cost: 0.01,
+        estimatedCompactedInputTokens: 90,
+      },
+    });
+
+    const insertedDoc = mockCtx.db.insert.mock.calls[0][1];
+    expectNoSummaryTelemetry(insertedDoc);
+  });
+
+  it("should remove legacy summary telemetry fields in cleanup batches", async () => {
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [
+        makeSummaryDoc({
+          _id: "summary-with-telemetry" as Id<"chat_summaries">,
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_tokens: 10,
+          cache_write_tokens: 5,
+          cost: 0.01,
+          estimated_compacted_input_tokens: 90,
+        }),
+        makeSummaryDoc({
+          _id: "summary-without-telemetry" as Id<"chat_summaries">,
+        }),
+      ],
+      isDone: false,
+      continueCursor: "next-cursor",
+    });
+    const order = jest.fn().mockReturnValue({ paginate });
+    mockCtx.db.query.mockReturnValue({ order });
+
+    const { cleanupChatSummaryTelemetry } = await import("../chats");
+    const result = await cleanupChatSummaryTelemetry.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      paginationOpts: { numItems: 2, cursor: null },
+    });
+
+    expect(mockCtx.db.query).toHaveBeenCalledWith("chat_summaries");
+    expect(order).toHaveBeenCalledWith("asc");
+    expect(paginate).toHaveBeenCalledWith({ numItems: 2, cursor: null });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith("summary-with-telemetry", {
+      input_tokens: undefined,
+      output_tokens: undefined,
+      cache_read_tokens: undefined,
+      cache_write_tokens: undefined,
+      cost: undefined,
+      estimated_compacted_input_tokens: undefined,
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      scanned: 2,
+      matched: 1,
+      patched: 1,
+      isDone: false,
+      continueCursor: "next-cursor",
+    });
+  });
+
+  it("should support dry-run telemetry cleanup without patching rows", async () => {
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [
+        makeSummaryDoc({
+          _id: "summary-with-telemetry" as Id<"chat_summaries">,
+          input_tokens: 100,
+        }),
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    mockCtx.db.query.mockReturnValue({
+      order: jest.fn().mockReturnValue({ paginate }),
+    });
+
+    const { cleanupChatSummaryTelemetry } = await import("../chats");
+    const result = await cleanupChatSummaryTelemetry.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      paginationOpts: { numItems: 1, cursor: null },
+      dryRun: true,
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      scanned: 1,
+      matched: 1,
+      patched: 0,
+      isDone: true,
+      continueCursor: "",
+    });
   });
 
   it("should persist retained tail metadata on the latest summary", async () => {

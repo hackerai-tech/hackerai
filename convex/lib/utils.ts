@@ -69,13 +69,6 @@ export async function copyChatSummary(
         model: summary.model,
         status: summary.status,
         error: summary.error,
-        input_tokens: summary.input_tokens,
-        output_tokens: summary.output_tokens,
-        cache_read_tokens: summary.cache_read_tokens,
-        cache_write_tokens: summary.cache_write_tokens,
-        cost: summary.cost,
-        estimated_compacted_input_tokens:
-          summary.estimated_compacted_input_tokens,
         transcript_path: summary.transcript_path,
         retained_tail: remapRetainedTail(
           summary.retained_tail as RetainedTailDoc | undefined,
