@@ -357,21 +357,25 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
 
     const details = await ctx.db
       .query("cancellation_reason_details")
+      .withIndex("by_created_at", (q) => {
+        if (args.startAt !== undefined && args.endAt !== undefined) {
+          return q
+            .gte("created_at", args.startAt)
+            .lte("created_at", args.endAt);
+        }
+        if (args.startAt !== undefined) {
+          return q.gte("created_at", args.startAt);
+        }
+        if (args.endAt !== undefined) {
+          return q.lte("created_at", args.endAt);
+        }
+        return q;
+      })
       .order("desc")
       .take(limit);
 
-    const filteredDetails = details.filter((detail) => {
-      if (args.startAt !== undefined && detail.created_at < args.startAt) {
-        return false;
-      }
-      if (args.endAt !== undefined && detail.created_at > args.endAt) {
-        return false;
-      }
-      return true;
-    });
-
     return Promise.all(
-      filteredDetails.map(async (detail) => {
+      details.map(async (detail) => {
         const reason = await ctx.db.get(detail.cancellation_reason_id);
 
         return {

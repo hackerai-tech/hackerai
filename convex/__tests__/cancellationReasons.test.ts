@@ -26,10 +26,42 @@ jest.mock("../lib/utils", () => ({
 }));
 
 function buildDetailsQuery(rows: Record<string, any>[]) {
-  return {
-    order: jest.fn<any>().mockReturnThis(),
-    take: jest.fn<any>().mockResolvedValue(rows),
+  let matches = [...rows];
+  const query: any = {
+    withIndex: jest.fn((_indexName: string, builder: any) => {
+      const gtes: Record<string, number> = {};
+      const ltes: Record<string, number> = {};
+      const captureQuery = {
+        gte: (field: string, value: number) => {
+          gtes[field] = value;
+          return captureQuery;
+        },
+        lte: (field: string, value: number) => {
+          ltes[field] = value;
+          return captureQuery;
+        },
+      };
+      builder(captureQuery);
+      matches = rows.filter((row) => {
+        const afterStart =
+          gtes.created_at === undefined || row.created_at >= gtes.created_at;
+        const beforeEnd =
+          ltes.created_at === undefined || row.created_at <= ltes.created_at;
+        return afterStart && beforeEnd;
+      });
+      return query;
+    }),
+    order: jest.fn<any>((direction: "asc" | "desc") => {
+      matches = [...matches].sort((a, b) =>
+        direction === "desc"
+          ? b.created_at - a.created_at
+          : a.created_at - b.created_at,
+      );
+      return query;
+    }),
+    take: jest.fn<any>(async (limit: number) => matches.slice(0, limit)),
   };
+  return query;
 }
 
 describe("cancellation reason feedback export", () => {
@@ -97,6 +129,10 @@ describe("cancellation reason feedback export", () => {
       },
     );
 
+    expect(detailsQuery.withIndex).toHaveBeenCalledWith(
+      "by_created_at",
+      expect.any(Function),
+    );
     expect(detailsQuery.order).toHaveBeenCalledWith("desc");
     expect(detailsQuery.take).toHaveBeenCalledWith(50);
     expect(ctx.db.get).toHaveBeenCalledWith("reason-1");
@@ -137,5 +173,77 @@ describe("cancellation reason feedback export", () => {
     });
 
     expect(detailsQuery.take).toHaveBeenCalledWith(10_000);
+  });
+
+  it("filters by creation date before applying the dashboard export limit", async () => {
+    const inWindowCreatedAt = Date.UTC(2026, 5, 20, 12);
+    const detailsQuery = buildDetailsQuery([
+      {
+        _id: "newer-out-of-window",
+        cancellation_reason_id: "newer-reason",
+        reason_details: "Too new for the requested window",
+        created_at: Date.UTC(2026, 5, 22, 12),
+      },
+      {
+        _id: "older-in-window",
+        cancellation_reason_id: "in-window-reason",
+        reason_details: "Missing the workflow I needed.",
+        created_at: inWindowCreatedAt,
+      },
+      {
+        _id: "oldest-in-window",
+        cancellation_reason_id: "oldest-reason",
+        reason_details: "Also in window but beyond limit",
+        created_at: Date.UTC(2026, 5, 19, 12),
+      },
+    ]);
+    const ctx: any = {
+      db: {
+        query: jest.fn(() => detailsQuery),
+        get: jest.fn(async (id: string) =>
+          id === "in-window-reason"
+            ? {
+                reason_category: "missing_feature",
+                subscription_tier: "pro-plus",
+                plan: "pro-plus",
+                status: "started",
+                source: "in_app",
+                recent_usage_segment: "light",
+                recent_usage_request_count: 3,
+                recent_usage_cost_dollars: 1.25,
+              }
+            : null,
+        ),
+      },
+    };
+
+    const { getCancellationFeedbackForAnalysis } =
+      await import("../cancellationReasons");
+    const result = await (getCancellationFeedbackForAnalysis as any).handler(
+      ctx,
+      {
+        limit: 1,
+        startAt: Date.UTC(2026, 5, 19),
+        endAt: Date.UTC(2026, 5, 20, 23, 59, 59),
+      },
+    );
+
+    expect(detailsQuery.take).toHaveBeenCalledWith(1);
+    expect(ctx.db.get).toHaveBeenCalledWith("in-window-reason");
+    expect(ctx.db.get).not.toHaveBeenCalledWith("newer-reason");
+    expect(result).toEqual([
+      {
+        createdAt: new Date(inWindowCreatedAt).toISOString(),
+        reasonCategory: "missing_feature",
+        subscriptionTier: "pro-plus",
+        plan: "pro-plus",
+        status: "started",
+        source: "in_app",
+        recentUsageSegment: "light",
+        recentUsageRequestCount: 3,
+        recentUsageCostDollars: 1.25,
+        feedback: "Missing the workflow I needed.",
+      },
+    ]);
   });
 });
