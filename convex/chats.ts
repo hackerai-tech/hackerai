@@ -22,6 +22,8 @@ import { convexLogger } from "./lib/logger";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
+const CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE = 1000;
 const CHAT_SUMMARY_TELEMETRY_FIELDS = [
   "input_tokens",
   "output_tokens",
@@ -30,6 +32,35 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
   "cost",
   "estimated_compacted_input_tokens",
 ] as const;
+
+function normalizeTelemetryCleanupBatchSize(batchSize?: number): number {
+  if (!Number.isFinite(batchSize) || !batchSize) {
+    return CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE;
+  }
+  return Math.min(
+    CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE,
+    Math.max(1, Math.floor(batchSize)),
+  );
+}
+
+function hasChatSummaryTelemetry(
+  summary: Partial<
+    Record<(typeof CHAT_SUMMARY_TELEMETRY_FIELDS)[number], unknown>
+  >,
+): boolean {
+  return CHAT_SUMMARY_TELEMETRY_FIELDS.some(
+    (field) => summary[field] !== undefined,
+  );
+}
+
+const CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH = {
+  input_tokens: undefined,
+  output_tokens: undefined,
+  cache_read_tokens: undefined,
+  cache_write_tokens: undefined,
+  cost: undefined,
+  estimated_compacted_input_tokens: undefined,
+};
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -1352,22 +1383,12 @@ export const cleanupChatSummaryTelemetry = mutation({
     let matched = 0;
     let patched = 0;
     for (const summary of result.page) {
-      const hasTelemetry = CHAT_SUMMARY_TELEMETRY_FIELDS.some(
-        (field) => summary[field] !== undefined,
-      );
-      if (!hasTelemetry) continue;
+      if (!hasChatSummaryTelemetry(summary)) continue;
 
       matched++;
       if (args.dryRun === true) continue;
 
-      await ctx.db.patch(summary._id, {
-        input_tokens: undefined,
-        output_tokens: undefined,
-        cache_read_tokens: undefined,
-        cache_write_tokens: undefined,
-        cost: undefined,
-        estimated_compacted_input_tokens: undefined,
-      });
+      await ctx.db.patch(summary._id, CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH);
       patched++;
     }
 
@@ -1375,6 +1396,148 @@ export const cleanupChatSummaryTelemetry = mutation({
       scanned: result.page.length,
       matched,
       patched,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
+  },
+});
+
+/**
+ * Starts an async cleanup job for large production datasets.
+ *
+ * This schedules internal batches so a 250k-row cleanup does not require
+ * hundreds of manual cursor calls.
+ */
+export const startChatSummaryTelemetryCleanup = mutation({
+  args: {
+    serviceKey: v.string(),
+    batchSize: v.optional(v.number()),
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scheduled: v.boolean(),
+    batchSize: v.number(),
+    dryRun: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const batchSize = normalizeTelemetryCleanupBatchSize(args.batchSize);
+    const dryRun = args.dryRun === true;
+    await ctx.scheduler.runAfter(
+      0,
+      internal.chats.cleanupChatSummaryTelemetryBatch,
+      {
+        cursor: null,
+        batchSize,
+        dryRun,
+        scannedSoFar: 0,
+        matchedSoFar: 0,
+        patchedSoFar: 0,
+        batchCount: 0,
+        startedAt: Date.now(),
+      },
+    );
+
+    return { scheduled: true, batchSize, dryRun };
+  },
+});
+
+export const cleanupChatSummaryTelemetryBatch = internalMutation({
+  args: {
+    cursor: v.union(v.string(), v.null()),
+    batchSize: v.number(),
+    dryRun: v.optional(v.boolean()),
+    scannedSoFar: v.optional(v.number()),
+    matchedSoFar: v.optional(v.number()),
+    patchedSoFar: v.optional(v.number()),
+    batchCount: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    patched: v.number(),
+    totalScanned: v.number(),
+    totalMatched: v.number(),
+    totalPatched: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = normalizeTelemetryCleanupBatchSize(args.batchSize);
+    const result = await ctx.db
+      .query("chat_summaries")
+      .order("asc")
+      .paginate({ numItems: batchSize, cursor: args.cursor });
+
+    let matched = 0;
+    let patched = 0;
+    for (const summary of result.page) {
+      if (!hasChatSummaryTelemetry(summary)) continue;
+
+      matched++;
+      if (args.dryRun === true) continue;
+
+      await ctx.db.patch(summary._id, CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH);
+      patched++;
+    }
+
+    const totalScanned = (args.scannedSoFar ?? 0) + result.page.length;
+    const totalMatched = (args.matchedSoFar ?? 0) + matched;
+    const totalPatched = (args.patchedSoFar ?? 0) + patched;
+    const batchCount = (args.batchCount ?? 0) + 1;
+    const startedAt = args.startedAt ?? Date.now();
+
+    if (result.isDone) {
+      convexLogger.info("chat_summary_telemetry_cleanup_completed", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        dry_run: args.dryRun === true,
+        batch_size: batchSize,
+        batch_count: batchCount,
+        scanned: totalScanned,
+        matched: totalMatched,
+        patched: totalPatched,
+        duration_ms: Date.now() - startedAt,
+      });
+    } else {
+      if (batchCount % 25 === 0) {
+        convexLogger.info("chat_summary_telemetry_cleanup_progress", {
+          service: "convex",
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+          dry_run: args.dryRun === true,
+          batch_size: batchSize,
+          batch_count: batchCount,
+          scanned: totalScanned,
+          matched: totalMatched,
+          patched: totalPatched,
+        });
+      }
+
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chats.cleanupChatSummaryTelemetryBatch,
+        {
+          cursor: result.continueCursor,
+          batchSize,
+          dryRun: args.dryRun === true,
+          scannedSoFar: totalScanned,
+          matchedSoFar: totalMatched,
+          patchedSoFar: totalPatched,
+          batchCount,
+          startedAt,
+        },
+      );
+    }
+
+    return {
+      scanned: result.page.length,
+      matched,
+      patched,
+      totalScanned,
+      totalMatched,
+      totalPatched,
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };

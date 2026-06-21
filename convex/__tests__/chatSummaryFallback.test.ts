@@ -32,6 +32,10 @@ jest.mock("convex/values", () => ({
 }));
 jest.mock("../_generated/api", () => ({
   internal: {
+    chats: {
+      cleanupChatSummaryTelemetryBatch:
+        "internal.chats.cleanupChatSummaryTelemetryBatch",
+    },
     messages: {
       verifyChatOwnership: "internal.messages.verifyChatOwnership",
     },
@@ -267,6 +271,9 @@ describe("saveLatestSummary — previous_summaries chain", () => {
         patch: jest.fn<any>().mockResolvedValue(undefined),
         delete: jest.fn<any>().mockResolvedValue(undefined),
       },
+      scheduler: {
+        runAfter: jest.fn<any>().mockResolvedValue(undefined),
+      },
     };
 
     const withIndexMock = jest.fn().mockReturnValue({
@@ -461,6 +468,137 @@ describe("saveLatestSummary — previous_summaries chain", () => {
       isDone: true,
       continueCursor: "",
     });
+  });
+
+  it("should schedule async summary telemetry cleanup for large datasets", async () => {
+    const { startChatSummaryTelemetryCleanup } = await import("../chats");
+
+    const result = await startChatSummaryTelemetryCleanup.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      batchSize: 2_000,
+    });
+
+    expect(result).toEqual({
+      scheduled: true,
+      batchSize: 1000,
+      dryRun: false,
+    });
+    expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.chats.cleanupChatSummaryTelemetryBatch",
+      expect.objectContaining({
+        cursor: null,
+        batchSize: 1000,
+        dryRun: false,
+        scannedSoFar: 0,
+        matchedSoFar: 0,
+        patchedSoFar: 0,
+        batchCount: 0,
+      }),
+    );
+  });
+
+  it("should process and reschedule async telemetry cleanup batches", async () => {
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [
+        makeSummaryDoc({
+          _id: "summary-with-telemetry" as Id<"chat_summaries">,
+          input_tokens: 100,
+        }),
+        makeSummaryDoc({
+          _id: "summary-without-telemetry" as Id<"chat_summaries">,
+        }),
+      ],
+      isDone: false,
+      continueCursor: "next-cursor",
+    });
+    mockCtx.db.query.mockReturnValue({
+      order: jest.fn().mockReturnValue({ paginate }),
+    });
+
+    const { cleanupChatSummaryTelemetryBatch } = await import("../chats");
+    const result = await cleanupChatSummaryTelemetryBatch.handler(mockCtx, {
+      cursor: "current-cursor",
+      batchSize: 500,
+      scannedSoFar: 10,
+      matchedSoFar: 4,
+      patchedSoFar: 4,
+      batchCount: 1,
+      startedAt: Date.now(),
+    });
+
+    expect(paginate).toHaveBeenCalledWith({
+      numItems: 500,
+      cursor: "current-cursor",
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "summary-with-telemetry",
+      expect.objectContaining({
+        input_tokens: undefined,
+        estimated_compacted_input_tokens: undefined,
+      }),
+    );
+    expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.chats.cleanupChatSummaryTelemetryBatch",
+      expect.objectContaining({
+        cursor: "next-cursor",
+        batchSize: 500,
+        scannedSoFar: 12,
+        matchedSoFar: 5,
+        patchedSoFar: 5,
+        batchCount: 2,
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        scanned: 2,
+        matched: 1,
+        patched: 1,
+        totalScanned: 12,
+        totalMatched: 5,
+        totalPatched: 5,
+        isDone: false,
+        continueCursor: "next-cursor",
+      }),
+    );
+  });
+
+  it("should finish async telemetry cleanup without rescheduling", async () => {
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [
+        makeSummaryDoc({
+          _id: "summary-with-telemetry" as Id<"chat_summaries">,
+          input_tokens: 100,
+        }),
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    mockCtx.db.query.mockReturnValue({
+      order: jest.fn().mockReturnValue({ paginate }),
+    });
+
+    const { cleanupChatSummaryTelemetryBatch } = await import("../chats");
+    const result = await cleanupChatSummaryTelemetryBatch.handler(mockCtx, {
+      cursor: null,
+      batchSize: 500,
+      dryRun: true,
+    });
+
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        scanned: 1,
+        matched: 1,
+        patched: 0,
+        totalScanned: 1,
+        totalMatched: 1,
+        totalPatched: 0,
+        isDone: true,
+      }),
+    );
   });
 
   it("should persist retained tail metadata on the latest summary", async () => {
