@@ -1,4 +1,9 @@
-import { mutation, query, type MutationCtx } from "./_generated/server";
+import {
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 
@@ -8,6 +13,7 @@ const MAX_REASON_DETAILS_LENGTH = 2_000;
 const MAX_RECENT_USAGE_LOGS = 5_000;
 const MAX_COMPLETION_CANDIDATES = 100;
 const MAX_REPORT_ROWS = 10_000;
+const MAX_FEEDBACK_EXPORT_ROWS = 10_000;
 
 const subscriptionTierValidator = v.union(
   v.literal("free"),
@@ -317,5 +323,70 @@ export const getCancellationReasonReport = query({
       if (segmentCompare !== 0) return segmentCompare;
       return b.startedCount - a.startedCount;
     });
+  },
+});
+
+export const getCancellationFeedbackForAnalysis = internalQuery({
+  args: {
+    limit: v.optional(v.number()),
+    startAt: v.optional(v.number()),
+    endAt: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      createdAt: v.string(),
+      reasonCategory: v.union(reasonCategoryValidator, v.null()),
+      subscriptionTier: v.union(subscriptionTierValidator, v.null()),
+      plan: v.union(v.string(), v.null()),
+      status: v.union(v.literal("started"), v.literal("completed"), v.null()),
+      source: v.union(sourceValidator, v.null()),
+      recentUsageSegment: v.union(usageSegmentValidator, v.null()),
+      recentUsageRequestCount: v.union(v.number(), v.null()),
+      recentUsageCostDollars: v.union(v.number(), v.null()),
+      feedback: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const limit = Math.max(
+      0,
+      Math.min(
+        args.limit ?? MAX_FEEDBACK_EXPORT_ROWS,
+        MAX_FEEDBACK_EXPORT_ROWS,
+      ),
+    );
+
+    const details = await ctx.db
+      .query("cancellation_reason_details")
+      .order("desc")
+      .take(limit);
+
+    const filteredDetails = details.filter((detail) => {
+      if (args.startAt !== undefined && detail.created_at < args.startAt) {
+        return false;
+      }
+      if (args.endAt !== undefined && detail.created_at > args.endAt) {
+        return false;
+      }
+      return true;
+    });
+
+    return Promise.all(
+      filteredDetails.map(async (detail) => {
+        const reason = await ctx.db.get(detail.cancellation_reason_id);
+
+        return {
+          createdAt: new Date(detail.created_at).toISOString(),
+          reasonCategory: reason?.reason_category ?? null,
+          subscriptionTier: reason?.subscription_tier ?? null,
+          plan: reason?.plan ?? null,
+          status: reason?.status ?? null,
+          source: reason?.source ?? null,
+          recentUsageSegment: reason?.recent_usage_segment ?? null,
+          recentUsageRequestCount: reason?.recent_usage_request_count ?? null,
+          recentUsageCostDollars: reason?.recent_usage_cost_dollars ?? null,
+          feedback: detail.reason_details,
+        };
+      }),
+    );
   },
 });
