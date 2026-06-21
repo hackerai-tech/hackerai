@@ -651,19 +651,50 @@ describe("userDeletion", () => {
     expect(row(tables, "chat_summaries", "summary-other")).toBeTruthy();
   });
 
-  it("does not fail user deletion if S3 cleanup scheduling fails", async () => {
+  it("rejects bulk deleted-user residue cleanup in one transaction", async () => {
+    const { cleanupDeletedUserResidue } = await import("../userDeletion");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+
+    await expect(
+      cleanupDeletedUserResidue.handler(ctx as any, {
+        serviceKey: "service_key",
+        userIds: ["user_123", "user_other"],
+      }),
+    ).rejects.toThrow("processes one userId per mutation");
+  });
+
+  it("fails before cleanup when an indexed query exceeds the bounded read limit", async () => {
+    const { deleteAllUserData } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.notes = Array.from({ length: 501 }, (_, index) => ({
+      _id: `note-user-${index}`,
+      user_id: "user_123",
+      note_id: `note-${index}`,
+    }));
+    const { ctx } = createMockCtx(tables);
+
+    await expect(deleteAllUserData.handler(ctx as any, {})).rejects.toThrow(
+      "matched more than 500 rows in notes.by_user_and_updated",
+    );
+    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
+  });
+
+  it("fails user deletion if S3 cleanup scheduling fails", async () => {
     const { deleteAllUserData } = await import("../userDeletion");
     const tables = seedTables();
     const { ctx, scheduler } = createMockCtx(tables);
     scheduler.runAfter.mockRejectedValueOnce(new Error("Scheduler error"));
 
-    await expect(deleteAllUserData.handler(ctx as any, {})).resolves.toBeNull();
-
-    expect(console.error).toHaveBeenCalledWith(
-      "Failed to schedule S3 batch deletion:",
-      expect.any(Error),
+    await expect(deleteAllUserData.handler(ctx as any, {})).rejects.toThrow(
+      "Scheduler error",
     );
-    expect(row(tables, "files", "file-user")).toBeUndefined();
+
+    expect(scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "deleteS3ObjectsBatchAction",
+      { s3Keys: ["users/user_123/file.pdf"] },
+    );
   });
 
   it("throws if the public mutation has no authenticated user", async () => {

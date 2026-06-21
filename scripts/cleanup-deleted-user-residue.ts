@@ -6,7 +6,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 
 config({ path: resolve(process.cwd(), ".env.e2e") });
-config({ path: resolve(process.cwd(), ".env.local") });
+config({ path: resolve(process.cwd(), ".env.local"), override: true });
 
 type Options = {
   userIds: string[];
@@ -28,7 +28,7 @@ Usage:
   pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --user <id> --orphans --execute
 
 Options:
-  --user <id>       Deleted WorkOS user id to clean. Repeat for multiple users.
+  --user <id>       Deleted WorkOS user id to clean. Run once per user id.
   --orphans         Include orphan chat_summaries cleanup.
   --cursor <cursor> Continue an orphan chat_summaries scan from a prior result.
   --limit <number>  Orphan chat_summaries page size. Default 500, max 1000.
@@ -103,6 +103,10 @@ function parseArgs(argv: string[]): Options {
 
   if (!Number.isFinite(options.orphanNumItems)) {
     throw new Error("--limit must be a number");
+  }
+
+  if (options.userIds.length > 1) {
+    throw new Error("Run this script once per --user to keep cleanup bounded");
   }
 
   options.orphanNumItems = Math.min(

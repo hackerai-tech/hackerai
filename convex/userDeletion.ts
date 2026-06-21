@@ -45,6 +45,9 @@ export const USER_DELETION_TABLE_POLICY = {
 type AnyDoc = { _id: Id<any>; [key: string]: any };
 type CleanupMode = "execute" | "dryRun";
 
+const MAX_CLEANUP_DOCS_PER_INDEX = 500;
+const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
+
 type CleanupStats = {
   deleted: Record<string, number>;
   anonymized: Record<string, number>;
@@ -109,9 +112,17 @@ async function collectByIndex<T extends AnyDoc>(
   indexName: string,
   build: (q: any) => any,
 ): Promise<T[]> {
-  return await (ctx.db.query(table as any) as any)
+  const rows = await (ctx.db.query(table as any) as any)
     .withIndex(indexName, build)
-    .collect();
+    .take(MAX_CLEANUP_DOCS_PER_INDEX + 1);
+
+  if (rows.length > MAX_CLEANUP_DOCS_PER_INDEX) {
+    throw new Error(
+      `Account cleanup matched more than ${MAX_CLEANUP_DOCS_PER_INDEX} rows in ${table}.${indexName}; run a narrower cleanup before deleting this account.`,
+    );
+  }
+
+  return rows;
 }
 
 async function firstByIndex<T extends AnyDoc>(
@@ -207,18 +218,14 @@ async function deleteFiles(
   }
 
   if (s3Keys.length > 0) {
-    try {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.s3Cleanup.deleteS3ObjectsBatchAction,
-        { s3Keys },
-      );
-      console.log(
-        `Scheduled deletion of ${s3Keys.length} S3 objects for deleted user data cleanup`,
-      );
-    } catch (error) {
-      console.error("Failed to schedule S3 batch deletion:", error);
-    }
+    await ctx.scheduler.runAfter(
+      0,
+      internal.s3Cleanup.deleteS3ObjectsBatchAction,
+      { s3Keys },
+    );
+    console.log(
+      `Scheduled deletion of ${s3Keys.length} S3 objects for deleted user data cleanup`,
+    );
   }
 }
 
@@ -653,6 +660,12 @@ export const cleanupDeletedUserResidue = mutation({
     if (userIds.length === 0 && !args.deleteOrphanChatSummaries) {
       throw new Error(
         "Pass at least one userId or enable deleteOrphanChatSummaries",
+      );
+    }
+
+    if (userIds.length > MAX_RESIDUE_USER_IDS_PER_MUTATION) {
+      throw new Error(
+        "cleanupDeletedUserResidue processes one userId per mutation to keep Convex transactions bounded",
       );
     }
 
