@@ -256,6 +256,7 @@ export const getFileById = internalQuery({
     v.object({
       _id: v.id("files"),
       s3_key: v.optional(v.string()),
+      storage_id: v.optional(v.string()),
       user_id: v.string(),
       name: v.string(),
       media_type: v.string(),

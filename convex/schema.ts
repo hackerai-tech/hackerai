@@ -116,6 +116,8 @@ export default defineSchema({
 
   files: defineTable({
     s3_key: v.optional(v.string()),
+    // Legacy Convex storage reference retained for existing rows.
+    storage_id: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
