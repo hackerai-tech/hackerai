@@ -633,9 +633,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // Show toast notification
           const message =
             fallbackData.reason === "no_local_connections"
-              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
-              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
-          toast.info(message, { duration: 5000 });
+              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}; host files, drives, localhost, and private networks are unavailable until local reconnects.`
+              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}. Commands run there, not on the selected host.`;
+          toast.info(message, { duration: 8000 });
           break;
         }
       }
