@@ -2,8 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { useMutation } from "convex/react";
-import { api } from "@/convex/_generated/api";
 import {
   Dialog,
   DialogContent,
@@ -28,7 +26,6 @@ export const DeleteAccountDialog = ({
   onOpenChange,
 }: DeleteAccountDialogProps) => {
   const { user } = useAuth();
-  const deleteAllUserData = useMutation(api.userDeletion.deleteAllUserData);
   const [isDeleting, setIsDeleting] = useState(false);
   const [emailInput, setEmailInput] = useState("");
   const [confirmInput, setConfirmInput] = useState("");
@@ -79,15 +76,14 @@ export const DeleteAccountDialog = ({
     if (isDeleting || !canDelete) return;
     setIsDeleting(true);
     try {
-      // 1) Delete all Convex data first
-      await deleteAllUserData({});
-      // 2) Cancel Stripe subs, remove WorkOS org(s), and delete WorkOS user server-side
+      // Delete Convex data, cancel Stripe subs, remove WorkOS org(s), and
+      // delete the WorkOS user server-side.
       const res = await fetch("/api/delete-account", { method: "POST" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.error || "Failed to cancel subscriptions");
       }
-      // 3) Clear HttpOnly auth cookies on the server, then redirect home
+      // Clear HttpOnly auth cookies on the server, then redirect home
       try {
         await fetch("/api/clear-auth-cookies", { method: "POST" });
       } catch {}

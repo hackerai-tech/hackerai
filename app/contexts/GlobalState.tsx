@@ -25,6 +25,7 @@ import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
   computeReplaceAssistantTodos,
+  type TodoLike,
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import type { FileMessagePart } from "@/types/file";
@@ -88,7 +89,7 @@ interface GlobalStateType {
   // Todos state
   todos: Todo[];
   setTodos: (todos: Todo[]) => void;
-  mergeTodos: (todos: Todo[]) => void;
+  mergeTodos: (todos: TodoLike[]) => void;
   replaceAssistantTodos: (todos: Todo[], sourceMessageId?: string) => void;
 
   // UI state
@@ -329,7 +330,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
-  const mergeTodos = useCallback((newTodos: Todo[]) => {
+  const mergeTodos = useCallback((newTodos: TodoLike[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
   }, []);
   const replaceAssistantTodos = useCallback(

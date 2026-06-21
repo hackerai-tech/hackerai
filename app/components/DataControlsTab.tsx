@@ -2,9 +2,6 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useMutation } from "convex/react";
-import { ConvexError } from "convex/values";
-import { api } from "@/convex/_generated/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,25 +24,25 @@ const DataControlsTab = () => {
   const [isDeletingSandboxes, setIsDeletingSandboxes] = useState(false);
   const [showManageSharedChats, setShowManageSharedChats] = useState(false);
 
-  const deleteAllChats = useMutation(api.chats.deleteAllChats);
-
   const handleDeleteAllChats = async () => {
     if (isDeletingChats) return;
     setIsDeletingChats(true);
     try {
-      await deleteAllChats();
+      const response = await fetch("/api/chats", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const errorMessage = await response.text();
+        throw new Error(errorMessage || "Failed to delete all chats");
+      }
+
       setShowDeleteChats(false);
       window.location.href = "/";
     } catch (error) {
       console.error("Failed to delete all chats:", error);
       const errorMessage =
-        error instanceof ConvexError
-          ? (error.data as { message?: string })?.message ||
-            error.message ||
-            "Failed to delete all chats"
-          : error instanceof Error
-            ? error.message
-            : "Failed to delete all chats";
+        error instanceof Error ? error.message : "Failed to delete all chats";
       toast.error(errorMessage);
       setShowDeleteChats(false);
     } finally {

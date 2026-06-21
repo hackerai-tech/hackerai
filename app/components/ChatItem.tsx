@@ -94,7 +94,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     initializeChat,
   } = useGlobalState();
   const isMobile = useIsMobile();
-  const deleteChat = useMutation(api.chats.deleteChat);
   const renameChat = useMutation(api.chats.renameChat);
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
@@ -140,7 +139,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setIsDeleting(true);
 
     try {
-      await deleteChat({ chatId: id });
+      const response = await fetch(`/api/chat/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(errorText || "Failed to delete chat");
+      }
 
       // Remove draft from localStorage immediately after successful deletion
       removeDraft(id);

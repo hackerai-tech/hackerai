@@ -4,6 +4,8 @@ import { workos } from "../workos";
 import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
 import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { api } from "@/convex/_generated/api";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -73,6 +75,21 @@ async function getMembershipDeletionPlan(
   }
 }
 
+async function deleteConvexUserData(userId: string) {
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  if (!serviceKey) {
+    throw new Error("CONVEX_SERVICE_ROLE_KEY is not set");
+  }
+
+  await getConvexClient().mutation(
+    api.userDeletion.deleteAllUserDataByService,
+    {
+      serviceKey,
+      userId,
+    },
+  );
+}
+
 export const POST = async (req: NextRequest) => {
   try {
     // Enforce recent login (10-minute window) before any destructive action
@@ -99,6 +116,10 @@ export const POST = async (req: NextRequest) => {
         { status: 400 },
       );
     }
+
+    // Own app-data cleanup on the server so account deletion does not depend
+    // on the browser successfully running a Convex mutation before this route.
+    await deleteConvexUserData(userId);
 
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.

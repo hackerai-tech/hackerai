@@ -4,22 +4,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import DeleteAccountDialog from "../DeleteAccountDialog";
 
-const mockDeleteAllUserData = jest.fn();
-
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: jest.fn(),
-}));
-
-jest.mock("convex/react", () => ({
-  useMutation: () => mockDeleteAllUserData,
-}));
-
-jest.mock("@/convex/_generated/api", () => ({
-  api: {
-    userDeletion: {
-      deleteAllUserData: "userDeletion.deleteAllUserData",
-    },
-  },
 }));
 
 jest.mock("sonner", () => ({
@@ -48,7 +34,6 @@ describe("DeleteAccountDialog", () => {
         lastSignInAt: new Date().toISOString(),
       },
     } as ReturnType<typeof useAuth>);
-    mockDeleteAllUserData.mockReset();
   });
 
   it("keeps the delete button visible but disabled before confirmation", () => {

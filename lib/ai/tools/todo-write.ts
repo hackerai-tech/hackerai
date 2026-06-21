@@ -17,7 +17,7 @@ Use proactively for:
 2. Non-trivial vulnerability testing requiring systematic approach
 3. User explicitly requests todo list
 4. User provides multiple targets or attack vectors (numbered/comma-separated)
-5. After receiving new instructions - capture requirements as todos (use merge=false to add new ones)
+5. After receiving new instructions - capture requirements as todos (use merge=false to replace the assistant plan, or merge=true to patch the current plan)
 6. After completing tasks - mark complete with merge=true and add follow-ups
 7. When starting new tasks - mark as in_progress (ideally only one at a time)
 
@@ -142,14 +142,21 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
             id: z.string().describe("Unique identifier for the todo item"),
             content: z
               .string()
+              .refine((value) => value.trim().length > 0, {
+                message: "Todo content cannot be blank",
+              })
+              .optional()
               .describe("The description/content of the todo item"),
             status: z
               .enum(["pending", "in_progress", "completed", "cancelled"])
+              .optional()
               .describe("The current status of the todo item"),
           }),
         )
         .min(1)
-        .describe("Array of todo items to write to the workspace"),
+        .describe(
+          "Array of todo items to write to the workspace. For merge=false, every item must include content and status and replaces the assistant-generated plan while preserving manually created todos. For merge=true, existing items may be patched with partial updates, but new items must include content and status.",
+        ),
     }),
     execute: async ({
       merge,
@@ -159,33 +166,44 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
       todos: Array<{
         id: string;
         content?: string;
-        status: Todo["status"];
+        status?: Todo["status"];
       }>;
     }) => {
       try {
-        // Runtime validation for non-merge operations
-        if (!merge) {
-          for (let i = 0; i < todos.length; i++) {
-            const todo = todos[i];
-            if (!todo.content || todo.content.trim() === "") {
-              throw new Error(
-                `Todo at index ${i} is missing required content field`,
-              );
-            }
-          }
-        }
-
         // If incoming payload looks like partial updates (missing content fields), switch to merge to avoid replacing the whole plan.
         const shouldMerge =
           merge ||
-          todos.some((t) => t.content === undefined || t.content === null);
+          todos.some(
+            (t) =>
+              t.content === undefined ||
+              t.content === null ||
+              t.status === undefined ||
+              t.status === null,
+          );
+
+        const existingTodoIds = new Set(
+          todoManager.getAllTodos().map((todo) => todo.id),
+        );
+        const todosWithSourceMessageId: Array<Partial<Todo> & { id: string }> =
+          assistantMessageId
+            ? todos.map((todo) => {
+                const isNewCompleteMergeTodo =
+                  shouldMerge &&
+                  !existingTodoIds.has(todo.id) &&
+                  typeof todo.content === "string" &&
+                  todo.content.trim() !== "" &&
+                  todo.status !== undefined;
+                const shouldStamp = !shouldMerge || isNewCompleteMergeTodo;
+
+                return shouldStamp
+                  ? { ...todo, sourceMessageId: assistantMessageId }
+                  : todo;
+              })
+            : todos;
 
         // Update backend state first (TodoManager handles deduplication)
         const updatedTodos = todoManager.setTodos(
-          // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
-          shouldMerge || !assistantMessageId
-            ? todos
-            : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
+          todosWithSourceMessageId,
           shouldMerge,
         );
 

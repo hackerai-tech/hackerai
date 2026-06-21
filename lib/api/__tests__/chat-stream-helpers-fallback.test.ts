@@ -27,7 +27,7 @@ const GROK_SLUG = "x-ai/grok-4.3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 ask chain to Gemini slug", () => {
+  it("resolves Opus 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
       models: [GEMINI_SLUG],
@@ -62,7 +62,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 ask chain to Gemini slug", () => {
+  it("resolves Sonnet 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -168,7 +168,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from Gemini to Grok", () => {
+  it("falls back from the Gemini PDF route to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
       models: [GROK_SLUG],
@@ -205,6 +205,16 @@ describe("buildProviderOptions fallback chain", () => {
         enabled: true,
         effort: "medium",
         exclude: true,
+      });
+    },
+  );
+
+  it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
+    "enables reasoning for Kimi ask mode route %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
       });
     },
   );

@@ -247,6 +247,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       runId: handle.id,
       publicAccessToken,
+      chatId,
     });
   } catch (error) {
     if (error instanceof ChatSDKError) {
