@@ -50,7 +50,6 @@ export default defineSchema({
     ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
-    .index("by_latest_summary_id", ["latest_summary_id"])
     .searchIndex("search_title", {
       searchField: "title",
       filterFields: ["user_id"],

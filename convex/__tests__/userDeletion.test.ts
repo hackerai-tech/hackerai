@@ -634,7 +634,7 @@ describe("userDeletion", () => {
       orphanNumItems: 20,
     });
 
-    expect(dryRun.orphanChatSummariesDeleted).toBe(1);
+    expect(dryRun.orphanChatSummariesDeleted).toBe(2);
     expect(row(tables, "chat_summaries", "summary-orphan")).toBeTruthy();
     expect(row(tables, "chat_summaries", "summary-latest")).toBeTruthy();
 
@@ -645,9 +645,9 @@ describe("userDeletion", () => {
       orphanNumItems: 20,
     });
 
-    expect(execute.orphanChatSummariesDeleted).toBe(1);
+    expect(execute.orphanChatSummariesDeleted).toBe(2);
     expect(row(tables, "chat_summaries", "summary-orphan")).toBeUndefined();
-    expect(row(tables, "chat_summaries", "summary-latest")).toBeTruthy();
+    expect(row(tables, "chat_summaries", "summary-latest")).toBeUndefined();
     expect(row(tables, "chat_summaries", "summary-other")).toBeTruthy();
   });
 

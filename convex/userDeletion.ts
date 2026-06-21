@@ -582,15 +582,13 @@ async function cleanupOrphanChatSummaries(
 
   const orphanSummaries: Doc<"chat_summaries">[] = [];
   for (const summary of page.page as Doc<"chat_summaries">[]) {
-    const [chatByChatId, chatByLatestSummary] = await Promise.all([
-      firstByIndex<Doc<"chats">>(ctx, "chats", "by_chat_id", (q) =>
-        q.eq("id", summary.chat_id),
-      ),
-      firstByIndex<Doc<"chats">>(ctx, "chats", "by_latest_summary_id", (q) =>
-        q.eq("latest_summary_id", summary._id),
-      ),
-    ]);
-    if (!chatByChatId && !chatByLatestSummary) {
+    const chat = await firstByIndex<Doc<"chats">>(
+      ctx,
+      "chats",
+      "by_chat_id",
+      (q) => q.eq("id", summary.chat_id),
+    );
+    if (!chat) {
       orphanSummaries.push(summary);
     }
   }
