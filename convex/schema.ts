@@ -50,6 +50,7 @@ export default defineSchema({
     ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
+    .index("by_latest_summary_id", ["latest_summary_id"])
     .searchIndex("search_title", {
       searchField: "title",
       filterFields: ["user_id"],
@@ -289,7 +290,8 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_org", ["organization_id"])
-    .index("by_org_user", ["organization_id", "user_id"]),
+    .index("by_org_user", ["organization_id", "user_id"])
+    .index("by_user_id", ["user_id"]),
 
   referral_codes: defineTable({
     user_id: v.string(),
@@ -387,6 +389,7 @@ export default defineSchema({
     notification_seen_at: v.optional(v.number()),
   })
     .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_user_id", ["user_id"])
     .index("by_referrer_user_id", ["referrer_user_id"])
     .index("by_referrer_notification", [
       "referrer_user_id",
@@ -417,6 +420,7 @@ export default defineSchema({
     resolved_at: v.optional(v.number()),
     resolved_reason: v.optional(v.string()),
   })
+    .index("by_user_id", ["user_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_user_status_source_created", [
       "user_id",
@@ -453,7 +457,9 @@ export default defineSchema({
   temp_streams: defineTable({
     chat_id: v.string(),
     user_id: v.string(),
-  }).index("by_chat_id", ["chat_id"]),
+  })
+    .index("by_chat_id", ["chat_id"])
+    .index("by_user_id", ["user_id"]),
 
   // Local Sandbox Tables
   local_sandbox_tokens: defineTable({
