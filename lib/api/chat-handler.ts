@@ -515,7 +515,6 @@ export const createChatHandler = () => {
               try {
                 assertLocalSandboxFallbackAllowed({
                   fallbackInfo: sandboxPromptContext.fallbackInfo,
-                  messages: processedMessages,
                 });
               } catch (error) {
                 if (error instanceof ChatSDKError) {

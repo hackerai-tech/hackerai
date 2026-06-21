@@ -131,7 +131,6 @@ export async function POST(req: NextRequest) {
         await sandboxManager.getSandboxContextForPrompt();
         assertLocalSandboxFallbackAllowed({
           fallbackInfo: sandboxManager.consumeFallbackInfo(),
-          messages: requestMessages,
           requireLocalSandbox: true,
         });
 

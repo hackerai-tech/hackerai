@@ -1,4 +1,4 @@
-import type { UIMessage, UIMessageStreamWriter } from "ai";
+import type { UIMessageStreamWriter } from "ai";
 import { ChatSDKError } from "@/lib/errors";
 import type { SandboxFallbackInfo } from "./hybrid-sandbox-manager";
 
@@ -16,57 +16,20 @@ const escapePromptText = (value: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-const LOCAL_HOST_PATTERNS: RegExp[] = [
-  /\b[C-Z]:[\\/]/i,
-  /\b[C-Z]:\s*(?:drive|path|folder|directory|file|share|volume)\b/i,
-  /\b(?:drive|path|folder|directory|file|share|volume)\s+[`'"]?[C-Z]:\b/i,
-  /(?:^|[\s`'"])(?:~\/|\/Users\/|\/Volumes\/|\/Applications\/|\/mnt\/[a-z]\/|\/media\/|\/run\/media\/)/i,
-  /(?:^|[\s`'"])\/home\/(?!user(?:\/|\s|$))[A-Za-z0-9._-]+(?:\/|\b)/i,
-  /\b(?:localhost|127\.0\.0\.1|::1|host\.docker\.internal)\b/i,
-  /\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})\b/,
-  /\b(?:private\s+(?:lan|network)|local\s+(?:dev\s+)?server|internal\s+(?:ip|network|host|service)|vpn)\b/i,
-  /\b(?:my|this|the)\s+(?:laptop|desktop|computer|machine|host|pc)\b/i,
-  /\b(?:desktop app|local machine|host machine|local filesystem|host filesystem|browser profile)\b/i,
-];
-
 const LOCAL_FALLBACK_BLOCK_MESSAGE =
-  "Local sandbox is unavailable, and this request appears to need your local machine. Cloud cannot access your host files, drives, localhost, private networks, or desktop apps. Reconnect Desktop or a Remote Connection, then send the message again.";
+  "Local sandbox is unavailable, so HackerAI did not switch this run to Cloud. Cloud cannot access your host files, drives, localhost, private networks, or desktop apps. Reconnect Desktop or a Remote Connection, or switch the sandbox to Cloud and send the message again.";
 
 const SELECTED_LOCAL_FALLBACK_BLOCK_MESSAGE =
-  "The selected local sandbox is unavailable, and this request appears to need that machine. HackerAI did not switch sandboxes because commands would run on the wrong host. Reconnect or select the right local sandbox, then send the message again.";
+  "The selected local sandbox is unavailable, so HackerAI did not switch sandboxes because commands would run on the wrong host. Reconnect or select the right local sandbox, then send the message again.";
 
 const LOCAL_ATTACHMENT_BLOCK_MESSAGE =
   "Desktop-local attachments require the Desktop sandbox. Reconnect Desktop, then resend the message with the attachment.";
 
-function getLastUserText(messages: UIMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message.role !== "user") continue;
-
-    return (message.parts ?? [])
-      .map((part) => {
-        if (part.type !== "text") return "";
-        return typeof part.text === "string" ? part.text : "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  return "";
-}
-
-export function requestNeedsLocalHost(messages: UIMessage[]): boolean {
-  const lastUserText = getLastUserText(messages);
-  return LOCAL_HOST_PATTERNS.some((pattern) => pattern.test(lastUserText));
-}
-
 export function assertLocalSandboxFallbackAllowed({
   fallbackInfo,
-  messages,
   requireLocalSandbox = false,
 }: {
   fallbackInfo: SandboxFallbackInfo | null;
-  messages: UIMessage[];
   requireLocalSandbox?: boolean;
 }): void {
   if (!fallbackInfo?.occurred) {
@@ -82,10 +45,6 @@ export function assertLocalSandboxFallbackAllowed({
     });
   }
 
-  if (!requestNeedsLocalHost(messages)) {
-    return;
-  }
-
   const message =
     fallbackInfo.actualSandbox === "e2b"
       ? LOCAL_FALLBACK_BLOCK_MESSAGE
@@ -95,7 +54,7 @@ export function assertLocalSandboxFallbackAllowed({
     sandboxFallbackReason: fallbackInfo.reason,
     requestedPreference: fallbackInfo.requestedPreference,
     actualSandbox: fallbackInfo.actualSandbox,
-    localHostRequest: true,
+    localSandboxFallbackBlocked: true,
   });
 }
 

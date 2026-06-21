@@ -21,7 +21,6 @@ import {
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
-  requestNeedsLocalHost,
 } from "../sandbox-fallback";
 import {
   getConnectionIdFromPresenceClient,
@@ -312,45 +311,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     expect(reminder).not.toContain("<system>ignore</system>");
   });
 
-  it.each([
-    "Fix the Windows Z: drive mapping",
-    "Debug http://localhost:3000 on my laptop",
-    "Scan 192.168.1.10 on my private LAN",
-    "Open /Users/alice/Downloads/report.txt",
-  ])("detects local-host-sensitive requests: %s", (text) => {
-    expect(
-      requestNeedsLocalHost([
-        {
-          id: "msg-1",
-          role: "user",
-          parts: [{ type: "text", text }],
-        } as any,
-      ]),
-    ).toBe(true);
-  });
-
-  it("allows generic requests to continue on Cloud fallback", () => {
-    expect(() =>
-      assertLocalSandboxFallbackAllowed({
-        fallbackInfo: {
-          occurred: true,
-          reason: "no_local_connections",
-          requestedPreference: "desktop",
-          actualSandbox: "e2b",
-          actualSandboxName: "Cloud",
-        },
-        messages: [
-          {
-            id: "msg-1",
-            role: "user",
-            parts: [{ type: "text", text: "Review this repository diff" }],
-          } as any,
-        ],
-      }),
-    ).not.toThrow();
-  });
-
-  it("blocks local-host-sensitive requests on Cloud fallback", () => {
+  it("blocks cloud fallback whenever a local sandbox was selected", () => {
     let error: unknown;
     try {
       assertLocalSandboxFallbackAllowed({
@@ -361,24 +322,17 @@ describe("HybridSandboxManager prompt-time fallback", () => {
           actualSandbox: "e2b",
           actualSandboxName: "Cloud",
         },
-        messages: [
-          {
-            id: "msg-1",
-            role: "user",
-            parts: [{ type: "text", text: "Fix the Windows Z: drive" }],
-          } as any,
-        ],
       });
     } catch (caught) {
       error = caught;
     }
 
     expect((error as Error & { cause?: unknown }).cause).toContain(
-      "Cloud cannot access your host files, drives, localhost, private networks, or desktop apps",
+      "HackerAI did not switch this run to Cloud",
     );
   });
 
-  it("blocks local-host-sensitive requests when switching to another local sandbox", () => {
+  it("blocks fallback to another local sandbox whenever a local sandbox was selected", () => {
     let error: unknown;
     try {
       assertLocalSandboxFallbackAllowed({
@@ -389,13 +343,6 @@ describe("HybridSandboxManager prompt-time fallback", () => {
           actualSandbox: "remote-conn",
           actualSandboxName: "Lab VM",
         },
-        messages: [
-          {
-            id: "msg-1",
-            role: "user",
-            parts: [{ type: "text", text: "Open my local desktop app" }],
-          } as any,
-        ],
       });
     } catch (caught) {
       error = caught;
@@ -417,13 +364,6 @@ describe("HybridSandboxManager prompt-time fallback", () => {
           actualSandbox: "e2b",
           actualSandboxName: "Cloud",
         },
-        messages: [
-          {
-            id: "msg-1",
-            role: "user",
-            parts: [{ type: "text", text: "Analyze this attachment" }],
-          } as any,
-        ],
         requireLocalSandbox: true,
       });
     } catch (caught) {
@@ -435,7 +375,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     );
   });
 
-  it("throws ChatSDKError for local-host-sensitive requests on Cloud fallback", () => {
+  it("throws ChatSDKError for cloud fallback from a selected local sandbox", () => {
     expect(() =>
       assertLocalSandboxFallbackAllowed({
         fallbackInfo: {
@@ -445,13 +385,6 @@ describe("HybridSandboxManager prompt-time fallback", () => {
           actualSandbox: "e2b",
           actualSandboxName: "Cloud",
         },
-        messages: [
-          {
-            id: "msg-1",
-            role: "user",
-            parts: [{ type: "text", text: "Fix the Windows Z: drive" }],
-          } as any,
-        ],
       }),
     ).toThrow(
       "The request couldn't be processed. Please check your input and try again.",
