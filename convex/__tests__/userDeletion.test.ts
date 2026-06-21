@@ -388,6 +388,74 @@ describe("userDeletion", () => {
       expect(mockScheduler.runAfter).not.toHaveBeenCalled();
     });
 
+    it("should delete chat summaries before deleting chats", async () => {
+      const { deleteAllUserData } = await import("../userDeletion");
+
+      const mockScheduler = {
+        runAfter: jest.fn(),
+      };
+
+      const mockChats = [
+        {
+          _id: "chat-doc-1",
+          id: "chat-1",
+          user_id: "user123",
+          title: "Chat 1",
+          update_time: 1000,
+          latest_summary_id: "summary-1",
+        },
+      ];
+      const mockSummaries = [
+        { _id: "summary-1", chat_id: "chat-1" },
+        { _id: "summary-2", chat_id: "chat-1" },
+      ];
+
+      const mockDb = {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn().mockReturnValue({
+            collect: jest
+              .fn()
+              .mockResolvedValue(
+                table === "chats"
+                  ? mockChats
+                  : table === "chat_summaries"
+                    ? mockSummaries
+                    : [],
+              ),
+            first: jest.fn().mockResolvedValue(null),
+          }),
+        })),
+        delete: jest.fn(),
+      };
+
+      const mockAuth = {
+        getUserIdentity: jest.fn().mockResolvedValue({
+          subject: "user123",
+        }),
+      };
+
+      const mockCtx = {
+        auth: mockAuth,
+        db: mockDb,
+        scheduler: mockScheduler,
+      };
+
+      await deleteAllUserData.handler(mockCtx, {});
+
+      expect(mockDb.query).toHaveBeenCalledWith("chat_summaries");
+      expect(mockDb.delete).toHaveBeenCalledWith("summary-1");
+      expect(mockDb.delete).toHaveBeenCalledWith("summary-2");
+      expect(mockDb.delete).toHaveBeenCalledWith("chat-doc-1");
+
+      const deleteOrder = mockDb.delete.mock.calls.map(([id]) => id);
+      expect(deleteOrder.indexOf("summary-1")).toBeLessThan(
+        deleteOrder.indexOf("chat-doc-1"),
+      );
+      expect(deleteOrder.indexOf("summary-2")).toBeLessThan(
+        deleteOrder.indexOf("chat-doc-1"),
+      );
+    });
+
     it("should throw error if user is not authenticated", async () => {
       const { deleteAllUserData } = await import("../userDeletion");
 

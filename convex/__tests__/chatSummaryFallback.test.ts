@@ -277,7 +277,47 @@ describe("saveLatestSummary — previous_summaries chain", () => {
         ],
       }),
     );
-    expect(mockCtx.db.delete).not.toHaveBeenCalledWith(SUMMARY_DOC_ID);
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
+  });
+
+  it("should still save the new summary if old summary cleanup fails", async () => {
+    const chat = makeChatDoc();
+    setupSaveSummaryQueries(chat);
+
+    const oldSummary = makeSummaryDoc({
+      summary_text: "old text",
+      summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
+      previous_summaries: [],
+    });
+    mockCtx.db.get.mockResolvedValue(oldSummary);
+    mockCtx.db.delete.mockRejectedValueOnce(new Error("cleanup failed"));
+
+    const { saveLatestSummary } = await import("../chats");
+
+    await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "new summary",
+      summaryUpToMessageId: "msg-10",
+    });
+
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "chat_summaries",
+      expect.objectContaining({
+        previous_summaries: [
+          {
+            summary_text: "old text",
+            summary_up_to_message_id: "msg-5",
+            summary_up_to_message_creation_time: 5_000,
+          },
+        ],
+      }),
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(CHAT_DOC_ID, {
+      latest_summary_id: "new-summary-id",
+    });
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
   });
 
   it("should preserve the chain: [old, ...old_previous_summaries]", async () => {
@@ -376,6 +416,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
 
     expect(mockCtx.db.insert).not.toHaveBeenCalled();
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.db.delete).not.toHaveBeenCalled();
   });
 
   it("should save a different cutoff message with the same creation time", async () => {
@@ -408,6 +449,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(CHAT_DOC_ID, {
       latest_summary_id: "new-summary-id",
     });
+    expect(mockCtx.db.delete).toHaveBeenCalledWith(SUMMARY_DOC_ID);
   });
 
   it("should skip saves when the incoming cutoff message was deleted", async () => {

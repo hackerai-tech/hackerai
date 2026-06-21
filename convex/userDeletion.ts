@@ -9,11 +9,12 @@ import { fileCountAggregate } from "./fileAggregate";
  * Deletion order (respects foreign key constraints):
  * 1) Feedback records (referenced by messages)
  * 2) Messages (owned by user, reference chats and files)
- * 3) Chats (owned by user)
- * 4) Files + S3 objects (owned by user, may be referenced by messages)
+ * 3) Chat summaries (referenced by chats)
+ * 4) Chats (owned by user)
+ * 5) Files + S3 objects (owned by user, may be referenced by messages)
  *    - S3 objects: Batch deleted using scheduled action
- * 5) Notes (owned by user)
- * 6) User customization (owned by user)
+ * 6) Notes (owned by user)
+ * 7) User customization (owned by user)
  *
  * Uses parallel queries and deletions for optimal performance.
  * S3 cleanup is scheduled asynchronously and errors don't block user deletion.
@@ -86,7 +87,27 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 3: Delete chats (now safe since messages are gone)
+      // Step 3: Delete chat summaries before deleting the chats that reference them
+      const summariesByChat = await Promise.all(
+        chats.map((chat) =>
+          ctx.db
+            .query("chat_summaries")
+            .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+            .collect(),
+        ),
+      );
+
+      await Promise.all(
+        summariesByChat.flat().map(async (summary) => {
+          try {
+            await ctx.db.delete(summary._id);
+          } catch (error) {
+            console.error(`Failed to delete summary ${summary._id}:`, error);
+          }
+        }),
+      );
+
+      // Step 4: Delete chats (now safe since messages and summaries are gone)
       await Promise.all(
         chats.map(async (chat) => {
           try {
@@ -97,7 +118,7 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 4: Delete files and S3 objects (safe since messages no longer reference them)
+      // Step 5: Delete files and S3 objects (safe since messages no longer reference them)
 
       // Collect S3 keys for batch deletion
       const s3Keys: string[] = [];
@@ -137,7 +158,7 @@ export const deleteAllUserData = mutation({
         }
       }
 
-      // Step 5: Delete notes (independent of other data)
+      // Step 6: Delete notes (independent of other data)
       await Promise.all(
         notes.map(async (note) => {
           try {
@@ -148,7 +169,7 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 6: Delete user customization (independent of other data)
+      // Step 7: Delete user customization (independent of other data)
       if (customization) {
         try {
           await ctx.db.delete(customization._id);

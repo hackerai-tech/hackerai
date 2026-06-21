@@ -1171,9 +1171,13 @@ export const saveLatestSummary = mutation({
         summary_up_to_message_creation_time?: number;
       }[] = [];
 
-      if (chat.latest_summary_id) {
-        const oldSummary = await ctx.db.get(chat.latest_summary_id);
+      const previousSummaryId = chat.latest_summary_id;
+      let shouldDeletePreviousSummary = false;
+
+      if (previousSummaryId) {
+        const oldSummary = await ctx.db.get(previousSummaryId);
         if (oldSummary) {
+          shouldDeletePreviousSummary = true;
           const oldSummaryWithCreationTime = oldSummary as typeof oldSummary & {
             summary_up_to_message_creation_time?: number;
           };
@@ -1200,7 +1204,7 @@ export const saveLatestSummary = mutation({
               incoming_summary_up_to_message_id: args.summaryUpToMessageId,
               incoming_summary_up_to_message_creation_time:
                 incomingCutoffCreationTime,
-              current_summary_id: chat.latest_summary_id,
+              current_summary_id: previousSummaryId,
               current_summary_up_to_message_id:
                 oldSummary.summary_up_to_message_id,
               current_summary_up_to_message_creation_time:
@@ -1227,7 +1231,7 @@ export const saveLatestSummary = mutation({
             service: "convex",
             environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
             chat_id: args.chatId,
-            latest_summary_id: chat.latest_summary_id,
+            latest_summary_id: previousSummaryId,
           });
         }
       }
@@ -1284,6 +1288,27 @@ export const saveLatestSummary = mutation({
         latest_summary_id: summaryId,
       });
 
+      let deletedPreviousSummary = false;
+      if (
+        shouldDeletePreviousSummary &&
+        previousSummaryId &&
+        previousSummaryId !== summaryId
+      ) {
+        try {
+          await ctx.db.delete(previousSummaryId);
+          deletedPreviousSummary = true;
+        } catch (error) {
+          convexLogger.warn("chat_summary_previous_cleanup_failed", {
+            service: "convex",
+            environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+            chat_id: args.chatId,
+            previous_summary_id: previousSummaryId,
+            new_summary_id: summaryId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       convexLogger.info("chat_summary_saved", {
         service: "convex",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
@@ -1291,8 +1316,9 @@ export const saveLatestSummary = mutation({
         summary_id: summaryId,
         summary_up_to_message_id: args.summaryUpToMessageId,
         summary_up_to_message_creation_time: incomingCutoffCreationTime,
-        previous_summary_id: chat.latest_summary_id,
+        previous_summary_id: previousSummaryId,
         previous_summaries_count: previousSummaries.length,
+        deleted_previous_summary: deletedPreviousSummary,
       });
 
       return null;
