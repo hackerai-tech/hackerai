@@ -7,6 +7,14 @@ type SandboxContextForPromptManager = {
   consumeFallbackInfo?: () => SandboxFallbackInfo | null;
 };
 
+const escapePromptText = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
 export function writeSandboxFallbackEvent(
   writer: UIMessageStreamWriter,
   fallbackInfo: SandboxFallbackInfo,
@@ -65,7 +73,9 @@ Local sandbox unavailable. This run is using the Cloud sandbox. Cloud commands c
 </sandbox_fallback>`;
   }
 
-  const actualName = fallbackInfo.actualSandboxName || "another local sandbox";
+  const actualName = escapePromptText(
+    fallbackInfo.actualSandboxName || "another local sandbox",
+  );
   return `<sandbox_fallback>
 The selected local sandbox is unavailable. This run switched to ${actualName}. Commands run only on that connected machine; do not assume access to the originally selected host.
 </sandbox_fallback>`;
