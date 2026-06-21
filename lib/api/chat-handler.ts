@@ -126,6 +126,7 @@ import {
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
+  assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
@@ -511,6 +512,19 @@ export const createChatHandler = () => {
               sandboxFallbackReminder = getSandboxFallbackPromptReminder(
                 sandboxPromptContext.fallbackInfo,
               );
+              try {
+                assertLocalSandboxFallbackAllowed({
+                  fallbackInfo: sandboxPromptContext.fallbackInfo,
+                  messages: processedMessages,
+                });
+              } catch (error) {
+                if (error instanceof ChatSDKError) {
+                  preemptiveTimeout?.clear();
+                  await usageRefundTracker.refund();
+                  chatLogger?.emitChatError(error);
+                }
+                throw error;
+              }
             }
 
             if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {

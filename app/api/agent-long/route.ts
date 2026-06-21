@@ -20,6 +20,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import { assertLocalSandboxFallbackAllowed } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   getUploadBasePath,
   hasLocalDesktopSourcePaths,
@@ -127,6 +128,13 @@ export async function POST(req: NextRequest) {
           null,
           subscription,
         );
+        await sandboxManager.getSandboxContextForPrompt();
+        assertLocalSandboxFallbackAllowed({
+          fallbackInfo: sandboxManager.consumeFallbackInfo(),
+          messages: requestMessages,
+          requireLocalSandbox: true,
+        });
+
         let stagedSandbox: any = null;
         let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
         try {
