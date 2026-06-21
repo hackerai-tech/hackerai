@@ -25,6 +25,8 @@ const SELECTED_LOCAL_FALLBACK_BLOCK_MESSAGE =
 const LOCAL_ATTACHMENT_BLOCK_MESSAGE =
   "Desktop-local attachments require the Desktop sandbox. Reconnect Desktop, then resend the message with the attachment.";
 
+const CLOUD_SANDBOX_TYPE = "e2b";
+
 export function assertLocalSandboxFallbackAllowed({
   fallbackInfo,
   requireLocalSandbox = false,
@@ -46,7 +48,7 @@ export function assertLocalSandboxFallbackAllowed({
   }
 
   const message =
-    fallbackInfo.actualSandbox === "e2b"
+    fallbackInfo.actualSandbox === CLOUD_SANDBOX_TYPE
       ? LOCAL_FALLBACK_BLOCK_MESSAGE
       : SELECTED_LOCAL_FALLBACK_BLOCK_MESSAGE;
 
@@ -110,7 +112,7 @@ export function getSandboxFallbackPromptReminder(
     return null;
   }
 
-  if (fallbackInfo.actualSandbox === "e2b") {
+  if (fallbackInfo.actualSandbox === CLOUD_SANDBOX_TYPE) {
     return `<sandbox_fallback>
 Local sandbox unavailable. This run is using the Cloud sandbox. Cloud commands cannot access the user's Windows/macOS/Linux host files, drives such as C: or Z:, localhost, private LAN, or desktop apps. Do not promise host access or try to fix local host paths from Cloud. If the task requires the user's host, tell them to reconnect Desktop or a Remote Connection before continuing.
 </sandbox_fallback>`;
