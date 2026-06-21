@@ -420,6 +420,33 @@ describe("HybridSandboxManager prompt-time fallback", () => {
       data: fallbackInfo,
     });
   });
+
+  it("can delay the fallback stream part until after guard checks", async () => {
+    const fallbackInfo = {
+      occurred: true,
+      reason: "no_local_connections" as const,
+      requestedPreference: "desktop" as const,
+      actualSandbox: "e2b" as const,
+      actualSandboxName: "Cloud",
+    };
+    const writer = { write: jest.fn() };
+
+    const result = await prepareSandboxContextForPrompt({
+      sandboxManager: {
+        getSandboxContextForPrompt: jest.fn().mockResolvedValue(null),
+        consumeFallbackInfo: jest.fn(() => fallbackInfo),
+      },
+      writer: writer as any,
+      eventId: "sandbox-fallback-test",
+      emitFallbackEvent: false,
+    });
+
+    expect(result).toEqual({
+      sandboxContext: null,
+      fallbackInfo,
+    });
+    expect(writer.write).not.toHaveBeenCalled();
+  });
 });
 
 describe("HybridSandboxManager reset cleanup", () => {

@@ -112,6 +112,7 @@ import {
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
+  writeSandboxFallbackEvent,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
@@ -1162,6 +1163,7 @@ export const agentLongTask = task({
               sandboxManager,
               writer,
               eventId: `sandbox-fallback-${assistantMessageId}`,
+              emitFallbackEvent: false,
               onContextError: (err) => {
                 console.warn(
                   "[agent-long] Failed to get sandbox context:",
@@ -1183,6 +1185,13 @@ export const agentLongTask = task({
                 chatLogger?.emitChatError(error);
               }
               throw error;
+            }
+            if (sandboxPromptContext.fallbackInfo?.occurred) {
+              writeSandboxFallbackEvent(
+                writer,
+                sandboxPromptContext.fallbackInfo,
+                `sandbox-fallback-${assistantMessageId}`,
+              );
             }
 
             if (sandboxFiles && sandboxFiles.length > 0) {

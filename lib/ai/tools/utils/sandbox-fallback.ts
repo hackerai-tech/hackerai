@@ -76,11 +76,13 @@ export async function prepareSandboxContextForPrompt({
   sandboxManager,
   writer,
   eventId,
+  emitFallbackEvent = true,
   onContextError,
 }: {
   sandboxManager: SandboxContextForPromptManager;
   writer: UIMessageStreamWriter;
   eventId: string;
+  emitFallbackEvent?: boolean;
   onContextError?: (error: unknown) => void;
 }): Promise<{
   sandboxContext: string | null;
@@ -98,7 +100,9 @@ export async function prepareSandboxContextForPrompt({
 
   const fallbackInfo = sandboxManager.consumeFallbackInfo?.() ?? null;
   if (fallbackInfo?.occurred) {
-    writeSandboxFallbackEvent(writer, fallbackInfo, eventId);
+    if (emitFallbackEvent) {
+      writeSandboxFallbackEvent(writer, fallbackInfo, eventId);
+    }
     return { sandboxContext, fallbackInfo };
   }
 

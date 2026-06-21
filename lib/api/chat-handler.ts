@@ -129,6 +129,7 @@ import {
   assertLocalSandboxFallbackAllowed,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
+  writeSandboxFallbackEvent,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   omitImageViewToolResultsForProviderRetry,
@@ -500,6 +501,7 @@ export const createChatHandler = () => {
                   sandboxManager,
                   writer,
                   eventId: `sandbox-fallback-${assistantMessageId}`,
+                  emitFallbackEvent: false,
                   onContextError: (error) => {
                     console.warn(
                       "Failed to get sandbox context for prompt:",
@@ -523,6 +525,13 @@ export const createChatHandler = () => {
                   chatLogger?.emitChatError(error);
                 }
                 throw error;
+              }
+              if (sandboxPromptContext.fallbackInfo?.occurred) {
+                writeSandboxFallbackEvent(
+                  writer,
+                  sandboxPromptContext.fallbackInfo,
+                  `sandbox-fallback-${assistantMessageId}`,
+                );
               }
             }
 
