@@ -165,9 +165,9 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return Kimi K2.7 Code for paid ask when an image is attached", () => {
+    it("should return ask-model (Gemini) for paid ask when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-kimi-k2.7-code",
+        "ask-model",
       );
     });
 
@@ -222,19 +222,19 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Kimi K2.7 Code when an image is attached", () => {
+    it("should promote HackerAI Standard to Gemini 3.5 Flash when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-kimi-k2.7-code",
+        "model-gemini-3-flash",
       );
     });
 
-    it("should promote HackerAI Standard to Gemini 3 Flash when a PDF is attached", () => {
+    it("should promote HackerAI Standard to Gemini 3.5 Flash when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
         "model-gemini-3-flash",
       );
     });
 
-    it("should prefer Gemini 3 Flash for HackerAI Standard when image and PDF are both attached", () => {
+    it("should prefer Gemini 3.5 Flash for HackerAI Standard when image and PDF are both attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
         "model-gemini-3-flash",
       );
@@ -300,10 +300,8 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image -> Kimi K2.7 Code", () => {
-      expect(selectModel("ask", "pro", "auto", true, false)).toBe(
-        "model-kimi-k2.7-code",
-      );
+    it("should treat 'auto' as no override in ask mode with image -> Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
     it("should treat 'auto' as no override in ask mode with PDF -> Gemini", () => {
@@ -319,7 +317,7 @@ describe("selectModel", () => {
         "model-deepseek-v4-pro",
       );
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-kimi-k2.7-code",
+        "ask-model",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
         "ask-model",

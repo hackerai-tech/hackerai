@@ -614,7 +614,8 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const isGemini3Flash = modelId?.startsWith("google/gemini-3-flash") ?? false;
+  const isGemini35Flash =
+    modelId?.startsWith("google/gemini-3.5-flash") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning = isReasoningModel
     ? {
@@ -628,8 +629,8 @@ export function buildProviderOptions(
       : mode === "ask" && isAskMediumReasoningModel(modelName)
         ? {
             enabled: true,
-            effort: "medium",
-            ...(isGemini3Flash && { exclude: true }),
+            effort: isGemini35Flash ? "minimal" : "medium",
+            ...(isGemini35Flash && { exclude: true }),
           }
         : { enabled: false };
 

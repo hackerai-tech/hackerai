@@ -10,14 +10,14 @@ describe("provider registry", () => {
   it("keeps Gemini and stale Kimi compatibility keys pointed at their active slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("google/gemini-3-flash-preview");
+    ).toBe("google/gemini-3.5-flash");
     expect(
       (
         myProvider.languageModel("model-gemini-3-flash") as {
           modelId: string;
         }
       ).modelId,
-    ).toBe("google/gemini-3-flash-preview");
+    ).toBe("google/gemini-3.5-flash");
     expect(
       (
         myProvider.languageModel("model-kimi-k2.6") as {
@@ -26,7 +26,7 @@ describe("provider registry", () => {
       ).modelId,
     ).toBe("moonshotai/kimi-k2.7-code:exacto");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe(
-      "Google Gemini 3 Flash",
+      "Google Gemini 3.5 Flash",
     );
   });
 });
