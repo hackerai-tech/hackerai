@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
 import {
+  normalizeAgentFirstSandboxType,
   type AgentFirstDefaultEligibility,
   shouldDefaultFreeUserToAgent,
 } from "../agent-first-default";
@@ -13,6 +14,7 @@ const baseEligibility: AgentFirstDefaultEligibility = {
   isCheckingProPlan: false,
   isMobile: false,
   subscription: "free",
+  subscriptionResolved: true,
   temporaryChatsEnabled: false,
   userPresent: true,
 };
@@ -77,6 +79,15 @@ describe("shouldDefaultFreeUserToAgent", () => {
     ).toBe(false);
   });
 
+  it("does not default before subscription status is resolved", () => {
+    expect(
+      shouldDefaultFreeUserToAgent({
+        ...baseEligibility,
+        subscriptionResolved: false,
+      }),
+    ).toBe(false);
+  });
+
   it("does not default temporary chats to Agent", () => {
     expect(
       shouldDefaultFreeUserToAgent({
@@ -84,5 +95,22 @@ describe("shouldDefaultFreeUserToAgent", () => {
         temporaryChatsEnabled: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("normalizeAgentFirstSandboxType", () => {
+  it("returns none when no sandbox preference is available", () => {
+    expect(normalizeAgentFirstSandboxType(null)).toBe("none");
+  });
+
+  it("preserves known non-identifying sandbox types", () => {
+    expect(normalizeAgentFirstSandboxType("desktop")).toBe("desktop");
+    expect(normalizeAgentFirstSandboxType("e2b")).toBe("e2b");
+  });
+
+  it("buckets remote connection ids without returning the raw id", () => {
+    expect(normalizeAgentFirstSandboxType("conn_remote_123")).toBe(
+      "remote-connection",
+    );
   });
 });

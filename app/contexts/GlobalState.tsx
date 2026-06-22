@@ -49,7 +49,10 @@ import {
   markHasAuthenticatedBefore,
 } from "@/lib/utils/client-storage";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { shouldDefaultFreeUserToAgent } from "@/lib/activation/agent-first-default";
+import {
+  normalizeAgentFirstSandboxType,
+  shouldDefaultFreeUserToAgent,
+} from "@/lib/activation/agent-first-default";
 
 interface GlobalStateType {
   // Input state
@@ -192,7 +195,7 @@ interface LocalSandboxConnection {
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
-  const { user, entitlements } = useAuth();
+  const { user, entitlements, loading: authLoading } = useAuth();
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
   const shownReferralRewardNotificationsRef = useRef(new Set<string>());
@@ -220,6 +223,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSubscription(tier);
   }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
+  const subscriptionFromEntitlements = useMemo<SubscriptionTier | null>(() => {
+    if (!Array.isArray(entitlements)) return null;
+    return resolveSubscriptionTier(entitlements);
+  }, [entitlements]);
 
   // Persist chat mode preference to localStorage on change
   useEffect(() => {
@@ -387,6 +394,24 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       return null;
     }, [desktopBridgeActive, localConnections]);
 
+  const entitlementRefreshRequested =
+    typeof window !== "undefined" &&
+    new URL(window.location.href).searchParams.get("refresh") ===
+      "entitlements";
+  const desktopEntitlementRefreshPending =
+    Boolean(user) &&
+    !authLoading &&
+    subscriptionFromEntitlements === "free" &&
+    isTauriEnvironment() &&
+    desktopEntitlementRefreshUserRef.current !== user?.id &&
+    !entitlementRefreshRequested;
+  const subscriptionResolved =
+    Boolean(user) &&
+    !authLoading &&
+    subscriptionFromEntitlements !== null &&
+    !entitlementRefreshRequested &&
+    !desktopEntitlementRefreshPending;
+
   // Persist queue behavior to localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -420,17 +445,29 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
 
+    const selectedSubscription =
+      subscriptionFromEntitlements === null ||
+      subscriptionFromEntitlements === "free"
+        ? subscription
+        : subscriptionFromEntitlements;
+    const savedModePresent = initialSavedChatModeRef.current !== null;
+    const userSelectedModeThisSession =
+      hasUserSelectedModeThisSessionRef.current;
+    const sandboxType = normalizeAgentFirstSandboxType(
+      defaultLocalSandboxPreference,
+    );
+
     if (
       !shouldDefaultFreeUserToAgent({
         chatMode,
         defaultLocalSandboxPreference,
         hasLocalSandbox,
-        hasSavedChatMode: initialSavedChatModeRef.current !== null,
-        hasUserSelectedModeThisSession:
-          hasUserSelectedModeThisSessionRef.current,
+        hasSavedChatMode: savedModePresent,
+        hasUserSelectedModeThisSession: userSelectedModeThisSession,
         isCheckingProPlan,
         isMobile,
-        subscription,
+        subscription: selectedSubscription,
+        subscriptionResolved,
         temporaryChatsEnabled,
         userPresent: Boolean(user),
       })
@@ -446,20 +483,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
 
     const now = new Date().toISOString();
-    captureAuthenticatedEvent("first_experience_exposed", {
+    const agentFirstProperties = {
       experiment_key: "free_agent_first_v1",
+      first_experience_event_version: 2,
       variant: "agent_first",
-      subscription,
+      subscription: selectedSubscription,
+      eligible_subscription_tier: "free",
+      selected_subscription_tier: selectedSubscription,
+      selection_reason: "eligible_free_user_local_sandbox",
+      default_applied: true,
       has_local_sandbox: hasLocalSandbox,
-      sandbox_preference: defaultLocalSandboxPreference,
+      sandbox_type: sandboxType,
+      sandbox_preference: sandboxType,
       surface: "new_chat",
-      previous_saved_mode: false,
+      previous_saved_mode: savedModePresent,
+      saved_mode_present: savedModePresent,
+      user_selected_mode_this_session: userSelectedModeThisSession,
+      is_mobile: isMobile === true,
       current_mode_before: chatMode,
       $set_once: {
         first_experience_variant: "agent_first",
         first_experience_exposed_at: now,
       },
-    });
+    };
+    captureAuthenticatedEvent("first_experience_exposed", agentFirstProperties);
+    captureAuthenticatedEvent(
+      "agent_first_default_applied",
+      agentFirstProperties,
+    );
   }, [
     chatMode,
     defaultLocalSandboxPreference,
@@ -469,6 +520,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     selectedModel,
     setSandboxPreference,
     subscription,
+    subscriptionFromEntitlements,
+    subscriptionResolved,
     temporaryChatsEnabled,
     user,
   ]);
@@ -520,10 +573,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       return;
     }
 
-    if (Array.isArray(entitlements)) {
-      setSubscriptionWithNormalize(resolveSubscriptionTier(entitlements));
+    if (subscriptionFromEntitlements) {
+      setSubscriptionWithNormalize(subscriptionFromEntitlements);
     }
-  }, [user, entitlements, setSubscriptionWithNormalize]);
+  }, [user, subscriptionFromEntitlements, setSubscriptionWithNormalize]);
 
   // Desktop sessions are created through a separate OAuth transfer flow. Older
   // desktop sessions may be unscoped, so refresh once to pull WorkOS

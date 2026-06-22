@@ -91,8 +91,10 @@ describe("captureAgentRun", () => {
       properties: {
         mode: "agent",
         subscription: "pro",
+        subscription_tier: "pro",
         outcome: "success",
         sandboxType: "remote-connection",
+        sandbox_type: "remote-connection",
       },
     });
   });
@@ -214,8 +216,10 @@ describe("captureAgentCompletionAnalytics", () => {
       properties: {
         mode: "agent",
         subscription: "free",
+        subscription_tier: "free",
         outcome: "success",
         sandboxType: "e2b",
+        sandbox_type: "e2b",
       },
     });
     expect(capture).toHaveBeenCalledWith({
@@ -254,8 +258,10 @@ describe("captureAgentCompletionAnalytics", () => {
       properties: {
         mode: "agent",
         subscription: "pro",
+        subscription_tier: "pro",
         outcome: "success",
         sandboxType: "e2b",
+        sandbox_type: "e2b",
       },
     });
   });

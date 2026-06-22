@@ -29,6 +29,10 @@ Paid funnel events use stable snake_case event names. Most events include
 - `add_credit_cta_clicked`: a user clicked an add-credit prompt.
 - `add_credit_checkout_started`: an extra-usage credit checkout was created.
 - `add_credit_checkout_succeeded`: an extra-usage credit checkout was paid.
+- `first_experience_exposed`: Agent-first onboarding selected and exposed a
+  user to the default-Agent first experience.
+- `agent_first_default_applied`: the client actually changed the user's
+  current chat mode/sandbox/model defaults for Agent-first onboarding.
 
 ## Join Keys
 
@@ -65,6 +69,11 @@ Paid funnel events use stable snake_case event names. Most events include
   or payment guardrail rather than the included monthly bucket alone.
 - `paid_monthly_exhaustion`: true for paid users whose included monthly bucket
   is exhausted and can be resolved through add-credit/upgrade flow.
+- Agent-first onboarding events include `first_experience_event_version`,
+  `eligible_subscription_tier`, `selected_subscription_tier`,
+  `selection_reason`, `default_applied`, `saved_mode_present`,
+  `user_selected_mode_this_session`, `is_mobile`, `has_local_sandbox`,
+  `sandbox_type`, and `current_mode_before`.
 
 ## Data Minimization
 
@@ -74,12 +83,17 @@ Paid funnel events use stable snake_case event names. Most events include
   not arbitrary client-provided strings.
 - `checkout_attempt_id` and Stripe ids are for funnel stitching and billing
   reconciliation only.
+- Agent-first onboarding should log normalized sandbox types such as `desktop`,
+  `remote-connection`, and `e2b`; do not log raw remote connection ids.
 
 ## Suggested Readouts
 
 - Signup to first usage: `user_signed_up -> hackerai-usage_cost`.
 - Free agent activation to paid:
   `user_signed_up -> hackerai-free_agent_value_reached -> subscription_started`.
+- Agent-first onboarding:
+  `first_experience_exposed -> agent_first_default_applied -> hackerai-agent_run`,
+  grouped by `selected_subscription_tier`, `sandbox_type`, and `outcome`.
 - Upgrade click to success: `upgrade_cta_clicked -> checkout_succeeded`,
   grouped by `surface`.
 - Checkout start to subscription: `checkout_started -> subscription_started`,
