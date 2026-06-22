@@ -182,6 +182,12 @@ export function ReferralRewardDialog({
                 </li>
                 <li>
                   <span className="text-muted-foreground text-sm">
+                    Deleting and recreating an account does not reset usage
+                    limits or referral eligibility.
+                  </span>
+                </li>
+                <li>
+                  <span className="text-muted-foreground text-sm">
                     Please avoid spamming or misusing your referral link to earn
                     credits without bringing legitimate users to the platform.
                     Our systems actively monitor referral engagement and flag

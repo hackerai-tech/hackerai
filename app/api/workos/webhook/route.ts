@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import { workos } from "@/app/api/workos";
 import { captureUserSignedUp } from "@/lib/analytics/user-signup";
 import { phLogger } from "@/lib/posthog/server";
+import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
 
 export const runtime = "nodejs";
 
@@ -87,6 +88,14 @@ export async function POST(req: NextRequest) {
 
   try {
     if (event.event === "user.created") {
+      const freeQuotaSubject = createFreeQuotaSubject(event.data.email);
+      if (freeQuotaSubject) {
+        await getConvexClient().mutation(api.accountIdentities.upsertSeen, {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          identityHash: freeQuotaSubject,
+          userId: event.data.id,
+        });
+      }
       captureUserSignedUp({
         user: event.data,
         workosEventId: event.id,

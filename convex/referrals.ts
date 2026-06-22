@@ -39,6 +39,8 @@ const QUALIFYING_TIERS = new Set<PaidTier>([
 
 const SUBSCRIPTION_ENDED_REASON = "subscription_ended";
 const INELIGIBLE_REFERRER_REASON = "ineligible_referrer_tier";
+const RECREATED_IDENTITY_REASON = "recreated_identity";
+const REFERRAL_IDENTITY_DELETION_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isReferralCodeUsable = (referralCode: {
   status: "active" | "deactivated";
@@ -590,6 +592,7 @@ export const attributeReferredSignup = mutation({
     referredUserId: v.string(),
     referralCode: v.string(),
     starterBonusUnits: v.number(),
+    referredIdentityHash: v.optional(v.string()),
     userCreatedAtMs: v.optional(v.number()),
     maxUserAgeDays: v.optional(v.number()),
     source: v.optional(v.string()),
@@ -699,6 +702,42 @@ export const attributeReferredSignup = mutation({
       };
     }
 
+    if (args.referredIdentityHash) {
+      const identity = await ctx.db
+        .query("account_identities")
+        .withIndex("by_identity_hash", (q) =>
+          q.eq("identity_hash", args.referredIdentityHash!),
+        )
+        .first();
+      const deletedAt = identity?.deleted_at;
+      const cooldownEndsAt =
+        deletedAt == null
+          ? null
+          : deletedAt + REFERRAL_IDENTITY_DELETION_COOLDOWN_MS;
+
+      if (cooldownEndsAt != null && now < cooldownEndsAt) {
+        await insertRewardLog(ctx, {
+          idempotencyKey: `referral_signup_blocked:${args.referredIdentityHash}:${args.referralCode}:${RECREATED_IDENTITY_REASON}`,
+          rewardType: "referred_signup",
+          status: "withheld",
+          amountDollars: 0,
+          referrerUserId: referralCode.user_id,
+          referredUserId: args.referredUserId,
+          referralCode: referralCode.code,
+          reason: RECREATED_IDENTITY_REASON,
+        });
+        return {
+          status: "blocked" as const,
+          reason: RECREATED_IDENTITY_REASON,
+          referrerUserId: referralCode.user_id,
+          referrerSubscriptionTier,
+          starterBonusAwarded: false,
+          starterBonusEligible: false,
+          starterBonusUnits: 0,
+        };
+      }
+    }
+
     if (
       args.userCreatedAtMs &&
       args.maxUserAgeDays != null &&
@@ -730,6 +769,7 @@ export const attributeReferredSignup = mutation({
 
     await ctx.db.insert("referral_attributions", {
       referred_user_id: args.referredUserId,
+      referred_identity_hash: args.referredIdentityHash,
       referrer_user_id: referralCode.user_id,
       referral_code: referralCode.code,
       referrer_subscription_tier: referrerSubscriptionTier,

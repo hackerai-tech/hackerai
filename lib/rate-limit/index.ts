@@ -82,6 +82,7 @@ import {
  * @param subscription - The user's subscription tier
  * @param estimatedInputTokens - Estimated input tokens (for token bucket)
  * @param extraUsageConfig - Optional config for extra usage charging
+ * @param freeQuotaSubject - Privacy-safe identity-scoped key for free-tier limits
  * @returns Rate limit info including remaining quota
  */
 export const checkRateLimit = async (
@@ -92,14 +93,16 @@ export const checkRateLimit = async (
   extraUsageConfig?: ExtraUsageConfig,
   modelName?: string,
   organizationId?: string,
+  freeQuotaSubject?: string,
 ): Promise<RateLimitInfo> => {
   // Free users: fixed daily window
   if (subscription === "free") {
+    const quotaSubject = freeQuotaSubject ?? userId;
     if (isAgentMode(mode)) {
       // Free agent mode shares the daily free budget and consumes 2 units.
-      return checkFreeAgentRateLimit(userId);
+      return checkFreeAgentRateLimit(quotaSubject);
     }
-    return checkFreeUserRateLimit(userId);
+    return checkFreeUserRateLimit(quotaSubject);
   }
 
   // Paid users: token bucket (same budget for both modes)

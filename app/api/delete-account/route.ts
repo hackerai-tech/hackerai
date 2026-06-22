@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
-import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
+import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
 import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -75,12 +75,29 @@ async function getMembershipDeletionPlan(
   }
 }
 
-async function deleteConvexUserData(userId: string) {
+function getConvexServiceKey(): string {
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   if (!serviceKey) {
     throw new Error("CONVEX_SERVICE_ROLE_KEY is not set");
   }
+  return serviceKey;
+}
 
+async function markAccountIdentityDeleted(
+  userId: string,
+  freeQuotaSubject: string | undefined,
+  serviceKey: string,
+) {
+  if (!freeQuotaSubject) return;
+
+  await getConvexClient().mutation(api.accountIdentities.markDeleted, {
+    serviceKey,
+    identityHash: freeQuotaSubject,
+    userId,
+  });
+}
+
+async function deleteConvexUserData(userId: string, serviceKey: string) {
   await getConvexClient().mutation(
     api.userDeletion.deleteAllUserDataByService,
     {
@@ -93,7 +110,8 @@ async function deleteConvexUserData(userId: string) {
 export const POST = async (req: NextRequest) => {
   try {
     // Enforce recent login (10-minute window) before any destructive action
-    const userId = await getUserIDWithFreshLogin(req);
+    const { userId, freeQuotaSubject } =
+      await getUserIDWithFreshLoginContext(req);
 
     // List all org memberships for this user
     // NOTE: Pagination not required - users can only have one organization (max 2 if something goes wrong)
@@ -117,9 +135,12 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
+    const serviceKey = getConvexServiceKey();
+    await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
+
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
-    await deleteConvexUserData(userId);
+    await deleteConvexUserData(userId, serviceKey);
 
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.

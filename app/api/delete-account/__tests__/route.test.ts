@@ -1,5 +1,5 @@
 import { POST } from "../route";
-import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
+import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
 import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { stripe } from "../../stripe";
 import { workos } from "../../workos";
@@ -16,7 +16,7 @@ jest.mock("next/server", () => ({
 }));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
-  getUserIDWithFreshLogin: jest.fn(),
+  getUserIDWithFreshLoginContext: jest.fn(),
 }));
 
 jest.mock("@/lib/rate-limit/token-bucket", () => ({
@@ -31,6 +31,9 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    accountIdentities: {
+      markDeleted: "accountIdentities.markDeleted",
+    },
     userDeletion: {
       deleteAllUserDataByService: "userDeletion.deleteAllUserDataByService",
     },
@@ -63,9 +66,9 @@ jest.mock("../../workos", () => ({
   },
 }));
 
-const mockGetUserIDWithFreshLogin =
-  getUserIDWithFreshLogin as jest.MockedFunction<
-    typeof getUserIDWithFreshLogin
+const mockGetUserIDWithFreshLoginContext =
+  getUserIDWithFreshLoginContext as jest.MockedFunction<
+    typeof getUserIDWithFreshLoginContext
   >;
 const mockDeleteUserRateLimitKeys =
   deleteUserRateLimitKeys as jest.MockedFunction<
@@ -103,8 +106,12 @@ const request = () => ({ url: "https://hackerai.test/api/delete-account" });
 
 describe("POST /api/delete-account", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
-    mockGetUserIDWithFreshLogin.mockResolvedValue("user_123");
+    mockGetUserIDWithFreshLoginContext.mockResolvedValue({
+      userId: "user_123",
+      freeQuotaSubject: "free_quota:v1:identity_hash",
+    });
     mockDeleteUserRateLimitKeys.mockResolvedValue(undefined);
     mockConvexMutation.mockResolvedValue(null);
     mockDeleteOrganizationMembership.mockResolvedValue(undefined as never);
@@ -140,6 +147,14 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenCalledWith(
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
@@ -156,9 +171,12 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteOrganization).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
     expect(mockConvexMutation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConvexMutation.mock.invocationCallOrder[1],
+    );
+    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
       mockDeleteOrganizationMembership.mock.invocationCallOrder[0],
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -186,6 +204,14 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenCalledWith(
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
@@ -205,7 +231,7 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
   });
 
-  it("runs Convex cleanup before deleting a WorkOS user with no memberships", async () => {
+  it("marks identity and runs Convex cleanup before deleting a WorkOS user with no memberships", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
@@ -213,14 +239,24 @@ describe("POST /api/delete-account", () => {
     const response = await POST(request() as any);
 
     expect(response.status).toBe(200);
-    expect(mockConvexMutation).toHaveBeenCalledWith(
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      1,
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
         userId: "user_123",
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -229,9 +265,9 @@ describe("POST /api/delete-account", () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation.mockRejectedValueOnce(
-      new Error("Convex cleanup failed"),
-    );
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("Convex cleanup failed"));
 
     const response = await POST(request() as any);
     const body = await response.json();
@@ -284,6 +320,14 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteCustomer).not.toHaveBeenCalled();
     expect(mockDeleteOrganization).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "userDeletion.deleteAllUserDataByService",
       {

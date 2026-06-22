@@ -85,6 +85,32 @@ describe("free monthly cost limit", () => {
     );
   });
 
+  it("can key free monthly usage by privacy-safe quota subject", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    const { checkFreeMonthlyCostLimit, recordFreeMonthlyCost } =
+      getIsolatedModule();
+    const subject =
+      "free_quota:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+    await checkFreeMonthlyCostLimit(subject);
+    await recordFreeMonthlyCost(subject, 0.01);
+
+    expect(mockGet).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^free_monthly_cost:free_quota:v1:[a-f0-9]+:\d{4}-\d{2}$/,
+      ),
+    );
+    expect(mockEval).toHaveBeenCalledWith(
+      expect.any(String),
+      [
+        expect.stringMatching(
+          /^free_monthly_cost:free_quota:v1:[a-f0-9]+:\d{4}-\d{2}$/,
+        ),
+      ],
+      [100, expect.any(Number)],
+    );
+  });
+
   it("skips checks outside production when Redis is unavailable", async () => {
     mockCreateRedisClient.mockReturnValue(null);
     const { checkFreeMonthlyCostLimit, recordFreeMonthlyCost } =

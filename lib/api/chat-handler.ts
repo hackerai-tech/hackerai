@@ -202,8 +202,9 @@ export const createChatHandler = () => {
         isRegenerate: !!regenerate,
       });
 
-      const { userId, subscription, organizationId } =
+      const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
+      const freeUsageSubject = freeQuotaSubject ?? userId;
       const selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
@@ -213,7 +214,7 @@ export const createChatHandler = () => {
       usageRefundTracker.setUser(userId, subscription, organizationId);
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
-          userId,
+          freeUsageSubject,
           FREE_RUN_LOCK_TTL_SECONDS,
         );
         releaseFreeRunLock = lock.release;
@@ -282,7 +283,16 @@ export const createChatHandler = () => {
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
         mode === "ask" && subscription === "free"
-          ? await checkRateLimit(userId, mode, subscription)
+          ? await checkRateLimit(
+              userId,
+              mode,
+              subscription,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              freeQuotaSubject,
+            )
           : null;
 
       const uploadBasePath = isAgentMode(mode)
@@ -359,11 +369,12 @@ export const createChatHandler = () => {
           extraUsageConfig,
           selectedModel,
           organizationId,
+          freeQuotaSubject,
         ));
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(userId)
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject)
           : null;
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
@@ -760,7 +771,7 @@ export const createChatHandler = () => {
 
                 if (subscription === "free") {
                   await recordFreeMonthlyCost(
-                    userId,
+                    freeUsageSubject,
                     usageCostRecord.costDollars,
                   );
                 } else {

@@ -89,6 +89,35 @@ describe("checkRateLimit", () => {
       expect(result.remaining).toBe(5);
     });
 
+    it("should use the free quota subject for free user keys when provided", async () => {
+      const { checkRateLimit } = getIsolatedModule();
+      const subject =
+        "free_quota:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+
+      const result = await checkRateLimit(
+        "user-123",
+        "ask",
+        "free",
+        0,
+        undefined,
+        undefined,
+        undefined,
+        subject,
+      );
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          expect.stringMatching(/^free_limit:free_quota:v1:/),
+          `free_referral_bonus:${subject}`,
+        ],
+        [10, 1, expect.any(Number)],
+      );
+      expect(result.remaining).toBe(5);
+    });
+
     it("should skip rate limiting when Redis unavailable", async () => {
       const { checkRateLimit } = getIsolatedModule();
 

@@ -65,6 +65,14 @@ export default function TermsOfServicePage() {
               and legal fees.
             </li>
             <li className="mb-3">
+              <strong>Usage Limits and Abuse Controls:</strong> Usage limits,
+              starter bonuses, referrals, and similar eligibility controls may
+              be tied to privacy-preserving account identity signals. Deleting
+              and recreating an account does not reset usage limits or referral
+              eligibility, and users may not circumvent rate limits, quotas, or
+              protective measures.
+            </li>
+            <li className="mb-3">
               <strong>Changes to Terms of Service:</strong> HackerAI LLC
               reserves the right to update or modify these Terms of Service at
               any time without prior notice. Your use of the Products after any

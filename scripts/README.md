@@ -41,7 +41,7 @@ pnpm rate-limit:reset --all
 
 #### How It Works
 
-The script looks up the user's WorkOS ID, then deletes all matching Redis keys (`*{userId}*`) to reset their rate limits.
+The script looks up the user's WorkOS ID, then deletes matching user-scoped Redis keys. When `ACCOUNT_IDENTITY_HMAC_SECRET` is configured locally, it also deletes the identity-scoped free quota keys for that email. Account deletion does not use this identity cleanup path.
 
 Rate limits are stored in Upstash Redis. The script requires both WorkOS and Redis credentials.
 
@@ -54,6 +54,7 @@ UPSTASH_REDIS_REST_URL=https://your-endpoint.upstash.io
 UPSTASH_REDIS_REST_TOKEN=your_token_here
 WORKOS_API_KEY=your_key_here
 WORKOS_CLIENT_ID=your_client_id_here
+ACCOUNT_IDENTITY_HMAC_SECRET=your_random_hmac_secret_here
 ```
 
 If Redis is not configured, rate limiting is automatically disabled in local development.
