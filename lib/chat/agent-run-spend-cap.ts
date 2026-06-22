@@ -53,12 +53,6 @@ export function canContinueProAgentRunWithPremium(
   );
 }
 
-export function isPremiumAgentContinuationModel(
-  selectedModel: SelectedModel | undefined,
-): boolean {
-  return selectedModel === "hackerai-pro" || selectedModel === "hackerai-max";
-}
-
 export function resolveAgentRunSpendCapContinuationModel(args: {
   finishReason: string | null | undefined;
   isAutoContinue: boolean | undefined;
@@ -76,12 +70,15 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
     extraUsageConfig,
   } = args;
 
+  const isAlreadyStandardContinuation =
+    selectedModelOverride === AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL;
+
   if (
     finishReason !== AGENT_RUN_SPEND_CAP_FINISH_REASON ||
     !isAutoContinue ||
     mode !== "agent" ||
     subscription !== "pro" ||
-    !isPremiumAgentContinuationModel(selectedModelOverride) ||
+    isAlreadyStandardContinuation ||
     canContinueProAgentRunWithPremium(extraUsageConfig)
   ) {
     return selectedModelOverride;

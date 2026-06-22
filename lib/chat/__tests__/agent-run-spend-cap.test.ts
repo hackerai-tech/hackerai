@@ -66,6 +66,28 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         extraUsageConfig: undefined,
       }),
     ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "auto",
+        extraUsageConfig: undefined,
+      }),
+    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: undefined,
+        extraUsageConfig: undefined,
+      }),
+    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
   });
 
   it("keeps the premium model when extra usage or auto-reload can cover continuation", () => {

@@ -631,7 +631,7 @@ export const MessageItem = memo(function MessageItem({
             finishReason={finishReason}
             mode={mode}
             agentRunSpendCapPremiumContinuationAllowed={
-              agentRunSpendCapWarning?.premiumContinuationAllowed ?? false
+              agentRunSpendCapWarning?.premiumContinuationAllowed
             }
             onContinue={onContinue}
           />

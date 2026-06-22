@@ -21,7 +21,7 @@ interface FinishReasonNoticeProps {
 export const FinishReasonNotice = ({
   finishReason,
   mode,
-  agentRunSpendCapPremiumContinuationAllowed = false,
+  agentRunSpendCapPremiumContinuationAllowed,
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, autoContinueCount } = useDataStreamState();
@@ -74,7 +74,7 @@ export const FinishReasonNotice = ({
 
   const shouldContinueWithStandard =
     finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON &&
-    !agentRunSpendCapPremiumContinuationAllowed;
+    agentRunSpendCapPremiumContinuationAllowed === false;
   const continuationModel = shouldContinueWithStandard
     ? AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL
     : undefined;

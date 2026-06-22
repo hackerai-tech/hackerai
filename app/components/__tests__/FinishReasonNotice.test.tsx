@@ -229,6 +229,7 @@ describe("FinishReasonNotice", () => {
         {
           finishReason: "agent-run-spend-cap",
           mode: "agent",
+          agentRunSpendCapPremiumContinuationAllowed: false,
           onContinue,
         },
         { isAutoResuming: false, autoContinueCount: 0 },
@@ -242,6 +243,22 @@ describe("FinishReasonNotice", () => {
       );
 
       expect(onContinue).toHaveBeenCalledWith("hackerai-standard");
+    });
+
+    it("keeps the current selected model when spend-cap continuation eligibility is unknown", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "agent-run-spend-cap",
+          mode: "agent",
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+      expect(onContinue).toHaveBeenCalledWith(undefined);
     });
 
     it("continues the current premium model when spend-cap continuation is backed by extra usage", () => {
