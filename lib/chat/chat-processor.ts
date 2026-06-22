@@ -39,10 +39,9 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only, much cheaper than Claude); image-only prompts promote to Kimi
- *   K2.7 Code, while prompts with PDFs promote to Gemini 3 Flash Preview for
- *   native file support. Free ASK stays on DeepSeek V4 Flash. Paid ASK Pro
- *   always uses Sonnet 4.6.
+ *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
+ *   to Gemini 3.5 Flash for native media support. Free ASK stays on DeepSeek
+ *   V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(
@@ -55,17 +54,12 @@ export function selectModel(
   const isAgent = isAgentMode(mode);
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Sonnet or Opus. PDF wins over image
-  // when both are present because Kimi K2.7 Code is image-capable but not
-  // declared as file/PDF-capable by OpenRouter.
+  // multimodal/file-capable model such as Sonnet or Opus.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const paidAskMediaModel: ModelName = hasAskPdf
-    ? "ask-model"
-    : hasAskImage
-      ? "model-kimi-k2.7-code"
-      : "model-deepseek-v4-pro";
+  const paidAskMediaModel: ModelName =
+    hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
@@ -85,11 +79,9 @@ export function selectModel(
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
   if (selectedModel === "hackerai-standard" && !isAgent) {
-    return hasAskPdf
+    return hasAskImage || hasAskPdf
       ? "model-gemini-3-flash"
-      : hasAskImage
-        ? "model-kimi-k2.7-code"
-        : "model-deepseek-v4-pro";
+      : "model-deepseek-v4-pro";
   }
 
   if (selectedModel === "hackerai-pro" && !isAgent) {

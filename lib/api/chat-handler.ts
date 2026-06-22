@@ -126,6 +126,12 @@ import {
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
+  assertLocalSandboxFallbackAllowed,
+  getSandboxFallbackPromptReminder,
+  prepareSandboxContextForPrompt,
+  writeSandboxFallbackEvent,
+} from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
@@ -487,22 +493,44 @@ export const createChatHandler = () => {
               });
             };
 
-            // Get sandbox context for system prompt (only for local sandboxes)
             let sandboxContext: string | null = null;
-            if (
-              isAgentMode(mode) &&
-              "getSandboxContextForPrompt" in sandboxManager
-            ) {
+            let sandboxFallbackReminder: string | null = null;
+            if (isAgentMode(mode)) {
+              const sandboxPromptContext = await prepareSandboxContextForPrompt(
+                {
+                  sandboxManager,
+                  writer,
+                  eventId: `sandbox-fallback-${assistantMessageId}`,
+                  emitFallbackEvent: false,
+                  onContextError: (error) => {
+                    console.warn(
+                      "Failed to get sandbox context for prompt:",
+                      error,
+                    );
+                  },
+                },
+              );
+              sandboxContext = sandboxPromptContext.sandboxContext;
+              sandboxFallbackReminder = getSandboxFallbackPromptReminder(
+                sandboxPromptContext.fallbackInfo,
+              );
               try {
-                sandboxContext = await (
-                  sandboxManager as {
-                    getSandboxContextForPrompt: () => Promise<string | null>;
-                  }
-                ).getSandboxContextForPrompt();
+                assertLocalSandboxFallbackAllowed({
+                  fallbackInfo: sandboxPromptContext.fallbackInfo,
+                });
               } catch (error) {
-                console.warn(
-                  "Failed to get sandbox context for prompt:",
-                  error,
+                if (error instanceof ChatSDKError) {
+                  preemptiveTimeout?.clear();
+                  await usageRefundTracker.refund();
+                  chatLogger?.emitChatError(error);
+                }
+                throw error;
+              }
+              if (sandboxPromptContext.fallbackInfo?.occurred) {
+                writeSandboxFallbackEvent(
+                  writer,
+                  sandboxPromptContext.fallbackInfo,
+                  `sandbox-fallback-${assistantMessageId}`,
                 );
               }
             }
@@ -583,6 +611,13 @@ export const createChatHandler = () => {
               : 0;
             // finalMessages will be set in prepareStep if summarization is needed
             let finalMessages = processedMessages;
+
+            if (sandboxFallbackReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                sandboxFallbackReminder,
+              );
+            }
 
             // Inject resume context into messages instead of system prompt
             // to keep the system prompt stable for caching

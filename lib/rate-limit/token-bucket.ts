@@ -25,11 +25,12 @@ export { isUserRateLimitKey } from "./key-cleanup";
 // Configuration
 // =============================================================================
 
-/** Model pricing: $/1M tokens per model (default used for ask models + gemini 3 flash agent) */
+/** Model pricing: $/1M tokens per model. */
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
+  "ask-model": { input: 1.5, output: 9.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  "model-gemini-3-flash": { input: 0.5, output: 3.0 },
+  "model-gemini-3-flash": { input: 1.5, output: 9.0 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
   "fallback-gemini-3.5-flash": { input: 1.5, output: 9.0 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },

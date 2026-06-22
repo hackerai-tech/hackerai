@@ -409,6 +409,14 @@ describe("token-bucket", () => {
       ).toBe(11310);
     });
 
+    it.each(["ask-model", "model-gemini-3-flash"])(
+      "should use Gemini 3.5 Flash pricing for %s ($1.50/$9.00)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(19500);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(117000);
+      },
+    );
+
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens
