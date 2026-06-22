@@ -6,6 +6,10 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  AGENT_RUN_SPEND_CAP_REASON,
+  type AgentRunSpendCapBasis,
+} from "@/lib/chat/agent-run-spend-cap";
+import {
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
@@ -13,6 +17,7 @@ import {
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
+  captureAgentRunSpendCapImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 
@@ -44,6 +49,18 @@ export type RateLimitWarningData =
       resetTime: Date;
       subscription: SubscriptionTier;
       capReason?: LimitCapReason;
+      midStream?: boolean;
+    }
+  | {
+      warningType: "agent-run-spend-cap";
+      resetTime: Date;
+      subscription: "pro";
+      mode: "agent";
+      runCostDollars: number;
+      runCapDollars: number;
+      monthlyRemainingDollars: number;
+      capBasis: AgentRunSpendCapBasis;
+      premiumContinuationAllowed: boolean;
       midStream?: boolean;
     };
 
@@ -86,20 +103,32 @@ const formatTimeUntil = (resetTime: Date): string => {
 
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.warningType === "sliding-window") {
-    return data.remaining === 0
-      ? `You've used all your daily requests. Daily requests reset at midnight UTC.`
-      : `You have ${data.remaining} daily ${data.remaining === 1 ? "request" : "requests"} remaining today.`;
+    if (data.remaining === 0) {
+      return data.mode === "agent"
+        ? "You've used today's free Agent requests. Upgrade to keep running Agent today, or wait for the reset at midnight UTC."
+        : "You've used all your daily free requests. Upgrade to keep going today, or wait for the reset at midnight UTC.";
+    }
+
+    return `You have ${data.remaining} daily ${data.remaining === 1 ? "request" : "requests"} remaining today.`;
   }
 
   if (data.warningType === "extra-usage-active") {
     return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
   }
 
+  if (data.warningType === "agent-run-spend-cap") {
+    if (data.premiumContinuationAllowed) {
+      return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue to keep working with extra usage.`;
+    }
+
+    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue with Standard to keep working without extra usage.`;
+  }
+
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
       if (data.subscription === "free") {
-        return `You've reached your free monthly usage limit and this response was cut off. Upgrade to continue. Resets ${timeString}.`;
+        return `You've reached your free monthly usage limit and this response was cut off. Upgrade for higher limits. Resets ${timeString}.`;
       }
       if (data.capReason === "extra_usage_cap") {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
@@ -109,6 +138,10 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
+    if (data.subscription === "free") {
+      return `You've reached your free monthly usage limit. Upgrade for higher limits. Resets ${timeString}.`;
+    }
+
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
   }
 
@@ -120,6 +153,20 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
 };
 
+const getUpgradeCtaText = (
+  data: RateLimitWarningData,
+  limitType: string,
+): string => {
+  if (
+    data.subscription === "free" &&
+    (limitType === "daily_requests" || limitType === "free_monthly")
+  ) {
+    return "Keep going";
+  }
+
+  return "Upgrade plan";
+};
+
 const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
 export const RateLimitWarning = ({
@@ -128,10 +175,14 @@ export const RateLimitWarning = ({
 }: RateLimitWarningProps) => {
   const capturedUpgradeImpressionRef = useRef(false);
   const capturedAddCreditImpressionRef = useRef(false);
+  const capturedAgentRunCapImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
   const capReason =
-    data.warningType === "sliding-window" ? undefined : data.capReason;
+    data.warningType === "sliding-window" ||
+    data.warningType === "agent-run-spend-cap"
+      ? undefined
+      : data.capReason;
   const extraUsageCta =
     data.warningType === "token-bucket"
       ? getExtraUsageLimitCta({
@@ -139,7 +190,9 @@ export const RateLimitWarning = ({
           capReason,
         })
       : null;
+  const showUsageCta = data.warningType === "extra-usage-active";
   const showUpgrade =
+    data.warningType !== "agent-run-spend-cap" &&
     data.warningType !== "extra-usage-active" &&
     shouldShowUpgradeCta({
       subscription: data.subscription,
@@ -148,13 +201,34 @@ export const RateLimitWarning = ({
   const limitType =
     data.warningType === "sliding-window"
       ? "daily_requests"
-      : data.warningType === "token-bucket"
-        ? getLimitTypeForCapReason(capReason)
-        : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
+      : data.warningType === "agent-run-spend-cap"
+        ? "monthly"
+        : data.warningType === "token-bucket"
+          ? getLimitTypeForCapReason(capReason)
+          : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
   const limitSeverity =
     data.warningType === "token-bucket" && data.remainingPercent === 0
       ? "hit"
       : "warning";
+  const upgradeCtaText = getUpgradeCtaText(data, limitType);
+
+  useEffect(() => {
+    if (data.warningType !== "agent-run-spend-cap") return;
+    if (capturedAgentRunCapImpressionRef.current) return;
+    capturedAgentRunCapImpressionRef.current = true;
+    captureAgentRunSpendCapImpression({
+      surface: "rate_limit_warning",
+      source: AGENT_RUN_SPEND_CAP_REASON,
+      subscription_tier: data.subscription,
+      mode: data.mode,
+      cap_reason: AGENT_RUN_SPEND_CAP_REASON,
+      run_cost_dollars: data.runCostDollars,
+      run_cap_dollars: data.runCapDollars,
+      monthly_remaining_dollars: data.monthlyRemainingDollars,
+      cap_basis: data.capBasis,
+      premium_continuation_allowed: data.premiumContinuationAllowed,
+    });
+  }, [data]);
 
   useEffect(() => {
     if (!showUpgrade || capturedUpgradeImpressionRef.current) return;
@@ -166,9 +240,16 @@ export const RateLimitWarning = ({
       limit_type: limitType,
       limit_severity: limitSeverity,
       cap_reason: capReason,
-      cta_text: "Upgrade plan",
+      cta_text: upgradeCtaText,
     });
-  }, [capReason, data.subscription, limitSeverity, limitType, showUpgrade]);
+  }, [
+    capReason,
+    data.subscription,
+    limitSeverity,
+    limitType,
+    showUpgrade,
+    upgradeCtaText,
+  ]);
 
   useEffect(() => {
     if (!extraUsageCta || capturedAddCreditImpressionRef.current) return;
@@ -216,6 +297,16 @@ export const RateLimitWarning = ({
             {extraUsageCta.label}
           </Button>
         )}
+        {showUsageCta && (
+          <Button
+            onClick={() => openSettingsDialog("Usage")}
+            size="sm"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+          >
+            View Usage
+          </Button>
+        )}
         {showUpgrade && (
           <Button
             onClick={() =>
@@ -225,14 +316,14 @@ export const RateLimitWarning = ({
                 from_tier: data.subscription,
                 limit_type: limitType,
                 reason: capReason,
-                cta_text: "Upgrade plan",
+                cta_text: upgradeCtaText,
               })
             }
             size="sm"
             variant="outline"
             className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
-            Upgrade plan
+            {upgradeCtaText}
           </Button>
         )}
       </div>

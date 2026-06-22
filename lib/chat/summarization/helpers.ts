@@ -34,6 +34,7 @@ import {
   AGENT_SUMMARIZATION_PROMPT,
   ASK_SUMMARIZATION_PROMPT,
 } from "./prompts";
+import type { RetainedTailMetadata } from "./retained-tail";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -45,17 +46,12 @@ export interface SummarizationUsage {
 }
 
 export interface SummaryPersistenceMetadata {
-  reason: "token_threshold" | "provider_input_threshold";
+  reason: "token_threshold" | "provider_input_threshold" | "provider_pressure";
   promptVersion: string;
   model?: string;
   status: "completed";
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  cost?: number;
-  estimatedCompactedInputTokens?: number;
   transcriptPath?: string;
+  retainedTail?: RetainedTailMetadata;
 }
 
 export interface SummarizationResult {
@@ -659,29 +655,27 @@ export const buildSummaryPersistenceMetadata = ({
   providerInputTokens,
   threshold,
   languageModel,
-  usage,
   transcriptPath,
+  retainedTail,
+  reason,
 }: {
   providerInputTokens: number;
   threshold: number;
   languageModel: LanguageModel;
-  usage?: SummarizationUsage;
   transcriptPath?: string | null;
+  retainedTail?: RetainedTailMetadata;
+  reason?: SummaryPersistenceMetadata["reason"];
 }): SummaryPersistenceMetadata => ({
   reason:
-    providerInputTokens > threshold
+    reason ??
+    (providerInputTokens > threshold
       ? "provider_input_threshold"
-      : "token_threshold",
+      : "token_threshold"),
   promptVersion: SUMMARY_PROMPT_VERSION,
   model: getLanguageModelIdentifier(languageModel),
   status: "completed",
-  inputTokens: usage?.inputTokens,
-  outputTokens: usage?.outputTokens,
-  cacheReadTokens: usage?.cacheReadTokens,
-  cacheWriteTokens: usage?.cacheWriteTokens,
-  cost: usage?.cost,
-  estimatedCompactedInputTokens: usage?.estimatedCompactedInputTokens,
   transcriptPath: transcriptPath ?? undefined,
+  retainedTail,
 });
 
 export const buildSummaryMessage = (

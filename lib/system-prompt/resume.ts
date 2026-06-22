@@ -29,6 +29,12 @@ Your previous response was stopped because the streaming duration exceeded the s
 This is a normal operational limit, not an error. The conversation is intact and your work is preserved. \
 Resume the task exactly where you left off without repeating what was already done.
 </resume_context>`;
+  } else if (finishReason === "agent-run-spend-cap") {
+    return `<resume_context>
+Your previous response was paused by the Pro Agent per-run spend cap. \
+This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
+resume the task exactly where you left off without repeating what was already done.
+</resume_context>`;
   }
 
   return "";

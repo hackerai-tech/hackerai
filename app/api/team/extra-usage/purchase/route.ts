@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../../team-auth";
 import { normalizeCheckoutAttemptId } from "@/lib/analytics/paid-funnel";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
  * POST /api/team/extra-usage/purchase
@@ -41,7 +39,7 @@ export const POST = async (req: NextRequest) => {
 
     const baseUrl = req.nextUrl.origin;
 
-    const result = await convex.action(
+    const result = await getConvexClient().action(
       api.teamExtraUsageActions.createTeamPurchaseSession,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

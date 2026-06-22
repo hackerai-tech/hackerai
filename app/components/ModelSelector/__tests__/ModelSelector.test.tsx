@@ -69,15 +69,24 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("selects HackerAI Pro in ask mode without the high-cost warning", () => {
+  it("warns before selecting HackerAI Pro in ask mode on paid plans", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
 
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
+    expect(screen.getByText("High-cost model")).toBeVisible();
+    expect(
+      screen.getByText(/long requests can use around \$10 of usage/i),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
+
+    expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
-    expect(screen.queryByTestId("high-cost-model-warning")).toBeNull();
   });
 
   it("warns before selecting HackerAI Pro in agent mode on paid plans", () => {
@@ -126,5 +135,15 @@ describe("ModelSelector", () => {
     expect(
       screen.getByText(/long requests can use around \$10 of usage/i),
     ).toBeVisible();
+  });
+
+  it("does not display a stale paid model as selected for free users", () => {
+    mockSubscription = "free";
+
+    render(
+      <ModelSelector value="hackerai-pro" onChange={jest.fn()} mode="agent" />,
+    );
+
+    expect(screen.getByRole("button", { name: /^Auto$/i })).toBeVisible();
   });
 });

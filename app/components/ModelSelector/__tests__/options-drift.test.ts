@@ -33,16 +33,16 @@ describe("ModelSelector tier ↔ provider drift", () => {
 
   it("HackerAI Standard resolves to different providers per mode", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
-      "model-gemini-3-flash",
+      "model-deepseek-v4-pro",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
       "model-kimi-k2.7-code",
     );
   });
 
-  it("HackerAI Pro resolves to DeepSeek in ask mode and Sonnet in agent mode", () => {
+  it("HackerAI Pro resolves to Sonnet in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-deepseek-v4-pro",
+      "model-sonnet-4.6",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
       "model-sonnet-4.6",

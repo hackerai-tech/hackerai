@@ -2,6 +2,7 @@
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import dynamic from "next/dynamic";
 import {
   useRef,
   useEffect,
@@ -16,7 +17,6 @@ import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import type { RateLimitWarningData } from "./RateLimitWarning";
-import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
@@ -40,10 +40,13 @@ import {
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode } from "@/types";
+import {
+  normalizeSelectedModelForSubscription,
+  type Todo,
+  type ChatMessage,
+  type ChatMode,
+} from "@/types";
 import { coerceSelectedModel } from "@/types/chat";
-import type { ContextUsageData } from "./ContextUsageIndicator";
-import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useParams, useRouter } from "next/navigation";
@@ -58,6 +61,49 @@ import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
+const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
+const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
+const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
+
+const getAgentLongPartFingerprint = (part: unknown): string => {
+  if (typeof part !== "object" || part === null) return String(part);
+  const typedPart = part as {
+    type?: unknown;
+    text?: unknown;
+    delta?: unknown;
+    state?: unknown;
+  };
+  const type = typeof typedPart.type === "string" ? typedPart.type : "unknown";
+  const textLength =
+    typeof typedPart.text === "string" ? typedPart.text.length : undefined;
+  const deltaLength =
+    typeof typedPart.delta === "string" ? typedPart.delta.length : undefined;
+  if (textLength !== undefined || deltaLength !== undefined) {
+    return `${type}:${textLength ?? 0}:${deltaLength ?? 0}:${typedPart.state ?? ""}`;
+  }
+
+  try {
+    return `${type}:${JSON.stringify(part).length}`;
+  } catch {
+    return type;
+  }
+};
+
+const getAgentLongMessageFingerprint = (messages: ChatMessage[]): string =>
+  messages
+    .map(
+      (message) =>
+        `${message.id}:${message.role}:${(message.parts ?? [])
+          .map(getAgentLongPartFingerprint)
+          .join(",")}`,
+    )
+    .join("|");
+
+const ComputerSidebar = dynamic(
+  () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
+  { ssr: false },
+);
+
 // --- Streaming ephemeral state reducer ---
 // Consolidates high-frequency streaming state updates into a single dispatch
 // to avoid cascading re-renders from multiple independent useState calls.
@@ -68,7 +114,6 @@ interface StreamingEphemeralState {
     message: string;
   } | null;
   rateLimitWarning: RateLimitWarningData | null;
-  contextUsage: ContextUsageData;
 }
 
 type StreamingAction =
@@ -84,14 +129,12 @@ type StreamingAction =
       type: "SET_RATE_LIMIT_WARNING";
       payload: StreamingEphemeralState["rateLimitWarning"];
     }
-  | { type: "SET_CONTEXT_USAGE"; payload: ContextUsageData }
   | { type: "RESET_ON_FINISH" };
 
 const initialStreamingState: StreamingEphemeralState = {
   uploadStatus: null,
   summarizationStatus: null,
   rateLimitWarning: null,
-  contextUsage: { usedTokens: 0, maxTokens: 0 },
 };
 
 function streamingReducer(
@@ -107,8 +150,6 @@ function streamingReducer(
       return { ...state, summarizationStatus: action.payload };
     case "SET_RATE_LIMIT_WARNING":
       return { ...state, rateLimitWarning: action.payload };
-    case "SET_CONTEXT_USAGE":
-      return { ...state, contextUsage: action.payload };
     case "RESET_ON_FINISH":
       if (state.uploadStatus === null && state.summarizationStatus === null)
         return state;
@@ -120,6 +161,37 @@ function streamingReducer(
     default:
       return state;
   }
+}
+
+function getLatestTodoWriteOutput(messages: ChatMessage[]):
+  | {
+      key: string;
+      todos: Todo[];
+    }
+  | undefined {
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0;
+    messageIndex--
+  ) {
+    const message = messages[messageIndex];
+    const parts = message.parts || [];
+    for (let partIndex = parts.length - 1; partIndex >= 0; partIndex--) {
+      const part = parts[partIndex] as any;
+      const currentTodos = part?.output?.currentTodos;
+      if (
+        part?.type === "tool-todo_write" &&
+        part?.state === "output-available" &&
+        Array.isArray(currentTodos)
+      ) {
+        return {
+          key: `${message.id}:${part.toolCallId || partIndex}`,
+          todos: currentTodos as Todo[],
+        };
+      }
+    }
+  }
+  return undefined;
 }
 
 // Renderless component that isolates dataStream state subscriptions
@@ -197,7 +269,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingReducer,
     initialStreamingState,
   );
-  const { uploadStatus, summarizationStatus, rateLimitWarning, contextUsage } =
+  const { uploadStatus, summarizationStatus, rateLimitWarning } =
     streamingState;
 
   const {
@@ -208,9 +280,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatSidebarOpen,
     setChatSidebarOpen,
     initializeChat,
-    mergeTodos,
     setTodos,
-    replaceAssistantTodos,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -263,8 +333,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const requestSelectedModel = normalizeSelectedModelForSubscription(
+    selectedModel,
+    subscription,
+  );
+  const shouldUseAgentLong = shouldUseAgentLongForAgent({
+    mode: chatMode,
+    subscription,
+    isTauri: isTauriEnvironment(),
+  });
   // Use ref for model selection to avoid stale closures in auto-send
-  const selectedModelRef = useLatestRef(selectedModel);
+  const requestSelectedModelRef = useLatestRef(requestSelectedModel);
+  const lastAppliedTodoOutputRef = useRef<string | null>(null);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -281,6 +361,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
     setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
@@ -523,11 +604,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           });
           break;
         }
-        case "data-context-usage": {
-          const usage = dataPart.data as ContextUsageData;
-          dispatchStreaming({ type: "SET_CONTEXT_USAGE", payload: usage });
-          break;
-        }
         case "data-title": {
           const titleData = dataPart.data as { chatTitle?: string };
           if (titleData?.chatTitle) {
@@ -557,39 +633,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           // Show toast notification
           const message =
             fallbackData.reason === "no_local_connections"
-              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
-              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
-          toast.info(message, { duration: 5000 });
+              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}; host files, drives, localhost, and private networks are unavailable until local reconnects.`
+              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}. Commands run there, not on the selected host.`;
+          toast.info(message, { duration: 8000 });
           break;
-        }
-      }
-    },
-    onToolCall: ({ toolCall }) => {
-      if (toolCall.toolName === "todo_write" && toolCall.input) {
-        const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
-        if (!todoInput.todos) return;
-        // Determine last assistant message id to stamp/replace.
-        // Read via ref to avoid closing over the streaming messages array.
-        const currentMessages = messagesRef.current;
-        let lastAssistantId: string | undefined;
-        for (let i = currentMessages.length - 1; i >= 0; i--) {
-          if (currentMessages[i].role === "assistant") {
-            lastAssistantId = currentMessages[i].id;
-            break;
-          }
-        }
-
-        const treatAsMerge = shouldTreatAsMerge(
-          todoInput.merge,
-          todoInput.todos,
-        );
-
-        if (!treatAsMerge) {
-          // Fresh plan creation: replace assistant todos with new ones, stamp with current assistant id if present.
-          replaceAssistantTodos(todoInput.todos, lastAssistantId);
-        } else {
-          // Partial update: merge
-          mergeTodos(todoInput.todos);
         }
       }
     },
@@ -628,10 +675,120 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   setMessagesRef.current = setMessages;
   messagesRef.current = messages;
 
+  useEffect(() => {
+    const shouldApplyOutput =
+      status === "streaming" || status === "submitted" || !shouldFetchMessages;
+    if (!shouldApplyOutput) return;
+
+    const latestTodoOutput = getLatestTodoWriteOutput(
+      messages as ChatMessage[],
+    );
+    if (!latestTodoOutput) return;
+    if (lastAppliedTodoOutputRef.current === latestTodoOutput.key) return;
+
+    lastAppliedTodoOutputRef.current = latestTodoOutput.key;
+    setTodos(latestTodoOutput.todos);
+  }, [messages, setTodos, shouldFetchMessages, status]);
+
   // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
   const statusRef = useRef(status);
   statusRef.current = status;
+
+  const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
+  const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
+  const agentLongLastMessageChangeAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    if (
+      agentLongMessageFingerprintRef.current === agentLongMessageFingerprint
+    ) {
+      return;
+    }
+    agentLongMessageFingerprintRef.current = agentLongMessageFingerprint;
+    agentLongLastMessageChangeAtRef.current = Date.now();
+  }, [agentLongMessageFingerprint]);
+
+  // Trigger.dev can finish and persist an Agent answer even if the realtime
+  // UI stream never delivers a terminal chunk to useChat. Reconcile against
+  // the app's authenticated resume endpoint so the first message in a new
+  // chat can leave "Working..." even before chatData is subscribed.
+  useEffect(() => {
+    if (
+      status !== "streaming" ||
+      !shouldUseAgentLong ||
+      temporaryChatsEnabled
+    ) {
+      return;
+    }
+
+    let stopped = false;
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
+    const abortController = new AbortController();
+
+    const finishLocally = () => {
+      if (stopped) return;
+      stopped = true;
+      stop();
+      setIsAutoResuming(false);
+      setAwaitingServerChat(false);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+
+      if (!isExistingChatRef.current) {
+        window.history.replaceState({}, "", `/c/${chatId}`);
+        removeDraft("new");
+        setIsExistingChat(true);
+      }
+    };
+
+    const checkRunCompletion = async () => {
+      if (
+        Date.now() - agentLongLastMessageChangeAtRef.current <
+        AGENT_LONG_COMPLETION_QUIET_MS
+      ) {
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+          { method: "GET", signal: abortController.signal },
+        );
+        if (response.status === 204) {
+          finishLocally();
+        }
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          // Ignore transient polling failures; the underlying stream still owns
+          // the visible error state.
+        }
+      }
+    };
+
+    const pollDelay = setTimeout(() => {
+      void checkRunCompletion();
+      pollInterval = setInterval(() => {
+        void checkRunCompletion();
+      }, AGENT_LONG_COMPLETION_POLL_INTERVAL_MS);
+    }, AGENT_LONG_COMPLETION_POLL_DELAY_MS);
+
+    return () => {
+      stopped = true;
+      abortController.abort();
+      clearTimeout(pollDelay);
+      if (pollInterval !== undefined) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [
+    chatId,
+    isExistingChatRef,
+    setIsAutoResuming,
+    shouldUseAgentLong,
+    status,
+    stop,
+    temporaryChatsEnabled,
+  ]);
 
   // Ref bridge: StreamEffects exposes resetAutoContinueCount here
   const resetAutoContinueRef = useRef<(() => void) | null>(null);
@@ -650,10 +807,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setStreamedTitle(null);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      dispatchStreaming({
-        type: "SET_CONTEXT_USAGE",
-        payload: { usedTokens: 0, maxTokens: 0 },
-      });
       // Clear DataStreamProvider state so stale parts from the previous chat
       // don't feed into useAutoResume/useAutoContinue in the next conversation.
       setDataStream([]);
@@ -1031,7 +1184,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 todos: todosRef.current,
                 temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
-                selectedModel: selectedModelRef.current,
+                selectedModel: requestSelectedModelRef.current,
               },
             },
           );
@@ -1057,7 +1210,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
-    selectedModelRef,
+    requestSelectedModelRef,
   ]);
 
   // Chat handlers
@@ -1086,31 +1239,36 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     resetAutoContinueCount,
   });
 
-  const handleScrollToBottom = () => scrollToBottom({ force: true });
+  const handleScrollToBottom = useCallback(() => {
+    scrollToBottom({ force: true });
+  }, [scrollToBottom]);
 
   // Rate limit warning dismiss handler
-  const handleDismissRateLimitWarning = () => {
+  const handleDismissRateLimitWarning = useCallback(() => {
     dispatchStreaming({ type: "SET_RATE_LIMIT_WARNING", payload: null });
     setHasUserDismissedRateLimitWarning(true);
-  };
+  }, [setHasUserDismissedRateLimitWarning]);
 
   // Branch chat handler
   const branchChatMutation = useMutation(api.messages.branchChat);
 
-  const handleBranchMessage = async (messageId: string) => {
-    try {
-      const newChatId = await branchChatMutation({ messageId });
-      if (!newChatId) {
-        toast.error("That message is no longer available to branch.");
-        return;
+  const handleBranchMessage = useCallback(
+    async (messageId: string) => {
+      try {
+        const newChatId = await branchChatMutation({ messageId });
+        if (!newChatId) {
+          toast.error("That message is no longer available to branch.");
+          return;
+        }
+        initializeChat(newChatId);
+        router.push(`/c/${newChatId}`);
+      } catch (error) {
+        console.error("Failed to branch chat:", error);
+        toast.error("Failed to branch chat. Please try again.");
       }
-      initializeChat(newChatId);
-      router.push(`/c/${newChatId}`);
-    } catch (error) {
-      console.error("Failed to branch chat:", error);
-      toast.error("Failed to branch chat. Please try again.");
-    }
-  };
+    },
+    [branchChatMutation, initializeChat, router],
+  );
 
   // Auto-send message after forking a shared chat
   const autoSendFiredRef = useRef(false);
@@ -1135,6 +1293,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
+  const agentRunSpendCapWarning =
+    rateLimitWarning?.warningType === "agent-run-spend-cap"
+      ? rateLimitWarning
+      : undefined;
 
   // UI-level temporary chat flag
   const isTempChat = !isExistingChat && temporaryChatsEnabled;
@@ -1165,7 +1327,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         todos={todos}
         temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
-        selectedModel={selectedModel}
+        selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
           chatData === undefined
@@ -1227,6 +1389,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}
+                  agentRunSpendCapWarning={agentRunSpendCapWarning}
                   uploadStatus={uploadStatus}
                   summarizationStatus={summarizationStatus}
                   mode={chatMode ?? (chatData as any)?.default_model_slug}
@@ -1276,7 +1439,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
-                            contextUsage={contextUsage}
                           />
                         </div>
                       )}
@@ -1307,7 +1469,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
-                    contextUsage={contextUsage}
                   />
                 )}
             </div>

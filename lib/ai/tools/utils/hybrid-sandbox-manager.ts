@@ -16,6 +16,7 @@ import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
@@ -215,6 +216,7 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionId: string | null = null;
   private currentConnectionName: string | null = null;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
+  private reportedFallbackKeys = new Set<string>();
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
 
@@ -292,7 +294,11 @@ export class HybridSandboxManager implements SandboxManager {
   private async closeCurrentSandbox(): Promise<void> {
     if (this.sandbox instanceof CentrifugoSandbox) {
       await this.sandbox.close().catch((err) => {
-        console.warn(`[${this.userID}] Failed to close sandbox:`, err);
+        if (isExpectedAlreadyGoneCleanupError(err)) {
+          console.debug(`[${this.userID}] Sandbox was already closed:`, err);
+        } else {
+          console.warn(`[${this.userID}] Failed to close sandbox:`, err);
+        }
       });
     }
   }
@@ -318,7 +324,25 @@ export class HybridSandboxManager implements SandboxManager {
   consumeFallbackInfo(): SandboxFallbackInfo | null {
     const info = this.pendingFallbackInfo;
     this.pendingFallbackInfo = null;
+    if (info) {
+      this.reportedFallbackKeys.add(this.getFallbackKey(info));
+    }
     return info;
+  }
+
+  private getFallbackKey(info: SandboxFallbackInfo): string {
+    return [
+      info.reason ?? "unknown",
+      info.requestedPreference,
+      info.actualSandbox,
+    ].join(":");
+  }
+
+  private recordFallbackInfo(info: SandboxFallbackInfo): void {
+    if (this.reportedFallbackKeys.has(this.getFallbackKey(info))) {
+      return;
+    }
+    this.pendingFallbackInfo = info;
   }
 
   getSandboxInfo(): { type: SandboxType; name?: string } | null {
@@ -478,14 +502,13 @@ export class HybridSandboxManager implements SandboxManager {
       const firstAvailable = connections[0];
       await this.useCentrifugoConnection(firstAvailable);
 
-      // Record fallback info for notification
-      this.pendingFallbackInfo = {
+      this.recordFallbackInfo({
         occurred: true,
         reason: "connection_unavailable",
         requestedPreference: this.sandboxPreference,
         actualSandbox: firstAvailable.connectionId,
         actualSandboxName: firstAvailable.name,
-      };
+      });
 
       return { sandbox: this.sandbox! };
     }
@@ -498,14 +521,13 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     // Fall back to E2B if no local connections available (paid users only)
-    // Record fallback info for notification
-    this.pendingFallbackInfo = {
+    this.recordFallbackInfo({
       occurred: true,
       reason: "no_local_connections",
       requestedPreference: this.sandboxPreference,
       actualSandbox: "e2b",
       actualSandboxName: "Cloud",
-    };
+    });
 
     return this.getE2BSandbox();
   }
@@ -591,6 +613,39 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(sandbox);
   }
 
+  async resetSandbox(reason?: string): Promise<void> {
+    const sandbox = this.sandbox;
+    this.sandbox = null;
+    this.isLocal = false;
+    this.currentConnectionId = null;
+    this.currentConnectionName = null;
+
+    if (!sandbox) return;
+
+    if (sandbox instanceof CentrifugoSandbox) {
+      await sandbox.close().catch((error) => {
+        const message = `[${this.userID}] Failed to close local sandbox during reset${reason ? ` (${reason})` : ""}:`;
+        if (isExpectedAlreadyGoneCleanupError(error)) {
+          console.debug(message, error);
+        } else {
+          console.warn(message, error);
+        }
+      });
+      return;
+    }
+
+    try {
+      await sandbox.kill();
+    } catch (error) {
+      const message = `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`;
+      if (isExpectedAlreadyGoneCleanupError(error)) {
+        console.debug(message, error);
+      } else {
+        console.warn(message, error);
+      }
+    }
+  }
+
   /**
    * Get expected sandbox context for the system prompt based on preference
    * without initializing the sandbox. Returns null for E2B (uses default prompt).
@@ -600,15 +655,44 @@ export class HybridSandboxManager implements SandboxManager {
       return null;
     }
 
-    const connection = await this.getPreferredOrFallbackConnection();
-    if (!connection) {
-      return null;
+    const connections = await this.listConnections();
+    const preferredConnection =
+      this.sandboxPreference === "desktop"
+        ? connections.find((conn) => conn.isDesktop)
+        : connections.find(
+            (conn) => conn.connectionId === this.sandboxPreference,
+          );
+
+    if (preferredConnection) {
+      // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
+      this.currentConnectionName = preferredConnection.name;
+      return this.buildSandboxContext(preferredConnection);
     }
 
-    // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
-    this.currentConnectionName = connection.name;
+    if (connections.length > 0) {
+      const firstAvailable = connections[0];
+      this.currentConnectionName = firstAvailable.name;
+      this.recordFallbackInfo({
+        occurred: true,
+        reason: "connection_unavailable",
+        requestedPreference: this.sandboxPreference,
+        actualSandbox: firstAvailable.connectionId,
+        actualSandboxName: firstAvailable.name,
+      });
+      return this.buildSandboxContext(firstAvailable);
+    }
 
-    return this.buildSandboxContext(connection);
+    if (this.subscription !== "free") {
+      this.recordFallbackInfo({
+        occurred: true,
+        reason: "no_local_connections",
+        requestedPreference: this.sandboxPreference,
+        actualSandbox: "e2b",
+        actualSandboxName: "Cloud",
+      });
+    }
+
+    return null;
   }
 
   private buildSandboxContext(connection: ConnectionInfo): string | null {

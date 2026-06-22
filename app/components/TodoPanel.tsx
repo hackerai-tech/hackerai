@@ -8,7 +8,7 @@ import {
   SharedTodoItem,
   getStatusIcon,
 } from "@/components/ui/shared-todo-item";
-import { getTodoStats } from "@/lib/utils/todo-utils";
+import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 
 interface TodoPanelProps {
   status?: ChatStatus;
@@ -23,18 +23,17 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
     sidebarOpen,
   } = useGlobalState();
 
-  // Deduplicate todos by id (keep last occurrence, consistent with backend)
-  const uniqueTodos = Array.from(
-    new Map(todos.map((todo) => [todo.id, todo])).values(),
-  );
-
-  const stats = getTodoStats(uniqueTodos);
-
-  // Don't show panel if no todos exist
-  const hasTodos = uniqueTodos.length > 0;
-
-  // Show panel only when there are active todos (hide when all are finished)
-  const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
+  const viewState = getTodoPanelViewState(todos, status);
+  const {
+    todos: uniqueTodos,
+    stats,
+    hasTodos,
+    hasActiveTodos,
+    currentTodoIndex,
+    currentTodo,
+    isPaused,
+    currentTodoDisplayStatus,
+  } = viewState;
 
   // If panel is not visible, ensure global state is reset
   useEffect(() => {
@@ -62,31 +61,6 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
   const handleToggleExpand = () => {
     setIsTodoPanelExpanded(!isExpanded);
   };
-
-  // Find the "current" todo: prefer in-progress, otherwise the most recent
-  // completed/cancelled action. Pending-only is handled with a count fallback.
-  const currentTodoIndex = (() => {
-    const inProgressIdx = uniqueTodos.findIndex(
-      (t) => t.status === "in_progress",
-    );
-    if (inProgressIdx !== -1) return inProgressIdx;
-    for (let i = uniqueTodos.length - 1; i >= 0; i--) {
-      const s = uniqueTodos[i].status;
-      if (s === "completed" || s === "cancelled") return i;
-    }
-    return -1;
-  })();
-
-  const currentTodo =
-    currentTodoIndex !== -1 ? uniqueTodos[currentTodoIndex] : undefined;
-
-  // When the chat is idle but a todo is still in_progress, the user manually
-  // stopped the agent — surface the in_progress todo as paused.
-  const isPaused = status === "ready" && stats.inProgress > 0;
-  const currentTodoDisplayStatus =
-    currentTodo && isPaused && currentTodo.status === "in_progress"
-      ? "paused"
-      : currentTodo?.status;
 
   const headerText = isExpanded
     ? "Task progress"

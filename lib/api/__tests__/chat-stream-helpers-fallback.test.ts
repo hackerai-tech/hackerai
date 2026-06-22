@@ -6,7 +6,10 @@
  * that the function fails closed (no fallback, no throw) for unknown keys.
  */
 
-import { buildProviderOptions } from "@/lib/api/chat-stream-helpers";
+import {
+  buildProviderOptions,
+  isAutoModelSelectionForRetry,
+} from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
   getNotes: jest.fn(),
@@ -18,16 +21,16 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
-const GEMINI_SLUG = "google/gemini-3-flash-preview";
+const GEMINI_PREVIEW_SLUG = "google/gemini-3-flash-preview";
 const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
-const KIMI_SLUG = "moonshotai/kimi-k2.7-code";
+const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 ask chain to Gemini slug", () => {
+  it("resolves Opus 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_SLUG],
+      models: [GEMINI_3_5_SLUG],
       user: "user-1",
     });
   });
@@ -59,7 +62,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 ask chain to Gemini slug", () => {
+  it("resolves Sonnet 4.6 ask chain to Gemini", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -67,7 +70,7 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_SLUG],
+      models: [GEMINI_3_5_SLUG],
       user: "user-1",
     });
   });
@@ -99,6 +102,30 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("keeps Anthropic multimodal agent fallback off text-only Kimi once image tool results exist", () => {
+    const opus = buildProviderOptions(
+      false,
+      "user-1",
+      "model-opus-4.6",
+      "agent",
+      {
+        hasMultimodalToolResults: true,
+      },
+    );
+    const sonnet = buildProviderOptions(
+      false,
+      "user-1",
+      "model-sonnet-4.6",
+      "agent",
+      { hasMultimodalToolResults: true },
+    );
+
+    expect(opus.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
+    expect(sonnet.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
+    expect(opus.openrouter.models).not.toContain(KIMI_SLUG);
+    expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
+  });
+
   it("falls back from auto agent Kimi to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
@@ -123,7 +150,7 @@ describe("buildProviderOptions fallback chain", () => {
   it("falls back from free DeepSeek agent model to Gemini", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model-free");
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_SLUG],
+      models: [GEMINI_PREVIEW_SLUG],
       user: "user-1",
     });
   });
@@ -136,12 +163,12 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_SLUG],
+      models: [GEMINI_PREVIEW_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from Gemini to Grok", () => {
+  it("falls back from the Gemini media route to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
       models: [GROK_SLUG],
@@ -161,6 +188,47 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1");
     expect(opts.openrouter).not.toHaveProperty("models");
   });
+
+  it.each(["ask-model-free", "model-deepseek-v4-flash"])(
+    "keeps reasoning disabled for free/flash ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({ enabled: false });
+    },
+  );
+
+  it.each(["ask-model", "model-gemini-3-flash"])(
+    "enables hidden minimal reasoning for Gemini 3.5 ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "minimal",
+        exclude: true,
+      });
+    },
+  );
+
+  it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
+    "enables reasoning for Kimi ask mode route %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+      });
+    },
+  );
+
+  it.each(["model-deepseek-v4-pro", "model-sonnet-4.6", "model-opus-4.6"])(
+    "enables medium reasoning for ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "medium",
+      });
+    },
+  );
 
   it("includes reasoning settings independent of fallback chain", () => {
     const reasoning = buildProviderOptions(
@@ -196,5 +264,48 @@ describe("buildProviderOptions fallback chain", () => {
       reasoning: { enabled: true },
       models: [GEMINI_3_5_SLUG, GROK_SLUG],
     });
+  });
+});
+
+describe("isAutoModelSelectionForRetry", () => {
+  it("keeps paid ask Auto retryable after it resolves to explicit DeepSeek Pro", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+        selectedModelOverride: "auto",
+      }),
+    ).toBe(true);
+  });
+
+  it("treats missing paid model override as Auto even with an explicit provider key", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat explicit paid Standard or Pro selections as Auto", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(false);
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "model-sonnet-4.6",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves retry behavior for legacy auto-router model keys", () => {
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "ask-model-free",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
   });
 });

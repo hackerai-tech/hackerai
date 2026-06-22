@@ -214,6 +214,71 @@ describe("UpgradeConfirmationDialog", () => {
         fromTier: "pro",
       });
     });
+
+    it("should pass attribution context to preview and confirm APIs", async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              proratedAmount: 80,
+              proratedCredit: 10,
+              totalDue: 70,
+              paymentMethod: "VISA *4242",
+              currentPlan: "pro",
+              quantity: 2,
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ success: true }),
+        });
+
+      render(
+        <UpgradeConfirmationDialog
+          {...defaultProps}
+          source="limit_pressure"
+          surface="pricing_dialog"
+          reason="monthly_exhausted"
+          limitType="monthly"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("$70.00")).toBeInTheDocument();
+      });
+
+      const previewBody = JSON.parse(
+        (mockFetch.mock.calls[0]?.[1] as RequestInit).body as string,
+      );
+      expect(previewBody).toEqual(
+        expect.objectContaining({
+          source: "limit_pressure",
+          surface: "pricing_dialog",
+          reason: "monthly_exhausted",
+          limitType: "monthly",
+        }),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /confirm and pay/i }));
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+      });
+
+      const confirmBody = JSON.parse(
+        (mockFetch.mock.calls[1]?.[1] as RequestInit).body as string,
+      );
+      expect(confirmBody).toEqual(
+        expect.objectContaining({
+          source: "limit_pressure",
+          surface: "pricing_dialog",
+          reason: "monthly_exhausted",
+          limitType: "monthly",
+          fromTier: "pro",
+        }),
+      );
+    });
   });
 
   describe("Error handling", () => {

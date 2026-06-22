@@ -8,11 +8,11 @@ import React, {
   useRef,
 } from "react";
 import { createPortal } from "react-dom";
-import { useConvex, useAction } from "convex/react";
+import { useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File, Download } from "lucide-react";
+import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
@@ -24,7 +24,6 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
-  const convex = useConvex();
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
   // Use ref to access cache without adding to useEffect dependencies
@@ -52,7 +51,6 @@ const FilePartRendererComponent = ({
   // Track the last fetched identifiers to avoid unnecessary refetches
   const lastFetchedRef = useRef<{
     fileId?: string;
-    storageId?: string;
     url?: string;
   }>({});
 
@@ -66,7 +64,6 @@ const FilePartRendererComponent = ({
     // Check if we already fetched for these same identifiers
     const sameIdentifiers =
       lastFetchedRef.current.fileId === part.fileId &&
-      lastFetchedRef.current.storageId === part.storageId &&
       lastFetchedRef.current.url === part.url;
 
     // If identifiers haven't changed and we have a URL, skip refetch
@@ -77,18 +74,18 @@ const FilePartRendererComponent = ({
     // Update tracking ref
     lastFetchedRef.current = {
       fileId: part.fileId,
-      storageId: part.storageId,
       url: part.url,
     };
 
     async function fetchUrl() {
       const cache = fileUrlCacheRef.current;
 
-      // If we have fileId (for S3 files), check cache first
+      // If we have fileId, check cache first
       if (part.fileId) {
         if (cache) {
           const cachedUrl = cache.getCachedUrl(part.fileId);
           if (cachedUrl) {
+            setUrlError(null);
             setFileUrl(cachedUrl);
             return;
           }
@@ -99,6 +96,12 @@ const FilePartRendererComponent = ({
         setUrlError(null);
         try {
           const url = await getFileUrlAction({ fileId: part.fileId });
+          if (!url) {
+            setFileUrl(null);
+            setUrlError("File not available");
+            return;
+          }
+
           setFileUrl(url);
           // Cache the fetched URL
           if (cache) {
@@ -120,38 +123,10 @@ const FilePartRendererComponent = ({
         return;
       }
 
-      // Fallback: if no fileId but we have part.url (Convex storage), use it
+      // Fallback for transient already-resolved URLs.
       if (part.url) {
-        setFileUrl(part.url);
-        return;
-      }
-
-      // If we have storageId (for Convex files), fetch URL on-demand for images
-      if (part.storageId) {
         setUrlError(null);
-        try {
-          const url = await convex.query(api.fileStorage.getFileDownloadUrl, {
-            storageId: part.storageId,
-          });
-          if (url) {
-            setFileUrl(url);
-          } else {
-            setUrlError("Failed to get download URL");
-          }
-        } catch (error) {
-          console.error("Failed to fetch download URL:", error);
-          const errorMessage =
-            error instanceof ConvexError
-              ? (error.data as { message?: string })?.message ||
-                error.message ||
-                "Failed to load file"
-              : error instanceof Error
-                ? error.message
-                : "Failed to load file";
-          setUrlError(errorMessage);
-          toast.error(errorMessage);
-        }
-        return;
+        setFileUrl(part.url);
       }
     }
 
@@ -159,14 +134,7 @@ const FilePartRendererComponent = ({
     // Note: fileUrl is intentionally not in deps - we check it inside the effect
     // fileUrlCacheRef is a ref, so it doesn't need to be in deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    part.url,
-    part.fileId,
-    part.storageId,
-    part.mediaType,
-    getFileUrlAction,
-    convex,
-  ]);
+  }, [part.url, part.fileId, part.mediaType, getFileUrlAction]);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
@@ -229,18 +197,14 @@ const FilePartRendererComponent = ({
         let url: string | null = null;
 
         if (part.fileId) {
-          // S3 file - fetch presigned URL
           url = await getFileUrlAction({ fileId: part.fileId });
 
           // Cache it for future clicks
           if (url && cache) {
             cache.setCachedUrl(part.fileId, url);
           }
-        } else if (part.storageId) {
-          // Convex storage file - fetch URL
-          url = await convex.query(api.fileStorage.getFileDownloadUrl, {
-            storageId: part.storageId,
-          });
+        } else if (part.url) {
+          url = part.url;
         }
 
         if (url) {
@@ -264,14 +228,7 @@ const FilePartRendererComponent = ({
         toast.error(errorMessage);
       }
     },
-    [
-      fileUrl,
-      handleDownload,
-      part.fileId,
-      part.storageId,
-      getFileUrlAction,
-      convex,
-    ],
+    [fileUrl, handleDownload, part.fileId, part.url, getFileUrlAction],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -282,7 +239,6 @@ const FilePartRendererComponent = ({
       fileName,
       subtitle,
       url,
-      storageId,
       fileId,
     }: {
       partId: string;
@@ -290,7 +246,6 @@ const FilePartRendererComponent = ({
       fileName: string;
       subtitle: string;
       url?: string;
-      storageId?: string;
       fileId?: string;
     }) => {
       const content = (
@@ -306,7 +261,7 @@ const FilePartRendererComponent = ({
               {subtitle}
             </div>
           </div>
-          {(url || storageId || fileId) && (
+          {(url || fileId) && (
             <div className="flex items-center justify-center w-6 h-6 rounded-md border border-border opacity-0 group-hover:opacity-100 transition-opacity">
               <Download className="w-4 h-4 text-muted-foreground" />
             </div>
@@ -314,7 +269,7 @@ const FilePartRendererComponent = ({
         </div>
       );
 
-      if (url || storageId || fileId) {
+      if (url || fileId) {
         return (
           <button
             key={partId}
@@ -354,7 +309,6 @@ const FilePartRendererComponent = ({
             fileName={part.name || part.filename || "Unknown file"}
             subtitle={urlError}
             url={undefined}
-            storageId={undefined}
             fileId={undefined}
           />
         );
@@ -371,13 +325,12 @@ const FilePartRendererComponent = ({
             fileName={part.name || part.filename || "Local file"}
             subtitle="Local-only attachment"
             url={undefined}
-            storageId={undefined}
             fileId={undefined}
           />
         );
       }
 
-      if (!actualUrl && !part.storageId && !part.fileId) {
+      if (!actualUrl && !part.fileId) {
         // Error state for files without URLs or storage references
         return (
           <FilePreviewCard
@@ -386,15 +339,33 @@ const FilePartRendererComponent = ({
             fileName={part.name || part.filename || "Unknown file"}
             subtitle="File not available"
             url={undefined}
-            storageId={undefined}
             fileId={undefined}
           />
         );
       }
 
-      // Handle image files - they should always have URL
+      // Handle image files - resolve fetchable URLs before showing a real error
       if (part.mediaType?.startsWith("image/")) {
         if (!actualUrl) {
+          if (part.fileId) {
+            const isMultipleImages = totalFileParts > 1;
+            const loadingClass = isMultipleImages
+              ? "h-32 w-32"
+              : "h-36 w-36 max-w-64";
+
+            return (
+              <div key={partId} className="overflow-hidden rounded-lg">
+                <div
+                  className={`${loadingClass} bg-token-main-surface-secondary text-token-text-tertiary relative flex items-center justify-center overflow-hidden rounded-lg`}
+                  aria-label={`Loading ${part.name || part.filename || "image"}`}
+                  role="status"
+                >
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              </div>
+            );
+          }
+
           return (
             <FilePreviewCard
               partId={partId}
@@ -402,7 +373,6 @@ const FilePartRendererComponent = ({
               fileName={part.name || part.filename || "Unknown image"}
               subtitle="Image URL not available"
               url={undefined}
-              storageId={undefined}
               fileId={undefined}
             />
           );
@@ -453,7 +423,7 @@ const FilePartRendererComponent = ({
         );
       }
 
-      // Handle all non-image files with the new UI (use storageId or fileId if no URL)
+      // Handle all non-image files with the new UI.
       return (
         <FilePreviewCard
           partId={partId}
@@ -461,7 +431,6 @@ const FilePartRendererComponent = ({
           fileName={part.name || part.filename || "Document"}
           subtitle="Document"
           url={actualUrl}
-          storageId={part.storageId}
           fileId={part.fileId}
         />
       );
@@ -474,10 +443,9 @@ const FilePartRendererComponent = ({
   const renderedFilePart = useMemo(() => {
     const partId = `${messageId}-file-${partIndex}`;
 
-    // Check if this is a file part with either URL, storageId, or fileId
+    // Check if this is a file part with either URL, fileId, or local metadata.
     if (
       part.url ||
-      part.storageId ||
       part.fileId ||
       part.storage === "local-desktop" ||
       fileUrl
@@ -493,7 +461,6 @@ const FilePartRendererComponent = ({
         fileName={part.name || part.filename || "Unknown file"}
         subtitle="Document"
         url={part.url}
-        storageId={part.storageId}
         fileId={part.fileId}
       />
     );
@@ -502,7 +469,6 @@ const FilePartRendererComponent = ({
     messageId,
     partIndex,
     part.url,
-    part.storageId,
     part.fileId,
     fileUrl,
     urlError,
@@ -539,14 +505,15 @@ export const FilePartRenderer = memo(
       prevProps.partIndex === nextProps.partIndex &&
       prevProps.totalFileParts === nextProps.totalFileParts &&
       prevProps.part.url === nextProps.part.url &&
-      prevProps.part.storageId === nextProps.part.storageId &&
       prevProps.part.storage === nextProps.part.storage &&
       prevProps.part.localAttachmentId === nextProps.part.localAttachmentId &&
       prevProps.part.fileId === nextProps.part.fileId &&
       prevProps.part.s3Key === nextProps.part.s3Key &&
       prevProps.part.name === nextProps.part.name &&
       prevProps.part.filename === nextProps.part.filename &&
-      prevProps.part.mediaType === nextProps.part.mediaType
+      prevProps.part.mediaType === nextProps.part.mediaType &&
+      prevProps.part.size === nextProps.part.size &&
+      prevProps.part.sizeBytes === nextProps.part.sizeBytes
     );
   },
 );

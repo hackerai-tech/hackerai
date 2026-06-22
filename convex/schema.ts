@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { retainedTailValidator } from "./lib/retainedTail";
 
 export default defineSchema({
   chats: defineTable({
@@ -44,6 +45,10 @@ export default defineSchema({
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_user_and_active_trigger_run", [
+      "user_id",
+      "active_trigger_run_id",
+    ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
@@ -68,12 +73,14 @@ export default defineSchema({
     cost: v.optional(v.number()),
     estimated_compacted_input_tokens: v.optional(v.number()),
     transcript_path: v.optional(v.string()),
+    retained_tail: v.optional(retainedTailValidator),
     previous_summaries: v.optional(
       v.array(
         v.object({
           summary_text: v.string(),
           summary_up_to_message_id: v.string(),
           summary_up_to_message_creation_time: v.optional(v.number()),
+          retained_tail: v.optional(retainedTailValidator),
         }),
       ),
     ),
@@ -112,9 +119,6 @@ export default defineSchema({
     }),
 
   files: defineTable({
-    // Legacy field for Convex storage (existing files)
-    storage_id: v.optional(v.id("_storage")),
-    // New field for S3 storage
     s3_key: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
@@ -126,8 +130,7 @@ export default defineSchema({
   })
     .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"])
-    .index("by_s3_key", ["s3_key"])
-    .index("by_storage_id", ["storage_id"]),
+    .index("by_s3_key", ["s3_key"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),
@@ -199,6 +202,7 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_cancellation_reason_id", ["cancellation_reason_id"])
+    .index("by_created_at", ["created_at"])
     .index("by_user_id_and_created_at", ["user_id", "created_at"])
     .index("by_stripe_subscription_id_and_created_at", [
       "stripe_subscription_id",
@@ -289,7 +293,8 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_org", ["organization_id"])
-    .index("by_org_user", ["organization_id", "user_id"]),
+    .index("by_org_user", ["organization_id", "user_id"])
+    .index("by_user_id", ["user_id"]),
 
   referral_codes: defineTable({
     user_id: v.string(),
@@ -387,7 +392,15 @@ export default defineSchema({
     notification_seen_at: v.optional(v.number()),
   })
     .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_user_id", ["user_id"])
     .index("by_referrer_user_id", ["referrer_user_id"])
+    .index("by_referrer_notification", [
+      "referrer_user_id",
+      "reward_type",
+      "status",
+      "notification_seen_at",
+      "created_at",
+    ])
     .index("by_referred_user_id", ["referred_user_id"]),
 
   user_suspensions: defineTable({
@@ -410,6 +423,7 @@ export default defineSchema({
     resolved_at: v.optional(v.number()),
     resolved_reason: v.optional(v.string()),
   })
+    .index("by_user_id", ["user_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_user_status_source_created", [
       "user_id",
@@ -446,7 +460,9 @@ export default defineSchema({
   temp_streams: defineTable({
     chat_id: v.string(),
     user_id: v.string(),
-  }).index("by_chat_id", ["chat_id"]),
+  })
+    .index("by_chat_id", ["chat_id"])
+    .index("by_user_id", ["user_id"]),
 
   // Local Sandbox Tables
   local_sandbox_tokens: defineTable({
@@ -512,17 +528,29 @@ export default defineSchema({
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     subscription: v.optional(v.string()),
     model: v.string(),
-    type: v.union(v.literal("included"), v.literal("extra")),
+    type: v.union(
+      v.literal("included"),
+      v.literal("extra"),
+      v.literal("mixed"),
+    ),
     input_tokens: v.number(),
     output_tokens: v.number(),
     cache_read_tokens: v.optional(v.number()),
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
+    included_cost_dollars: v.optional(v.number()),
+    extra_usage_cost_dollars: v.optional(v.number()),
+    included_points_deducted: v.optional(v.number()),
+    extra_usage_points_deducted: v.optional(v.number()),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
-      v.union(v.literal("provider"), v.literal("token_estimate")),
+      v.union(
+        v.literal("provider"),
+        v.literal("token_estimate"),
+        v.literal("raw_token_estimate"),
+      ),
     ),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema

@@ -69,10 +69,9 @@ const AUTO_MODEL_DESCRIPTION =
 const shouldWarnForPaidHighCostModel = (
   subscription: SubscriptionTier,
   model: SelectedModel,
-  mode: ChatMode,
 ): boolean =>
   subscription !== "free" &&
-  (model === "hackerai-max" || (model === "hackerai-pro" && isAgentMode(mode)));
+  (model === "hackerai-max" || model === "hackerai-pro");
 
 const AutoOptionButton = ({
   isSelected,
@@ -335,12 +334,13 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const { subscription } = useGlobalState();
   const isMobile = useIsMobile();
 
-  const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
+  const displayValue: SelectedModel = isFreeUser ? "auto" : value;
+  const isAuto = displayValue === "auto";
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
 
-  const effectiveValue = isAuto ? getDefaultModelForMode(mode) : value;
+  const effectiveValue = isAuto ? getDefaultModelForMode(mode) : displayValue;
   const selected =
     options.find((opt) => opt.id === effectiveValue) ?? options[0];
 
@@ -376,7 +376,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     }
 
     if (
-      shouldWarnForPaidHighCostModel(subscription, option.id, mode) &&
+      shouldWarnForPaidHighCostModel(subscription, option.id) &&
       !isHighCostModelUsageNoticeDismissed()
     ) {
       setOpen(false);
@@ -469,7 +469,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             </SheetHeader>
             <ModelOptionList
               options={options}
-              value={value}
+              value={displayValue}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
               mode={mode}
@@ -492,7 +492,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
           <ModelOptionList
             options={options}
-            value={value}
+            value={displayValue}
             isAuto={isAuto}
             isFreeUser={isFreeUser}
             mode={mode}

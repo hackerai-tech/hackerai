@@ -20,7 +20,8 @@ import {
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
+import type { ChatStatus, ChatMessage, ChatMode, SelectedModel } from "@/types";
+import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { FileDetails } from "@/types/file";
 
 const USER_MESSAGE_PREVIEW_LINE_LIMIT = 20;
@@ -48,7 +49,6 @@ interface MessageItemProps {
   messagesLength: number;
   lastAssistantMessageIndex: number | undefined;
   status: ChatStatus;
-  isHovered: boolean;
   isEditing: boolean;
   isMobile?: boolean;
   feedbackInputMessageId: string | null;
@@ -66,13 +66,15 @@ interface MessageItemProps {
     message: string;
   } | null;
   // Callbacks
-  onMouseEnter: (messageId: string) => void;
-  onMouseLeave: () => void;
   onStartEdit: (messageId: string) => void;
   onSaveEdit: (newContent: string, remainingFileIds: string[]) => Promise<void>;
   onCancelEdit: () => void;
-  onRegenerate: () => void;
-  onContinue?: () => void;
+  onRegenerate: () => void | Promise<void>;
+  agentRunSpendCapWarning?: Extract<
+    RateLimitWarningData,
+    { warningType: "agent-run-spend-cap" }
+  >;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
   onFeedbackSubmit: (details: string) => Promise<void>;
@@ -88,7 +90,6 @@ function areMessageItemPropsEqual(
 ): boolean {
   // Always re-render if these change
   if (prev.status !== next.status) return false;
-  if (prev.isHovered !== next.isHovered) return false;
   if (prev.isEditing !== next.isEditing) return false;
   if (prev.isMobile !== next.isMobile) return false;
   if (prev.feedbackInputMessageId !== next.feedbackInputMessageId) return false;
@@ -98,6 +99,8 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.mode !== next.mode) return false;
+  if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
+    return false;
   if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
     return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
@@ -142,7 +145,6 @@ export const MessageItem = memo(function MessageItem({
   messagesLength,
   lastAssistantMessageIndex,
   status,
-  isHovered,
   isEditing,
   isMobile,
   feedbackInputMessageId,
@@ -153,8 +155,6 @@ export const MessageItem = memo(function MessageItem({
   branchedFromChatId,
   branchedFromChatTitle,
   branchBoundaryIndex,
-  onMouseEnter,
-  onMouseLeave,
   onStartEdit,
   onSaveEdit,
   onCancelEdit,
@@ -168,7 +168,9 @@ export const MessageItem = memo(function MessageItem({
   getCachedUrl,
   showingLoadingIndicator,
   summarizationStatus,
+  agentRunSpendCapWarning,
 }: MessageItemProps) {
+  const [isHovered, setIsHovered] = useState(false);
   const [isUserMessageExpanded, setIsUserMessageExpanded] = useState(false);
   const isUser = message.role === "user";
   const isLastAssistantMessage =
@@ -263,7 +265,7 @@ export const MessageItem = memo(function MessageItem({
 
   const savedFiles = useMemo(() => {
     if (isUser || !effectiveFileDetails) return [];
-    return effectiveFileDetails.filter((f) => f.url || f.storageId || f.s3Key);
+    return effectiveFileDetails.filter((f) => f.url || f.fileId || f.s3Key);
   }, [isUser, effectiveFileDetails]);
 
   const renderAssistantPart = (
@@ -299,8 +301,12 @@ export const MessageItem = memo(function MessageItem({
 
   // Stable event handlers
   const handleMouseEnter = useCallback(() => {
-    onMouseEnter(message.id);
-  }, [onMouseEnter, message.id]);
+    if (!isMobile) setIsHovered(true);
+  }, [isMobile]);
+
+  const handleMouseLeave = useCallback(() => {
+    if (!isMobile) setIsHovered(false);
+  }, [isMobile]);
 
   const handleEdit = useCallback(() => {
     onStartEdit(message.id);
@@ -341,9 +347,9 @@ export const MessageItem = memo(function MessageItem({
     <Fragment>
       <div
         data-testid={isUser ? "user-message" : "assistant-message"}
-        className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
+        className={`message-row flex flex-col ${isUser ? "items-end" : "items-start"}`}
         onMouseEnter={handleMouseEnter}
-        onMouseLeave={onMouseLeave}
+        onMouseLeave={handleMouseLeave}
       >
         {isEditing && isUser ? (
           <div className="w-full">
@@ -556,12 +562,12 @@ export const MessageItem = memo(function MessageItem({
                     key={`${message.id}-saved-file-${savedFiles.length - 1}`}
                     part={{
                       url: savedFiles[savedFiles.length - 1].url ?? undefined,
-                      storageId: savedFiles[savedFiles.length - 1].storageId,
                       fileId: savedFiles[savedFiles.length - 1].fileId,
                       s3Key: savedFiles[savedFiles.length - 1].s3Key,
                       name: savedFiles[savedFiles.length - 1].name,
                       filename: savedFiles[savedFiles.length - 1].name,
                       mediaType: savedFiles[savedFiles.length - 1].mediaType,
+                      sizeBytes: savedFiles[savedFiles.length - 1].sizeBytes,
                     }}
                     partIndex={savedFiles.length - 1}
                     messageId={message.id}
@@ -592,12 +598,12 @@ export const MessageItem = memo(function MessageItem({
                     key={`${message.id}-saved-file-${fileIndex}`}
                     part={{
                       url: file.url ?? undefined,
-                      storageId: file.storageId,
                       fileId: file.fileId,
                       s3Key: file.s3Key,
                       name: file.name,
                       filename: file.name,
                       mediaType: file.mediaType,
+                      sizeBytes: file.sizeBytes,
                     }}
                     partIndex={fileIndex}
                     messageId={message.id}
@@ -624,6 +630,9 @@ export const MessageItem = memo(function MessageItem({
           <FinishReasonNotice
             finishReason={finishReason}
             mode={mode}
+            agentRunSpendCapPremiumContinuationAllowed={
+              agentRunSpendCapWarning?.premiumContinuationAllowed
+            }
             onContinue={onContinue}
           />
         )}

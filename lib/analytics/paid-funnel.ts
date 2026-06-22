@@ -20,6 +20,9 @@ export const PAID_FUNNEL_EVENTS = {
   paidDailyFreeAllowanceSucceeded: "paid_daily_free_allowance_succeeded",
   paidDailyFreeAllowanceBlocked: "paid_daily_free_allowance_blocked",
   paidDailyFreeAllowanceCutOff: "paid_daily_free_allowance_cut_off",
+  agentRunSpendCapHit: "agent_run_spend_cap_hit",
+  agentRunSpendCapImpressed: "agent_run_spend_cap_impressed",
+  agentRunSpendCapContinueClicked: "agent_run_spend_cap_continue_clicked",
 } as const;
 
 export type PaidFunnelPlan =

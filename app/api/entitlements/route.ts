@@ -1,5 +1,4 @@
 import { NextRequest } from "next/server";
-import { WorkOS } from "@workos-inc/node";
 import {
   json,
   extractErrorMessage,
@@ -9,10 +8,7 @@ import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
-
-const workos = new WorkOS(process.env.WORKOS_API_KEY!, {
-  clientId: process.env.WORKOS_CLIENT_ID!,
-});
+import { workos } from "@/app/api/workos";
 
 export async function GET(req: NextRequest) {
   try {

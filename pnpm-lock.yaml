@@ -315,6 +315,9 @@ importers:
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.60.0
+      '@posthog/cli':
+        specifier: ^0.7.25
+        version: 0.7.25
       '@tailwindcss/postcss':
         specifier: ^4.3.0
         version: 4.3.0
@@ -2429,6 +2432,11 @@ packages:
         optional: true
       openai:
         optional: true
+
+  '@posthog/cli@0.7.25':
+    resolution: {integrity: sha512-o+NiX3D7nmXPiY2aOQ7WqzhNyLXsGfpCrha/i8dnBGouP43Pqeyxw+N/H5CM0McH7uMZyEv76JIziPzL91YMJw==}
+    engines: {node: '>=14.14', npm: '>=6'}
+    hasBin: true
 
   '@posthog/core@1.32.1':
     resolution: {integrity: sha512-ELq0TQ/MCCj1bY/oFsX53HV6GjRgtzcixhvcPG3Rv+0tU+NaS5Seg1f4cRpfFDTQlIN0Fu+r9oHnFcnXrg7Eew==}
@@ -10328,6 +10336,10 @@ snapshots:
       '@opentelemetry/exporter-trace-otlp-http': 0.203.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 2.2.0(@opentelemetry/api@1.9.0)
       openai: 6.42.0(ws@8.20.1)(zod@4.4.3)
+
+  '@posthog/cli@0.7.25':
+    dependencies:
+      detect-libc: 2.1.2
 
   '@posthog/core@1.32.1':
     dependencies:

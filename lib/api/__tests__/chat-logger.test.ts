@@ -91,8 +91,10 @@ describe("captureAgentRun", () => {
       properties: {
         mode: "agent",
         subscription: "pro",
+        subscription_tier: "pro",
         outcome: "success",
         sandboxType: "remote-connection",
+        sandbox_type: "remote-connection",
       },
     });
   });
@@ -214,8 +216,10 @@ describe("captureAgentCompletionAnalytics", () => {
       properties: {
         mode: "agent",
         subscription: "free",
+        subscription_tier: "free",
         outcome: "success",
         sandboxType: "e2b",
+        sandbox_type: "e2b",
       },
     });
     expect(capture).toHaveBeenCalledWith({
@@ -254,8 +258,10 @@ describe("captureAgentCompletionAnalytics", () => {
       properties: {
         mode: "agent",
         subscription: "pro",
+        subscription_tier: "pro",
         outcome: "success",
         sandboxType: "e2b",
+        sandbox_type: "e2b",
       },
     });
   });
@@ -282,6 +288,10 @@ describe("captureUsageCost", () => {
         cacheReadTokens: 200,
         cacheWriteTokens: undefined,
         costDollars: 0.42,
+        includedCostDollars: 0.1,
+        extraUsageCostDollars: 0.32,
+        includedPointsDeducted: 1000,
+        extraUsagePointsDeducted: 3200,
         modelCostDollars: 0.3,
         nonModelCostDollars: 0.12,
         costSource: "provider",
@@ -309,6 +319,10 @@ describe("captureUsageCost", () => {
         model: "claude-sonnet",
         usage_type: "extra",
         cost_dollars: 0.42,
+        included_cost_dollars: 0.1,
+        extra_usage_cost_dollars: 0.32,
+        included_points_deducted: 1000,
+        extra_usage_points_deducted: 3200,
         model_cost_dollars: 0.3,
         non_model_cost_dollars: 0.12,
         input_tokens: 1000,
@@ -333,18 +347,36 @@ describe("captureUsageCost", () => {
 });
 
 describe("createChatLogger provider stream termination", () => {
-  it("logs provider safety blocks as non-retryable content blocks", () => {
+  it("logs provider safety blocks as errors with provider and model context", () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const phErrorSpy = jest
+      .spyOn(phLogger, "error")
+      .mockImplementation(() => {});
 
     try {
       const chatLogger = createChatLogger({
         chatId: "chat_content_blocked",
         endpoint: "/api/chat",
       });
-      const err = Object.assign(new Error("PROHIBITED_CONTENT"), {
-        statusCode: 403,
-      });
+      const err = Object.assign(
+        new Error("Output blocked by content filtering policy"),
+        {
+          statusCode: 403,
+          responseBody: JSON.stringify({
+            id: "gen-content-blocked",
+            error: {
+              code: 403,
+              message: "Provider returned error",
+              metadata: {
+                provider_name: "Anthropic Vertex",
+                raw: "Output blocked by content filtering policy",
+              },
+            },
+          }),
+        },
+      );
 
       chatLogger.recordProviderError(err, {
         mode: "ask",
@@ -353,11 +385,31 @@ describe("createChatLogger provider stream termination", () => {
       });
       chatLogger.emitUnexpectedError(err);
 
+      const warnOutput = warnSpy.mock.calls.flat().map(String).join("\n");
       const errorOutput = errorSpy.mock.calls.flat().map(String).join("\n");
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
 
+      expect(warnOutput).not.toContain("Provider content blocked");
       expect(errorOutput).toContain("Provider content blocked");
       expect(errorOutput).toContain("provider_content_blocked");
+      expect(errorOutput).toContain('"provider_name":"Anthropic Vertex"');
+      expect(errorOutput).toContain('"configured_model":"ask-model-free"');
+      expect(errorOutput).toContain(
+        '"requested_model_slug":"deepseek/deepseek-v4-flash"',
+      );
+      expect(phErrorSpy).toHaveBeenCalledWith(
+        "Provider content blocked",
+        expect.objectContaining({
+          event: "provider_content_blocked",
+          providerErrorCategory: "content_blocked",
+          provider_name: "Anthropic Vertex",
+          provider_name_source: "openrouter_error_metadata",
+          configured_model: "ask-model-free",
+          requested_model_slug: "deepseek/deepseek-v4-flash",
+          model_provider_slug: "deepseek",
+          openrouter_generation_id: "gen-content-blocked",
+        }),
+      );
       expect(wideEvent.error).toMatchObject({
         type: "ProviderContentBlocked",
         retriable: false,
@@ -366,10 +418,18 @@ describe("createChatLogger provider stream termination", () => {
         category: "content_blocked",
         status_code: 403,
         retriable: false,
+        provider_name: "Anthropic Vertex",
+        provider_name_source: "openrouter_error_metadata",
+        configured_model: "ask-model-free",
+        requested_model_slug: "deepseek/deepseek-v4-flash",
+        model_provider_slug: "deepseek",
+        openrouter_generation_id: "gen-content-blocked",
       });
     } finally {
+      warnSpy.mockRestore();
       errorSpy.mockRestore();
       logSpy.mockRestore();
+      phErrorSpy.mockRestore();
     }
   });
 
@@ -390,7 +450,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code",
+        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -646,6 +706,18 @@ describe("createChatLogger ChatSDKError metadata", () => {
           parts_size_kb: 551,
           part_count: 288,
           tool_part_count: 99,
+          empty_after_processing: true,
+          processing_input_message_count: 2,
+          processing_input_part_count: 4,
+          processing_input_text_part_count: 1,
+          processing_input_nonempty_text_part_count: 0,
+          processing_input_ui_only_part_count: 1,
+          processing_input_regenerate: false,
+          processing_input_sandbox_preference: "desktop",
+          processing_input_part_types: {
+            text: 1,
+            "data-summarization": 1,
+          },
         },
       );
 
@@ -661,11 +733,22 @@ describe("createChatLogger ChatSDKError metadata", () => {
         parts_size_kb: 551,
         part_count: 288,
         tool_part_count: 99,
+        empty_after_processing: true,
+        processing_input_message_count: 2,
+        processing_input_part_count: 4,
+        processing_input_text_part_count: 1,
+        processing_input_nonempty_text_part_count: 0,
+        processing_input_ui_only_part_count: 1,
+        processing_input_regenerate: false,
+        processing_input_sandbox_preference: "desktop",
       });
       expect(wideEvent.error.metadata).not.toHaveProperty("db_error_data");
       expect(wideEvent.error.metadata).not.toHaveProperty("part_types");
       expect(wideEvent.error.metadata).not.toHaveProperty("usage_keys");
       expect(wideEvent.error.metadata).not.toHaveProperty("parts_size_bytes");
+      expect(wideEvent.error.metadata).not.toHaveProperty(
+        "processing_input_part_types",
+      );
     } finally {
       logSpy.mockRestore();
     }
@@ -861,7 +944,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code",
+        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
       });
       chatLogger.emitUnexpectedError(err);
 

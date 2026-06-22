@@ -1,12 +1,30 @@
 import { GenericDatabaseWriter } from "convex/server";
 import type { DataModel } from "../_generated/dataModel";
 import { Id } from "../_generated/dataModel";
+import type { RetainedTailDoc } from "./retainedTail";
 
 export function validateServiceKey(serviceKey: string): void {
   if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }
+
+const remapRetainedTail = (
+  retainedTail: RetainedTailDoc | undefined,
+  messageIdMap: Map<string, string>,
+): RetainedTailDoc | undefined => {
+  if (!retainedTail) return undefined;
+
+  const remappedStartMessageId = messageIdMap.get(
+    retainedTail.start_message_id,
+  );
+  if (!remappedStartMessageId) return undefined;
+
+  return {
+    ...retainedTail,
+    start_message_id: remappedStartMessageId,
+  };
+};
 
 /**
  * Copy a chat's summary to a new chat, remapping message IDs.
@@ -30,12 +48,19 @@ export async function copyChatSummary(
 
     const remappedPrevious = (summary.previous_summaries ?? [])
       .filter((s) => opts.messageIdMap.has(s.summary_up_to_message_id))
-      .map((s) => ({
-        summary_text: s.summary_text,
-        summary_up_to_message_id: opts.messageIdMap.get(
-          s.summary_up_to_message_id,
-        )!,
-      }));
+      .map((s) => {
+        const retainedTail = remapRetainedTail(
+          s.retained_tail as RetainedTailDoc | undefined,
+          opts.messageIdMap,
+        );
+        return {
+          summary_text: s.summary_text,
+          summary_up_to_message_id: opts.messageIdMap.get(
+            s.summary_up_to_message_id,
+          )!,
+          ...(retainedTail ? { retained_tail: retainedTail } : {}),
+        };
+      });
 
     const metadata = Object.fromEntries(
       Object.entries({
@@ -44,14 +69,11 @@ export async function copyChatSummary(
         model: summary.model,
         status: summary.status,
         error: summary.error,
-        input_tokens: summary.input_tokens,
-        output_tokens: summary.output_tokens,
-        cache_read_tokens: summary.cache_read_tokens,
-        cache_write_tokens: summary.cache_write_tokens,
-        cost: summary.cost,
-        estimated_compacted_input_tokens:
-          summary.estimated_compacted_input_tokens,
         transcript_path: summary.transcript_path,
+        retained_tail: remapRetainedTail(
+          summary.retained_tail as RetainedTailDoc | undefined,
+          opts.messageIdMap,
+        ),
       }).filter(([, value]) => value !== undefined),
     );
 

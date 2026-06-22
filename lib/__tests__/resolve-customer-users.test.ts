@@ -77,7 +77,59 @@ describe("resolveUserIdsFromCustomer", () => {
 
     const result = await resolveUserIdsFromCustomer("cus_123", "Test Webhook");
 
-    expect(result).toEqual({ userIds: [], orgId: null });
+    expect(result).toEqual({
+      userIds: [],
+      orgId: null,
+      reason: "missing_workos_organization_metadata",
+    });
     expect(mockListMemberships).not.toHaveBeenCalled();
+  });
+
+  it("returns a deleted-customer reason without querying WorkOS memberships", async () => {
+    mockRetrieveCustomer.mockResolvedValueOnce({
+      deleted: true,
+      id: "cus_deleted",
+    } as never);
+
+    const { resolveUserIdsFromCustomer } =
+      await import("../billing/resolve-customer-users");
+
+    const result = await resolveUserIdsFromCustomer(
+      "cus_deleted",
+      "Test Webhook",
+    );
+
+    expect(result).toEqual({
+      userIds: [],
+      orgId: null,
+      reason: "customer_deleted",
+    });
+    expect(mockListMemberships).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("returns a no-active-memberships reason when the org has no active users", async () => {
+    mockRetrieveCustomer.mockResolvedValueOnce({
+      deleted: false,
+      metadata: { workOSOrganizationId: "org_empty" },
+    } as never);
+    mockListMemberships.mockResolvedValueOnce({
+      data: [],
+      autoPagination: jest.fn().mockResolvedValue([]),
+    } as never);
+
+    const { resolveUserIdsFromCustomer } =
+      await import("../billing/resolve-customer-users");
+
+    const result = await resolveUserIdsFromCustomer(
+      "cus_empty",
+      "Test Webhook",
+    );
+
+    expect(result).toEqual({
+      userIds: [],
+      orgId: "org_empty",
+      reason: "no_active_memberships",
+    });
   });
 });

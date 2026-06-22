@@ -245,16 +245,17 @@ const openrouter = createOpenRouter({
 
 type OpenRouterInstance = typeof openrouter;
 
-const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code";
+const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+const GEMINI_3_5_FLASH_SLUG = "google/gemini-3.5-flash";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
-    "ask-model": or("google/gemini-3-flash-preview"),
+    "ask-model": or(GEMINI_3_5_FLASH_SLUG),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or(KIMI_K2_7_CODE_SLUG),
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
-    "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
+    "model-gemini-3-flash": or(GEMINI_3_5_FLASH_SLUG),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
@@ -300,7 +301,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
-  "model-gemini-3-flash": "Google Gemini 3 Flash",
+  "model-gemini-3-flash": "Google Gemini 3.5 Flash",
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
@@ -387,9 +388,9 @@ export function resolveTierToProviderKey(
     case "hackerai-standard":
       return isAgentMode(mode)
         ? "model-kimi-k2.7-code"
-        : "model-gemini-3-flash";
+        : "model-deepseek-v4-pro";
     case "hackerai-pro":
-      return isAgentMode(mode) ? "model-sonnet-4.6" : "model-deepseek-v4-pro";
+      return "model-sonnet-4.6";
     case "hackerai-max":
       return "model-opus-4.6";
   }

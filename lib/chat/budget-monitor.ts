@@ -3,6 +3,7 @@ import "server-only";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ExtraUsageConfig,
+  ChatMode,
   RateLimitInfo,
   SubscriptionTier,
 } from "@/types";
@@ -13,13 +14,18 @@ import {
 } from "@/lib/api/chat-stream-helpers";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import {
+  canContinueProAgentRunWithPremium,
+  PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
+  type AgentRunSpendCap,
+  type AgentRunSpendCapHit,
+} from "@/lib/chat/agent-run-spend-cap";
 
 // 50% is intentionally omitted: at the halfway mark there's no actionable
-// signal for the user, so an in-product banner is noise. The ladder matches
-// the codebase's pre-existing 80/95 warnings, plus 100% which drives the
-// abort. (Anthropic's Console alerts include 50% but deliver it via email,
-// not an in-product disruption — we don't have that channel.)
-export const BUDGET_THRESHOLDS = [80, 95, 100] as const;
+// signal for the user, so an in-product banner is noise. The ladder gives an
+// early heads-up at 75%, a stronger warning at 90%, and uses 100% for the
+// cutoff or extra-usage transition.
+export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
 
 export interface BudgetSnapshot {
   monthlyLimitPoints: number;
@@ -64,6 +70,24 @@ export function captureBudgetSnapshot(args: {
   };
 }
 
+export function getProAgentRunSpendCap(args: {
+  snapshot: BudgetSnapshot | null;
+  subscription: SubscriptionTier;
+  mode: ChatMode;
+}): AgentRunSpendCap | null {
+  const { snapshot, subscription, mode } = args;
+  if (!snapshot || subscription !== "pro" || mode !== "agent") return null;
+
+  const monthlyRemainingDollars =
+    snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
+  if (monthlyRemainingDollars < PRO_AGENT_RUN_SPEND_CAP_DOLLARS) return null;
+
+  return {
+    capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
+    basis: "fixed_5_dollars",
+  };
+}
+
 /**
  * Mid-stream budget enforcement. State lives on the monitor; the hook point
  * in chat-handler stays thin.
@@ -74,11 +98,17 @@ export function captureBudgetSnapshot(args: {
  */
 export class BudgetMonitor {
   private highestThresholdEmitted: number;
+  private hasEmittedAgentRunSpendCap = false;
 
   constructor(
     private readonly snapshot: BudgetSnapshot,
     private readonly writer: UIMessageStreamWriter,
     private readonly subscription: SubscriptionTier,
+    private readonly options: {
+      agentRunSpendCap?: AgentRunSpendCap | null;
+      extraUsageConfig?: ExtraUsageConfig;
+      onAgentRunSpendCapHit?: (hit: AgentRunSpendCapHit) => void;
+    } = {},
   ) {
     const startUsedPercent =
       ((snapshot.monthlyLimitPoints - snapshot.monthlyRemainingAtStart) /
@@ -88,11 +118,48 @@ export class BudgetMonitor {
       BUDGET_THRESHOLDS.filter((t) => startUsedPercent >= t).pop() ?? 0;
   }
 
-  checkAfterStep(currentCostDollars: number): "continue" | "abort" {
+  checkAfterStep(
+    currentCostDollars: number,
+  ): "continue" | "abort" | "abort-agent-run-spend-cap" {
     const { snapshot } = this;
     const usedSinceStartPoints = Math.ceil(
       currentCostDollars * POINTS_PER_DOLLAR,
     );
+    const agentRunSpendCap = this.options.agentRunSpendCap;
+    if (
+      agentRunSpendCap &&
+      !this.hasEmittedAgentRunSpendCap &&
+      currentCostDollars >= agentRunSpendCap.capDollars
+    ) {
+      this.hasEmittedAgentRunSpendCap = true;
+      const monthlyRemainingDollars =
+        snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
+      const hit: AgentRunSpendCapHit = {
+        runCostDollars: Math.round(currentCostDollars * 100) / 100,
+        runCapDollars: Math.round(agentRunSpendCap.capDollars * 100) / 100,
+        monthlyRemainingDollars:
+          Math.round(monthlyRemainingDollars * 100) / 100,
+        capBasis: agentRunSpendCap.basis,
+        premiumContinuationAllowed: canContinueProAgentRunWithPremium(
+          this.options.extraUsageConfig,
+        ),
+      };
+      writeRateLimitWarning(this.writer, {
+        warningType: "agent-run-spend-cap",
+        subscription: "pro",
+        mode: "agent",
+        resetTime: snapshot.monthlyResetTime.toISOString(),
+        runCostDollars: hit.runCostDollars,
+        runCapDollars: hit.runCapDollars,
+        monthlyRemainingDollars: hit.monthlyRemainingDollars,
+        capBasis: hit.capBasis,
+        premiumContinuationAllowed: hit.premiumContinuationAllowed,
+        midStream: true,
+      });
+      this.options.onAgentRunSpendCapHit?.(hit);
+      return "abort-agent-run-spend-cap";
+    }
+
     const projectedUsedPoints =
       snapshot.monthlyLimitPoints -
       snapshot.monthlyRemainingAtStart +

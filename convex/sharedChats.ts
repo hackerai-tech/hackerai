@@ -265,11 +265,12 @@ export const getUserSharedChats = query({
       .withIndex("by_user_and_updated", (q) =>
         q.eq("user_id", identity.subject),
       )
+      .order("desc")
       .collect();
 
-    // Filter and map to only shared chats
     return chats
       .filter((chat) => chat.share_id && chat.share_date)
+      .sort((a, b) => b.share_date! - a.share_date!)
       .map((chat) => ({
         _id: chat._id,
         id: chat.id,
@@ -277,8 +278,7 @@ export const getUserSharedChats = query({
         share_id: chat.share_id!,
         share_date: chat.share_date!,
         update_time: chat.update_time,
-      }))
-      .sort((a, b) => b.share_date - a.share_date); // Most recent first
+      }));
   },
 });
 
@@ -316,16 +316,22 @@ export const forkSharedChat = mutation({
       throw new Error("Shared chat not found");
     }
 
-    // Get all messages up to share_date (frozen content)
+    // Read this chat's messages via the existing per-chat index, then apply the
+    // frozen-share cutoff locally to avoid a production-wide compound index.
     const messages = await ctx.db
       .query("messages")
       .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
       .order("asc")
       .collect();
 
-    const frozenMessages = messages.filter(
-      (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-    );
+    const frozenMessages = messages
+      .filter(
+        (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
+      )
+      .sort(
+        (a, b) =>
+          a.update_time - b.update_time || a._creationTime - b._creationTime,
+      );
 
     // Create new chat owned by the current user
     const newChatId = crypto.randomUUID();

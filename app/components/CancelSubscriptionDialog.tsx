@@ -56,6 +56,7 @@ const visibleCancellationReasonValues: CancellationReasonCategory[] = [
   "too_expensive",
   "not_using_enough",
   "missing_feature",
+  "hit_usage_limits",
   "too_slow_or_unreliable",
   "other",
 ];

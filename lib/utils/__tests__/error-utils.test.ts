@@ -400,6 +400,18 @@ describe("provider error classification", () => {
     expect(isProviderContentBlockedError(err)).toBe(true);
   });
 
+  it("classifies output blocks from content filtering policy", () => {
+    const err = apiCallError({
+      statusCode: 403,
+      message: "Output blocked by content filtering policy",
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "content_blocked",
+    );
+    expect(isProviderContentBlockedError(err)).toBe(true);
+  });
+
   it("does not classify moderation service failures as content blocks", () => {
     const err = apiCallError({
       statusCode: 503,
@@ -447,6 +459,20 @@ describe("provider error classification", () => {
       responseBody: JSON.stringify({
         error: {
           message: "image file too large; reduce the attachment size",
+        },
+      }),
+    });
+
+    expect(classifyProviderOverflowError(err)).toBe("media");
+    expect(getUserFriendlyProviderError(err)).toContain("attached media");
+  });
+
+  it("classifies OpenRouter downloaded image size failures as media overflow", () => {
+    const err = apiCallError({
+      statusCode: 413,
+      responseBody: JSON.stringify({
+        error: {
+          message: "Downloaded image content cannot exceed 30MB",
         },
       }),
     });

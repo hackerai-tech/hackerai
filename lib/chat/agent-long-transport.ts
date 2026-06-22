@@ -20,7 +20,11 @@ import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
  * chunk from the beginning — useChat reconstructs the in-progress
  * assistant turn without needing a client-side cursor.
  */
-type RunHandle = { runId: string; publicAccessToken: string };
+type RunHandle = {
+  runId: string;
+  publicAccessToken: string;
+  chatId?: string;
+};
 
 const sseHeaders: HeadersInit = {
   "Content-Type": "text/event-stream",
@@ -49,12 +53,40 @@ const TERMINAL_RUN_STATUSES = new Set([
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const STREAM_IDLE_TIMEOUT_SECONDS = STREAM_TIMEOUT_MS / 1000;
 const POST_FINISH_DRAIN_TIMEOUT_MS = 2_000;
+const COMPLETED_RUN_DRAIN_TIMEOUT_MS = 5_000;
+const QUIET_STREAM_STATUS_POLL_INTERVAL_MS = 2_000;
+const QUIET_STREAM_STATUS_POLL_AFTER_MS = 5_000;
+
+const getChatIdFromRequestInit = (
+  init: RequestInit | undefined,
+): string | undefined => {
+  if (typeof init?.body !== "string") return undefined;
+  try {
+    const body = JSON.parse(init.body) as { chatId?: unknown };
+    return typeof body.chatId === "string" ? body.chatId : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const getChatIdFromResumeUrl = (url: string): string | undefined => {
+  try {
+    const base =
+      typeof window === "undefined" ? "http://localhost" : window.location.href;
+    return new URL(url, base).searchParams.get("chatId") ?? undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const buildSSEResponseFromRun = (
-  { runId, publicAccessToken }: RunHandle,
+  handle: RunHandle,
   signal?: AbortSignal,
+  options?: { chatId?: string },
 ): Response => {
+  const { runId, publicAccessToken } = handle;
   const encoder = new TextEncoder();
+  const chatId = options?.chatId ?? handle.chatId;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -123,6 +155,82 @@ const buildSSEResponseFromRun = (
             return;
           }
 
+          const completedRunDrainTimeout = Symbol(
+            "completed-run-drain-timeout",
+          );
+          let completedRunDrainTimer: ReturnType<typeof setTimeout> | undefined;
+          let resolveCompletedRunDrain:
+            | ((value: typeof completedRunDrainTimeout) => void)
+            | undefined;
+          const completedRunDrainPromise = new Promise<
+            typeof completedRunDrainTimeout
+          >((resolve) => {
+            resolveCompletedRunDrain = resolve;
+          });
+
+          let sawTerminalChunk = false;
+          let sawFinishChunk = false;
+          let timedOutAfterFinish = false;
+          let completedRunDrainElapsed = false;
+          let firstEventReceived = false;
+          let lastEventReceivedAt = Date.now();
+          let isPollingRunStatus = false;
+
+          const clearCompletedRunDrainTimer = () => {
+            if (completedRunDrainTimer === undefined) return;
+            clearTimeout(completedRunDrainTimer);
+            completedRunDrainTimer = undefined;
+          };
+
+          const startCompletedRunDrainTimer = () => {
+            if (
+              completedRunDrainTimer !== undefined ||
+              sawTerminalChunk ||
+              closed
+            ) {
+              return;
+            }
+
+            completedRunDrainTimer = setTimeout(() => {
+              resolveCompletedRunDrain?.(completedRunDrainTimeout);
+            }, COMPLETED_RUN_DRAIN_TIMEOUT_MS);
+          };
+
+          const enqueueSyntheticFinish = () => {
+            if (closed || sawFinishChunk) return;
+            try {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: "finish" })}\n\n`,
+                ),
+              );
+            } catch {
+              // controller may already be closed
+            }
+            sawFinishChunk = true;
+          };
+
+          const handleRunStatus = (status: string | undefined) => {
+            if (status === "COMPLETED") {
+              startCompletedRunDrainTimer();
+              return;
+            }
+            if (status && TERMINAL_RUN_STATUSES.has(status)) {
+              readAbortController?.abort();
+            }
+          };
+
+          const pollResumeEndpointForTerminalRun = async () => {
+            if (!chatId) return;
+            const response = await fetchWithErrorHandlers(
+              `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+              { method: "GET", signal: readAbortController?.signal },
+            );
+            if (response.status === 204) {
+              handleRunStatus("COMPLETED");
+            }
+          };
+
           // Monitor run failure separately from the UI stream. Reading the
           // stream directly avoids a race where the mixed run+stream
           // subscription can discover the stream late and replay chunks only
@@ -135,8 +243,11 @@ const buildSSEResponseFromRun = (
               status?: string;
             }>) {
               const status = run.status;
-              if (status && TERMINAL_RUN_STATUSES.has(status)) {
-                readAbortController?.abort();
+              handleRunStatus(status);
+              if (
+                status === "COMPLETED" ||
+                (status && TERMINAL_RUN_STATUSES.has(status))
+              ) {
                 break;
               }
             }
@@ -150,6 +261,34 @@ const buildSSEResponseFromRun = (
               timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
             },
           );
+
+          const statusPollInterval = setInterval(() => {
+            if (
+              !firstEventReceived ||
+              sawTerminalChunk ||
+              closed ||
+              isPollingRunStatus ||
+              Date.now() - lastEventReceivedAt <
+                QUIET_STREAM_STATUS_POLL_AFTER_MS
+            ) {
+              return;
+            }
+
+            isPollingRunStatus = true;
+            void (async () => {
+              try {
+                const run = await runs.retrieve(runId);
+                handleRunStatus(run.status);
+              } catch {
+                // Fall back to the app's authenticated resume endpoint below.
+              }
+              if (!sawTerminalChunk) {
+                await pollResumeEndpointForTerminalRun().catch(() => undefined);
+              }
+            })().finally(() => {
+              isPollingRunStatus = false;
+            });
+          }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
 
           // text-delta and reasoning-delta chunks are emitted per-token and
           // can number in the thousands for long tasks. Forwarding each one
@@ -201,14 +340,14 @@ const buildSSEResponseFromRun = (
             });
           });
 
-          let sawTerminalChunk = false;
-          let sawFinishChunk = false;
-          let timedOutAfterFinish = false;
-          let firstEventReceived = false;
           const iter = uiStream[Symbol.asyncIterator]();
           const readNextChunk = () => {
             if (!sawFinishChunk) {
-              return Promise.race([iter.next(), abortPromise]);
+              return Promise.race([
+                iter.next(),
+                abortPromise,
+                completedRunDrainPromise,
+              ]);
             }
 
             let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -225,6 +364,7 @@ const buildSSEResponseFromRun = (
               iter.next(),
               abortPromise,
               timeoutPromise,
+              completedRunDrainPromise,
             ]).finally(() => {
               if (timeoutId !== undefined) {
                 clearTimeout(timeoutId);
@@ -242,8 +382,15 @@ const buildSSEResponseFromRun = (
               timedOutAfterFinish = true;
               break;
             }
+            if (next === completedRunDrainTimeout) {
+              completedRunDrainElapsed = true;
+              enqueueSyntheticFinish();
+              sawTerminalChunk = true;
+              break;
+            }
             if (next.done) break;
             const chunk = next.value;
+            lastEventReceivedAt = Date.now();
 
             // Disarm the "no first event" timeout once the UI stream is
             // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
@@ -309,8 +456,9 @@ const buildSSEResponseFromRun = (
             }
             if (chunkType === "finish") {
               // The task writes a few data chunks after `finish`
-              // (message-metadata, final context usage, auto-continue).
+              // (message-metadata, auto-continue).
               // Drain that short tail so the browser receives them.
+              clearCompletedRunDrainTimer();
               sawTerminalChunk = true;
               sawFinishChunk = true;
               continue;
@@ -318,6 +466,7 @@ const buildSSEResponseFromRun = (
 
             // abort / error are terminal and do not have useful trailing data.
             if (chunkType === "abort" || chunkType === "error") {
+              clearCompletedRunDrainTimer();
               sawTerminalChunk = true;
               break;
             }
@@ -326,7 +475,7 @@ const buildSSEResponseFromRun = (
           // Flush any deltas that didn't trigger a count- or timer-based flush.
           flushDeltaBuffers();
 
-          if (userAborted || timedOutAfterFinish) {
+          if (userAborted || timedOutAfterFinish || completedRunDrainElapsed) {
             // Release the trigger.dev subscription so it doesn't keep
             // streaming chunks into a dead controller.
             await iter.return?.(undefined).catch(() => undefined);
@@ -339,6 +488,8 @@ const buildSSEResponseFromRun = (
           }
 
           statusSubscription?.unsubscribe?.();
+          clearCompletedRunDrainTimer();
+          clearInterval(statusPollInterval);
           void statusMonitor;
         });
 
@@ -366,7 +517,9 @@ export const fetchAgentLongStream = async (
   if (!startResponse.ok) return startResponse;
 
   const handle: RunHandle = await startResponse.json();
-  return buildSSEResponseFromRun(handle, init?.signal ?? undefined);
+  return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
+    chatId: getChatIdFromRequestInit(init),
+  });
 };
 
 export const resumeAgentLongStream = async (
@@ -384,5 +537,7 @@ export const resumeAgentLongStream = async (
   if (!response.ok) return response;
 
   const handle: RunHandle = await response.json();
-  return buildSSEResponseFromRun(handle, init?.signal ?? undefined);
+  return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
+    chatId: getChatIdFromResumeUrl(url),
+  });
 };

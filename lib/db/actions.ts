@@ -21,6 +21,11 @@ import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
+import {
+  projectMessagesToTokenBudget,
+  projectRetainedTailFromMessages,
+  type RetainedTailMetadata,
+} from "@/lib/chat/summarization/retained-tail";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import type { ChatMode } from "@/types/chat";
@@ -36,6 +41,10 @@ const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
 const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+type SummaryReason =
+  | "token_threshold"
+  | "provider_input_threshold"
+  | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -321,6 +330,60 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+export async function deleteChatForBackend({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("chats.deleteChatForBackend", error, {
+      chat_id: chatId,
+      user_id: userId,
+    });
+  }
+}
+
+export async function getActiveTriggerRunsForUser({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    return await getConvexClient().query(
+      api.chats.getActiveTriggerRunsForUser,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+  } catch (error) {
+    throw databaseError("chats.getActiveTriggerRunsForUser", error, {
+      user_id: userId,
+    });
+  }
+}
+
+export async function deleteAllChatsForBackend({ userId }: { userId: string }) {
+  try {
+    await getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
+      serviceKey,
+      userId,
+    });
+  } catch (error) {
+    throw databaseError("chats.deleteAllChatsForBackend", error, {
+      user_id: userId,
+    });
+  }
+}
+
 export async function saveChat({
   id,
   userId,
@@ -454,6 +517,9 @@ export async function saveMessage({
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
+    const usageForSave = sanitizeForConvexValue(usage) as
+      | Record<string, unknown>
+      | undefined;
 
     return await getConvexClient().mutation(api.messages.saveMessage, {
       serviceKey,
@@ -468,7 +534,7 @@ export async function saveMessage({
       generationStartedAt,
       generationTimeMs,
       finishReason,
-      usage,
+      usage: usageForSave,
       updateOnly,
       isHidden,
     });
@@ -749,17 +815,9 @@ export async function getMessagesByChatId({
           // deleted assistant response must not leak back into the new run.
           if (latestSummary && !regenerate) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
-
-            // Find cutoff index once
-            const cutoffIndex = truncatedFromLoop.findIndex(
-              (m) => m.id === summaryUpToId,
-            );
-
-            // Keep messages that come after the cutoff
-            const messagesAfterCutoff =
-              cutoffIndex >= 0
-                ? truncatedFromLoop.slice(cutoffIndex + 1)
-                : truncatedFromLoop;
+            const availableChrono = [...fetchedDesc]
+              .reverse()
+              .concat(newMessages);
 
             // Create summary message, prepending resume preamble for agent modes
             const summaryPrefix =
@@ -784,14 +842,53 @@ export async function getMessagesByChatId({
               fileTokensFromLoop,
             );
             const budgetForMessages = maxTokens - summaryTokens;
-            const truncatedAfterCutoff =
-              budgetForMessages > 0
-                ? truncateMessagesToTokenLimit(
-                    messagesAfterCutoff,
-                    fileTokensFromLoop,
-                    budgetForMessages,
-                  )
-                : [];
+            const retainedTail = latestSummary.retained_tail as
+              | RetainedTailMetadata
+              | undefined;
+            let truncatedAfterCutoff: UIMessage[] = [];
+
+            if (budgetForMessages > 0 && retainedTail) {
+              truncatedAfterCutoff = projectRetainedTailFromMessages(
+                availableChrono,
+                retainedTail,
+                {
+                  budgetTokens: budgetForMessages,
+                  fileTokens: fileTokensFromLoop,
+                },
+              );
+
+              if (truncatedAfterCutoff.length === 0) {
+                const cutoffIndex = availableChrono.findIndex(
+                  (m) => m.id === summaryUpToId,
+                );
+                const messagesAfterCutoff =
+                  cutoffIndex >= 0
+                    ? availableChrono.slice(cutoffIndex + 1)
+                    : availableChrono;
+                truncatedAfterCutoff = projectMessagesToTokenBudget(
+                  messagesAfterCutoff,
+                  {
+                    budgetTokens: budgetForMessages,
+                    fileTokens: fileTokensFromLoop,
+                  },
+                );
+              }
+            } else if (budgetForMessages > 0) {
+              // Legacy summaries only have a whole-message cutoff.
+              const cutoffIndex = truncatedFromLoop.findIndex(
+                (m) => m.id === summaryUpToId,
+              );
+              const messagesAfterCutoff =
+                cutoffIndex >= 0
+                  ? truncatedFromLoop.slice(cutoffIndex + 1)
+                  : truncatedFromLoop;
+              truncatedAfterCutoff = truncateMessagesToTokenLimit(
+                messagesAfterCutoff,
+                fileTokensFromLoop,
+                budgetForMessages,
+              );
+            }
+
             const truncatedWithSummary: UIMessage[] = [
               summaryMessage,
               ...truncatedAfterCutoff,
@@ -1100,18 +1197,13 @@ export async function saveChatSummary({
   summaryText: string;
   summaryUpToMessageId: string;
   metadata?: {
-    reason?: string;
+    reason?: SummaryReason;
     promptVersion?: string;
     model?: string;
     status?: string;
     error?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    cost?: number;
-    estimatedCompactedInputTokens?: number;
     transcriptPath?: string;
+    retainedTail?: RetainedTailMetadata;
   };
 }) {
   try {
@@ -1322,6 +1414,10 @@ export async function logUsageRecord({
   subscription,
   model,
   type,
+  includedCostDollars,
+  extraUsageCostDollars,
+  includedPointsDeducted,
+  extraUsagePointsDeducted,
   inputTokens,
   outputTokens,
   totalTokens,
@@ -1339,7 +1435,11 @@ export async function logUsageRecord({
   mode?: ChatMode;
   subscription?: SubscriptionTier;
   model: string;
-  type: "included" | "extra";
+  type: "included" | "extra" | "mixed";
+  includedCostDollars?: number;
+  extraUsageCostDollars?: number;
+  includedPointsDeducted?: number;
+  extraUsagePointsDeducted?: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -1348,7 +1448,7 @@ export async function logUsageRecord({
   costDollars: number;
   modelCostDollars?: number;
   nonModelCostDollars?: number;
-  costSource?: "provider" | "token_estimate";
+  costSource?: "provider" | "token_estimate" | "raw_token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
@@ -1361,6 +1461,10 @@ export async function logUsageRecord({
       subscription,
       model,
       type,
+      included_cost_dollars: includedCostDollars,
+      extra_usage_cost_dollars: extraUsageCostDollars,
+      included_points_deducted: includedPointsDeducted,
+      extra_usage_points_deducted: extraUsagePointsDeducted,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,

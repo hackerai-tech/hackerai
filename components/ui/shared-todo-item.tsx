@@ -22,7 +22,7 @@ export const getStatusIcon = (status: TodoDisplayStatus) =>
   STATUS_ICONS[status] || STATUS_ICONS.pending;
 
 export const getTextStyles = (status: TodoDisplayStatus) => {
-  if (status === "completed") {
+  if (status === "completed" || status === "cancelled") {
     return "line-through opacity-75 text-foreground";
   }
   if (status === "in_progress") {

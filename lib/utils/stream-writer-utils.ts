@@ -3,6 +3,7 @@ import "server-only";
 import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
+import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
 // Upload status notifications
 export const writeUploadStartStatus = (
@@ -115,7 +116,7 @@ export type RateLimitWarningData =
       limitDollars?: number;
       capReason?: LimitCapReason;
       // Mid-stream emits bypass localStorage dedup so threshold escalations
-      // (50→80→95→100) within a single stream always reach the client.
+      // (75→90→100) within a single stream always reach the client.
       midStream?: boolean;
       // Set when the response was cut off mid-stream because the bucket hit 0.
       cutOff?: boolean;
@@ -127,6 +128,19 @@ export type RateLimitWarningData =
       resetTime: string;
       subscription: SubscriptionTier;
       capReason?: LimitCapReason;
+      midStream?: boolean;
+    }
+  | {
+      // Pro Agent users: per-run spend cap paused the current run.
+      warningType: "agent-run-spend-cap";
+      resetTime: string;
+      subscription: "pro";
+      mode: "agent";
+      runCostDollars: number;
+      runCapDollars: number;
+      monthlyRemainingDollars: number;
+      capBasis: AgentRunSpendCapBasis;
+      premiumContinuationAllowed: boolean;
       midStream?: boolean;
     };
 

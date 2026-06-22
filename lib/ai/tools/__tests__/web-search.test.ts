@@ -294,4 +294,52 @@ describe("web_search", () => {
       "Error performing web search: Perplexity search is not authorized (HTTP 401 Unauthorized). Check the Perplexity API key or account access.",
     );
   });
+
+  it("sanitizes non-retry provider failure details before logging or returning", async () => {
+    const esc = String.fromCharCode(0x1b);
+    const bell = String.fromCharCode(0x07);
+    const rawBody = JSON.stringify({
+      error: `${esc}[31mapi_key=provider-secret${bell} from 54.81.73.203 Ray ID: a0611dc9caa93928`,
+    });
+
+    global.fetch = jest.fn().mockResolvedValue(
+      response(rawBody, {
+        status: 400,
+        statusText: "Bad Request",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await runTool(createWebSearch(makeContext()), {
+      queries: ["perplexity status"],
+      brief: "check provider status",
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(result).toBe(
+      "Error performing web search: Perplexity search failed (HTTP 400 Bad Request).",
+    );
+    expect(result).not.toContain("provider-secret");
+    expect(result).not.toContain("54.81.73.203");
+    expect(result).not.toContain("a0611dc9caa93928");
+
+    expect(console.error).toHaveBeenCalledWith(
+      "Web search tool error:",
+      expect.objectContaining({
+        name: "PerplexityApiError",
+        status: 400,
+        retryable: false,
+      }),
+    );
+    const loggedPayload = (console.error as jest.Mock).mock.calls[0][1] as {
+      bodySummary: string;
+    };
+    expect(loggedPayload.bodySummary).toContain('api_key="[Redacted]"');
+    expect(loggedPayload.bodySummary).toContain("[Redacted IP]");
+    expect(loggedPayload.bodySummary).toContain("Ray ID: [Redacted]");
+    expect(loggedPayload.bodySummary).not.toContain(esc);
+    expect(loggedPayload.bodySummary).not.toContain(bell);
+    expect(loggedPayload.bodySummary).not.toContain("provider-secret");
+    expect(loggedPayload.bodySummary).not.toContain("54.81.73.203");
+  });
 });

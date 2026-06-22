@@ -21,10 +21,12 @@ import {
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import type { PricingDialogContext } from "../hooks/usePricingDialog";
 
 interface PricingDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  context?: PricingDialogContext;
 }
 
 interface PlanCardProps {
@@ -46,6 +48,65 @@ interface PlanCardProps {
   badgeClassName?: string;
   footerNote?: string;
   featureHeader?: string | null;
+}
+
+type PricingIntentCopy = {
+  title: string;
+  description: string;
+  proDescription: string;
+  proPlusDescription: string;
+  ultraDescription: string;
+  proButtonText: string;
+  proPlusButtonText: string;
+  ultraButtonText: string;
+};
+
+export function getPricingIntentCopy(
+  context: PricingDialogContext | undefined,
+  subscription: string,
+): PricingIntentCopy | null {
+  if (subscription !== "free") return null;
+
+  const source = context?.source;
+  const limitType = context?.limitType;
+  const reason = context?.reason;
+
+  if (source === "agent_mode_gate") {
+    return {
+      title: "Unlock cloud Agent mode",
+      description:
+        "Use Agent without connecting a local sandbox, with higher limits, file uploads, and stronger models included.",
+      proDescription: "Cloud agents and higher limits",
+      proPlusDescription: "More usage for repeated Agent runs",
+      ultraDescription: "Maximum room for serious workloads",
+      proButtonText: "Use cloud Agent",
+      proPlusButtonText: "Get more Agent usage",
+      ultraButtonText: "Get Ultra",
+    };
+  }
+
+  if (
+    source === "limit_pressure" ||
+    source === "rate_limit_error" ||
+    limitType === "free_monthly" ||
+    limitType === "daily_requests" ||
+    reason === "free_monthly_exhausted" ||
+    reason === "daily_requests_exhausted"
+  ) {
+    return {
+      title: "Keep working",
+      description:
+        "Upgrade to continue today with higher usage limits, file uploads, and stronger models for heavier security work.",
+      proDescription: "Continue with higher limits",
+      proPlusDescription: "More room for heavier work",
+      ultraDescription: "Maximum usage for intensive testing",
+      proButtonText: "Continue with Pro",
+      proPlusButtonText: "Keep going with Pro+",
+      ultraButtonText: "Scale up with Ultra",
+    };
+  }
+
+  return null;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
@@ -146,7 +207,11 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
-const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
+const PricingDialog: React.FC<PricingDialogProps> = ({
+  isOpen,
+  onClose,
+  context,
+}) => {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
@@ -159,6 +224,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     planName: string;
     price: number;
   } | null>(null);
+  const pricingIntentCopy = getPricingIntentCopy(context, subscription);
 
   // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
@@ -177,11 +243,19 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     capturedPricingCtaImpressionRef.current = true;
     captureUpgradeCtaImpression({
       surface: "pricing_dialog",
-      source: "plan_cards",
+      source: context?.source ?? "plan_cards",
       from_tier: subscription,
       cta_text: "plan_card_buttons",
+      ...(context?.reason && { reason: context.reason }),
+      ...(context?.limitType && { limit_type: context.limitType }),
     });
-  }, [isOpen, subscription]);
+  }, [
+    context?.limitType,
+    context?.reason,
+    context?.source,
+    isOpen,
+    subscription,
+  ]);
 
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
@@ -202,8 +276,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     if (subscription === "free") {
       try {
         await handleUpgrade(plan, undefined, undefined, subscription, {
-          source: "plan_card",
+          source: context?.source ?? "plan_card",
           surface: "pricing_dialog",
+          reason: context?.reason,
+          limit_type: context?.limitType,
         });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
@@ -288,7 +364,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       };
     } else if (user) {
       return {
-        text: "Get Pro",
+        text: pricingIntentCopy?.proButtonText ?? "Get Pro",
         disabled: upgradeLoading,
         className: "",
         variant: "default" as const,
@@ -325,7 +401,9 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       };
     } else if (user) {
       const buttonText =
-        subscription === "pro" ? "Upgrade to Pro+" : "Get Pro+";
+        subscription === "pro"
+          ? "Upgrade to Pro+"
+          : (pricingIntentCopy?.proPlusButtonText ?? "Get Pro+");
       return {
         text: buttonText,
         disabled: upgradeLoading,
@@ -367,7 +445,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         text:
           subscription === "pro" || subscription === "pro-plus"
             ? "Upgrade to Ultra"
-            : "Get Ultra",
+            : (pricingIntentCopy?.ultraButtonText ?? "Get Ultra"),
         disabled: upgradeLoading,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
@@ -408,8 +486,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         planName={pendingUpgrade?.planName || ""}
         price={pendingUpgrade?.price || 0}
         targetPlan={pendingUpgrade?.plan || ""}
-        source="plan_card"
+        source={context?.source ?? "plan_card"}
         surface="pricing_dialog"
+        reason={context?.reason}
+        limitType={context?.limitType}
       />
 
       <Dialog open={isOpen} onOpenChange={onClose}>
@@ -422,8 +502,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
               <DialogTitle className="text-3xl font-semibold">
-                Upgrade your plan
+                {pricingIntentCopy?.title ?? "Upgrade your plan"}
               </DialogTitle>
+              {pricingIntentCopy && (
+                <p className="text-muted-foreground mt-2 max-w-2xl text-center text-sm">
+                  {pricingIntentCopy.description}
+                </p>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -467,7 +552,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
               <PlanCard
                 planName="Pro"
                 price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
-                description="For everyday productivity"
+                description={
+                  pricingIntentCopy?.proDescription ??
+                  "For everyday productivity"
+                }
                 features={proFeatures}
                 buttonText={proButtonConfig.text}
                 buttonVariant={proButtonConfig.variant}
@@ -488,7 +576,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                     ? PRICING["pro-plus"].yearly
                     : PRICING["pro-plus"].monthly
                 }
-                description="For power users who need more"
+                description={
+                  pricingIntentCopy?.proPlusDescription ??
+                  "For power users who need more"
+                }
                 features={proPlusFeatures}
                 buttonText={proPlusButtonConfig.text}
                 buttonVariant={proPlusButtonConfig.variant}
@@ -504,7 +595,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
               <PlanCard
                 planName="Ultra"
                 price={isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly}
-                description="Get the most out of HackerAI"
+                description={
+                  pricingIntentCopy?.ultraDescription ??
+                  "Get the most out of HackerAI"
+                }
                 features={ultraFeatures}
                 buttonText={ultraButtonConfig.text}
                 buttonVariant={ultraButtonConfig.variant}

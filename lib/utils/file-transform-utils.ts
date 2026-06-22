@@ -18,6 +18,11 @@ import type { SubscriptionTier } from "@/types";
 import { logger } from "@/lib/logger";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import {
+  normalizeImageMediaType,
+  validateImageBytes,
+  type ImageValidationResult,
+} from "@/lib/utils/image-validation";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE = 30 * 1024 * 1024;
@@ -27,13 +32,23 @@ type FileToProcess = {
   fileId?: string;
   url?: string;
   mediaType?: string;
+  sizeBytes?: number;
   positions: Array<{ messageIndex: number; partIndex: number }>;
+};
+
+type ResolvedFileUrlInfo = {
+  url: string;
+  sizeBytes?: number;
+  mediaType?: string;
+  name?: string;
 };
 
 type SizeProbeResult = {
   bytes: number;
-  source: "content_length" | "content_range" | "download_probe";
+  source: "file_record" | "content_length" | "content_range" | "download_probe";
 };
+
+const providerUnsafeImageParts = new WeakSet<object>();
 
 const redactUrlForLog = (url: string): string => {
   try {
@@ -44,15 +59,42 @@ const redactUrlForLog = (url: string): string => {
   }
 };
 
-const validateResolvedFileUrl = (
-  url: string | null | undefined,
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const getFiniteSizeBytes = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+
+const validateResolvedFileUrlInfo = (
+  info: ResolvedFileUrlInfo | string | null | undefined,
   fileId: string,
-): string | null => {
+): ResolvedFileUrlInfo | null => {
+  const url =
+    typeof info === "string"
+      ? info
+      : isRecord(info) && typeof info.url === "string"
+        ? info.url
+        : null;
   if (!url) return null;
 
   try {
     validateDownloadUrl(url);
-    return url;
+    if (typeof info === "string") {
+      return { url };
+    }
+    if (!isRecord(info)) {
+      return { url };
+    }
+
+    return {
+      url,
+      sizeBytes: getFiniteSizeBytes(info.sizeBytes),
+      mediaType:
+        typeof info.mediaType === "string" ? info.mediaType : undefined,
+      name: typeof info.name === "string" ? info.name : undefined,
+    };
   } catch (error) {
     logger.warn("resolved_file_url_rejected", {
       event: "resolved_file_url_rejected",
@@ -205,6 +247,99 @@ const probeImageSize = async (
 ): Promise<SizeProbeResult | null> =>
   (await probeContentLength(url)) ?? (await probeDownloadSize(url, limitBytes));
 
+const readResponseBytesWithLimit = async (
+  response: Response,
+  limitBytes: number,
+): Promise<Uint8Array | null> => {
+  if (!response.body) {
+    const contentLength = parseContentLength(
+      response.headers.get("content-length"),
+    );
+    if (contentLength == null || contentLength > limitBytes) return null;
+    if (typeof response.arrayBuffer !== "function") return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return bytes.byteLength > limitBytes ? null : bytes;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    totalBytes += value.byteLength;
+    if (totalBytes > limitBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const buffer = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return buffer;
+};
+
+const validateImageUrl = async (
+  url: string,
+  mediaType: string | undefined,
+  limitBytes: number,
+): Promise<ImageValidationResult> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      return {
+        valid: false,
+        reason: `image_validation_download_failed_${response.status}`,
+      };
+    }
+
+    const contentLength = parseContentLength(
+      response.headers.get("content-length"),
+    );
+    if (contentLength != null && contentLength > limitBytes) {
+      return { valid: false, reason: "image_validation_size_exceeded" };
+    }
+
+    const bytes = await readResponseBytesWithLimit(response, limitBytes);
+    if (!bytes) {
+      return { valid: false, reason: "image_validation_size_exceeded" };
+    }
+
+    const validation = validateImageBytes(bytes, mediaType);
+    if (
+      !validation.valid &&
+      validation.reason === "declared_media_type_mismatch" &&
+      validation.detectedMediaType &&
+      isSupportedImageMediaType(validation.detectedMediaType)
+    ) {
+      return { valid: true, mediaType: validation.detectedMediaType };
+    }
+
+    return validation;
+  } catch (error) {
+    return {
+      valid: false,
+      reason:
+        error instanceof DOMException && error.name === "AbortError"
+          ? "image_validation_download_timeout"
+          : "image_validation_download_failed",
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
 const imageOmittedText = (
   name: unknown,
   sizeBytes: number,
@@ -214,6 +349,12 @@ const imageOmittedText = (
 
 const untrustedImageUrlOmittedText = (name: unknown) =>
   `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: URL-backed image attachments must be reattached before they can be sent to the model]`;
+
+const unverifiedImageOmittedText = (name: unknown) =>
+  `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: could not verify the image size before sending it to the model. Please reattach a smaller image or use Agent mode for large images.]`;
+
+const invalidImageOmittedText = (name: unknown) =>
+  `[Image "${typeof name === "string" && name.length > 0 ? name : "unnamed"}" omitted: could not verify valid image bytes before sending it to the model. Please reattach or regenerate the image.]`;
 
 /**
  * Replace non-stored image file parts whose declared size exceeds Anthropic's
@@ -333,7 +474,7 @@ const collectFilesToProcess = (
 const fetchFileUrls = async (
   fileIds: string[],
   userId: string | undefined,
-): Promise<(string | null)[]> => {
+): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
   if (!fileIds.length) return [];
   if (!userId) {
     logger.warn("file_url_fetch_skipped_missing_user_id", {
@@ -351,29 +492,55 @@ const fetchFileUrls = async (
     }
 
     const chunkResults = await Promise.all(
-      chunks.map(async (chunk, index): Promise<(string | null)[]> => {
-        try {
-          return await getConvexClient().action(
-            api.s3Actions.getFileUrlsByFileIdsAction,
-            {
-              serviceKey,
-              userId,
-              fileIds: chunk as Id<"files">[],
-            },
-          );
-        } catch (error) {
-          logger.warn("file_url_fetch_chunk_failed", {
-            event: "file_url_fetch_chunk_failed",
-            service: "chat-handler",
-            error: stringifyRedactedError(error),
-            file_count: fileIds.length,
-            chunk_file_count: chunk.length,
-            chunk_index: index,
-            chunk_count: chunks.length,
-          });
-          return chunk.map(() => null);
-        }
-      }),
+      chunks.map(
+        async (
+          chunk,
+          index,
+        ): Promise<(ResolvedFileUrlInfo | string | null)[]> => {
+          try {
+            return await getConvexClient().action(
+              api.s3Actions.getFileUrlInfosByFileIdsAction,
+              {
+                serviceKey,
+                userId,
+                fileIds: chunk as Id<"files">[],
+              },
+            );
+          } catch (error) {
+            logger.warn("file_url_fetch_chunk_failed", {
+              event: "file_url_fetch_chunk_failed",
+              service: "chat-handler",
+              error: stringifyRedactedError(error),
+              file_count: fileIds.length,
+              chunk_file_count: chunk.length,
+              chunk_index: index,
+              chunk_count: chunks.length,
+            });
+
+            try {
+              return await getConvexClient().action(
+                api.s3Actions.getFileUrlsByFileIdsAction,
+                {
+                  serviceKey,
+                  userId,
+                  fileIds: chunk as Id<"files">[],
+                },
+              );
+            } catch (fallbackError) {
+              logger.warn("file_url_legacy_fetch_chunk_failed", {
+                event: "file_url_legacy_fetch_chunk_failed",
+                service: "chat-handler",
+                error: stringifyRedactedError(fallbackError),
+                file_count: fileIds.length,
+                chunk_file_count: chunk.length,
+                chunk_index: index,
+                chunk_count: chunks.length,
+              });
+              return chunk.map(() => null);
+            }
+          }
+        },
+      ),
     );
 
     return chunkResults.flat();
@@ -402,12 +569,18 @@ const applyUrlsToFileParts = async (
   const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls, userId);
 
   filesNeedingUrls.forEach((file, index) => {
-    const resolvedUrl = validateResolvedFileUrl(
+    const resolved = validateResolvedFileUrlInfo(
       fetchedUrls[index],
       file.fileId!,
     );
-    if (resolvedUrl) {
-      file.url = resolvedUrl;
+    if (resolved) {
+      file.url = resolved.url;
+      if (typeof resolved.sizeBytes === "number") {
+        file.sizeBytes = resolved.sizeBytes;
+      }
+      if (!file.mediaType && resolved.mediaType) {
+        file.mediaType = resolved.mediaType;
+      }
     }
   });
 
@@ -423,34 +596,55 @@ const applyUrlsToFileParts = async (
           )
         : file.url;
 
-    const firstPart = file.positions.length
-      ? (messages[file.positions[0].messageIndex].parts![
-          file.positions[0].partIndex
-        ] as any)
-      : null;
-    const isSupportedImage = isSupportedImageMediaType(file.mediaType ?? "");
-    // The storage URL is the provider-visible payload. Probe it even when the
-    // message has size metadata so stale or incorrect client/DB metadata can't
-    // leak an oversized image into OpenRouter and trigger a provider 413.
+    const normalizedMediaType =
+      normalizeImageMediaType(file.mediaType) ?? file.mediaType;
+    const isSupportedImage = isSupportedImageMediaType(
+      normalizedMediaType ?? "",
+    );
+    const trustedImageSize =
+      typeof file.sizeBytes === "number"
+        ? ({ bytes: file.sizeBytes, source: "file_record" } as const)
+        : null;
     const shouldProbeImageSize =
-      isSupportedImage && file.url && mode !== "agent";
+      isSupportedImage && file.url && mode !== "agent" && !trustedImageSize;
     const probedImageSize = shouldProbeImageSize
       ? await probeImageSize(file.url, MAX_IMAGE_SIZE)
       : null;
-    const declaredImageSize =
-      typeof firstPart?.size === "number" ? firstPart.size : null;
-    const effectiveImageSize = probedImageSize?.bytes ?? declaredImageSize;
+    const effectiveImageSize = trustedImageSize ?? probedImageSize;
     const imageLimit =
-      effectiveImageSize != null &&
-      effectiveImageSize > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
+      effectiveImageSize &&
+      effectiveImageSize.bytes > MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
         ? MAX_PROVIDER_IMAGE_DOWNLOAD_SIZE
         : MAX_IMAGE_SIZE;
     const shouldOmitImage =
       isSupportedImage &&
       effectiveImageSize != null &&
-      effectiveImageSize > imageLimit;
+      effectiveImageSize.bytes > imageLimit;
+    const shouldOmitUnverifiedImage =
+      isSupportedImage &&
+      mode !== "agent" &&
+      !!file.url &&
+      effectiveImageSize == null;
+    const shouldValidateImage =
+      isSupportedImage &&
+      !!file.url &&
+      !shouldOmitImage &&
+      !shouldOmitUnverifiedImage;
+    const imageValidation = shouldValidateImage
+      ? await validateImageUrl(file.url, normalizedMediaType, imageLimit)
+      : null;
+    const shouldOmitInvalidImage = imageValidation?.valid === false;
 
-    if (shouldOmitImage && mode !== "agent") {
+    if (imageValidation?.valid) {
+      file.mediaType = imageValidation.mediaType;
+    }
+
+    if (
+      (shouldOmitImage ||
+        shouldOmitUnverifiedImage ||
+        shouldOmitInvalidImage) &&
+      mode !== "agent"
+    ) {
       logger.warn("image_attachment_omitted_before_provider_call", {
         event: "image_attachment_omitted_before_provider_call",
         service: "chat-handler",
@@ -458,11 +652,22 @@ const applyUrlsToFileParts = async (
         file_ref: file.fileId ? "file_id" : "inline_url",
         file_key: file.fileId ? fileKey : undefined,
         media_type: file.mediaType,
-        size_bytes: effectiveImageSize,
+        size_bytes: effectiveImageSize?.bytes,
         limit_bytes: imageLimit,
-        size_source:
-          probedImageSize?.source ??
-          (declaredImageSize != null ? "message_part" : undefined),
+        size_source: effectiveImageSize?.source,
+        reason: shouldOmitImage
+          ? "size_exceeded"
+          : shouldOmitUnverifiedImage
+            ? "size_unverified"
+            : "invalid_image",
+        validation_reason:
+          imageValidation && !imageValidation.valid
+            ? imageValidation.reason
+            : undefined,
+        detected_media_type:
+          imageValidation && !imageValidation.valid
+            ? imageValidation.detectedMediaType
+            : undefined,
         mode,
       });
     }
@@ -470,14 +675,35 @@ const applyUrlsToFileParts = async (
     file.positions.forEach(({ messageIndex, partIndex }) => {
       const filePart = messages[messageIndex].parts![partIndex] as any;
       if (filePart.type !== "file") return;
-      if (shouldOmitImage && mode !== "agent") {
+      if (typeof file.sizeBytes === "number") {
+        filePart.size = file.sizeBytes;
+      }
+      if (file.mediaType) {
+        filePart.mediaType =
+          normalizeImageMediaType(file.mediaType) ?? file.mediaType;
+      }
+
+      if ((shouldOmitImage || shouldOmitInvalidImage) && mode === "agent") {
+        filePart.url = finalUrl;
+        providerUnsafeImageParts.add(filePart);
+      } else if (shouldOmitImage && mode !== "agent") {
         messages[messageIndex].parts![partIndex] = {
           type: "text",
           text: imageOmittedText(
             filePart.name,
-            effectiveImageSize!,
+            effectiveImageSize!.bytes,
             imageLimit,
           ),
+        };
+      } else if (shouldOmitUnverifiedImage) {
+        messages[messageIndex].parts![partIndex] = {
+          type: "text",
+          text: unverifiedImageOmittedText(filePart.name),
+        };
+      } else if (shouldOmitInvalidImage) {
+        messages[messageIndex].parts![partIndex] = {
+          type: "text",
+          text: invalidImageOmittedText(filePart.name),
         };
       } else {
         filePart.url = finalUrl;
@@ -754,10 +980,16 @@ const removeNonMediaAndOversizedImageFileParts = (messages: UIMessage[]) => {
     if (!msg.parts) return;
     msg.parts = msg.parts.filter((part: any) => {
       if (part?.type !== "file") return true;
+      if (providerUnsafeImageParts.has(part)) return false;
       if (!isSupportedImageMediaType(part.mediaType ?? "")) return false;
       return !isSandboxOnlyAgentUpload({
         mode: "agent",
-        size: typeof part.size === "number" ? part.size : 0,
+        size:
+          typeof part.size === "number"
+            ? part.size
+            : typeof part.sizeBytes === "number"
+              ? part.sizeBytes
+              : 0,
         mediaType: part.mediaType ?? "",
       });
     });

@@ -230,7 +230,7 @@ export const ShareDialog = ({
                           const savedFiles = isUser
                             ? []
                             : (message.fileDetails || []).filter(
-                                (f) => f.storageId || f.s3Key,
+                                (f) => f.fileId || f.s3Key,
                               );
 
                           return (
@@ -314,12 +314,12 @@ export const ShareDialog = ({
                                     <FilePartRenderer
                                       key={`${message.id}-saved-file-${fileIndex}`}
                                       part={{
-                                        storageId: file.storageId,
                                         fileId: file.fileId,
                                         s3Key: file.s3Key,
                                         name: file.name,
                                         filename: file.name,
                                         mediaType: file.mediaType,
+                                        sizeBytes: file.sizeBytes,
                                       }}
                                       partIndex={fileIndex}
                                       messageId={message.id}

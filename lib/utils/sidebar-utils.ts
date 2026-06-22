@@ -622,7 +622,7 @@ export function extractSidebarContentFromMessage(
         mediaType: f.mediaType,
         fileId: f.fileId,
         s3Key: f.s3Key,
-        storageId: f.storageId,
+        sizeBytes: typeof f.sizeBytes === "number" ? f.sizeBytes : undefined,
       }));
 
       contentList.push({

@@ -69,6 +69,10 @@ export const POST = async (req: NextRequest) => {
       createCheckoutAttemptId();
     const checkoutSource = normalizePaidFunnelLabel(body?.source);
     const checkoutSurface = normalizePaidFunnelLabel(body?.surface);
+    const checkoutReason = normalizePaidFunnelLabel(body?.reason);
+    const checkoutLimitType = normalizePaidFunnelLabel(
+      body?.limitType ?? body?.limit_type,
+    );
     const posthogSessionId = req.headers?.get("x-posthog-session-id");
 
     const allowedPlans = new Set([
@@ -337,6 +341,8 @@ export const POST = async (req: NextRequest) => {
               quantity,
               surface: checkoutSurface,
               source: checkoutSource,
+              reason: checkoutReason,
+              limit_type: checkoutLimitType,
               checkout_amount_dollars: totalDue,
               currency: targetPrice.currency,
               stripe_customer_id: matchingCustomer.id,
@@ -369,6 +375,8 @@ export const POST = async (req: NextRequest) => {
                 checkoutAttemptId,
                 ...(checkoutSource && { checkoutSource }),
                 ...(checkoutSurface && { checkoutSurface }),
+                ...(checkoutReason && { checkoutReason }),
+                ...(checkoutLimitType && { checkoutLimitType }),
                 checkoutType: "subscription_change",
               },
             },
@@ -435,6 +443,8 @@ export const POST = async (req: NextRequest) => {
               quantity,
               surface: checkoutSurface,
               source: checkoutSource,
+              reason: checkoutReason,
+              limit_type: checkoutLimitType,
               checkout_amount_dollars: totalDue,
               currency: targetPrice.currency,
               stripe_customer_id: matchingCustomer.id,

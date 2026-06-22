@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { useConvex, useAction } from "convex/react";
+import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useFileUrlCacheContext } from "@/app/contexts/FileUrlCacheContext";
 import type { FilePart } from "@/types/file";
@@ -142,7 +142,6 @@ const AllFilesDialog = ({
   files,
   chatTitle,
 }: AllFilesDialogProps) => {
-  const convex = useConvex();
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
   const [selectionMode, setSelectionMode] = useState(false);
@@ -191,22 +190,15 @@ const AllFilesDialog = ({
             }
           }
 
-          // Fetch URL based on storage type
           try {
             let url: string | null = null;
 
             if (file.part.fileId) {
-              // S3 file - fetch presigned URL
               url = await getFileUrlAction({ fileId: file.part.fileId });
               // Cache it
               if (url && fileUrlCache) {
                 fileUrlCache.setCachedUrl(file.part.fileId, url);
               }
-            } else if (file.part.storageId) {
-              // Convex storage file - fetch URL
-              url = await convex.query(api.fileStorage.getFileDownloadUrl, {
-                storageId: file.part.storageId,
-              });
             }
 
             if (url) {
@@ -229,7 +221,7 @@ const AllFilesDialog = ({
     return () => {
       cancelled = true;
     };
-  }, [open, files, getFileUrlAction, convex, fileUrlCache]);
+  }, [open, files, getFileUrlAction, fileUrlCache]);
 
   const handleEnterSelectionMode = () => {
     setSelectionMode(true);
@@ -276,20 +268,13 @@ const AllFilesDialog = ({
       await Promise.all(
         filesToDownload.map(async ({ file, index }) => {
           try {
-            let url = fileUrls.get(index) || file.part.url;
+            let url: string | null | undefined =
+              fileUrls.get(index) || file.part.url;
 
             // Fetch URL if not already available
             if (!url) {
               if (file.part.fileId) {
                 url = await getFileUrlAction({ fileId: file.part.fileId });
-              } else if (file.part.storageId) {
-                const fetchedUrl = await convex.query(
-                  api.fileStorage.getFileDownloadUrl,
-                  {
-                    storageId: file.part.storageId,
-                  },
-                );
-                url = fetchedUrl || undefined;
               }
             }
 

@@ -63,7 +63,7 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
         mediaType: f.mediaType,
         fileId: f.fileId as string,
         s3Key: f.s3Key,
-        storageId: f.storageId,
+        sizeBytes: f.sizeBytes,
       }),
     );
 

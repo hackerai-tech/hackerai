@@ -1,7 +1,27 @@
 import type { NextConfig } from "next";
 
+const postHogSourceMapApiKey = process.env.POSTHOG_CLI_API_KEY?.trim();
+const postHogSourceMapProjectId = process.env.POSTHOG_CLI_PROJECT_ID?.trim();
+const hasPostHogSourceMapApiKey = Boolean(postHogSourceMapApiKey);
+const hasPostHogSourceMapProjectId = Boolean(postHogSourceMapProjectId);
+const posthogSourceMapsEnabled =
+  hasPostHogSourceMapApiKey && hasPostHogSourceMapProjectId;
+
+if (
+  (hasPostHogSourceMapApiKey || hasPostHogSourceMapProjectId) &&
+  !posthogSourceMapsEnabled
+) {
+  console.warn(
+    "[PostHog] Source maps are disabled. Set both POSTHOG_CLI_API_KEY and POSTHOG_CLI_PROJECT_ID to enable upload.",
+  );
+}
+
 const nextConfig: NextConfig = {
   devIndicators: false,
+  productionBrowserSourceMaps: posthogSourceMapsEnabled,
+  experimental: {
+    optimizePackageImports: ["lucide-react", "date-fns"],
+  },
   ...(process.env.NODE_ENV === "development" && {
     logging: {
       serverFunctions: false,

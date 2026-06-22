@@ -20,8 +20,13 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
+  SandboxBootInfo,
 } from "@/types";
-import { coerceSelectedModel, isLimitRescueRequest } from "@/types";
+import {
+  coerceSelectedModel,
+  isLimitRescueRequest,
+  normalizeSelectedModelOverrideForSubscription,
+} from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
@@ -39,6 +44,7 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
@@ -55,13 +61,14 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
+import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import {
   countFileAttachments,
   stripImageAttachments,
   sendRateLimitWarnings,
   isProviderApiError,
   computeContextUsage,
-  writeContextUsage,
   isContextUsageEnabled,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
@@ -70,6 +77,7 @@ import {
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
+  isAutoModelSelectionForRetry,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -93,12 +101,16 @@ import { processChatMessages } from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
+  getSandboxUploadFailureMetadata,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
   stripLocalDesktopSourcePaths,
 } from "@/lib/utils/sandbox-file-utils";
-import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
+import {
+  getEmptyProcessedMessagesCause,
+  getEmptyProcessedMessagesMetadata,
+} from "@/lib/utils/local-attachment-messages";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import {
@@ -130,6 +142,17 @@ import {
   initAgentStreamState,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
+import {
+  assertLocalSandboxFallbackAllowed,
+  getSandboxFallbackPromptReminder,
+  prepareSandboxContextForPrompt,
+  writeSandboxFallbackEvent,
+} from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
+  omitImageViewToolResultsForProviderRetry,
+  omitTrailingStepStartAssistantMessage,
+} from "@/lib/chat/multimodal-tool-result-recovery";
+import { shouldRetryProviderStreamWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
@@ -191,8 +214,6 @@ export const createChatHandler = () => {
       } = await req.json();
       outerChatId = chatId;
 
-      const selectedModelOverride: SelectedModel | undefined =
-        coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
         rawLimitRescue,
       )
@@ -208,6 +229,11 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
+      let selectedModelOverride: SelectedModel | undefined =
+        normalizeSelectedModelOverrideForSubscription(
+          coerceSelectedModel(rawSelectedModel ?? null),
+          subscription,
+        );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
       if (subscription === "free") {
@@ -230,7 +256,6 @@ export const createChatHandler = () => {
         mode,
         subscription,
         sandboxPreference,
-        rawSelectedModel,
       });
 
       // Pre-emptive abort fires before Vercel's hard request timeout so we
@@ -267,6 +292,22 @@ export const createChatHandler = () => {
         Array.isArray(todos) ? todos : [],
         { isTemporary: !!temporary, regenerate },
       );
+
+      const extraUsageConfig = await buildExtraUsageConfig({
+        userId,
+        subscription,
+        userCustomization,
+        organizationId,
+      });
+
+      selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
+        finishReason: chat?.finish_reason,
+        isAutoContinue,
+        mode,
+        subscription,
+        selectedModelOverride,
+        extraUsageConfig,
+      });
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
@@ -306,6 +347,12 @@ export const createChatHandler = () => {
         throw new ChatSDKError(
           "bad_request:api",
           getEmptyProcessedMessagesCause(truncatedMessages),
+          getEmptyProcessedMessagesMetadata(truncatedMessages, {
+            regenerate: !!regenerate,
+            isAutoContinue: !!isAutoContinue,
+            isTemporary: !!temporary,
+            sandboxPreference,
+          }),
         );
       }
 
@@ -333,13 +380,6 @@ export const createChatHandler = () => {
         notesEnabled,
       };
       chatLogger.setChat(chatLogContext, selectedModel);
-
-      const extraUsageConfig = await buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
 
       let paidDailyFreeAllowanceReservation:
         | PaidDailyFreeAllowanceReservation
@@ -513,8 +553,10 @@ export const createChatHandler = () => {
               subscription,
               mode,
               rateLimitInfo,
+              extraUsageConfig,
             });
 
+            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             const {
               tools,
               getSandbox,
@@ -549,7 +591,10 @@ export const createChatHandler = () => {
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
               subscription,
-              (info) => chatLogger?.setSandboxBoot(info),
+              (info) => {
+                uploadSandboxBootPath ??= info.path;
+                chatLogger?.setSandboxBoot(info);
+              },
               (info) => chatLogger?.setCaidoReady(info),
               selectedModel,
             );
@@ -562,7 +607,7 @@ export const createChatHandler = () => {
                 name: string;
                 mediaType: string;
                 s3Key?: string;
-                storageId?: Id<"_storage">;
+                sizeBytes?: number;
               }>,
             ) => {
               if (!fileMetadata || fileMetadata.length === 0) return;
@@ -576,22 +621,44 @@ export const createChatHandler = () => {
               });
             };
 
-            // Get sandbox context for system prompt (only for local sandboxes)
             let sandboxContext: string | null = null;
-            if (
-              isAgentMode(mode) &&
-              "getSandboxContextForPrompt" in sandboxManager
-            ) {
+            let sandboxFallbackReminder: string | null = null;
+            if (isAgentMode(mode)) {
+              const sandboxPromptContext = await prepareSandboxContextForPrompt(
+                {
+                  sandboxManager,
+                  writer,
+                  eventId: `sandbox-fallback-${assistantMessageId}`,
+                  emitFallbackEvent: false,
+                  onContextError: (error) => {
+                    console.warn(
+                      "Failed to get sandbox context for prompt:",
+                      error,
+                    );
+                  },
+                },
+              );
+              sandboxContext = sandboxPromptContext.sandboxContext;
+              sandboxFallbackReminder = getSandboxFallbackPromptReminder(
+                sandboxPromptContext.fallbackInfo,
+              );
               try {
-                sandboxContext = await (
-                  sandboxManager as {
-                    getSandboxContextForPrompt: () => Promise<string | null>;
-                  }
-                ).getSandboxContextForPrompt();
+                assertLocalSandboxFallbackAllowed({
+                  fallbackInfo: sandboxPromptContext.fallbackInfo,
+                });
               } catch (error) {
-                console.warn(
-                  "Failed to get sandbox context for prompt:",
-                  error,
+                if (error instanceof ChatSDKError) {
+                  preemptiveTimeout?.clear();
+                  await usageRefundTracker.refund();
+                  chatLogger?.emitChatError(error);
+                }
+                throw error;
+              }
+              if (sandboxPromptContext.fallbackInfo?.occurred) {
+                writeSandboxFallbackEvent(
+                  writer,
+                  sandboxPromptContext.fallbackInfo,
+                  `sandbox-fallback-${assistantMessageId}`,
                 );
               }
             }
@@ -612,6 +679,10 @@ export const createChatHandler = () => {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
+                  {
+                    retryWithFreshSandboxOnTransientFailure: () =>
+                      uploadSandboxBootPath === "reuse_existing",
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -622,6 +693,7 @@ export const createChatHandler = () => {
                 const uploadError = new ChatSDKError(
                   "bad_request:stream",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadFailureMetadata(uploadResult),
                 );
                 // Errors thrown from execute are caught by createUIMessageStream's
                 // onError and never reach the outer catch, so refund / timeout
@@ -667,6 +739,13 @@ export const createChatHandler = () => {
               : 0;
             // finalMessages will be set in prepareStep if summarization is needed
             let finalMessages = processedMessages;
+
+            if (sandboxFallbackReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                sandboxFallbackReminder,
+              );
+            }
 
             // Inject resume context into messages instead of system prompt
             // to keep the system prompt stable for caching
@@ -726,22 +805,46 @@ export const createChatHandler = () => {
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
                 : freeMonthlyBudgetSnapshot);
-            const budgetMonitor = effectiveBudgetSnapshot
-              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
-              : null;
             const isReasoningModel = isAgentMode(mode);
 
             const streamStartTime = Date.now();
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const agentRunSpendCap = getProAgentRunSpendCap({
+              snapshot: effectiveBudgetSnapshot,
+              subscription,
+              mode,
+            });
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(
+                  effectiveBudgetSnapshot,
+                  writer,
+                  subscription,
+                  {
+                    agentRunSpendCap,
+                    extraUsageConfig,
+                    onAgentRunSpendCapHit: (hit) => {
+                      captureAgentRunSpendCapHit({
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint,
+                        selectedModel,
+                        selectedModelOverride,
+                        configuredModelSlug: configuredModelId,
+                        hit,
+                      });
+                    },
+                  },
+                )
+              : null;
 
             let isRetryWithFallback = false;
-            const isAutoModel = [
-              "ask-model",
-              "ask-model-free",
-              "agent-model",
-              "agent-model-free",
-            ].includes(selectedModel);
+            const isAutoModel = isAutoModelSelectionForRetry({
+              selectedModel,
+              selectedModelOverride,
+            });
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
@@ -768,13 +871,15 @@ export const createChatHandler = () => {
                   return;
                 }
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
 
                 // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
                 // non-clean streams. Each completed step reports authoritative cost with
@@ -861,7 +966,7 @@ export const createChatHandler = () => {
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const deductionResult = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -872,7 +977,17 @@ export const createChatHandler = () => {
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
+                  const billingBreakdown =
+                    deductionResult.includedPointsDeducted > 0 ||
+                    deductionResult.extraUsagePointsDeducted > 0
+                      ? deductionResult
+                      : undefined;
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,
@@ -885,6 +1000,7 @@ export const createChatHandler = () => {
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({
@@ -981,6 +1097,7 @@ export const createChatHandler = () => {
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
+                state.stoppedDueToAgentRunSpendCap = false;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 // Discard the failed primary leg's model usage so the user is
@@ -1017,18 +1134,37 @@ export const createChatHandler = () => {
                 onFinish: async ({ messages, isAborted }) => {
                   let retryScheduled = false;
                   try {
-                    // Check if stream finished with only step-start (indicates incomplete response)
                     const lastAssistantMessage = messages
                       .slice()
                       .reverse()
                       .find((m) => m.role === "assistant");
-                    const hasOnlyStepStart =
-                      lastAssistantMessage?.parts?.length === 1 &&
-                      lastAssistantMessage.parts[0]?.type === "step-start";
+                    const lastAssistantMessageParts =
+                      lastAssistantMessage?.parts ?? [];
+                    const shouldRetryWithFallback =
+                      shouldRetryProviderStreamWithFallback(
+                        lastAssistantMessageParts,
+                        {
+                          hasTerminalProviderStreamError:
+                            state.streamFinishReason === "error",
+                        },
+                      );
+                    const imageRecovery =
+                      state.providerRejectedMultimodalToolResults
+                        ? omitImageViewToolResultsForProviderRetry(messages)
+                        : { messages, omittedCount: 0 };
+                    const shouldRetryWithoutImageToolResults =
+                      imageRecovery.omittedCount > 0 && !isAborted;
 
-                    if (hasOnlyStepStart) {
+                    if (
+                      shouldRetryWithFallback ||
+                      shouldRetryWithoutImageToolResults
+                    ) {
                       phLogger.warn(
-                        "Stream finished incomplete - triggering fallback",
+                        shouldRetryWithoutImageToolResults
+                          ? "Provider rejected image tool output - retrying without images"
+                          : state.streamFinishReason === "error"
+                            ? "Provider stream errored before useful output - triggering fallback"
+                            : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1041,27 +1177,49 @@ export const createChatHandler = () => {
                           parts: lastAssistantMessage?.parts,
                           isRetryWithFallback,
                           assistantMessageId,
+                          imageToolResultsOmitted: imageRecovery.omittedCount,
                         },
                       );
 
-                      // Retry with fallback model if not already retrying (only for auto models)
-                      if (!isRetryWithFallback && !isAborted && isAutoModel) {
+                      // Retry with fallback model for incomplete or reasoning-only
+                      // terminal provider streams. For image-tool rejection, retry
+                      // the same selected model after replacing image outputs with
+                      // text placeholders.
+                      if (
+                        !isRetryWithFallback &&
+                        !isAborted &&
+                        (isAutoModel || shouldRetryWithoutImageToolResults)
+                      ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.streamFinishReason = undefined;
+                        state.providerError = undefined;
+                        state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
+                        state.stoppedDueToAgentRunSpendCap = false;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
 
-                        // Discard the failed primary leg's model usage so the
-                        // user is only billed for the fallback. Non-model spend
-                        // (sandbox/tools) is preserved.
-                        usageTracker.resetModelLeg();
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : fallbackModel;
+                        if (shouldRetryWithoutImageToolResults) {
+                          state.finalMessages =
+                            omitTrailingStepStartAssistantMessage(
+                              imageRecovery.messages,
+                            );
+                        } else {
+                          // Discard the failed primary leg's model usage so the
+                          // user is only billed for the fallback. Non-model spend
+                          // (sandbox/tools) is preserved.
+                          usageTracker.resetModelLeg();
+                        }
 
-                        const retryResult = await createStream(fallbackModel);
+                        const retryResult = await createStream(retryModel);
                         const retryMessageId = generateId();
 
                         writer.merge(
@@ -1242,7 +1400,7 @@ export const createChatHandler = () => {
                                   originalModel: selectedModel,
                                   originalAssistantMessageId:
                                     assistantMessageId,
-                                  fallbackModel,
+                                  fallbackModel: retryModel,
                                   fallbackAssistantMessageId: retryMessageId,
                                   fallbackDurationMs:
                                     Date.now() - fallbackStartTime,
@@ -1265,6 +1423,12 @@ export const createChatHandler = () => {
                                   isTemporary: temporary,
                                   paidAskMode:
                                     mode === "ask" && subscription !== "free",
+                                  retryReason:
+                                    shouldRetryWithoutImageToolResults
+                                      ? "image_tool_result_rejection"
+                                      : "incomplete_stream",
+                                  imageToolResultsOmitted:
+                                    imageRecovery.omittedCount,
                                 });
 
                                 // Deduct accumulated usage (includes both original + retry streams)
@@ -1619,16 +1783,6 @@ export const createChatHandler = () => {
                           : null,
                       });
                       await phLogger.flush();
-                    }
-
-                    // Send updated context usage with output tokens included
-                    if (contextUsageOn) {
-                      writeContextUsage(writer, {
-                        usedTokens:
-                          state.ctxUsage.usedTokens +
-                          usageTracker.streamOutputTokens,
-                        maxTokens: state.ctxUsage.maxTokens,
-                      });
                     }
 
                     if (

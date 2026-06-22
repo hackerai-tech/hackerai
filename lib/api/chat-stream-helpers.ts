@@ -17,6 +17,7 @@ import type {
   ChatMode,
   ExtraUsageConfig,
   SandboxPreference,
+  SelectedModel,
   SubscriptionTier,
   Todo,
   UserCustomization,
@@ -28,7 +29,6 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
-import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
 import {
@@ -43,6 +43,7 @@ import {
   type EnsureSandbox,
   type SummarizationUsage,
 } from "@/lib/chat/summarization";
+import type { ProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
@@ -135,9 +136,10 @@ export function sendRateLimitWarnings(
       extraUsagePointsDeducted?: number;
       rateLimitSkipped?: boolean;
     };
+    extraUsageConfig?: ExtraUsageConfig;
   },
 ): void {
-  const { subscription, mode, rateLimitInfo } = options;
+  const { subscription, mode, rateLimitInfo, extraUsageConfig } = options;
 
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
@@ -155,24 +157,35 @@ export function sendRateLimitWarnings(
       });
     }
   } else if (rateLimitInfo.monthly) {
-    // Paid users with extra usage: warn when extra usage is being used
+    const canUseExtraUsage =
+      !!extraUsageConfig?.enabled &&
+      (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled) &&
+      (extraUsageConfig.monthlyRemainingDollars === undefined ||
+        extraUsageConfig.monthlyRemainingDollars > 0);
+    const isUsingExtraUsage =
+      !!rateLimitInfo.extraUsagePointsDeducted &&
+      rateLimitInfo.extraUsagePointsDeducted > 0;
+
+    // Paid users with extra usage: warn when credits are being used, including
+    // the edge case where the included bucket is empty before output starts.
     if (
-      rateLimitInfo.extraUsagePointsDeducted &&
-      rateLimitInfo.extraUsagePointsDeducted > 0
+      isUsingExtraUsage ||
+      (rateLimitInfo.monthly.remaining <= 0 && canUseExtraUsage)
     ) {
       writeRateLimitWarning(writer, {
         warningType: "extra-usage-active",
         bucketType: "monthly",
         resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
         subscription,
+        capReason: "extra_usage_active",
       });
     } else {
-      // Paid users without extra usage: warn at 80% and 95%
+      // Paid users without extra usage: warn at 75% and 90%
       const usedPercent =
         100 -
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
 
-      if (usedPercent >= 80) {
+      if (usedPercent >= 75) {
         emitTokenBucketThresholdWarning(writer, {
           usedPercent,
           projectedUsedPoints:
@@ -216,7 +229,7 @@ export function emitTokenBucketThresholdWarning(
 ): void {
   const remainingPercent = Math.max(0, Math.round(100 - ctx.usedPercent));
   const severity: "info" | "warning" =
-    ctx.usedPercent >= 95 ? "warning" : "info";
+    ctx.usedPercent >= 90 ? "warning" : "info";
   writeRateLimitWarning(writer, {
     warningType: "token-bucket",
     bucketType: "monthly",
@@ -297,6 +310,11 @@ export function isProviderApiError(error: unknown): boolean {
 /**
  * Compute total context usage from messages.
  */
+export interface ContextUsageData {
+  usedTokens: number;
+  maxTokens: number;
+}
+
 export function computeContextUsage(
   messages: UIMessage[],
   fileTokens: Record<Id<"files">, number>,
@@ -313,16 +331,6 @@ export function isContextUsageEnabled(
 ): boolean {
   if (subscription !== "free") return true;
   return mode === "agent";
-}
-
-/**
- * Write a context usage data stream part to the client.
- */
-export function writeContextUsage(
-  writer: UIMessageStreamWriter,
-  usage: ContextUsageData,
-): void {
-  writer.write({ type: "data-context-usage", data: usage });
 }
 
 export interface SummarizationStepResult {
@@ -352,6 +360,7 @@ export async function runSummarizationStep(options: {
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
   transcriptMessages?: UIMessage[];
+  providerPromptPressure?: ProviderPromptPressure | null;
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded({
@@ -373,6 +382,7 @@ export async function runSummarizationStep(options: {
       modelMessages: options.modelMessages,
       transcriptMessages: options.transcriptMessages,
       maxTokensOverride: options.ctxMaxTokens,
+      providerPromptPressure: options.providerPromptPressure,
     });
 
   if (!needsSummarization) {
@@ -387,10 +397,6 @@ export async function runSummarizationStep(options: {
         options.ctxMaxTokens,
       )
     : undefined;
-
-  if (contextUsage) {
-    writeContextUsage(options.writer, contextUsage);
-  }
 
   return {
     needsSummarization: true,
@@ -480,6 +486,27 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
 
+const AUTO_MODEL_KEYS = new Set<string>([
+  "ask-model",
+  "ask-model-free",
+  "agent-model",
+  "agent-model-free",
+]);
+
+export function isAutoModelSelectionForRetry({
+  selectedModel,
+  selectedModelOverride,
+}: {
+  selectedModel: string;
+  selectedModelOverride?: SelectedModel | null;
+}): boolean {
+  return (
+    !selectedModelOverride ||
+    selectedModelOverride === "auto" ||
+    AUTO_MODEL_KEYS.has(selectedModel)
+  );
+}
+
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
     agent: ["model-kimi-k2.7-code", "fallback-grok-4.3"],
@@ -490,6 +517,27 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
   "fallback-gemini-3.5-flash",
   "fallback-grok-4.3",
 ] as const satisfies readonly ModelName[];
+
+const ASK_MEDIUM_REASONING_MODELS = [
+  "ask-model",
+  "model-gemini-3-flash",
+  "model-deepseek-v4-pro",
+  "model-sonnet-4.6",
+  "model-opus-4.6",
+] as const satisfies readonly ModelName[];
+
+const isAskMediumReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+
+const ASK_KIMI_REASONING_MODELS = [
+  "model-kimi-k2.7-code",
+  "model-kimi-k2.6",
+] as const satisfies readonly ModelName[];
+
+const isAskKimiReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
@@ -566,17 +614,29 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  const isGemini35Flash =
+    modelId?.startsWith("google/gemini-3.5-flash") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
+  const reasoning = isReasoningModel
+    ? {
+        enabled: true,
+        ...(isDeepSeekV4 && { effort: "xhigh" }),
+      }
+    : mode === "ask" && isAskKimiReasoningModel(modelName)
+      ? {
+          enabled: true,
+        }
+      : mode === "ask" && isAskMediumReasoningModel(modelName)
+        ? {
+            enabled: true,
+            effort: isGemini35Flash ? "minimal" : "medium",
+            ...(isGemini35Flash && { exclude: true }),
+          }
+        : { enabled: false };
+
   return {
     openrouter: {
-      ...(isReasoningModel
-        ? {
-            reasoning: {
-              enabled: true,
-              ...(isDeepSeekV4 && { effort: "xhigh" }),
-            },
-          }
-        : { reasoning: { enabled: false } }),
+      reasoning,
       ...(userId && { user: userId }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
@@ -872,16 +932,16 @@ export async function applyPrepareStepReminders(
 }
 
 /**
- * Free-tier agent mode is restricted to the local sandbox + auto model.
- * Throws ChatSDKError("forbidden:chat") if either gate fails.
+ * Free-tier agent mode is restricted to the local sandbox.
+ * Model overrides are normalized to auto before stream setup.
+ * Throws ChatSDKError("forbidden:chat") if the sandbox gate fails.
  */
 export function assertFreeAgentGates(args: {
   mode: ChatMode;
   subscription: SubscriptionTier;
   sandboxPreference: SandboxPreference | undefined;
-  rawSelectedModel: string | undefined;
 }): void {
-  const { mode, subscription, sandboxPreference, rawSelectedModel } = args;
+  const { mode, subscription, sandboxPreference } = args;
   if (!isAgentMode(mode) || subscription !== "free") return;
 
   const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
@@ -889,13 +949,6 @@ export function assertFreeAgentGates(args: {
     throw new ChatSDKError(
       "forbidden:chat",
       "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
-    );
-  }
-
-  if (rawSelectedModel && rawSelectedModel !== "auto") {
-    throw new ChatSDKError(
-      "forbidden:chat",
-      "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
     );
   }
 }

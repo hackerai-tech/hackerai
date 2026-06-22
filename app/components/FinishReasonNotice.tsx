@@ -3,16 +3,25 @@ import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { Button } from "@/components/ui/button";
+import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
+import {
+  AGENT_RUN_SPEND_CAP_FINISH_REASON,
+  AGENT_RUN_SPEND_CAP_REASON,
+  AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
+} from "@/lib/chat/agent-run-spend-cap";
+import type { SelectedModel } from "@/types/chat";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
-  onContinue?: () => void;
+  agentRunSpendCapPremiumContinuationAllowed?: boolean;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
 }
 
 export const FinishReasonNotice = ({
   finishReason,
   mode,
+  agentRunSpendCapPremiumContinuationAllowed,
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, autoContinueCount } = useDataStreamState();
@@ -52,12 +61,26 @@ export const FinishReasonNotice = ({
       return <>Reached the context limit for this conversation.</>;
     }
 
+    if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {
+      return <>Paused at the Pro Agent per-run safety cap.</>;
+    }
+
     return null;
   };
 
   const content = getNoticeContent();
 
   if (!content) return null;
+
+  const shouldContinueWithStandard =
+    finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON &&
+    agentRunSpendCapPremiumContinuationAllowed === false;
+  const continuationModel = shouldContinueWithStandard
+    ? AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL
+    : undefined;
+  const continueButtonLabel = shouldContinueWithStandard
+    ? "Continue with Standard"
+    : "Continue";
 
   return (
     <div className="mt-2 w-full">
@@ -70,10 +93,23 @@ export const FinishReasonNotice = ({
             variant="outline"
             onClick={() => {
               setHasContinued(true);
-              onContinue();
+              if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {
+                captureAgentRunSpendCapContinueClick({
+                  surface: "finish_reason_notice",
+                  source: AGENT_RUN_SPEND_CAP_REASON,
+                  finish_reason: finishReason,
+                  mode: mode ?? "agent",
+                  cap_reason: AGENT_RUN_SPEND_CAP_REASON,
+                  premium_continuation_allowed:
+                    agentRunSpendCapPremiumContinuationAllowed,
+                  continuation_model:
+                    continuationModel ?? "current_selected_model",
+                });
+              }
+              onContinue(continuationModel);
             }}
           >
-            Continue
+            {continueButtonLabel}
           </Button>
         )}
       </div>

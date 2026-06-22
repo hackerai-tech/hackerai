@@ -161,55 +161,81 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
     });
 
-    it("should return ask-model-free (DeepSeek) for paid ask with no image/PDF", () => {
-      expect(selectModel("ask", "pro")).toBe("ask-model-free");
+    it("should return DeepSeek V4 Pro for paid ask with no image/PDF", () => {
+      expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (Gemini) for paid ask when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
+    it("should return ask-model (Gemini) for paid ask when an image is attached", () => {
+      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
+        "ask-model",
+      );
+    });
+
+    it("should return ask-model (Gemini) for paid ask when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
+        "ask-model",
+      );
+    });
+
+    it("should prefer ask-model (Gemini) when paid ask has both image and PDF attachments", () => {
+      expect(selectModel("ask", "pro", undefined, true, true)).toBe(
+        "ask-model",
+      );
     });
 
     it("should return ask-model-free for ask mode (free)", () => {
       expect(selectModel("ask", "free")).toBe("ask-model-free");
     });
 
-    it("should return ask-model-free for ultra subscription with no image/PDF", () => {
-      expect(selectModel("ask", "ultra")).toBe("ask-model-free");
+    it("should return DeepSeek V4 Pro for ultra subscription with no image/PDF", () => {
+      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model-free for team subscription with no image/PDF", () => {
-      expect(selectModel("ask", "team")).toBe("ask-model-free");
+    it("should return DeepSeek V4 Pro for team subscription with no image/PDF", () => {
+      expect(selectModel("ask", "team")).toBe("model-deepseek-v4-pro");
     });
   });
 
-  // Tier override — Pro is mode/content-aware; Max maps to Opus in both modes
+  // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to DeepSeek V4 Pro for text-only ask mode", () => {
+    it("should map HackerAI Pro to Sonnet 4.6 for text-only ask mode", () => {
       expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-deepseek-v4-pro",
-      );
-    });
-
-    it("should map HackerAI Pro to DeepSeek V4 Pro for team users", () => {
-      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
-        "model-deepseek-v4-pro",
-      );
-    });
-
-    it("should keep HackerAI Pro on Sonnet 4.6 when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", true)).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should map HackerAI Standard to DeepSeek V4 Flash when no image/PDF", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
-        "model-deepseek-v4-flash",
+    it("should map HackerAI Pro to Sonnet 4.6 for team users", () => {
+      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
+        "model-sonnet-4.6",
       );
     });
 
-    it("should promote HackerAI Standard to Gemini 3 Flash when an image/PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true)).toBe(
+    it("should keep HackerAI Pro on Sonnet 4.6 when an image is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
+        "model-sonnet-4.6",
+      );
+    });
+
+    it("should map HackerAI Standard to DeepSeek V4 Pro when no image/PDF", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
+        "model-deepseek-v4-pro",
+      );
+    });
+
+    it("should promote HackerAI Standard to Gemini 3.5 Flash when an image is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
+        "model-gemini-3-flash",
+      );
+    });
+
+    it("should promote HackerAI Standard to Gemini 3.5 Flash when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
+        "model-gemini-3-flash",
+      );
+    });
+
+    it("should prefer Gemini 3.5 Flash for HackerAI Standard when image and PDF are both attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
         "model-gemini-3-flash",
       );
     });
@@ -256,6 +282,12 @@ describe("selectModel", () => {
     it("should ignore tier override for free users in ask mode", () => {
       expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
     });
+
+    it("should keep free ask Standard on the free DeepSeek route", () => {
+      expect(selectModel("ask", "free", "hackerai-standard")).toBe(
+        "ask-model-free",
+      );
+    });
   });
 
   // "auto" override
@@ -264,12 +296,16 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
     });
 
-    it("should treat 'auto' as no override in ask mode (text-only → DeepSeek)", () => {
-      expect(selectModel("ask", "pro", "auto")).toBe("ask-model-free");
+    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek Pro)", () => {
+      expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image/PDF → Gemini", () => {
-      expect(selectModel("ask", "pro", "auto", true)).toBe("ask-model");
+    it("should treat 'auto' as no override in ask mode with image -> Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
+    });
+
+    it("should treat 'auto' as no override in ask mode with PDF -> Gemini", () => {
+      expect(selectModel("ask", "pro", "auto", false, true)).toBe("ask-model");
     });
   });
 
@@ -277,8 +313,15 @@ describe("selectModel", () => {
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
       expect(selectModel("agent", "pro", undefined)).toBe("agent-model");
-      expect(selectModel("ask", "pro", undefined)).toBe("ask-model-free");
-      expect(selectModel("ask", "pro", undefined, true)).toBe("ask-model");
+      expect(selectModel("ask", "pro", undefined)).toBe(
+        "model-deepseek-v4-pro",
+      );
+      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
+        "ask-model",
+      );
+      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
+        "ask-model",
+      );
     });
   });
 });

@@ -124,6 +124,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "was_preemptive_timeout",
   "empty_prompt",
   "truncation_dropped_all_messages",
+  "empty_after_processing",
   "existing_messages_count",
   "new_messages_count",
   "all_messages_count",
@@ -131,6 +132,32 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "max_tokens",
   "file_ids_count",
   "largest_file_token",
+  "processing_input_message_count",
+  "processing_input_user_message_count",
+  "processing_input_assistant_message_count",
+  "processing_input_system_message_count",
+  "processing_input_other_role_message_count",
+  "processing_input_empty_parts_message_count",
+  "processing_input_part_count",
+  "processing_input_text_part_count",
+  "processing_input_nonempty_text_part_count",
+  "processing_input_file_part_count",
+  "processing_input_file_with_url_count",
+  "processing_input_file_with_file_id_count",
+  "processing_input_local_desktop_file_part_count",
+  "processing_input_local_desktop_file_with_local_path_count",
+  "processing_input_local_desktop_file_missing_local_path_count",
+  "processing_input_ui_only_part_count",
+  "processing_input_step_start_part_count",
+  "processing_input_reasoning_part_count",
+  "processing_input_nonempty_reasoning_part_count",
+  "processing_input_tool_part_count",
+  "processing_input_data_part_count",
+  "processing_input_other_part_count",
+  "processing_input_regenerate",
+  "processing_input_auto_continue",
+  "processing_input_temporary",
+  "processing_input_sandbox_preference",
   "capReason",
   "limitType",
   "costGuardrail",
@@ -144,6 +171,12 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerStatusCode",
   "providerErrorRetriable",
   "paidDailyFreeAllowance",
+  "upload_failure_kind",
+  "upload_failure_cause",
+  "upload_failure_transient_sandbox_command",
+  "upload_failure_protocol",
+  "upload_failure_url_length",
+  "upload_retried_with_fresh_sandbox",
 ] as const;
 
 const compactChatErrorMetadata = (
@@ -209,6 +242,16 @@ const isRetriableProviderCategory = (
   category === "provider_5xx" ||
   category === "stream_terminated" ||
   category === "timeout";
+
+const shouldCaptureProviderException = (
+  category: ProviderErrorCategory,
+): boolean => category !== "stream_terminated" && category !== "timeout";
+
+const nonEmptyString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value : undefined;
+
+const getModelProviderSlug = (modelSlug: string | undefined) =>
+  modelSlug?.includes("/") ? modelSlug.split("/", 1)[0] : undefined;
 
 /**
  * Creates a chat logger instance for tracking wide events
@@ -422,6 +465,29 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
+      const providerName = nonEmptyString(details.providerName);
+      const configuredModel =
+        nonEmptyString(providerContext.model) ??
+        nonEmptyString(providerRequest?.model);
+      const requestedModelSlug =
+        nonEmptyString(providerContext.requestedModelSlug) ??
+        nonEmptyString(providerRequest?.requested_model_slug);
+      const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
+      const openrouterGenerationId = nonEmptyString(
+        details.openrouterGenerationId,
+      );
+      const normalizedProviderContext = {
+        ...(providerName && {
+          provider_name: providerName,
+          provider_name_source: "openrouter_error_metadata",
+        }),
+        ...(configuredModel && { configured_model: configuredModel }),
+        ...(requestedModelSlug && { requested_model_slug: requestedModelSlug }),
+        ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
+        ...(openrouterGenerationId && {
+          openrouter_generation_id: openrouterGenerationId,
+        }),
+      };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
 
@@ -432,11 +498,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
         provider_error_category: category,
         ...providerContext,
         ...details,
+        ...normalizedProviderContext,
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
 
-      if (category === "stream_terminated" || category === "timeout") {
+      if (!shouldCaptureProviderException(category)) {
         logger.warn(providerErrorMessage(category), logContext);
       } else {
         logger.error(
@@ -453,11 +520,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
         providerErrorCategory: category,
         ...providerContext,
         ...details,
+        ...normalizedProviderContext,
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
 
-      if (category === "stream_terminated" || category === "timeout") {
+      if (!shouldCaptureProviderException(category)) {
         phLogger.warn(providerErrorMessage(category), phContext);
       } else {
         phLogger.error(providerErrorMessage(category), {
@@ -476,6 +544,14 @@ export function createChatLogger(config: ChatLoggerConfig) {
           typeof details.isRetryable === "boolean"
             ? details.isRetryable
             : isRetriableProviderCategory(category),
+        providerName,
+        providerNameSource: providerName
+          ? "openrouter_error_metadata"
+          : undefined,
+        configuredModel,
+        requestedModelSlug,
+        modelProviderSlug,
+        openrouterGenerationId,
         attempts,
       });
     },
@@ -758,8 +834,12 @@ export function captureAgentRun({
     properties: {
       mode,
       subscription,
+      subscription_tier: subscription,
       outcome,
-      ...(sandboxInfo?.type && { sandboxType: sandboxInfo.type }),
+      ...(sandboxInfo?.type && {
+        sandboxType: sandboxInfo.type,
+        sandbox_type: sandboxInfo.type,
+      }),
     },
   });
 }
@@ -878,6 +958,10 @@ export function captureUsageCost({
       model: usage.model,
       usage_type: usage.type,
       cost_dollars: usage.costDollars,
+      included_cost_dollars: usage.includedCostDollars,
+      extra_usage_cost_dollars: usage.extraUsageCostDollars,
+      included_points_deducted: usage.includedPointsDeducted,
+      extra_usage_points_deducted: usage.extraUsagePointsDeducted,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
       input_tokens: usage.inputTokens,

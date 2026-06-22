@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { workos } from "../../../../workos";
 import { requireAdminOrg } from "../../../team-auth";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
  * PATCH /api/team/extra-usage/members/:userId
@@ -53,7 +51,7 @@ export const PATCH = async (
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
-    await convex.mutation(api.teamExtraUsage.updateTeamMemberUsage, {
+    await getConvexClient().mutation(api.teamExtraUsage.updateTeamMemberUsage, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       organizationId: guard.organizationId,
       userId: targetUserId,

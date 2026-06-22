@@ -24,13 +24,15 @@ import { toast } from "sonner";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
+import type { RateLimitWarningData } from "./RateLimitWarning";
+import type { SelectedModel } from "@/types";
 
 interface MessagesProps {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  onRegenerate: () => void;
-  onRetry: (options?: RetryOptions) => void;
-  onContinue?: () => void;
+  onRegenerate: () => void | Promise<void>;
+  onRetry: (options?: RetryOptions) => void | Promise<void>;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
@@ -58,6 +60,10 @@ interface MessagesProps {
     message: string;
   } | null;
   mode?: import("@/types").ChatMode;
+  agentRunSpendCapWarning?: Extract<
+    RateLimitWarningData,
+    { warningType: "agent-run-spend-cap" }
+  >;
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
@@ -85,6 +91,7 @@ export const Messages = ({
   uploadStatus,
   summarizationStatus,
   mode,
+  agentRunSpendCapWarning,
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
@@ -157,9 +164,6 @@ export const Messages = ({
     return -1;
   }, [messages]);
 
-  // Track hover state for all messages
-  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
-
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
@@ -208,31 +212,23 @@ export const Messages = ({
     setEditingMessageId(null);
   }, []);
 
-  // Memoized mouse event handlers
-  const handleMouseEnter = useCallback((messageId: string) => {
-    setHoveredMessageId(messageId);
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    setHoveredMessageId(null);
-  }, []);
-
   // Handler to show all files for a specific message
   const handleShowAllFiles = useCallback(
     (message: ChatMessage, fileDetails: FileDetails[]) => {
       if (!fileDetails || fileDetails.length === 0) return;
 
       const files = fileDetails
-        .filter((file) => file.url || file.storageId || file.s3Key)
+        .filter((file) => file.url || file.fileId || file.s3Key)
         .map((file, fileIndex) => ({
           part: {
             url: file.url ?? undefined,
-            storageId: file.storageId,
             fileId: file.fileId,
             s3Key: file.s3Key,
             name: file.name,
             filename: file.name,
             mediaType: file.mediaType,
+            size: file.sizeBytes,
+            sizeBytes: file.sizeBytes,
           },
           partIndex: fileIndex,
           messageId: message.id,
@@ -278,7 +274,7 @@ export const Messages = ({
     const scrollElement = scrollRef.current;
     if (!scrollElement) return;
 
-    scrollElement.addEventListener("scroll", handleScroll);
+    scrollElement.addEventListener("scroll", handleScroll, { passive: true });
     return () => scrollElement.removeEventListener("scroll", handleScroll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleScroll]);
@@ -308,19 +304,17 @@ export const Messages = ({
               messagesLength={visibleMessages.length}
               lastAssistantMessageIndex={lastAssistantMessageIndex}
               status={status}
-              isHovered={hoveredMessageId === message.id}
               isEditing={editingMessageId === message.id}
               isMobile={isMobile}
               feedbackInputMessageId={feedbackInputMessageId}
               tempChatFileDetails={tempChatFileDetails}
               finishReason={finishReason}
               mode={mode}
+              agentRunSpendCapWarning={agentRunSpendCapWarning}
               isTemporaryChat={isTemporaryChat}
               branchedFromChatId={branchedFromChatId}
               branchedFromChatTitle={branchedFromChatTitle}
               branchBoundaryIndex={branchBoundaryIndex}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
               onStartEdit={handleStartEdit}
               onSaveEdit={handleSaveEdit}
               onCancelEdit={handleCancelEdit}

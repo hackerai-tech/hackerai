@@ -35,6 +35,10 @@ import {
   validateUploadPolicy,
 } from "../lib/utils/upload-policy";
 import {
+  normalizeImageMediaType,
+  validateImageBytes,
+} from "../lib/utils/image-validation";
+import {
   FILE_TOKEN_PERCENT,
   MAX_TOKENS_PAID,
   safeCountTokens,
@@ -653,9 +657,6 @@ const processDocxFile = async (
  */
 export const saveFile = action({
   args: {
-    // Accepted only to return a stable error to stale clients. New file
-    // uploads must go through S3.
-    storageId: v.optional(v.id("_storage")),
     s3Key: v.optional(v.string()),
     name: v.string(),
     mediaType: v.string(),
@@ -673,13 +674,6 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
-    if (args.storageId) {
-      throw new ConvexError({
-        code: "CONVEX_STORAGE_UPLOADS_DISABLED",
-        message:
-          "Convex storage uploads are no longer supported. Upload files through S3 instead.",
-      });
-    }
     if (!args.s3Key) {
       throw new ConvexError({
         code: "INVALID_STORAGE_ARGS",
@@ -863,6 +857,20 @@ export const saveFile = action({
         }
 
         const file = await response.blob();
+        const normalizedMediaType =
+          normalizeImageMediaType(args.mediaType) ?? args.mediaType;
+        if (isSupportedImageMediaType(normalizedMediaType)) {
+          const validation = validateImageBytes(
+            new Uint8Array(await file.arrayBuffer()),
+            normalizedMediaType,
+          );
+          if (!validation.valid) {
+            throw new ConvexError({
+              code: "INVALID_IMAGE_BYTES",
+              message: `Image "${args.name}" could not be uploaded because it is not a valid ${normalizedMediaType} file.`,
+            });
+          }
+        }
 
         // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
         const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);

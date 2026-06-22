@@ -32,6 +32,14 @@ const IGNORED_MESSAGE_TYPES = new Set([
 ]);
 
 const FILE_DOWNLOAD_TIMEOUT_MS = 120000;
+const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
+  /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const isTransientCommandTimeoutError = (error: unknown): boolean =>
+  TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
 
 export function parseSandboxMessage(
   data: unknown,
@@ -955,11 +963,30 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92, 124]);
       const MAX_ATTEMPTS = 3;
 
-      let result = await this.commands.run(command, {
-        displayName: `Downloading: ${fileName}`,
-        timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-      });
+      let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          result = await this.commands.run(command, {
+            displayName:
+              attempt === 1
+                ? `Downloading: ${fileName}`
+                : `Downloading: ${fileName} (retry ${attempt - 1})`,
+            timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+          });
+        } catch (error) {
+          if (
+            attempt === MAX_ATTEMPTS ||
+            !isTransientCommandTimeoutError(error)
+          ) {
+            throw error;
+          }
+          console.warn(
+            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying: ${getErrorMessage(error)}`,
+          );
+          await new Promise((r) => setTimeout(r, 500 * attempt));
+          continue;
+        }
+
         if (result.exitCode === 0) break;
         if (
           attempt === MAX_ATTEMPTS ||
@@ -971,10 +998,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
         );
         await new Promise((r) => setTimeout(r, 500 * attempt));
-        result = await this.commands.run(command, {
-          displayName: `Downloading: ${fileName} (retry ${attempt})`,
-          timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-        });
+        continue;
+      }
+      if (!result) {
+        throw new Error("Download command failed without returning a result");
       }
       if (result.exitCode !== 0) {
         // Gather diagnostic info to help debug write failures (e.g. curl exit 23).

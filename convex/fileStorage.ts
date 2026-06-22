@@ -4,7 +4,6 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
@@ -16,58 +15,7 @@ import { convexLogger } from "./lib/logger";
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
 
 /**
- * Get download URL for a file by storageId (on-demand for non-image files)
- */
-export const getFileDownloadUrl = query({
-  args: {
-    storageId: v.string(),
-  },
-  returns: v.union(v.string(), v.null()),
-  handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthorized: User not authenticated",
-      });
-    }
-
-    // Direct lookup by storage_id using index
-    const file = await ctx.db
-      .query("files")
-      .withIndex("by_storage_id", (q) =>
-        q.eq("storage_id", args.storageId as Id<"_storage">),
-      )
-      .first();
-
-    // Stale message/file UI can outlive deleted storage rows. Treat missing as
-    // an unavailable URL instead of a Convex exception.
-    if (!file) {
-      convexLogger.warn("file_download_url_missing_file", {
-        user_id: user.subject,
-        storage_id: args.storageId,
-      });
-      return null;
-    }
-
-    if (file.user_id !== user.subject) {
-      convexLogger.warn("file_download_url_access_denied", {
-        user_id: user.subject,
-        file_id: file._id,
-        storage_id: args.storageId,
-      });
-      return null;
-    }
-
-    // Generate and return signed URL
-    return await ctx.storage.getUrl(args.storageId);
-  },
-});
-
-/**
  * Delete file from storage by file ID
- * Handles both S3 and Convex storage files
  */
 export const deleteFile = mutation({
   args: {
@@ -101,18 +49,14 @@ export const deleteFile = mutation({
       });
     }
 
-    // Delete from appropriate storage
+    // Delete from S3 storage when this row still has an object reference.
     if (file.s3_key) {
-      // Schedule S3 deletion using the cleanup action
       await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
         s3Key: file.s3_key,
       });
-    } else if (file.storage_id) {
-      // Delete from Convex storage
-      await ctx.storage.delete(file.storage_id);
     } else {
       console.warn(
-        `File ${args.fileId} has neither s3_key nor storage_id, skipping storage deletion`,
+        `File ${args.fileId} has no s3_key, skipping storage deletion`,
       );
     }
 
@@ -165,7 +109,6 @@ export const getFileMetadataByFileIds = query({
         fileId: v.id("files"),
         name: v.string(),
         mediaType: v.string(),
-        storageId: v.optional(v.id("_storage")),
         s3Key: v.optional(v.string()),
       }),
       v.null(),
@@ -190,7 +133,6 @@ export const getFileMetadataByFileIds = query({
         fileId: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        storageId: file.storage_id,
         s3Key: file.s3_key,
       };
     });
@@ -255,7 +197,6 @@ export const getFileContentByFileIds = query({
 
 /**
  * Internal mutation: purge unattached files older than cutoff
- * Handles both S3 and Convex storage files
  */
 export const purgeExpiredUnattachedFiles = internalMutation({
   args: {
@@ -277,20 +218,15 @@ export const purgeExpiredUnattachedFiles = internalMutation({
     let deletedCount = 0;
     for (const file of candidates) {
       try {
-        // Delete from appropriate storage
         if (file.s3_key) {
-          // Schedule S3 deletion using the cleanup action
           await ctx.scheduler.runAfter(
             0,
             internal.s3Cleanup.deleteS3ObjectAction,
             { s3Key: file.s3_key },
           );
-        } else if (file.storage_id) {
-          // Delete from Convex storage
-          await ctx.storage.delete(file.storage_id);
         } else {
           console.warn(
-            `File ${file._id} has neither s3_key nor storage_id, skipping storage deletion`,
+            `File ${file._id} has no s3_key, skipping storage deletion`,
           );
         }
       } catch (e) {
@@ -319,7 +255,6 @@ export const getFileById = internalQuery({
   returns: v.union(
     v.object({
       _id: v.id("files"),
-      storage_id: v.optional(v.id("_storage")),
       s3_key: v.optional(v.string()),
       user_id: v.string(),
       name: v.string(),
@@ -432,7 +367,6 @@ export const saveFileToDb = internalMutation({
       }
 
       await ctx.db.patch(existing._id, {
-        storage_id: undefined,
         name: args.name,
         media_type: args.mediaType,
         file_token_size: args.fileTokenSize,

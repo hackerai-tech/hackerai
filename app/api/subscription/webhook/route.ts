@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { ConvexHttpClient } from "convex/browser";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
 import {
@@ -58,8 +58,6 @@ function invoicePaidAtMs(invoice: Stripe.Invoice): number {
     ((invoice as { created?: number }).created ?? Date.now() / 1000) * 1000
   );
 }
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 // =============================================================================
 // Tier Resolution
@@ -197,17 +195,20 @@ async function awardReferralConversion(args: {
     metadataString(metadata, "referral_referred_user_id");
 
   try {
-    const result = await convex.mutation(api.referrals.awardConversionReward, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      referrerRewardDollars: config.referrerRewardDollars,
-      referredUserId,
-      stripeCheckoutSessionId: args.checkoutSessionId,
-      stripeCustomerId: args.customerId,
-      stripeSubscriptionId: args.subscription.id,
-      stripeInvoiceId: args.invoiceId,
-      plan: args.plan,
-      tier: args.tier,
-    });
+    const result = await getConvexClient().mutation(
+      api.referrals.awardConversionReward,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        referrerRewardDollars: config.referrerRewardDollars,
+        referredUserId,
+        stripeCheckoutSessionId: args.checkoutSessionId,
+        stripeCustomerId: args.customerId,
+        stripeSubscriptionId: args.subscription.id,
+        stripeInvoiceId: args.invoiceId,
+        plan: args.plan,
+        tier: args.tier,
+      },
+    );
     const referrerSubscriptionTier = (
       result as { referrerSubscriptionTier?: string }
     ).referrerSubscriptionTier;
@@ -291,13 +292,16 @@ async function setReferralCodesPaidEligibility(args: {
     args.tier && args.tier !== "free" ? args.tier : "free";
 
   try {
-    await convex.mutation(api.referrals.setReferralCodesPaidEligibility, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userIds: args.userIds,
-      active: args.active,
-      ...(subscriptionTier && { subscriptionTier }),
-      ...(args.organizationId && { organizationId: args.organizationId }),
-    });
+    await getConvexClient().mutation(
+      api.referrals.setReferralCodesPaidEligibility,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userIds: args.userIds,
+        active: args.active,
+        ...(subscriptionTier && { subscriptionTier }),
+        ...(args.organizationId && { organizationId: args.organizationId }),
+      },
+    );
   } catch (error) {
     phLogger.warn("referral_paid_eligibility_update_failed", {
       userId: args.userIds[0],
@@ -351,7 +355,7 @@ async function recordSubscriptionRevenue({
 
   await Promise.all([
     ...userIds.map((uid) =>
-      convex.mutation(api.unitEconomics.recordRevenueEvent, {
+      getConvexClient().mutation(api.unitEconomics.recordRevenueEvent, {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         entityType: "user",
         entityId: uid,
@@ -377,7 +381,7 @@ async function recordSubscriptionRevenue({
     ),
     ...(orgId
       ? [
-          convex.mutation(api.unitEconomics.recordRevenueEvent, {
+          getConvexClient().mutation(api.unitEconomics.recordRevenueEvent, {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             entityType: "organization",
             entityId: orgId,
@@ -429,7 +433,7 @@ async function recordPaidStartMix({
   const entityId = orgId ?? userIds[0];
   const paidSeatCount = item?.quantity ?? userIds.length;
 
-  await convex.mutation(api.unitEconomics.recordPaidStartEvent, {
+  await getConvexClient().mutation(api.unitEconomics.recordPaidStartEvent, {
     serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     entityType,
     entityId,
@@ -767,15 +771,18 @@ async function handleCheckoutSessionCompleted(
 
   if (referredUserId) {
     try {
-      await convex.mutation(api.referrals.recordReferralCheckoutSession, {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        referredUserId,
-        stripeCustomerId: customerId,
-        stripeCheckoutSessionId: session.id,
-        stripeSubscriptionId: subscriptionId,
-        requestedPlan:
-          metadataString(session.metadata, "requestedPlan") ?? "unknown",
-      });
+      await getConvexClient().mutation(
+        api.referrals.recordReferralCheckoutSession,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          referredUserId,
+          stripeCustomerId: customerId,
+          stripeCheckoutSessionId: session.id,
+          stripeSubscriptionId: subscriptionId,
+          requestedPlan:
+            metadataString(session.metadata, "requestedPlan") ?? "unknown",
+        },
+      );
     } catch (error) {
       phLogger.warn("referral_checkout_session_record_failed", {
         userId: referredUserId,
@@ -1018,7 +1025,7 @@ async function recordCancellationCompleted(args: {
 
   let updatedCount = 0;
   try {
-    const result = await convex.mutation(
+    const result = await getConvexClient().mutation(
       api.cancellationReasons.markCancellationCompleted,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -1081,11 +1088,15 @@ async function handleSubscriptionDeleted(
   const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
   const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
 
-  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const { userIds, orgId, reason } =
+    await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
-    console.error(
-      `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId}`,
-    );
+    const message = `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId} (${reason ?? "unknown"})`;
+    if (reason === "customer_deleted") {
+      console.info(`${message}; likely account deletion cleanup`);
+    } else {
+      console.error(message);
+    }
     return;
   }
 
@@ -1171,11 +1182,14 @@ export async function POST(req: NextRequest) {
 
   // Idempotency check (check only — mark after successful processing)
   try {
-    const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
-      checkOnly: true,
-    });
+    const result = await getConvexClient().mutation(
+      api.extraUsage.checkAndMarkWebhook,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+        checkOnly: true,
+      },
+    );
 
     if (result.alreadyProcessed) {
       console.log(
@@ -1225,7 +1239,7 @@ export async function POST(req: NextRequest) {
 
   // Mark as processed after successful handling
   try {
-    await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
+    await getConvexClient().mutation(api.extraUsage.checkAndMarkWebhook, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
     });

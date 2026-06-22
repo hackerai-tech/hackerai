@@ -195,15 +195,15 @@ describe("UsageTracker", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 
       const cost = tracker.computeCostDollars("model-default");
-      // 1M input tokens at $0.50/1M * 1.3x = 6500 points / 10000 = 0.65
-      expect(cost).toBe(0.65);
+      // 1M input tokens at $0.50/1M, excluding the billing multiplier.
+      expect(cost).toBe(0.5);
     });
 
     it("should include non-model costs when provider cost is unavailable", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
       tracker.nonModelCost = 0.25;
 
-      expect(tracker.computeCostDollars("model-default")).toBe(0.9);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.75);
     });
 
     it("should use token-based model cost + nonModelCost when modelProviderCost is 0 but providerCost is positive from sandbox/tool spend (post-resetModelLeg scenario)", () => {
@@ -214,9 +214,9 @@ describe("UsageTracker", () => {
       tracker.nonModelCost = 0.25;
       // modelProviderCost stays 0 because the fallback provider didn't emit cost.
 
-      // Must include BOTH the token-based model cost (0.65) AND the sandbox
+      // Must include BOTH the raw token-based model cost (0.50) AND the sandbox
       // spend (0.25). The old implementation returned just providerCost = 0.25.
-      expect(tracker.computeCostDollars("model-default")).toBe(0.9);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.75);
     });
   });
 
@@ -226,10 +226,21 @@ describe("UsageTracker", () => {
         remaining: 0,
         resetTime: new Date(),
         limit: 250000,
-        pointsDeducted: 100,
+        pointsDeducted: 0,
         extraUsagePointsDeducted: 50,
       });
       expect(result).toBe("extra");
+    });
+
+    it("should return 'mixed' when included and extra usage were both used", () => {
+      const result = tracker.resolveUsageType({
+        remaining: 0,
+        resetTime: new Date(),
+        limit: 250000,
+        pointsDeducted: 100,
+        extraUsagePointsDeducted: 50,
+      });
+      expect(result).toBe("mixed");
     });
 
     it("should return 'included' when no extra usage", () => {
@@ -251,6 +262,31 @@ describe("UsageTracker", () => {
         extraUsagePointsDeducted: 0,
       });
       expect(result).toBe("included");
+    });
+  });
+
+  describe("resolveCostBreakdown", () => {
+    it("splits cost proportionally across included and extra points", () => {
+      const result = tracker.resolveCostBreakdown(
+        3,
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+        {
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 50,
+        },
+      );
+
+      expect(result).toMatchObject({
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 50,
+      });
+      expect(result.includedCostDollars).toBeCloseTo(2);
+      expect(result.extraUsageCostDollars).toBeCloseTo(1);
     });
   });
 
@@ -314,7 +350,7 @@ describe("UsageTracker", () => {
           logUsageRecord: localMockLog,
         }));
         jest.doMock("@/lib/rate-limit", () => ({
-          calculateTokenCost: jest.fn(),
+          calculateRawTokenCost: jest.fn(),
           POINTS_PER_DOLLAR: 10_000,
         }));
         IsolatedTracker = require("../usage-tracker").UsageTracker;
@@ -348,6 +384,10 @@ describe("UsageTracker", () => {
         subscription: undefined,
         model: "auto",
         type: "included",
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
@@ -358,6 +398,50 @@ describe("UsageTracker", () => {
         nonModelCostDollars: 0,
         costSource: "provider",
       });
+    });
+
+    it("labels token-estimated cost as a raw estimate", () => {
+      tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "model-default",
+        configuredModelId: "model-config",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.costDollars).toBe(0.5);
+      expect(usage.costSource).toBe("raw_token_estimate");
+    });
+
+    it("labels post-run overflow as mixed when final deduction uses extra usage", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "model-default",
+        configuredModelId: "model-config",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+        billingBreakdown: {
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 100,
+        },
+      });
+
+      expect(usage.type).toBe("mixed");
+      expect(usage.includedCostDollars).toBeCloseTo(0.25);
+      expect(usage.extraUsageCostDollars).toBeCloseTo(0.25);
     });
   });
 });

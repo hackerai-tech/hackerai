@@ -3,6 +3,7 @@ import {
   detectDoomLoop,
   type MinimalStep,
 } from "@/lib/chat/doom-loop-detection";
+export { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 

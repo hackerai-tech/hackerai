@@ -28,7 +28,6 @@ import {
   addCacheBreakpointToLastUserMessage,
   applyPrepareStepReminders,
   runSummarizationStep,
-  writeContextUsage,
   getFallbackSlugs,
   isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
@@ -40,6 +39,7 @@ import {
   TOKEN_EXHAUSTION_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
   BUDGET_EXHAUSTION_FINISH_REASON,
+  AGENT_RUN_SPEND_CAP_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
   detectDoomLoop,
@@ -51,6 +51,11 @@ import {
   pruneToolOutputs,
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
+import {
+  isProviderMultimodalToolResultRejectionError,
+  toolResultsContainImageViewResult,
+  uiMessagesContainImageViewResult,
+} from "@/lib/chat/multimodal-tool-result-recovery";
 import { isAnthropicModel } from "@/lib/ai/providers";
 import {
   FREE_MAX_OUTPUT_TOKENS,
@@ -59,6 +64,7 @@ import {
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
@@ -94,12 +100,15 @@ export type AgentStreamState = {
   responseModel: string | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** True when a provider rejected an image-bearing tool result. */
+  providerRejectedMultimodalToolResults: boolean;
   /** Stop-condition flags set by the respective onFired callbacks. */
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
   stoppedDueToElapsedTimeout: boolean;
   stoppedDueToDoomLoop: boolean;
   stoppedDueToBudgetExhaustion: boolean;
+  stoppedDueToAgentRunSpendCap: boolean;
 };
 
 export function initAgentStreamState(
@@ -114,40 +123,17 @@ export function initAgentStreamState(
     streamUsage: undefined,
     responseModel: undefined,
     providerError: undefined,
+    providerRejectedMultimodalToolResults: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
     stoppedDueToBudgetExhaustion: false,
+    stoppedDueToAgentRunSpendCap: false,
   };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
-
-const isImageViewOutput = (output: unknown): boolean => {
-  if (!isRecord(output)) return false;
-
-  return (
-    output.action === "view" &&
-    output.kind === "image" &&
-    typeof output.mediaType === "string" &&
-    output.mediaType.startsWith("image/")
-  );
-};
-
-const uiMessagesContainImageViewResult = (messages: UIMessage[]): boolean =>
-  messages.some((message) =>
-    message.parts?.some((part) => {
-      if (!isRecord(part) || part.type !== "tool-file") return false;
-      return isImageViewOutput(part.output);
-    }),
-  );
-
-const toolResultsContainImageViewResult = (toolResults: unknown[]): boolean =>
-  toolResults.some((toolResult) => {
-    if (!isRecord(toolResult) || toolResult.toolName !== "file") return false;
-    return isImageViewOutput(toolResult.output);
-  });
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -479,6 +465,7 @@ export async function createAgentStream(
         }
 
         if (!ctx.temporary && !ctx.summarizationTracker.hasSummarized) {
+          const providerPromptPressure = getProviderPromptPressure(messages);
           const result = await runSummarizationStep({
             messages: state.finalMessages,
             modelMessages: messages,
@@ -499,6 +486,7 @@ export async function createAgentStream(
             tools: ctx.tools,
             providerOptions: getStepProviderOptions(),
             transcriptMessages: state.transcriptSourceMessages,
+            providerPromptPressure,
           });
 
           if (result.needsSummarization && result.summarizedMessages) {
@@ -637,21 +625,15 @@ export async function createAgentStream(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
-
-        if (ctx.contextUsageOn) {
-          writeContextUsage(ctx.writer, {
-            usedTokens:
-              state.ctxUsage.usedTokens + ctx.usageTracker.streamOutputTokens,
-            maxTokens: state.ctxUsage.maxTokens,
-          });
-        }
       }
 
-      if (
-        ctx.budgetMonitor?.checkAfterStep(
-          ctx.usageTracker.computeCostDollars(modelName),
-        ) === "abort"
-      ) {
+      const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
+        ctx.usageTracker.computeCostDollars(modelName),
+      );
+      if (budgetDecision === "abort-agent-run-spend-cap") {
+        state.stoppedDueToAgentRunSpendCap = true;
+        ctx.abortController.abort();
+      } else if (budgetDecision === "abort") {
         state.stoppedDueToBudgetExhaustion = true;
         ctx.abortController.abort();
       }
@@ -668,6 +650,8 @@ export async function createAgentStream(
         state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
       } else if (state.stoppedDueToDoomLoop) {
         state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
+      } else if (state.stoppedDueToAgentRunSpendCap) {
+        state.streamFinishReason = AGENT_RUN_SPEND_CAP_FINISH_REASON;
       } else if (state.stoppedDueToBudgetExhaustion) {
         state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
       } else {
@@ -733,6 +717,12 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      if (
+        streamHasImageViewResults &&
+        isProviderMultimodalToolResultRejectionError(error)
+      ) {
+        state.providerRejectedMultimodalToolResults = true;
+      }
       const overflowKind = classifyProviderOverflowError(error);
       if (overflowKind) {
         state.stoppedDueToTokenExhaustion = true;

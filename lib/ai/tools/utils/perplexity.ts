@@ -1,3 +1,5 @@
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+
 // Max tokens per search result content field
 export const SEARCH_RESULT_CONTENT_MAX_TOKENS = 250;
 
@@ -153,7 +155,11 @@ export const summarizePerplexityErrorBody = (
     summary = trimmed;
   }
 
-  return truncateSummary(redactNetworkDetails(normalizeWhitespace(summary)));
+  return truncateSummary(
+    redactSensitiveErrorMessage(
+      redactNetworkDetails(normalizeWhitespace(summary)),
+    ),
+  );
 };
 
 export interface FormattedSearchResult {

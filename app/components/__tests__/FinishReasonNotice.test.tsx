@@ -2,10 +2,11 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, jest } from "@jest/globals";
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+
 import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
-import type { ChatMode } from "@/types/chat";
+import type { ChatMode, SelectedModel } from "@/types/chat";
 
 function DataStreamSetter({
   isAutoResuming,
@@ -35,7 +36,8 @@ function DataStreamSetter({
 interface RenderNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
-  onContinue?: () => void;
+  agentRunSpendCapPremiumContinuationAllowed?: boolean;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
 }
 
 function renderNotice(
@@ -209,6 +211,7 @@ describe("FinishReasonNotice", () => {
       "length",
       "context-limit",
       "preemptive-timeout",
+      "agent-run-spend-cap",
     ])("renders the Continue button for finishReason=%s", (finishReason) => {
       const onContinue = jest.fn();
       renderNotice(
@@ -218,6 +221,61 @@ describe("FinishReasonNotice", () => {
       expect(
         screen.getByRole("button", { name: /continue/i }),
       ).toBeInTheDocument();
+    });
+
+    it("renders the Pro Agent run cap notice and continues with Standard when premium continuation is unavailable", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "agent-run-spend-cap",
+          mode: "agent",
+          agentRunSpendCapPremiumContinuationAllowed: false,
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      expect(
+        screen.getByText(/Paused at the Pro Agent per-run safety cap/i),
+      ).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: /continue with standard/i }),
+      );
+
+      expect(onContinue).toHaveBeenCalledWith("hackerai-standard");
+    });
+
+    it("keeps the current selected model when spend-cap continuation eligibility is unknown", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "agent-run-spend-cap",
+          mode: "agent",
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+      expect(onContinue).toHaveBeenCalledWith(undefined);
+    });
+
+    it("continues the current premium model when spend-cap continuation is backed by extra usage", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "agent-run-spend-cap",
+          mode: "agent",
+          agentRunSpendCapPremiumContinuationAllowed: true,
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+      expect(onContinue).toHaveBeenCalledWith(undefined);
     });
   });
 

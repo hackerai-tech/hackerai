@@ -9,6 +9,7 @@ import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
+import { validateImageBytes } from "@/lib/utils/image-validation";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -33,7 +34,6 @@ type ViewPreviewFile = {
   name: string;
   mediaType: string;
   s3Key?: string;
-  storageId?: Id<"_storage">;
 };
 
 type ViewMetadata = {
@@ -889,6 +889,19 @@ async function readSandboxFileForView(
     throw new Error("View inspection did not return image data.");
   }
 
+  if (includeData && payload.data) {
+    const validation = validateImageBytes(
+      Buffer.from(payload.data, "base64"),
+      payload.mediaType,
+    );
+    if (!validation.valid) {
+      throw new Error(
+        `View inspection found invalid image data (${validation.reason}).`,
+      );
+    }
+    payload.mediaType = validation.mediaType;
+  }
+
   return payload as SandboxViewPayload;
 }
 
@@ -914,7 +927,6 @@ async function uploadViewPreviewFiles(args: {
       name: uploaded.name,
       mediaType: uploaded.mediaType,
       s3Key: uploaded.s3Key,
-      storageId: uploaded.storageId,
     },
   ];
 }

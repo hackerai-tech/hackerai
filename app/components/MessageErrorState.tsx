@@ -16,6 +16,7 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
   PAID_DAILY_FREE_ASK_CTA_TEXT,
   getExtraUsageLimitCta,
+  getLimitTypeForCapReason,
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
 import type { RetryOptions } from "../hooks/useChatHandlers";
@@ -89,6 +90,12 @@ export const MessageErrorState = ({
   const isPaidUser = subscription !== "free";
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
   const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
+  const limitType = getLimitTypeForCapReason(capReason);
+  const upgradeCtaText =
+    subscription === "free" &&
+    (limitType === "daily_requests" || limitType === "free_monthly")
+      ? "Keep going"
+      : "Upgrade Plan";
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
   const paidDailyFreeAllowance =
     metadata?.paidDailyFreeAllowance &&
@@ -116,9 +123,17 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: "Upgrade Plan",
+      limit_type: limitType,
+      cta_text: upgradeCtaText,
     });
-  }, [capReason, isRateLimitError, showUpgrade, subscription]);
+  }, [
+    capReason,
+    isRateLimitError,
+    limitType,
+    showUpgrade,
+    subscription,
+    upgradeCtaText,
+  ]);
 
   useEffect(() => {
     if (
@@ -283,11 +298,12 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     reason: capReason,
-                    cta_text: "Upgrade Plan",
+                    limit_type: limitType,
+                    cta_text: upgradeCtaText,
                   })
                 }
               >
-                Upgrade Plan
+                {upgradeCtaText}
               </Button>
             )}
           </>

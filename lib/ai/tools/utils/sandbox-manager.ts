@@ -7,6 +7,7 @@ import type {
 } from "@/types";
 import { ensureSandboxConnection } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
+import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 const MAX_SANDBOX_HEALTH_FAILURES = 5;
 
@@ -83,5 +84,22 @@ export class DefaultSandboxManager implements SandboxManager {
   setSandbox(sandbox: Sandbox): void {
     this.sandbox = sandbox;
     this.setSandboxCallback(sandbox);
+  }
+
+  async resetSandbox(reason?: string): Promise<void> {
+    const sandbox = this.sandbox;
+    this.sandbox = null;
+    if (!sandbox) return;
+
+    try {
+      await sandbox.kill();
+    } catch (error) {
+      const message = `[${this.userID}] Failed to kill sandbox during reset${reason ? ` (${reason})` : ""}:`;
+      if (isExpectedAlreadyGoneCleanupError(error)) {
+        console.debug(message, error);
+      } else {
+        console.warn(message, error);
+      }
+    }
   }
 }

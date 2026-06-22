@@ -1,8 +1,35 @@
 import {
+  getModelDisplayName,
+  myProvider,
   sanitizeOpenRouterRequestForGeminiFunctionResponses,
   sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
+
+describe("provider registry", () => {
+  it("keeps Gemini and stale Kimi compatibility keys pointed at their active slugs", () => {
+    expect(
+      (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
+    ).toBe("google/gemini-3.5-flash");
+    expect(
+      (
+        myProvider.languageModel("model-gemini-3-flash") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("google/gemini-3.5-flash");
+    expect(
+      (
+        myProvider.languageModel("model-kimi-k2.6") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("moonshotai/kimi-k2.7-code:exacto");
+    expect(getModelDisplayName("model-gemini-3-flash")).toBe(
+      "Google Gemini 3.5 Flash",
+    );
+  });
+});
 
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
@@ -223,9 +250,18 @@ describe("supportsMultimodalToolResults", () => {
   it("allows Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
-    expect(supportsMultimodalToolResults("moonshotai/kimi-k2.7-code")).toBe(
+    expect(
+      supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),
+    ).toBe(true);
+  });
+
+  it("allows multimodal fallback keys and slugs used after image tool results", () => {
+    expect(supportsMultimodalToolResults("fallback-gemini-3.5-flash")).toBe(
       true,
     );
+    expect(supportsMultimodalToolResults("google/gemini-3.5-flash")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
+    expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
   });
 
   it("still rejects text-only DeepSeek routes", () => {

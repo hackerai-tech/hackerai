@@ -7,6 +7,7 @@ import type {
   ToolSet,
 } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
+import type { ProviderPromptPressure } from "../provider-pressure";
 import {
   getSummarizationThresholdTokens,
   SUMMARIZATION_RESERVED_MAX_TOKENS,
@@ -102,6 +103,7 @@ const checkAndSummarizeForTest = (
   modelMessages?: ModelMessage[],
   transcriptMessages?: UIMessage[],
   maxTokensOverride?: number,
+  providerPromptPressure?: ProviderPromptPressure | null,
 ) =>
   checkAndSummarizeIfNeeded({
     uiMessages,
@@ -122,6 +124,7 @@ const checkAndSummarizeForTest = (
     modelMessages,
     transcriptMessages,
     maxTokensOverride,
+    providerPromptPressure,
   });
 
 /**
@@ -257,6 +260,39 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizedMessages).toBe(fourMessages);
   });
 
+  it("should summarize below-token prompts when provider pressure is high", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Pressure summary" });
+
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "ask",
+      writer: mockWriter,
+      chatId: "chat-pressure",
+      chatSystemPrompt: "test-system-prompt",
+      providerPromptPressure: {
+        reason: "tool_result_count",
+        reasons: ["tool_result_count"],
+        toolResultCount: 101,
+        messageCount: 101,
+        summarizationMaxTokensOverride: 128_000,
+      },
+    });
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Pressure summary");
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-pressure",
+        metadata: expect.objectContaining({
+          reason: "provider_pressure",
+          promptVersion: SUMMARY_PROMPT_VERSION,
+        }),
+      }),
+    );
+  });
+
   it("should ignore a zero max token override instead of summarizing every free ask message", async () => {
     const result = await checkAndSummarizeForTest(
       fourMessages,
@@ -305,14 +341,95 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Test summary content");
-    expect(result.cutoffMessageId).toBe("msg-4");
+    expect(result.cutoffMessageId).toBe("msg-3");
 
-    // summary message + 0 kept messages = 1 total (just the summary message)
-    expect(result.summarizedMessages).toHaveLength(1);
+    // summary message + projected retained tail
+    expect(result.summarizedMessages).toHaveLength(2);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
       text: "<context_summary>\nTest summary content\n</context_summary>",
     });
+    expect(result.summarizedMessages[1].id).toBe("msg-4");
+
+    const serializedSummaryInput = JSON.stringify(
+      mockGenerateText.mock.calls[0][0].messages,
+    );
+    expect(serializedSummaryInput).toContain("[msg-3]");
+    expect(serializedSummaryInput).not.toContain("[msg-4]");
+  });
+
+  it("should not summarize the original payload for a tail-only projected oversized part", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Projected-only summary" });
+
+    const hugeOutput = Array.from(
+      { length: 20_000 },
+      (_, index) => `unique-projected-tail-line-${index}`,
+    ).join("\n");
+    const messages: UIMessage[] = [
+      {
+        id: "assistant-huge",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            state: "output-available",
+            output: hugeOutput,
+          } as any,
+        ],
+      },
+    ];
+
+    const result = await checkAndSummarizeForTest(
+      messages,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      "chat-tail-only",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        reason: "tool_result_count",
+        reasons: ["tool_result_count"],
+        toolResultCount: 1,
+        messageCount: 1,
+        summarizationMaxTokensOverride: 128_000,
+      },
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.cutoffMessageId).toBe("assistant-huge");
+    expect(result.summarizedMessages).toHaveLength(2);
+    expect(result.summarizedMessages[1].id).toBe("assistant-huge");
+
+    const serializedSummaryInput = JSON.stringify(
+      mockGenerateText.mock.calls[0][0].messages,
+    );
+    expect(serializedSummaryInput).not.toContain("unique-projected-tail-line");
+    expect(JSON.stringify(result.summarizedMessages)).not.toContain(hugeOutput);
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-tail-only",
+        summaryUpToMessageId: "assistant-huge",
+        metadata: expect.objectContaining({
+          retainedTail: expect.objectContaining({
+            start_message_id: "assistant-huge",
+            start_part_index: 0,
+            projected_part_count: 1,
+          }),
+        }),
+      }),
+    );
   });
 
   it("should use agent prompt when mode is agent", async () => {
@@ -385,26 +502,9 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     ] as unknown as ModelMessage[];
 
-    await checkAndSummarizeForTest(
-      fourMessagesAboveThreshold,
-      "free",
-      mockLanguageModel,
-      "agent",
-      mockWriter,
-      null,
-      {},
-      [],
-      undefined,
-      undefined,
-      0,
-      0,
-      "test-system-prompt",
-      undefined,
-      undefined,
+    const callMessages = compactModelMessagesForSummarization(
       modelMessages,
-    );
-
-    const callMessages = mockGenerateText.mock.calls[0][0].messages as Array<{
+    ) as Array<{
       role: string;
       content: Array<{
         type: string;
@@ -475,27 +575,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     ] as unknown as ModelMessage[];
 
-    await checkAndSummarizeForTest(
-      fourMessagesAboveThreshold,
-      "free",
-      mockLanguageModel,
-      "agent",
-      mockWriter,
-      null,
-      {},
-      [],
-      undefined,
-      undefined,
-      0,
-      0,
-      "test-system-prompt",
-      undefined,
-      undefined,
-      modelMessages,
-    );
-
     const serializedMessages = JSON.stringify(
-      mockGenerateText.mock.calls[0][0].messages,
+      compactModelMessagesForSummarization(modelMessages),
     );
 
     expect(serializedMessages).toContain("[Attached image/png: page.png]");
@@ -577,18 +658,31 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect.objectContaining({
         chatId: "chat-123",
         summaryText: "Summary",
-        summaryUpToMessageId: "msg-4",
+        summaryUpToMessageId: "msg-3",
         metadata: expect.objectContaining({
           reason: "token_threshold",
           promptVersion: SUMMARY_PROMPT_VERSION,
           model: "test-model",
           status: "completed",
-          inputTokens: 0,
-          outputTokens: 0,
-          estimatedCompactedInputTokens: expect.any(Number),
+          retainedTail: expect.objectContaining({
+            start_message_id: "msg-4",
+            start_part_index: 0,
+            strategy: "token_budgeted_tail_v1",
+          }),
         }),
       }),
     );
+    const saveSummaryCall =
+      mockSaveChatSummary.mock.calls[mockSaveChatSummary.mock.calls.length - 1];
+    const persistedMetadata = saveSummaryCall?.[0].metadata as
+      | Record<string, unknown>
+      | undefined;
+    expect(persistedMetadata?.inputTokens).toBeUndefined();
+    expect(persistedMetadata?.outputTokens).toBeUndefined();
+    expect(persistedMetadata?.cacheReadTokens).toBeUndefined();
+    expect(persistedMetadata?.cacheWriteTokens).toBeUndefined();
+    expect(persistedMetadata?.cost).toBeUndefined();
+    expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
   });
 
   it("should skip database persistence for temporary chats", async () => {
@@ -897,7 +991,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("real-4");
+    expect(result.cutoffMessageId).toBe("real-3");
     expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
   });
 
@@ -1028,7 +1122,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result1.needsSummarization).toBe(true);
-    expect(result1.cutoffMessageId).toBe("msg-4");
+    expect(result1.cutoffMessageId).toBe("msg-3");
 
     const newMessages = [
       createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
@@ -1059,12 +1153,12 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledTimes(2);
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ summaryUpToMessageId: "msg-4" }),
+      expect.objectContaining({ summaryUpToMessageId: "msg-3" }),
     );
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        summaryUpToMessageId: expect.not.stringMatching(/^msg-4$/),
+        summaryUpToMessageId: "msg-7",
       }),
     );
 
@@ -1096,17 +1190,18 @@ describe("checkAndSummarizeIfNeeded", () => {
             .join("");
     expect(secondLastContent).toContain("INCREMENTAL summarization");
 
-    // First call: msg-1..msg-4 converted + 1 summarization prompt = 5
+    // First call: msg-1..msg-3 converted + 1 summarization prompt = 4
     const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
-    expect(firstCallMessages).toHaveLength(5);
-    // Second call: 1 summary message + msg-5..msg-8 converted + 1 summarization prompt = 6
+    expect(firstCallMessages).toHaveLength(4);
+    // Second call: 1 summary message + retained msg-4 + msg-5..msg-7 + 1 summarization prompt = 6
     expect(secondCallMessages).toHaveLength(6);
 
-    expect(result2.summarizedMessages).toHaveLength(1);
+    expect(result2.summarizedMessages).toHaveLength(2);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
     expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
       "Second summary",
     );
+    expect(result2.summarizedMessages[1].id).toBe("msg-8");
   });
 
   it("should pass every message up to the last cutoff through generateText at least once", async () => {
@@ -1137,7 +1232,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       0,
       "test-system-prompt",
     );
-    expect(result1.cutoffMessageId).toBe("msg-4");
+    expect(result1.cutoffMessageId).toBe("msg-3");
 
     // Round 2: result1 + msg-5..msg-8
     const round2Input = [
@@ -1163,7 +1258,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       0,
       "test-system-prompt",
     );
-    expect(result2.cutoffMessageId).toBe("msg-8");
+    expect(result2.cutoffMessageId).toBe("msg-7");
 
     // Round 3: result2 + msg-9..msg-12
     const round3Input = [
@@ -1189,15 +1284,17 @@ describe("checkAndSummarizeIfNeeded", () => {
       0,
       "test-system-prompt",
     );
-    expect(result3.cutoffMessageId).toBe("msg-12");
+    expect(result3.cutoffMessageId).toBe("msg-11");
 
     // Collect all message IDs that were passed to generateText across all 3 calls
     const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
 
-    // Every message up to msg-12 must have been summarized
-    for (let i = 1; i <= 12; i++) {
+    // Every message up to the cutoff must have been summarized. The latest
+    // retained-tail message remains unsummarized until the next compaction.
+    for (let i = 1; i <= 11; i++) {
       expect(summarizedIds).toContain(`msg-${i}`);
     }
+    expect(summarizedIds).not.toContain("msg-12");
   });
 
   it("should handle normal first-time summarization unchanged", async () => {
@@ -1220,7 +1317,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("msg-4");
+    expect(result.cutoffMessageId).toBe("msg-3");
 
     const callArgs = mockGenerateText.mock.calls[0][0];
     // System should be the chat system prompt

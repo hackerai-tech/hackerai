@@ -103,6 +103,22 @@ export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   );
 }
 
+export function normalizeSelectedModelForSubscription(
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): SelectedModel {
+  if (subscription === "free") return "auto";
+  return model ?? "auto";
+}
+
+export function normalizeSelectedModelOverrideForSubscription(
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): SelectedModel | undefined {
+  if (subscription === "free") return "auto";
+  return model ?? undefined;
+}
+
 export interface SidebarFile {
   path: string;
   content: string;
@@ -244,7 +260,7 @@ export interface SidebarSharedFiles {
     mediaType?: string;
     fileId?: string;
     s3Key?: string;
-    storageId?: string;
+    sizeBytes?: number;
   }>;
   requestedPaths: string[];
   isExecuting: boolean;
@@ -304,14 +320,19 @@ export interface Todo {
 
 export interface TodoBlockProps {
   todos: Todo[];
-  inputTodos?: Todo[];
+  inputTodos?: TodoWriteInput["todos"];
   blockId: string;
   messageId: string;
 }
 
 export interface TodoWriteInput {
   merge?: boolean;
-  todos?: Todo[];
+  todos?: Array<{
+    id: string;
+    content?: string;
+    status?: Todo["status"];
+    sourceMessageId?: string;
+  }>;
 }
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
@@ -339,7 +360,7 @@ export type RateLimitInfo = {
   limit: number;
   // Monthly token bucket details for paid users
   monthly?: { remaining: number; limit: number; resetTime: Date };
-  // Points deducted for potential refund on error (always = estimatedCost)
+  // Included-bucket points deducted for potential refund on error
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;

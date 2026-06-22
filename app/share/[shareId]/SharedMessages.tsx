@@ -3,7 +3,7 @@
 import { ImageIcon, FileIcon } from "lucide-react";
 import { SharedMessagePartHandler } from "./components/SharedMessagePartHandler";
 
-interface MessagePart {
+export interface SharedMessagePart {
   type: string;
   text?: string;
   placeholder?: boolean;
@@ -14,16 +14,16 @@ interface MessagePart {
   errorText?: string;
 }
 
-interface Message {
+export interface SharedMessage {
   id: string;
   role: "user" | "assistant" | "system";
-  parts: MessagePart[];
+  parts: SharedMessagePart[];
   content?: string;
   update_time: number;
 }
 
 interface SharedMessagesProps {
-  messages: Message[];
+  messages: SharedMessage[];
   shareDate: number;
 }
 

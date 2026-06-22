@@ -8,14 +8,24 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   getChatById,
+  getUserCustomization,
   handleInitialChatAndUserMessage,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
-import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
-import { coerceSelectedModel } from "@/types";
+import {
+  assertFreeAgentGates,
+  buildExtraUsageConfig,
+} from "@/lib/api/chat-stream-helpers";
+import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
+import {
+  coerceSelectedModel,
+  normalizeSelectedModelOverrideForSubscription,
+} from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
+import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import { assertLocalSandboxFallbackAllowed } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   getUploadBasePath,
   hasLocalDesktopSourcePaths,
@@ -50,18 +60,20 @@ export async function POST(req: NextRequest) {
       isAutoContinue?: boolean;
     } = await req.json();
 
-    const selectedModelOverride: SelectedModel | undefined =
-      coerceSelectedModel(rawSelectedModel ?? null) ?? undefined;
-
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+    let selectedModelOverride: SelectedModel | undefined =
+      normalizeSelectedModelOverrideForSubscription(
+        coerceSelectedModel(rawSelectedModel ?? null),
+        subscription,
+      );
     await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
+    const triggerRegion = getTriggerRegionForVercelRequest(req);
 
     assertFreeAgentGates({
       mode: "agent",
       subscription,
       sandboxPreference,
-      rawSelectedModel,
     });
 
     const requestMessages = Array.isArray(messages) ? messages : [];
@@ -94,6 +106,21 @@ export async function POST(req: NextRequest) {
     const existingChat = temporary ? null : await getChatById({ id: chatId });
     const isNewChat =
       !temporary && !existingChat && !regenerate && !isAutoContinue;
+    const userCustomization = await getUserCustomization({ userId });
+    const extraUsageConfig = await buildExtraUsageConfig({
+      userId,
+      subscription,
+      userCustomization,
+      organizationId,
+    });
+    selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
+      finishReason: existingChat?.finish_reason,
+      isAutoContinue,
+      mode: "agent",
+      subscription,
+      selectedModelOverride,
+      extraUsageConfig,
+    });
 
     let messagesForPersistence = stripLocalDesktopSourcePaths(requestMessages);
     let messagesForTrigger = messagesForPersistence;
@@ -121,6 +148,12 @@ export async function POST(req: NextRequest) {
           null,
           subscription,
         );
+        await sandboxManager.getSandboxContextForPrompt();
+        assertLocalSandboxFallbackAllowed({
+          fallbackInfo: sandboxManager.consumeFallbackInfo(),
+          requireLocalSandbox: true,
+        });
+
         let stagedSandbox: any = null;
         let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
         try {
@@ -196,6 +229,7 @@ export async function POST(req: NextRequest) {
       },
       {
         tags: triggerTags,
+        region: triggerRegion,
         metadata: {
           status: "queued",
           chatId,
@@ -240,6 +274,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       runId: handle.id,
       publicAccessToken,
+      chatId,
     });
   } catch (error) {
     if (error instanceof ChatSDKError) {

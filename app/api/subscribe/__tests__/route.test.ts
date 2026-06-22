@@ -306,4 +306,65 @@ describe("POST /api/subscribe", () => {
       "referral_referred_user_id",
     );
   });
+
+  it("persists checkout attribution in Stripe metadata and analytics", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [],
+    } as never);
+    mockCreateOrganization.mockResolvedValue({
+      id: "org_new",
+    } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      makeRequest({
+        plan: "pro-plus-monthly-plan",
+        checkoutAttemptId: "ca_limit_pressure_123",
+        source: "limit_pressure",
+        surface: "rate_limit_warning",
+        reason: "monthly_exhausted",
+        limitType: "monthly",
+        fromTier: "free",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.checkoutAttemptId).toBe("ca_limit_pressure_123");
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          checkoutAttemptId: "ca_limit_pressure_123",
+          checkoutSource: "limit_pressure",
+          checkoutSurface: "rate_limit_warning",
+          checkoutReason: "monthly_exhausted",
+          checkoutLimitType: "monthly",
+        }),
+        subscription_data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            checkoutAttemptId: "ca_limit_pressure_123",
+            checkoutSource: "limit_pressure",
+            checkoutSurface: "rate_limit_warning",
+            checkoutReason: "monthly_exhausted",
+            checkoutLimitType: "monthly",
+          }),
+        }),
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_started",
+      expect.objectContaining({
+        checkout_attempt_id: "ca_limit_pressure_123",
+        source: "limit_pressure",
+        surface: "rate_limit_warning",
+        reason: "monthly_exhausted",
+        limit_type: "monthly",
+      }),
+    );
+  });
 });

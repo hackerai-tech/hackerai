@@ -29,7 +29,6 @@ import {
   estimatePreflightInputTokens,
   buildExtraUsageConfig,
   computeContextUsage,
-  writeContextUsage,
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
@@ -38,7 +37,9 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
+  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
+import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
   acquireFreeRunConcurrencyLock,
@@ -69,11 +70,15 @@ import {
   writeUploadCompleteStatus,
 } from "@/lib/utils/stream-writer-utils";
 import {
+  getSandboxUploadFailureMetadata,
   uploadSandboxFiles,
   getUploadBasePath,
   rewriteSandboxFilePathsInMessages,
 } from "@/lib/utils/sandbox-file-utils";
-import { getEmptyProcessedMessagesCause } from "@/lib/utils/local-attachment-messages";
+import {
+  getEmptyProcessedMessagesCause,
+  getEmptyProcessedMessagesMetadata,
+} from "@/lib/utils/local-attachment-messages";
 import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
@@ -95,6 +100,7 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
+  SandboxBootInfo,
 } from "@/types";
 import {
   createAgentStream,
@@ -103,12 +109,22 @@ import {
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
 import {
+  assertLocalSandboxFallbackAllowed,
+  getSandboxFallbackPromptReminder,
+  prepareSandboxContextForPrompt,
+  writeSandboxFallbackEvent,
+} from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
 import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
+import {
+  omitImageViewToolResultsForProviderRetry,
+  omitTrailingStepStartAssistantMessage,
+} from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
@@ -156,6 +172,114 @@ const getNumberMetadata = (
   return typeof value === "number" ? value : undefined;
 };
 
+const getBooleanMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+) => {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
+};
+
+type TriggerMetadataPrimitive = boolean | number | string;
+
+const EMPTY_AFTER_PROCESSING_TRIGGER_METADATA_KEYS = [
+  ["processing_input_message_count", "processingInputMessageCount"],
+  ["processing_input_user_message_count", "processingInputUserMessageCount"],
+  [
+    "processing_input_assistant_message_count",
+    "processingInputAssistantMessageCount",
+  ],
+  [
+    "processing_input_system_message_count",
+    "processingInputSystemMessageCount",
+  ],
+  [
+    "processing_input_other_role_message_count",
+    "processingInputOtherRoleMessageCount",
+  ],
+  [
+    "processing_input_empty_parts_message_count",
+    "processingInputEmptyPartsMessageCount",
+  ],
+  ["processing_input_part_count", "processingInputPartCount"],
+  ["processing_input_text_part_count", "processingInputTextPartCount"],
+  [
+    "processing_input_nonempty_text_part_count",
+    "processingInputNonemptyTextPartCount",
+  ],
+  ["processing_input_file_part_count", "processingInputFilePartCount"],
+  ["processing_input_file_with_url_count", "processingInputFileWithUrlCount"],
+  [
+    "processing_input_file_with_file_id_count",
+    "processingInputFileWithFileIdCount",
+  ],
+  [
+    "processing_input_local_desktop_file_part_count",
+    "processingInputLocalDesktopFilePartCount",
+  ],
+  [
+    "processing_input_local_desktop_file_with_local_path_count",
+    "processingInputLocalDesktopFileWithLocalPathCount",
+  ],
+  [
+    "processing_input_local_desktop_file_missing_local_path_count",
+    "processingInputLocalDesktopFileMissingLocalPathCount",
+  ],
+  ["processing_input_ui_only_part_count", "processingInputUiOnlyPartCount"],
+  [
+    "processing_input_step_start_part_count",
+    "processingInputStepStartPartCount",
+  ],
+  [
+    "processing_input_reasoning_part_count",
+    "processingInputReasoningPartCount",
+  ],
+  [
+    "processing_input_nonempty_reasoning_part_count",
+    "processingInputNonemptyReasoningPartCount",
+  ],
+  ["processing_input_tool_part_count", "processingInputToolPartCount"],
+  ["processing_input_data_part_count", "processingInputDataPartCount"],
+  ["processing_input_other_part_count", "processingInputOtherPartCount"],
+  ["processing_input_regenerate", "processingInputRegenerate"],
+  ["processing_input_auto_continue", "processingInputAutoContinue"],
+  ["processing_input_temporary", "processingInputTemporary"],
+  ["processing_input_sandbox_preference", "processingInputSandboxPreference"],
+] as const;
+
+const getPrimitiveMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): TriggerMetadataPrimitive | undefined => {
+  const value = metadata?.[key];
+  if (
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return value;
+  }
+  return undefined;
+};
+
+const getEmptyAfterProcessingTriggerMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, TriggerMetadataPrimitive> | undefined => {
+  if (metadata?.empty_after_processing !== true) return undefined;
+
+  const diagnostics: Record<string, TriggerMetadataPrimitive> = {
+    emptyAfterProcessing: true,
+  };
+  for (const [
+    sourceKey,
+    targetKey,
+  ] of EMPTY_AFTER_PROCESSING_TRIGGER_METADATA_KEYS) {
+    const value = getPrimitiveMetadata(metadata, sourceKey);
+    if (value !== undefined) diagnostics[targetKey] = value;
+  }
+  return diagnostics;
+};
+
 const OPERATIONAL_RATE_LIMIT_CAUSE_PATTERNS = [
   /rate limiting service .*not configured/i,
   /rate limiting service unavailable/i,
@@ -189,6 +313,14 @@ type AgentLongErrorSummary = {
   maxTokens?: number;
   fileIdsCount?: number;
   largestFileToken?: number;
+  emptyAfterProcessing?: boolean;
+  emptyAfterProcessingMetadata?: Record<string, TriggerMetadataPrimitive>;
+  uploadFailureKind?: string;
+  uploadFailureCause?: string;
+  uploadFailureTransientSandboxCommand?: boolean;
+  uploadFailureProtocol?: string;
+  uploadFailureUrlLength?: number;
+  uploadRetriedWithFreshSandbox?: boolean;
 };
 
 const isHandledUserRateLimitError = (error: unknown): error is ChatSDKError => {
@@ -279,7 +411,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
               ? "empty_prompt"
               : errorMetadata?.truncation_dropped_all_messages === true
                 ? "input_too_large"
-                : "chat_error",
+                : errorMetadata?.empty_after_processing === true
+                  ? "empty_after_processing"
+                  : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -315,6 +449,34 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       maxTokens: getNumberMetadata(errorMetadata, "max_tokens"),
       fileIdsCount: getNumberMetadata(errorMetadata, "file_ids_count"),
       largestFileToken: getNumberMetadata(errorMetadata, "largest_file_token"),
+      emptyAfterProcessing:
+        errorMetadata?.empty_after_processing === true || undefined,
+      emptyAfterProcessingMetadata:
+        getEmptyAfterProcessingTriggerMetadata(errorMetadata),
+      uploadFailureKind: getStringMetadata(
+        errorMetadata,
+        "upload_failure_kind",
+      ),
+      uploadFailureCause: getStringMetadata(
+        errorMetadata,
+        "upload_failure_cause",
+      ),
+      uploadFailureTransientSandboxCommand: getBooleanMetadata(
+        errorMetadata,
+        "upload_failure_transient_sandbox_command",
+      ),
+      uploadFailureProtocol: getStringMetadata(
+        errorMetadata,
+        "upload_failure_protocol",
+      ),
+      uploadFailureUrlLength: getNumberMetadata(
+        errorMetadata,
+        "upload_failure_url_length",
+      ),
+      uploadRetriedWithFreshSandbox: getBooleanMetadata(
+        errorMetadata,
+        "upload_retried_with_fresh_sandbox",
+      ),
     };
   }
 
@@ -415,6 +577,33 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("fileIdsCount", summary.fileIdsCount);
   if (summary.largestFileToken != null)
     metadata.set("largestFileToken", summary.largestFileToken);
+  if (summary.emptyAfterProcessingMetadata) {
+    for (const [key, value] of Object.entries(
+      summary.emptyAfterProcessingMetadata,
+    )) {
+      metadata.set(key, value);
+    }
+  }
+  if (summary.uploadFailureKind)
+    metadata.set("uploadFailureKind", summary.uploadFailureKind);
+  if (summary.uploadFailureCause)
+    metadata.set("uploadFailureCause", summary.uploadFailureCause);
+  if (summary.uploadFailureTransientSandboxCommand != null) {
+    metadata.set(
+      "uploadFailureTransientSandboxCommand",
+      summary.uploadFailureTransientSandboxCommand,
+    );
+  }
+  if (summary.uploadFailureProtocol)
+    metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
+  if (summary.uploadFailureUrlLength != null)
+    metadata.set("uploadFailureUrlLength", summary.uploadFailureUrlLength);
+  if (summary.uploadRetriedWithFreshSandbox != null) {
+    metadata.set(
+      "uploadRetriedWithFreshSandbox",
+      summary.uploadRetriedWithFreshSandbox,
+    );
+  }
 
   const errorTags = [`error_${summary.category}`];
   if (summary.code) {
@@ -422,18 +611,31 @@ const recordAgentLongFailureForDashboard = async (
   }
   await tags.add(errorTags);
 
+  const { emptyAfterProcessingMetadata, ...summaryLogFields } = summary;
   const logFields = {
     chatId: context.chatId,
     userId: context.userId,
     runId: context.runId,
     phase: context.phase,
-    ...summary,
+    ...summaryLogFields,
+    ...emptyAfterProcessingMetadata,
   };
-  if (summary.category === "chat_not_found") {
-    triggerLogger.warn("[agent-long] run ended because chat is missing", {
-      ...logFields,
-      status: runStatus,
-    });
+  const isExpectedUserCorrectableError =
+    summary.category === "chat_not_found" ||
+    summary.category === "empty_prompt" ||
+    summary.category === "input_too_large" ||
+    summary.category === "empty_after_processing";
+
+  if (isExpectedUserCorrectableError) {
+    triggerLogger.warn(
+      summary.category === "chat_not_found"
+        ? "[agent-long] run ended because chat is missing"
+        : "[agent-long] run ended with user-correctable request error",
+      {
+        ...logFields,
+        status: runStatus,
+      },
+    );
   } else {
     triggerLogger.error("[agent-long] run failed", logFields);
   }
@@ -761,6 +963,12 @@ export const agentLongTask = task({
         throw new ChatSDKError(
           "bad_request:api",
           getEmptyProcessedMessagesCause(messagesForProcessing),
+          getEmptyProcessedMessagesMetadata(messagesForProcessing, {
+            regenerate: !!regenerate,
+            isAutoContinue: !!isAutoContinue,
+            isTemporary: !!temporary,
+            sandboxPreference,
+          }),
         );
       }
 
@@ -889,8 +1097,10 @@ export const agentLongTask = task({
               subscription,
               mode,
               rateLimitInfo,
+              extraUsageConfig,
             });
 
+            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             const {
               tools,
               ensureSandbox,
@@ -922,7 +1132,10 @@ export const agentLongTask = task({
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
               subscription,
-              (info) => chatLogger?.setSandboxBoot(info),
+              (info) => {
+                uploadSandboxBootPath ??= info.path;
+                chatLogger?.setSandboxBoot(info);
+              },
               undefined,
               selectedModel,
             );
@@ -933,7 +1146,7 @@ export const agentLongTask = task({
                 name: string;
                 mediaType: string;
                 s3Key?: string;
-                storageId?: Id<"_storage">;
+                sizeBytes?: number;
               }>,
             ) => {
               if (!fileMetadata || fileMetadata.length === 0) return;
@@ -946,20 +1159,39 @@ export const agentLongTask = task({
               });
             };
 
-            let sandboxContext: string | null = null;
-            if ("getSandboxContextForPrompt" in sandboxManager) {
-              try {
-                sandboxContext = await (
-                  sandboxManager as {
-                    getSandboxContextForPrompt: () => Promise<string | null>;
-                  }
-                ).getSandboxContextForPrompt();
-              } catch (err) {
+            const sandboxPromptContext = await prepareSandboxContextForPrompt({
+              sandboxManager,
+              writer,
+              eventId: `sandbox-fallback-${assistantMessageId}`,
+              emitFallbackEvent: false,
+              onContextError: (err) => {
                 console.warn(
                   "[agent-long] Failed to get sandbox context:",
                   err,
                 );
+              },
+            });
+            const sandboxContext = sandboxPromptContext.sandboxContext;
+            const sandboxFallbackReminder = getSandboxFallbackPromptReminder(
+              sandboxPromptContext.fallbackInfo,
+            );
+            try {
+              assertLocalSandboxFallbackAllowed({
+                fallbackInfo: sandboxPromptContext.fallbackInfo,
+              });
+            } catch (error) {
+              if (error instanceof ChatSDKError) {
+                await usageRefundTracker.refund().catch(() => {});
+                chatLogger?.emitChatError(error);
               }
+              throw error;
+            }
+            if (sandboxPromptContext.fallbackInfo?.occurred) {
+              writeSandboxFallbackEvent(
+                writer,
+                sandboxPromptContext.fallbackInfo,
+                `sandbox-fallback-${assistantMessageId}`,
+              );
             }
 
             if (sandboxFiles && sandboxFiles.length > 0) {
@@ -978,6 +1210,10 @@ export const agentLongTask = task({
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
+                  {
+                    retryWithFreshSandboxOnTransientFailure: () =>
+                      uploadSandboxBootPath === "reuse_existing",
+                  },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -988,6 +1224,7 @@ export const agentLongTask = task({
                 const uploadError = new ChatSDKError(
                   "bad_request:stream",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+                  getSandboxUploadFailureMetadata(uploadResult),
                 );
                 await usageRefundTracker.refund();
                 chatLogger?.emitChatError(uploadError);
@@ -1035,6 +1272,13 @@ export const agentLongTask = task({
 
             let finalMessages = processedMessages;
 
+            if (sandboxFallbackReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                sandboxFallbackReminder,
+              );
+            }
+
             const resumeContext = regenerate
               ? ""
               : getResumeSection(chat?.finish_reason);
@@ -1071,15 +1315,40 @@ export const agentLongTask = task({
               (freeMonthlyBudgetSnapshot?.rateLimitSkipped
                 ? null
                 : freeMonthlyBudgetSnapshot);
-            const budgetMonitor = effectiveBudgetSnapshot
-              ? new BudgetMonitor(effectiveBudgetSnapshot, writer, subscription)
-              : null;
-
             // Use task start time (not stream start time) so the soft stop
             // leaves cleanup grace before the plan-specific runtime cap.
             const streamStartTime = taskStartTime;
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
+            const agentRunSpendCap = getProAgentRunSpendCap({
+              snapshot: effectiveBudgetSnapshot,
+              subscription,
+              mode,
+            });
+            const budgetMonitor = effectiveBudgetSnapshot
+              ? new BudgetMonitor(
+                  effectiveBudgetSnapshot,
+                  writer,
+                  subscription,
+                  {
+                    agentRunSpendCap,
+                    extraUsageConfig,
+                    onAgentRunSpendCapHit: (hit) => {
+                      captureAgentRunSpendCapHit({
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint: "/api/agent-long",
+                        selectedModel,
+                        selectedModelOverride,
+                        configuredModelSlug: configuredModelId,
+                        hit,
+                      });
+                    },
+                  },
+                )
+              : null;
 
             let isRetryWithFallback = false;
             const isAutoModel = [
@@ -1109,13 +1378,15 @@ export const agentLongTask = task({
                 }
                 if (!usageTracker.hasUsage) return;
                 hasRecordedUsage = true;
-                const usageCostRecord = usageTracker.createUsageCostRecord({
+                const usageRecordArgs = {
                   selectedModel,
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
                   rateLimitInfo,
-                });
+                };
+                let usageCostRecord =
+                  usageTracker.createUsageCostRecord(usageRecordArgs);
                 const providerCost =
                   usageTracker.modelProviderCost > 0
                     ? usageTracker.providerCost
@@ -1126,7 +1397,7 @@ export const agentLongTask = task({
                     usageCostRecord.costDollars,
                   );
                 } else {
-                  await deductUsage(
+                  const deductionResult = await deductUsage(
                     userId,
                     subscription,
                     estimatedInputTokens,
@@ -1137,7 +1408,17 @@ export const agentLongTask = task({
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
+                    rateLimitInfo,
                   );
+                  const billingBreakdown =
+                    deductionResult.includedPointsDeducted > 0 ||
+                    deductionResult.extraUsagePointsDeducted > 0
+                      ? deductionResult
+                      : undefined;
+                  usageCostRecord = usageTracker.createUsageCostRecord({
+                    ...usageRecordArgs,
+                    billingBreakdown,
+                  });
                   usageTracker.log({
                     userId,
                     organizationId,
@@ -1150,6 +1431,7 @@ export const agentLongTask = task({
                     responseModel: state.responseModel,
                     configuredModelId,
                     rateLimitInfo,
+                    billingBreakdown,
                   });
                 }
                 captureUsageCost({
@@ -1239,6 +1521,7 @@ export const agentLongTask = task({
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
+                state.stoppedDueToAgentRunSpendCap = false;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
@@ -1295,24 +1578,58 @@ export const agentLongTask = task({
                               isTerminalProviderStreamError(state),
                           },
                         );
+                      const imageRecovery =
+                        state.providerRejectedMultimodalToolResults
+                          ? omitImageViewToolResultsForProviderRetry(
+                              finishedMessages,
+                            )
+                          : { messages: finishedMessages, omittedCount: 0 };
+                      const shouldRetryWithoutImageToolResults =
+                        imageRecovery.omittedCount > 0 && !isAborted;
 
                       if (
-                        shouldRetryWithFallback &&
+                        (shouldRetryWithFallback ||
+                          shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
                         !isAborted &&
-                        isAutoModel
+                        (isAutoModel || shouldRetryWithoutImageToolResults)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
+                        state.streamFinishReason = undefined;
+                        state.providerError = undefined;
+                        state.providerRejectedMultimodalToolResults = false;
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
+                        state.stoppedDueToAgentRunSpendCap = false;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                        usageTracker.resetModelLeg();
-                        const retryResult = await createStream(fallbackModel);
+                        const retryModel = shouldRetryWithoutImageToolResults
+                          ? selectedModel
+                          : fallbackModel;
+                        if (shouldRetryWithoutImageToolResults) {
+                          const normalizedRetryMessages = imageRecovery.messages
+                            .map((message) =>
+                              message.role === "assistant"
+                                ? stripAgentLongHeartbeatParts(message)
+                                : message,
+                            )
+                            .filter(
+                              (message) =>
+                                message.role !== "assistant" ||
+                                (message.parts?.length ?? 0) > 0,
+                            );
+                          state.finalMessages =
+                            omitTrailingStepStartAssistantMessage(
+                              normalizedRetryMessages,
+                            );
+                        } else {
+                          usageTracker.resetModelLeg();
+                        }
+                        const retryResult = await createStream(retryModel);
                         const retryMessageId = generateId();
 
                         writer.merge(
@@ -1686,15 +2003,6 @@ export const agentLongTask = task({
                         }
 
                         sendFileMetadataToStream(accumulatedFiles);
-                      }
-
-                      if (contextUsageOn) {
-                        writeContextUsage(writer, {
-                          usedTokens:
-                            state.ctxUsage.usedTokens +
-                            usageTracker.streamOutputTokens,
-                          maxTokens: state.ctxUsage.maxTokens,
-                        });
                       }
 
                       // Don't auto-continue on elapsed timeout. Runs that hit

@@ -29,15 +29,20 @@ type UsageLogRow = {
   user_id: string;
   organization_id?: string;
   _creationTime: number;
-  type: "included" | "extra";
+  type: "included" | "extra" | "mixed";
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   total_tokens: number;
   cost_dollars: number;
+  included_cost_dollars?: number;
+  extra_usage_cost_dollars?: number;
+  included_points_deducted?: number;
+  extra_usage_points_deducted?: number;
   model_cost_dollars?: number;
   non_model_cost_dollars?: number;
+  cost_source?: "provider" | "token_estimate" | "raw_token_estimate";
 };
 
 type RevenueRow = {
@@ -61,8 +66,12 @@ type UnitEconomicsDailyRow = {
   day: string;
   gross_revenue_dollars: number;
   net_revenue_dollars: number;
+  model_cost_dollars?: number;
+  non_model_cost_dollars?: number;
   total_cost_dollars: number;
   gross_profit_dollars: number;
+  included_usage_cost_dollars?: number;
+  extra_usage_cost_dollars?: number;
 };
 
 function makeMockCtx(opts?: {
@@ -260,6 +269,89 @@ describe("unit economics reporting window", () => {
       net_revenue_dollars: 20,
       total_cost_dollars: 2,
       gross_profit_dollars: 18,
+    });
+  });
+
+  it("normalizes legacy token-estimated usage costs during rebuilds", async () => {
+    const userId = "user_1";
+    const { ctx, rollups } = makeMockCtx({
+      usage: [
+        {
+          _id: "usage-legacy",
+          user_id: userId,
+          _creationTime: REPORTING_START + 60_000,
+          type: "included",
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          total_tokens: 1_000_000,
+          cost_dollars: 0.9,
+          model_cost_dollars: 0.65,
+          non_model_cost_dollars: 0.25,
+          cost_source: "token_estimate",
+        },
+      ],
+      revenue: [
+        {
+          _id: "revenue-new",
+          entity_type: "user",
+          entity_id: userId,
+          user_id: userId,
+          occurred_at: REPORTING_START + 60_000,
+          gross_revenue_dollars: 20,
+          net_revenue_dollars: 20,
+        },
+      ],
+    });
+
+    await callRebuild(ctx, {
+      entityType: "user",
+      entityId: userId,
+      startTime: 0,
+      endTime: REPORTING_START + 120_000,
+    });
+
+    expect(rollups[0]).toMatchObject({
+      model_cost_dollars: 0.5,
+      non_model_cost_dollars: 0.25,
+      total_cost_dollars: 0.75,
+      included_usage_cost_dollars: 0.75,
+      gross_profit_dollars: 19.25,
+    });
+  });
+
+  it("preserves included and extra usage splits during rebuilds", async () => {
+    const userId = "user_1";
+    const { ctx, rollups } = makeMockCtx({
+      usage: [
+        {
+          _id: "usage-mixed",
+          user_id: userId,
+          _creationTime: REPORTING_START + 60_000,
+          type: "mixed",
+          input_tokens: 20,
+          output_tokens: 20,
+          total_tokens: 40,
+          cost_dollars: 3,
+          included_cost_dollars: 2,
+          extra_usage_cost_dollars: 1,
+          included_points_deducted: 20_000,
+          extra_usage_points_deducted: 10_000,
+          model_cost_dollars: 3,
+        },
+      ],
+    });
+
+    await callRebuild(ctx, {
+      entityType: "user",
+      entityId: userId,
+      startTime: 0,
+      endTime: REPORTING_START + 120_000,
+    });
+
+    expect(rollups[0]).toMatchObject({
+      total_cost_dollars: 3,
+      included_usage_cost_dollars: 2,
+      extra_usage_cost_dollars: 1,
     });
   });
 

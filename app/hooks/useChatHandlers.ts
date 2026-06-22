@@ -6,7 +6,13 @@ import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import type { ChatMessage, ChatStatus, LimitRescueRequest } from "@/types";
+import {
+  normalizeSelectedModelForSubscription,
+  type ChatMessage,
+  type ChatStatus,
+  type LimitRescueRequest,
+  type SelectedModel,
+} from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -26,6 +32,7 @@ import {
   getMaxFilesLimitForMode,
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
+import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -81,6 +88,10 @@ export const useChatHandlers = ({
     sandboxPreference,
     selectedModel,
   } = useGlobalState();
+  const requestSelectedModel = normalizeSelectedModelForSubscription(
+    selectedModel,
+    subscription,
+  );
 
   // Avoid stale closure on temporary flag
   const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
@@ -117,6 +128,8 @@ export const useChatHandlers = ({
   const cancelTempStreamMutation = useMutation(
     api.tempStreams.cancelTempStreamFromClient,
   );
+  const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
+    sanitizeForConvexValue(parts) as ChatMessage["parts"];
 
   // Mirrors the transport routing rule in app/components/chat.tsx. Persistent
   // chats only; temporary chats use the legacy Redis pub/sub cancel path.
@@ -200,7 +213,7 @@ export const useChatHandlers = ({
               id: lastMessage.id,
               chatId,
               role: lastMessage.role,
-              parts: lastMessage.parts,
+              parts: getConvexSafeParts(lastMessage.parts),
               mode: lastMessage.metadata?.mode ?? chatModeRef.current,
               generationStartedAt,
               generationTimeMs,
@@ -299,7 +312,7 @@ export const useChatHandlers = ({
                 id: lastMessage.id,
                 chatId,
                 role: lastMessage.role,
-                parts: lastMessage.parts,
+                parts: getConvexSafeParts(lastMessage.parts),
               }).catch((error) => {
                 console.error("Failed to save message on stop:", error);
               });
@@ -365,7 +378,7 @@ export const useChatHandlers = ({
               temporary: temporaryChatsEnabled,
               sandboxPreference,
 
-              selectedModel,
+              selectedModel: requestSelectedModel,
             },
           },
         );
@@ -381,7 +394,7 @@ export const useChatHandlers = ({
               temporary: temporaryChatsEnabled,
               sandboxPreference,
 
-              selectedModel,
+              selectedModel: requestSelectedModel,
             },
           },
         );
@@ -462,7 +475,7 @@ export const useChatHandlers = ({
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } else {
@@ -474,7 +487,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     }
@@ -518,7 +531,7 @@ export const useChatHandlers = ({
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
-          selectedModel,
+          selectedModel: requestSelectedModel,
           ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
@@ -531,8 +544,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-
-          selectedModel,
+          selectedModel: requestSelectedModel,
           ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
@@ -649,7 +661,7 @@ export const useChatHandlers = ({
           temporary: false,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } else {
@@ -686,15 +698,17 @@ export const useChatHandlers = ({
           temporary: true,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     }
   };
 
-  const handleContinue = () => {
+  const handleContinue = (selectedModelOverride?: SelectedModel) => {
     if (status === "streaming") return;
     hasManuallyStoppedRef.current = false;
+    const continuationSelectedModel =
+      selectedModelOverride ?? requestSelectedModel;
     sendMessage(
       { text: "continue", metadata: { isAutoContinue: true } },
       {
@@ -704,7 +718,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          selectedModel,
+          selectedModel: continuationSelectedModel,
         },
       },
     );
@@ -751,7 +765,7 @@ export const useChatHandlers = ({
           temporary: temporaryChatsEnabled,
           sandboxPreference,
 
-          selectedModel,
+          selectedModel: requestSelectedModel,
         },
       });
     } catch (error) {

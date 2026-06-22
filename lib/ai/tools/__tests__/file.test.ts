@@ -25,6 +25,9 @@ const mockUploadSandboxFileToConvex =
     typeof uploadSandboxFileToConvex
   >;
 
+const VALID_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+
 function makeContext(
   sandbox: unknown,
   overrides: Partial<ToolContext> = {},
@@ -382,7 +385,7 @@ describe("file tool image view", () => {
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
-            data: "iVBORw0KGgo=",
+            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -413,10 +416,47 @@ describe("file tool image view", () => {
         },
         {
           type: "image-data",
-          data: "iVBORw0KGgo=",
+          data: VALID_PNG_BASE64,
           mediaType: "image/png",
         },
       ],
+    });
+  });
+
+  test("returns a text error instead of invalid image-data for corrupt sandbox images", async () => {
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/broken.png",
+          mediaType: "image/png",
+          sizeBytes: 8,
+          kind: "image",
+          data: "iVBORw0KGgo=",
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: broken.png (image/png, 8 bytes).",
+        path: "/tmp/broken.png",
+        filename: "broken.png",
+        mediaType: "image/png",
+        sizeBytes: 8,
+        kind: "image",
+      }),
+    ).resolves.toEqual({
+      type: "text",
+      value:
+        "Error: View inspection found invalid image data (missing_png_ihdr).",
     });
   });
 });
