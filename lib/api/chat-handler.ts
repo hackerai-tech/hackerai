@@ -55,6 +55,7 @@ import {
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
+import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -204,7 +205,7 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
-      const selectedModelOverride: SelectedModel | undefined =
+      let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
@@ -267,6 +268,22 @@ export const createChatHandler = () => {
         Array.isArray(todos) ? todos : [],
         { isTemporary: !!temporary, regenerate },
       );
+
+      const extraUsageConfig = await buildExtraUsageConfig({
+        userId,
+        subscription,
+        userCustomization,
+        organizationId,
+      });
+
+      selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
+        finishReason: chat?.finish_reason,
+        isAutoContinue,
+        mode,
+        subscription,
+        selectedModelOverride,
+        extraUsageConfig,
+      });
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
@@ -341,13 +358,6 @@ export const createChatHandler = () => {
         },
         selectedModel,
       );
-
-      const extraUsageConfig = await buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
 
       const rateLimitInfo: RateLimitInfo =
         freeAskRateLimitInfo ??
@@ -687,6 +697,7 @@ export const createChatHandler = () => {
                   subscription,
                   {
                     agentRunSpendCap,
+                    extraUsageConfig,
                     onAgentRunSpendCapHit: (hit) => {
                       captureAgentRunSpendCapHit({
                         userId,

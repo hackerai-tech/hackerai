@@ -60,6 +60,7 @@ export type RateLimitWarningData =
       runCapDollars: number;
       monthlyRemainingDollars: number;
       capBasis: AgentRunSpendCapBasis;
+      premiumContinuationAllowed: boolean;
       midStream?: boolean;
     };
 
@@ -116,7 +117,11 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "agent-run-spend-cap") {
-    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue to keep working.`;
+    if (data.premiumContinuationAllowed) {
+      return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue to keep working with extra usage.`;
+    }
+
+    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue with Standard to keep working without extra usage.`;
   }
 
   // Token bucket warning — show dollar amounts when available
@@ -218,6 +223,7 @@ export const RateLimitWarning = ({
       run_cap_dollars: data.runCapDollars,
       monthly_remaining_dollars: data.monthlyRemainingDollars,
       cap_basis: data.capBasis,
+      premium_continuation_allowed: data.premiumContinuationAllowed,
     });
   }, [data]);
 

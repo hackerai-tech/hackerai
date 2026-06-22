@@ -20,7 +20,8 @@ import {
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
+import type { ChatStatus, ChatMessage, ChatMode, SelectedModel } from "@/types";
+import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { FileDetails } from "@/types/file";
 
 const USER_MESSAGE_PREVIEW_LINE_LIMIT = 20;
@@ -69,7 +70,11 @@ interface MessageItemProps {
   onSaveEdit: (newContent: string, remainingFileIds: string[]) => Promise<void>;
   onCancelEdit: () => void;
   onRegenerate: () => void | Promise<void>;
-  onContinue?: () => void;
+  agentRunSpendCapWarning?: Extract<
+    RateLimitWarningData,
+    { warningType: "agent-run-spend-cap" }
+  >;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
   onFeedbackSubmit: (details: string) => Promise<void>;
@@ -94,6 +99,8 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.mode !== next.mode) return false;
+  if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
+    return false;
   if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
     return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
@@ -161,6 +168,7 @@ export const MessageItem = memo(function MessageItem({
   getCachedUrl,
   showingLoadingIndicator,
   summarizationStatus,
+  agentRunSpendCapWarning,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isUserMessageExpanded, setIsUserMessageExpanded] = useState(false);
@@ -622,6 +630,9 @@ export const MessageItem = memo(function MessageItem({
           <FinishReasonNotice
             finishReason={finishReason}
             mode={mode}
+            agentRunSpendCapPremiumContinuationAllowed={
+              agentRunSpendCapWarning?.premiumContinuationAllowed ?? false
+            }
             onContinue={onContinue}
           />
         )}

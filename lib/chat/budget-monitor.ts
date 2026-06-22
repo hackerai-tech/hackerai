@@ -15,6 +15,7 @@ import {
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  canContinueProAgentRunWithPremium,
   PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
   type AgentRunSpendCap,
   type AgentRunSpendCapHit,
@@ -103,6 +104,7 @@ export class BudgetMonitor {
     private readonly subscription: SubscriptionTier,
     private readonly options: {
       agentRunSpendCap?: AgentRunSpendCap | null;
+      extraUsageConfig?: ExtraUsageConfig;
       onAgentRunSpendCapHit?: (hit: AgentRunSpendCapHit) => void;
     } = {},
   ) {
@@ -136,6 +138,9 @@ export class BudgetMonitor {
         monthlyRemainingDollars:
           Math.round(monthlyRemainingDollars * 100) / 100,
         capBasis: agentRunSpendCap.basis,
+        premiumContinuationAllowed: canContinueProAgentRunWithPremium(
+          this.options.extraUsageConfig,
+        ),
       };
       writeRateLimitWarning(this.writer, {
         warningType: "agent-run-spend-cap",
@@ -146,6 +151,7 @@ export class BudgetMonitor {
         runCapDollars: hit.runCapDollars,
         monthlyRemainingDollars: hit.monthlyRemainingDollars,
         capBasis: hit.capBasis,
+        premiumContinuationAllowed: hit.premiumContinuationAllowed,
         midStream: true,
       });
       this.options.onAgentRunSpendCapHit?.(hit);
