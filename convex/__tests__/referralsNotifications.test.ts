@@ -91,6 +91,12 @@ function makeMockCtx(initialTables: Partial<Tables>, userId = USER_ID) {
             );
             const chain = {
               first: jest.fn(async () => matches[0] ?? null),
+              unique: jest.fn(async () => {
+                if (matches.length > 1) {
+                  throw new Error("Expected unique result");
+                }
+                return matches[0] ?? null;
+              }),
               order: jest.fn(() => ({
                 first: jest.fn(async () => matches[0] ?? null),
                 take: jest.fn(async (limit: number) => matches.slice(0, limit)),

@@ -708,7 +708,7 @@ export const attributeReferredSignup = mutation({
         .withIndex("by_identity_hash", (q) =>
           q.eq("identity_hash", args.referredIdentityHash!),
         )
-        .first();
+        .unique();
       const deletedAt = identity?.deleted_at;
       const cooldownEndsAt =
         deletedAt == null

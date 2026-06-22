@@ -21,7 +21,7 @@ export const upsertSeen = mutation({
       .withIndex("by_identity_hash", (q) =>
         q.eq("identity_hash", args.identityHash),
       )
-      .first();
+      .unique();
 
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -59,7 +59,7 @@ export const markDeleted = mutation({
       .withIndex("by_identity_hash", (q) =>
         q.eq("identity_hash", args.identityHash),
       )
-      .first();
+      .unique();
 
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -101,7 +101,7 @@ export const getReferralCooldown = query({
       .withIndex("by_identity_hash", (q) =>
         q.eq("identity_hash", args.identityHash),
       )
-      .first();
+      .unique();
 
     const deletedAt = identity?.deleted_at;
     if (deletedAt == null) return { inCooldown: false };

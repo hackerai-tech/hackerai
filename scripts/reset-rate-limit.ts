@@ -23,7 +23,6 @@
  */
 
 import { config } from "dotenv";
-import { createHmac } from "crypto";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
@@ -31,6 +30,7 @@ import {
   isFreeQuotaSubjectRateLimitKey,
   isUserRateLimitKey,
 } from "../lib/rate-limit/key-cleanup";
+import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
 import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -40,8 +40,6 @@ config({ path: resolve(process.cwd(), ".env.local") });
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const REDIS_SCAN_COUNT = 500;
-const FREE_QUOTA_SUBJECT_PREFIX = "free_quota:v1:";
-const FREE_QUOTA_HMAC_CONTEXT = "email:v1:";
 
 type TestUserTier = "free" | "pro" | "ultra";
 
@@ -78,19 +76,6 @@ async function getUserId(email: string): Promise<string | null> {
     console.error(`❌ Error fetching user: ${error}`);
     return null;
   }
-}
-
-function getFreeQuotaSubject(email: string): string | null {
-  const secret = process.env.ACCOUNT_IDENTITY_HMAC_SECRET;
-  if (typeof secret !== "string" || secret.length === 0) return null;
-
-  const normalizedEmail = email.trim().toLowerCase();
-  if (normalizedEmail.length === 0) return null;
-
-  const digest = createHmac("sha256", secret)
-    .update(`${FREE_QUOTA_HMAC_CONTEXT}${normalizedEmail}`)
-    .digest("hex");
-  return `${FREE_QUOTA_SUBJECT_PREFIX}${digest}`;
 }
 
 async function resetRateLimitForUser(
@@ -135,7 +120,10 @@ async function resetRateLimitForUser(
     const userKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
-    const freeQuotaSubject = getFreeQuotaSubject(userEmail);
+    const freeQuotaSubject = createFreeQuotaSubjectWithSecret(
+      userEmail,
+      process.env.ACCOUNT_IDENTITY_HMAC_SECRET,
+    );
     const identityKeys = freeQuotaSubject
       ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
           isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
