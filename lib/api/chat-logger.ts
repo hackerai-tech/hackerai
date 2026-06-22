@@ -814,8 +814,12 @@ export function captureAgentRun({
     properties: {
       mode,
       subscription,
+      subscription_tier: subscription,
       outcome,
-      ...(sandboxInfo?.type && { sandboxType: sandboxInfo.type }),
+      ...(sandboxInfo?.type && {
+        sandboxType: sandboxInfo.type,
+        sandbox_type: sandboxInfo.type,
+      }),
     },
   });
 }
