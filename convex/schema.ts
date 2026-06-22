@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { retainedTailValidator } from "./lib/retainedTail";
 
 export default defineSchema({
   chats: defineTable({
@@ -72,12 +73,14 @@ export default defineSchema({
     cost: v.optional(v.number()),
     estimated_compacted_input_tokens: v.optional(v.number()),
     transcript_path: v.optional(v.string()),
+    retained_tail: v.optional(retainedTailValidator),
     previous_summaries: v.optional(
       v.array(
         v.object({
           summary_text: v.string(),
           summary_up_to_message_id: v.string(),
           summary_up_to_message_creation_time: v.optional(v.number()),
+          retained_tail: v.optional(retainedTailValidator),
         }),
       ),
     ),

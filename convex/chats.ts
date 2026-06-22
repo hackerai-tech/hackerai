@@ -8,6 +8,10 @@ import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 import {
+  retainedTailValidator,
+  type RetainedTailDoc,
+} from "./lib/retainedTail";
+import {
   coerceSelectedModel,
   normalizeSelectedModelForSubscription,
 } from "../types/chat";
@@ -20,6 +24,45 @@ import { convexLogger } from "./lib/logger";
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
+const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
+const CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE = 1000;
+const CHAT_SUMMARY_TELEMETRY_FIELDS = [
+  "input_tokens",
+  "output_tokens",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "cost",
+  "estimated_compacted_input_tokens",
+] as const;
+
+function normalizeTelemetryCleanupBatchSize(batchSize?: number): number {
+  if (!Number.isFinite(batchSize) || !batchSize) {
+    return CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE;
+  }
+  return Math.min(
+    CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE,
+    Math.max(1, Math.floor(batchSize)),
+  );
+}
+
+function hasChatSummaryTelemetry(
+  summary: Partial<
+    Record<(typeof CHAT_SUMMARY_TELEMETRY_FIELDS)[number], unknown>
+  >,
+): boolean {
+  return CHAT_SUMMARY_TELEMETRY_FIELDS.some(
+    (field) => summary[field] !== undefined,
+  );
+}
+
+const CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH = {
+  input_tokens: undefined,
+  output_tokens: undefined,
+  cache_read_tokens: undefined,
+  cache_write_tokens: undefined,
+  cost: undefined,
+  estimated_compacted_input_tokens: undefined,
+};
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -1253,6 +1296,8 @@ export const saveLatestSummary = mutation({
         model: v.optional(v.string()),
         status: v.optional(v.string()),
         error: v.optional(v.string()),
+        // Accepted for deploy-skew compatibility with older workers, but no
+        // longer persisted on chat_summaries.
         inputTokens: v.optional(v.number()),
         outputTokens: v.optional(v.number()),
         cacheReadTokens: v.optional(v.number()),
@@ -1260,6 +1305,7 @@ export const saveLatestSummary = mutation({
         cost: v.optional(v.number()),
         estimatedCompactedInputTokens: v.optional(v.number()),
         transcriptPath: v.optional(v.string()),
+        retainedTail: v.optional(retainedTailValidator),
       }),
     ),
   },
@@ -1313,6 +1359,7 @@ export const saveLatestSummary = mutation({
         summary_text: string;
         summary_up_to_message_id: string;
         summary_up_to_message_creation_time?: number;
+        retained_tail?: RetainedTailDoc;
       }[] = [];
 
       const previousSummaryId = chat.latest_summary_id;
@@ -1361,6 +1408,7 @@ export const saveLatestSummary = mutation({
             {
               summary_text: oldSummary.summary_text,
               summary_up_to_message_id: oldSummary.summary_up_to_message_id,
+              retained_tail: oldSummary.retained_tail,
               ...(previousSummaryCutoffCreationTime !== null
                 ? {
                     summary_up_to_message_creation_time:
@@ -1406,14 +1454,8 @@ export const saveLatestSummary = mutation({
           model: args.metadata?.model,
           status: args.metadata?.status ?? "completed",
           error: args.metadata?.error,
-          input_tokens: args.metadata?.inputTokens,
-          output_tokens: args.metadata?.outputTokens,
-          cache_read_tokens: args.metadata?.cacheReadTokens,
-          cache_write_tokens: args.metadata?.cacheWriteTokens,
-          cost: args.metadata?.cost,
-          estimated_compacted_input_tokens:
-            args.metadata?.estimatedCompactedInputTokens,
           transcript_path: args.metadata?.transcriptPath,
+          retained_tail: args.metadata?.retainedTail,
         }).filter(([, value]) => value !== undefined),
       );
 
@@ -1481,6 +1523,198 @@ export const saveLatestSummary = mutation({
 });
 
 /**
+ * Batch cleanup for legacy summary telemetry fields.
+ *
+ * Run repeatedly in production with the returned cursor until isDone is true,
+ * then the optional telemetry columns can be removed from the schema in a
+ * follow-up deploy.
+ */
+export const cleanupChatSummaryTelemetry = mutation({
+  args: {
+    serviceKey: v.string(),
+    paginationOpts: paginationOptsValidator,
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    patched: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const result = await ctx.db
+      .query("chat_summaries")
+      .order("asc")
+      .paginate(args.paginationOpts);
+
+    let matched = 0;
+    let patched = 0;
+    for (const summary of result.page) {
+      if (!hasChatSummaryTelemetry(summary)) continue;
+
+      matched++;
+      if (args.dryRun === true) continue;
+
+      await ctx.db.patch(summary._id, CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH);
+      patched++;
+    }
+
+    return {
+      scanned: result.page.length,
+      matched,
+      patched,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
+  },
+});
+
+/**
+ * Starts an async cleanup job for large production datasets.
+ *
+ * This schedules internal batches so a 250k-row cleanup does not require
+ * hundreds of manual cursor calls.
+ */
+export const startChatSummaryTelemetryCleanup = mutation({
+  args: {
+    serviceKey: v.string(),
+    batchSize: v.optional(v.number()),
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scheduled: v.boolean(),
+    batchSize: v.number(),
+    dryRun: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const batchSize = normalizeTelemetryCleanupBatchSize(args.batchSize);
+    const dryRun = args.dryRun === true;
+    await ctx.scheduler.runAfter(
+      0,
+      internal.chats.cleanupChatSummaryTelemetryBatch,
+      {
+        cursor: null,
+        batchSize,
+        dryRun,
+        scannedSoFar: 0,
+        matchedSoFar: 0,
+        patchedSoFar: 0,
+        batchCount: 0,
+        startedAt: Date.now(),
+      },
+    );
+
+    return { scheduled: true, batchSize, dryRun };
+  },
+});
+
+export const cleanupChatSummaryTelemetryBatch = internalMutation({
+  args: {
+    cursor: v.union(v.string(), v.null()),
+    batchSize: v.number(),
+    dryRun: v.optional(v.boolean()),
+    scannedSoFar: v.optional(v.number()),
+    matchedSoFar: v.optional(v.number()),
+    patchedSoFar: v.optional(v.number()),
+    batchCount: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    patched: v.number(),
+    totalScanned: v.number(),
+    totalMatched: v.number(),
+    totalPatched: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = normalizeTelemetryCleanupBatchSize(args.batchSize);
+    const result = await ctx.db
+      .query("chat_summaries")
+      .order("asc")
+      .paginate({ numItems: batchSize, cursor: args.cursor });
+
+    let matched = 0;
+    let patched = 0;
+    for (const summary of result.page) {
+      if (!hasChatSummaryTelemetry(summary)) continue;
+
+      matched++;
+      if (args.dryRun === true) continue;
+
+      await ctx.db.patch(summary._id, CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH);
+      patched++;
+    }
+
+    const totalScanned = (args.scannedSoFar ?? 0) + result.page.length;
+    const totalMatched = (args.matchedSoFar ?? 0) + matched;
+    const totalPatched = (args.patchedSoFar ?? 0) + patched;
+    const batchCount = (args.batchCount ?? 0) + 1;
+    const startedAt = args.startedAt ?? Date.now();
+
+    if (result.isDone) {
+      convexLogger.info("chat_summary_telemetry_cleanup_completed", {
+        service: "convex",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        dry_run: args.dryRun === true,
+        batch_size: batchSize,
+        batch_count: batchCount,
+        scanned: totalScanned,
+        matched: totalMatched,
+        patched: totalPatched,
+        duration_ms: Date.now() - startedAt,
+      });
+    } else {
+      if (batchCount % 25 === 0) {
+        convexLogger.info("chat_summary_telemetry_cleanup_progress", {
+          service: "convex",
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+          dry_run: args.dryRun === true,
+          batch_size: batchSize,
+          batch_count: batchCount,
+          scanned: totalScanned,
+          matched: totalMatched,
+          patched: totalPatched,
+        });
+      }
+
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chats.cleanupChatSummaryTelemetryBatch,
+        {
+          cursor: result.continueCursor,
+          batchSize,
+          dryRun: args.dryRun === true,
+          scannedSoFar: totalScanned,
+          matchedSoFar: totalMatched,
+          patchedSoFar: totalPatched,
+          batchCount,
+          startedAt,
+        },
+      );
+    }
+
+    return {
+      scanned: result.page.length,
+      matched,
+      patched,
+      totalScanned,
+      totalMatched,
+      totalPatched,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
+  },
+});
+
+/**
  * Get latest summary for a chat (backend only)
  * Optimized: 1 indexed query + 1 ID lookup (2 fast DB operations)
  */
@@ -1493,6 +1727,7 @@ export const getLatestSummaryForBackend = query({
     v.object({
       summary_text: v.string(),
       summary_up_to_message_id: v.string(),
+      retained_tail: v.optional(retainedTailValidator),
     }),
     v.null(),
   ),
@@ -1520,6 +1755,7 @@ export const getLatestSummaryForBackend = query({
       return {
         summary_text: summary.summary_text,
         summary_up_to_message_id: summary.summary_up_to_message_id,
+        retained_tail: summary.retained_tail,
       };
     } catch (error) {
       console.error("Failed to get latest summary:", error);

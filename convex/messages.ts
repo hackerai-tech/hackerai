@@ -1,4 +1,5 @@
 import { query, mutation, internalQuery } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
@@ -9,6 +10,7 @@ import {
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
+import type { RetainedTailDoc } from "./lib/retainedTail";
 
 /**
  * Extract text content from message parts for search and display
@@ -212,11 +214,13 @@ const getConvexErrorCode = (data: Value | undefined): string | undefined => {
  * Clears latest_summary_id if the summary's cutoff message was deleted
  */
 const tryFallbackSummary = async (
-  ctx: any,
+  ctx: MutationCtx,
   summaryId: Id<"chat_summaries">,
   previousSummaries: {
     summary_text: string;
     summary_up_to_message_id: string;
+    summary_up_to_message_creation_time?: number;
+    retained_tail?: RetainedTailDoc;
   }[],
   earliestDeletedTime: number,
 ): Promise<boolean> => {
@@ -225,7 +229,7 @@ const tryFallbackSummary = async (
     previousSummaries.map((s) =>
       ctx.db
         .query("messages")
-        .withIndex("by_message_id", (q: any) =>
+        .withIndex("by_message_id", (q) =>
           q.eq("id", s.summary_up_to_message_id),
         )
         .first(),
@@ -235,10 +239,26 @@ const tryFallbackSummary = async (
   // Find the first candidate whose cutoff message still exists and predates the deletion
   for (let i = 0; i < previousSummaries.length; i++) {
     const cutoffMsg = cutoffMessages[i];
-    if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
+    const retainedTailStartId =
+      previousSummaries[i].retained_tail?.start_message_id;
+    const retainedTailStartExists =
+      !retainedTailStartId ||
+      retainedTailStartId === previousSummaries[i].summary_up_to_message_id ||
+      !!(await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", retainedTailStartId))
+        .first());
+
+    if (
+      cutoffMsg &&
+      retainedTailStartExists &&
+      cutoffMsg._creationTime < earliestDeletedTime
+    ) {
       await ctx.db.patch(summaryId, {
         summary_text: previousSummaries[i].summary_text,
         summary_up_to_message_id: previousSummaries[i].summary_up_to_message_id,
+        summary_up_to_message_creation_time: cutoffMsg._creationTime,
+        retained_tail: previousSummaries[i].retained_tail,
         previous_summaries: previousSummaries.slice(i + 1),
       });
       return true;
@@ -248,7 +268,7 @@ const tryFallbackSummary = async (
 };
 
 const checkAndInvalidateSummary = async (
-  ctx: any,
+  ctx: MutationCtx,
   chatId: string,
   deletedMessages: { id: string; creationTime: number }[],
 ) => {
@@ -257,7 +277,7 @@ const checkAndInvalidateSummary = async (
   try {
     const chat = await ctx.db
       .query("chats")
-      .withIndex("by_chat_id", (q: any) => q.eq("id", chatId))
+      .withIndex("by_chat_id", (q) => q.eq("id", chatId))
       .first();
 
     if (!chat || !chat.latest_summary_id) return;
@@ -268,6 +288,8 @@ const checkAndInvalidateSummary = async (
     const previousSummaries: {
       summary_text: string;
       summary_up_to_message_id: string;
+      summary_up_to_message_creation_time?: number;
+      retained_tail?: RetainedTailDoc;
     }[] = summary.previous_summaries ?? [];
 
     const earliestDeletedTime = Math.min(
@@ -276,7 +298,7 @@ const checkAndInvalidateSummary = async (
 
     const cutoffMessage = await ctx.db
       .query("messages")
-      .withIndex("by_message_id", (q: any) =>
+      .withIndex("by_message_id", (q) =>
         q.eq("id", summary.summary_up_to_message_id),
       )
       .first();
@@ -301,8 +323,45 @@ const checkAndInvalidateSummary = async (
       return;
     }
 
+    const retainedTailStartMessageId = summary.retained_tail?.start_message_id;
+    const retainedTailStartMessage =
+      retainedTailStartMessageId &&
+      retainedTailStartMessageId !== summary.summary_up_to_message_id
+        ? await ctx.db
+            .query("messages")
+            .withIndex("by_message_id", (q) =>
+              q.eq("id", retainedTailStartMessageId),
+            )
+            .first()
+        : retainedTailStartMessageId === summary.summary_up_to_message_id
+          ? cutoffMessage
+          : null;
+
+    if (retainedTailStartMessageId && !retainedTailStartMessage) {
+      const found = await tryFallbackSummary(
+        ctx,
+        chat.latest_summary_id,
+        previousSummaries,
+        earliestDeletedTime,
+      );
+      if (found) return;
+
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: undefined,
+      });
+      try {
+        await ctx.db.delete(chat.latest_summary_id);
+      } catch (error) {
+        console.error("[Messages] Failed to delete stale summary:", error);
+      }
+      return;
+    }
+
     const shouldInvalidate = deletedMessages.some(
-      (msg) => msg.creationTime <= cutoffMessage._creationTime,
+      (msg) =>
+        msg.creationTime <= cutoffMessage._creationTime ||
+        (retainedTailStartMessageId != null &&
+          msg.id === retainedTailStartMessageId),
     );
 
     if (shouldInvalidate) {
