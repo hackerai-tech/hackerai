@@ -194,42 +194,4 @@ describe("retained tail selection", () => {
       { type: "text", text: "retained part" },
     ]);
   });
-
-  it("caps reconstructed retained tails to the persisted metadata budget", () => {
-    const hugeOutput = "raw-output ".repeat(10_000);
-    const messages: UIMessage[] = [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        parts: [
-          {
-            type: "tool-run_terminal_cmd",
-            state: "output-available",
-            output: hugeOutput,
-          } as any,
-        ],
-      },
-    ];
-
-    const projected = projectRetainedTailFromMessages(
-      messages,
-      {
-        start_message_id: "assistant-1",
-        start_part_index: 0,
-        budget_tokens: 128,
-        retained_tokens: 128,
-        retained_message_count: 1,
-        retained_part_count: 1,
-        projected_part_count: 1,
-        strategy: "token_budgeted_tail_v1",
-      },
-      { budgetTokens: 50_000 },
-    );
-
-    expect(projected).toHaveLength(1);
-    const [projectedPart] = projected[0].parts as any[];
-    expect(projectedPart.output).not.toBe(hugeOutput);
-    expect(JSON.stringify(projected)).not.toContain(hugeOutput);
-    expect(JSON.stringify(projected)).toContain("retained tail");
-  });
 });

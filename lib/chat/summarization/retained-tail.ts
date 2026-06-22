@@ -406,11 +406,6 @@ export const projectRetainedTailFromMessages = (
 ): UIMessage[] => {
   if (retainedTail.strategy !== RETAINED_TAIL_STRATEGY) return [];
 
-  const effectiveBudgetTokens = Math.min(
-    Math.max(0, Math.floor(budgetTokens)),
-    Math.max(0, Math.floor(retainedTail.budget_tokens)),
-  );
-
   const startIndex = messages.findIndex(
     (message) => message.id === retainedTail.start_message_id,
   );
@@ -427,7 +422,7 @@ export const projectRetainedTailFromMessages = (
   ].filter((message) => message.parts.length > 0);
 
   return projectMessagesToTokenBudget(candidates, {
-    budgetTokens: effectiveBudgetTokens,
+    budgetTokens,
     fileTokens,
   });
 };
