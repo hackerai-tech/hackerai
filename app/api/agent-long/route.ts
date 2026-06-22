@@ -8,10 +8,14 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   getChatById,
+  getUserCustomization,
   handleInitialChatAndUserMessage,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
-import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
+import {
+  assertFreeAgentGates,
+  buildExtraUsageConfig,
+} from "@/lib/api/chat-stream-helpers";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceSelectedModel,
@@ -19,6 +23,7 @@ import {
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
+import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import { assertLocalSandboxFallbackAllowed } from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
@@ -56,7 +61,7 @@ export async function POST(req: NextRequest) {
     } = await req.json();
 
     const { userId, subscription, organizationId } = await getUserIDAndPro(req);
-    const selectedModelOverride: SelectedModel | undefined =
+    let selectedModelOverride: SelectedModel | undefined =
       normalizeSelectedModelOverrideForSubscription(
         coerceSelectedModel(rawSelectedModel ?? null),
         subscription,
@@ -101,6 +106,21 @@ export async function POST(req: NextRequest) {
     const existingChat = temporary ? null : await getChatById({ id: chatId });
     const isNewChat =
       !temporary && !existingChat && !regenerate && !isAutoContinue;
+    const userCustomization = await getUserCustomization({ userId });
+    const extraUsageConfig = await buildExtraUsageConfig({
+      userId,
+      subscription,
+      userCustomization,
+      organizationId,
+    });
+    selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
+      finishReason: existingChat?.finish_reason,
+      isAutoContinue,
+      mode: "agent",
+      subscription,
+      selectedModelOverride,
+      extraUsageConfig,
+    });
 
     let messagesForPersistence = stripLocalDesktopSourcePaths(requestMessages);
     let messagesForTrigger = messagesForPersistence;

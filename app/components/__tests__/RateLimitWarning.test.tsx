@@ -72,6 +72,7 @@ describe("RateLimitWarning", () => {
           runCapDollars: 5,
           monthlyRemainingDollars: 20,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: true,
         }}
         onDismiss={jest.fn()}
       />,
@@ -86,6 +87,29 @@ describe("RateLimitWarning", () => {
     expect(
       screen.queryByRole("button", { name: /add credits/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("points spend-cap continuation to Standard when premium continuation is unavailable", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "agent-run-spend-cap",
+          resetTime: new Date(Date.now() + 60_000),
+          subscription: "pro",
+          mode: "agent",
+          runCostDollars: 5.24,
+          runCapDollars: 5,
+          monthlyRemainingDollars: 20,
+          capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: false,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
+      "Continue with Standard",
+    );
   });
 
   it("uses extra usage copy when paid overflow credits are active", () => {

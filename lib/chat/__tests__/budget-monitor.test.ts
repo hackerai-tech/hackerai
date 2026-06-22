@@ -154,6 +154,7 @@ describe("BudgetMonitor", () => {
       runCapDollars: 1,
       monthlyRemainingDollars: 10,
       capBasis: "fixed_5_dollars",
+      premiumContinuationAllowed: false,
     });
     expect(writer.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -165,6 +166,42 @@ describe("BudgetMonitor", () => {
           runCostDollars: 1.25,
           runCapDollars: 1,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: false,
+        }),
+      }),
+    );
+  });
+
+  it("marks Pro Agent run cap premium continuation as allowed when extra usage is available", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        monthlyLimitPoints: 200_000,
+        monthlyRemainingAtStart: 100_000,
+      },
+      writer,
+      "pro",
+      {
+        agentRunSpendCap: { capDollars: 1, basis: "fixed_5_dollars" },
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: false,
+          balanceDollars: 0,
+          autoReloadEnabled: true,
+        },
+      },
+    );
+
+    const decision = monitor.checkAfterStep(1.25);
+
+    expect(decision).toBe("abort-agent-run-spend-cap");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "agent-run-spend-cap",
+          premiumContinuationAllowed: true,
         }),
       }),
     );

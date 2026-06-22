@@ -46,6 +46,7 @@ export function captureAgentRunSpendCapHit({
       run_cap_dollars: hit.runCapDollars,
       monthly_remaining_dollars: hit.monthlyRemainingDollars,
       cap_basis: hit.capBasis,
+      premium_continuation_allowed: hit.premiumContinuationAllowed,
       $set: {
         subscription_tier: subscription,
         last_agent_run_spend_cap_hit_at: new Date().toISOString(),

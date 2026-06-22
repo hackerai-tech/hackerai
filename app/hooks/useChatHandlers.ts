@@ -10,6 +10,7 @@ import {
   normalizeSelectedModelForSubscription,
   type ChatMessage,
   type ChatStatus,
+  type SelectedModel,
 } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
@@ -696,9 +697,11 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleContinue = () => {
+  const handleContinue = (selectedModelOverride?: SelectedModel) => {
     if (status === "streaming") return;
     hasManuallyStoppedRef.current = false;
+    const continuationSelectedModel =
+      selectedModelOverride ?? requestSelectedModel;
     sendMessage(
       { text: "continue", metadata: { isAutoContinue: true } },
       {
@@ -708,7 +711,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          selectedModel: requestSelectedModel,
+          selectedModel: continuationSelectedModel,
         },
       },
     );
