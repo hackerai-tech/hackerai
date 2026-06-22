@@ -445,7 +445,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
 
-    const selectedSubscription = subscriptionFromEntitlements ?? subscription;
+    const selectedSubscription =
+      subscriptionFromEntitlements === null ||
+      subscriptionFromEntitlements === "free"
+        ? subscription
+        : subscriptionFromEntitlements;
     const savedModePresent = initialSavedChatModeRef.current !== null;
     const userSelectedModeThisSession =
       hasUserSelectedModeThisSessionRef.current;
