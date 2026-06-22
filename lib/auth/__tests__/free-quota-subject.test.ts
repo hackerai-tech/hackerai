@@ -78,8 +78,8 @@ describe("free quota subject", () => {
       expect(error).toMatchObject({
         type: "forbidden",
         surface: "auth",
-        cause: "account_identity_hmac_secret_missing",
       });
+      expect((error as { cause?: unknown }).cause).toBeUndefined();
     }
   });
 });

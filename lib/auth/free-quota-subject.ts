@@ -23,10 +23,7 @@ export function createFreeQuotaSubject(email: unknown): string | undefined {
   const secret = getAccountIdentityHmacSecret();
   if (!secret) {
     if (process.env.NODE_ENV === "production") {
-      throw new ChatSDKError(
-        "forbidden:auth",
-        "account_identity_hmac_secret_missing",
-      );
+      throw new ChatSDKError("forbidden:auth");
     }
     return undefined;
   }
