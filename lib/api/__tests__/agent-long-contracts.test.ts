@@ -452,20 +452,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
-  test("agent-long uses the Trigger.dev dashboard default region", () => {
-    const triggerIdx = routeSrc.indexOf("tasks.trigger");
-    const triggerCompletedIdx = routeSrc.indexOf(
-      "const triggerCompletedAt",
+  test("agent-long only passes explicit Trigger.dev region when mapped", () => {
+    const routingIdx = routeSrc.indexOf(
+      "getTriggerRegionForVercelRequest(req)",
+    );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", routingIdx);
+    const regionOptionIdx = routeSrc.indexOf(
+      "...(triggerRegion ? { region: triggerRegion } : {})",
       triggerIdx,
     );
-    const triggerCallSrc = routeSrc.slice(triggerIdx, triggerCompletedIdx);
 
-    expect(triggerIdx).toBeGreaterThan(-1);
-    expect(triggerCompletedIdx).toBeGreaterThan(triggerIdx);
-    expect(triggerCallSrc).not.toMatch(/\bregion\s*:/);
-    expect(routeSrc).not.toMatch(
-      /getTriggerRegionForVercelRequest|triggerRegion|trigger-region/,
-    );
+    expect(routingIdx).toBeGreaterThan(-1);
+    expect(triggerIdx).toBeGreaterThan(routingIdx);
+    expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
+    expect(routeSrc).not.toMatch(/trigger region routing/);
   });
 });
