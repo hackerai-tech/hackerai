@@ -16,7 +16,6 @@ import {
   assertFreeAgentGates,
   buildExtraUsageConfig,
 } from "@/lib/api/chat-stream-helpers";
-import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceSelectedModel,
   normalizeSelectedModelOverrideForSubscription,
@@ -68,7 +67,6 @@ export async function POST(req: NextRequest) {
       );
     await assertUserCanMakeCostIncurringRequest(userId);
     const userLocation = geolocation(req);
-    const triggerRegion = getTriggerRegionForVercelRequest(req);
 
     assertFreeAgentGates({
       mode: "agent",
@@ -229,7 +227,6 @@ export async function POST(req: NextRequest) {
       },
       {
         tags: triggerTags,
-        ...(triggerRegion ? { region: triggerRegion } : {}),
         metadata: {
           status: "queued",
           chatId,
