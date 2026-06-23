@@ -140,6 +140,7 @@ export type RateLimitWarningData =
       runCapDollars: number;
       monthlyRemainingDollars: number;
       capBasis: AgentRunSpendCapBasis;
+      premiumContinuationAllowed: boolean;
       midStream?: boolean;
     };
 

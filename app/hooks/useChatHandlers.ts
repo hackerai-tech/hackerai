@@ -10,6 +10,8 @@ import {
   normalizeSelectedModelForSubscription,
   type ChatMessage,
   type ChatStatus,
+  type LimitRescueRequest,
+  type SelectedModel,
 } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
@@ -48,6 +50,10 @@ interface UseChatHandlersProps {
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
+
+export type RetryOptions = {
+  limitRescue?: LimitRescueRequest;
+};
 
 export const useChatHandlers = ({
   chatId,
@@ -487,7 +493,7 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleRetry = async () => {
+  const handleRetry = async (options: RetryOptions = {}) => {
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -503,41 +509,43 @@ export const useChatHandlers = ({
         .map((t) => t.sourceMessageId as string),
     );
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
+
+    const messagesToLastUser = getMessagesUpToLastRealUser(messages);
+    setMessages(messagesToLastUser);
+
+    const shouldSendClientMessagesForRegenerate =
+      hasRestageableLocalDesktopAttachments(messagesToLastUser);
+    const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
+      ? messagesToLastUser
+      : [];
+
     if (!temporaryChatsEnabled) {
-      // For persisted chats, backend fetches from database - explicitly send no messages
+      // For persisted chats, backend fetches from database unless local desktop
+      // attachments must be restaged from the client.
       regenerate({
         body: {
           mode: chatModeRef.current,
-          messages: [],
+          messages: persistentRegenerateMessages,
           todos: cleanedTodos,
           regenerate: true,
+          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           temporary: false,
           sandboxPreference,
           selectedModel: requestSelectedModel,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
     } else {
-      // For temporary chats, filter out empty assistant message if present (from error)
-      // Check if last message is an empty assistant message
-      const lastMessage = messages[messages.length - 1];
-      const isLastMessageEmptyAssistant =
-        lastMessage?.role === "assistant" &&
-        (!lastMessage.parts || lastMessage.parts.length === 0);
-
-      const messagesToSend = isLastMessageEmptyAssistant
-        ? messages.slice(0, -1)
-        : messages;
-
       regenerate({
         body: {
           mode: chatModeRef.current,
-          messages: messagesToSend,
+          messages: messagesToLastUser,
           todos: cleanedTodos,
           regenerate: true,
           temporary: true,
           sandboxPreference,
-
           selectedModel: requestSelectedModel,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       });
     }
@@ -696,9 +704,11 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleContinue = () => {
+  const handleContinue = (selectedModelOverride?: SelectedModel) => {
     if (status === "streaming") return;
     hasManuallyStoppedRef.current = false;
+    const continuationSelectedModel =
+      selectedModelOverride ?? requestSelectedModel;
     sendMessage(
       { text: "continue", metadata: { isAutoContinue: true } },
       {
@@ -708,7 +718,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          selectedModel: requestSelectedModel,
+          selectedModel: continuationSelectedModel,
         },
       },
     );

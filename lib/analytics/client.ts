@@ -97,6 +97,24 @@ export function captureAddCreditCtaClick(properties: CtaAnalyticsProperties) {
   );
 }
 
+export function capturePaidDailyFreeAllowanceImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceImpressed,
+    paidFunnelProperties(properties),
+  );
+}
+
+export function capturePaidDailyFreeAllowanceClick(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureAuthenticatedEvent(
+    PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceClicked,
+    paidFunnelProperties(properties),
+  );
+}
+
 export function captureAgentRunSpendCapImpression(
   properties: CtaAnalyticsProperties,
 ) {

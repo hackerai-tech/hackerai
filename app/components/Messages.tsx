@@ -19,17 +19,20 @@ import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
 import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
+import type { RetryOptions } from "../hooks/useChatHandlers";
 import { toast } from "sonner";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
+import type { RateLimitWarningData } from "./RateLimitWarning";
+import type { SelectedModel } from "@/types";
 
 interface MessagesProps {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
-  onRetry: () => void;
-  onContinue?: () => void;
+  onRetry: (options?: RetryOptions) => void | Promise<void>;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
@@ -57,6 +60,10 @@ interface MessagesProps {
     message: string;
   } | null;
   mode?: import("@/types").ChatMode;
+  agentRunSpendCapWarning?: Extract<
+    RateLimitWarningData,
+    { warningType: "agent-run-spend-cap" }
+  >;
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
@@ -84,6 +91,7 @@ export const Messages = ({
   uploadStatus,
   summarizationStatus,
   mode,
+  agentRunSpendCapWarning,
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
@@ -302,6 +310,7 @@ export const Messages = ({
               tempChatFileDetails={tempChatFileDetails}
               finishReason={finishReason}
               mode={mode}
+              agentRunSpendCapWarning={agentRunSpendCapWarning}
               isTemporaryChat={isTemporaryChat}
               branchedFromChatId={branchedFromChatId}
               branchedFromChatTitle={branchedFromChatTitle}

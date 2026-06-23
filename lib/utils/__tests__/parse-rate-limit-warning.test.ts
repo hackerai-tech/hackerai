@@ -13,6 +13,7 @@ describe("parseRateLimitWarning", () => {
         runCapDollars: 5,
         monthlyRemainingDollars: 18,
         capBasis: "fixed_5_dollars",
+        premiumContinuationAllowed: true,
         midStream: true,
       },
       { hasUserDismissed: false },
@@ -26,6 +27,7 @@ describe("parseRateLimitWarning", () => {
       runCapDollars: 5,
       monthlyRemainingDollars: 18,
       capBasis: "fixed_5_dollars",
+      premiumContinuationAllowed: true,
       midStream: true,
     });
   });
@@ -42,6 +44,7 @@ describe("parseRateLimitWarning", () => {
           runCapDollars: 5,
           monthlyRemainingDollars: 18,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: true,
         },
         { hasUserDismissed: false },
       ),
@@ -60,6 +63,7 @@ describe("parseRateLimitWarning", () => {
           runCapDollars: 5,
           monthlyRemainingDollars: 18,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: true,
         },
         { hasUserDismissed: false },
       ),
@@ -76,6 +80,8 @@ describe("parseRateLimitWarning", () => {
     { runCostDollars: Number.NaN },
     { runCapDollars: Number.POSITIVE_INFINITY },
     { monthlyRemainingDollars: Number.NEGATIVE_INFINITY },
+    { premiumContinuationAllowed: undefined },
+    { premiumContinuationAllowed: "true" },
   ])("rejects invalid spend-cap payload: %o", (overrides) => {
     expect(
       parseRateLimitWarning(
@@ -88,6 +94,7 @@ describe("parseRateLimitWarning", () => {
           runCapDollars: 5,
           monthlyRemainingDollars: 18,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: true,
           ...overrides,
         },
         { hasUserDismissed: false },

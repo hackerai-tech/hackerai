@@ -170,6 +170,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorCategory",
   "providerStatusCode",
   "providerErrorRetriable",
+  "paidDailyFreeAllowance",
   "upload_failure_kind",
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
@@ -612,6 +613,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
               primaryCta: undefined,
               eligibleCtas: [],
             };
+        const paidDailyFreeAllowance =
+          error.metadata?.paidDailyFreeAllowance &&
+          typeof error.metadata.paidDailyFreeAllowance === "object"
+            ? (error.metadata.paidDailyFreeAllowance as Record<string, unknown>)
+            : undefined;
 
         phLogger.event(
           PAID_FUNNEL_EVENTS.limitHit,
@@ -629,6 +635,20 @@ export function createChatLogger(config: ChatLoggerConfig) {
             add_credit_available: pressure.addCreditAvailable,
             primary_cta: pressure.primaryCta,
             eligible_ctas: pressure.eligibleCtas,
+            paid_daily_free_allowance_available:
+              paidDailyFreeAllowance?.available,
+            paid_daily_free_allowance_unavailable_reason:
+              paidDailyFreeAllowance?.unavailableReason,
+            paid_daily_free_allowance_requests_remaining:
+              paidDailyFreeAllowance?.requestsRemaining,
+            paid_daily_free_allowance_request_limit:
+              paidDailyFreeAllowance?.requestLimit,
+            paid_daily_free_allowance_cost_remaining_dollars:
+              paidDailyFreeAllowance?.costRemainingDollars,
+            paid_daily_free_allowance_cost_limit_dollars:
+              paidDailyFreeAllowance?.costLimitDollars,
+            paid_daily_free_allowance_rollout_percent:
+              paidDailyFreeAllowance?.rolloutPercent,
             chat_id: config.chatId,
             endpoint: config.endpoint,
             $set: {
@@ -905,6 +925,7 @@ export function captureUsageCost({
   endpoint,
   mode,
   usage,
+  paidDailyFreeAllowance,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -914,6 +935,13 @@ export function captureUsageCost({
   endpoint: "/api/chat" | "/api/agent-long";
   mode: ChatMode;
   usage: UsageCostRecord;
+  paidDailyFreeAllowance?: {
+    active: boolean;
+    cutOff?: boolean;
+    requestLimit?: number;
+    costLimitDollars?: number;
+    resetTimestamp?: number;
+  };
 }) {
   if (!posthog) return;
   posthog.capture({
@@ -942,6 +970,18 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(paidDailyFreeAllowance?.active && {
+        limit_rescue_type: "paid_daily_free_allowance",
+        paid_daily_free_allowance_active: true,
+        paid_daily_free_allowance_cut_off:
+          paidDailyFreeAllowance.cutOff === true,
+        paid_daily_free_allowance_request_limit:
+          paidDailyFreeAllowance.requestLimit,
+        paid_daily_free_allowance_cost_limit_dollars:
+          paidDailyFreeAllowance.costLimitDollars,
+        paid_daily_free_allowance_reset_timestamp:
+          paidDailyFreeAllowance.resetTimestamp,
+      }),
       $set: {
         subscription_tier: subscription,
         last_usage_cost_at: new Date().toISOString(),

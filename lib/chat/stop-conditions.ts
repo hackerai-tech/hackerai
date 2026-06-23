@@ -3,12 +3,11 @@ import {
   detectDoomLoop,
   type MinimalStep,
 } from "@/lib/chat/doom-loop-detection";
+export { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
-
-export const AGENT_RUN_SPEND_CAP_FINISH_REASON = "agent-run-spend-cap";
 
 export function tokenExhaustedAfterSummarization(state: {
   threshold: number;

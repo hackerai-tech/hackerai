@@ -662,7 +662,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (error instanceof ChatSDKError) {
         const errorMessage =
           typeof error.cause === "string" ? error.cause : error.message;
-        if (error.type !== "rate_limit" || isMobile) {
+        if (error.type !== "rate_limit") {
           toast.error(errorMessage);
         }
       } else if (isMobile && error.name !== "AbortError") {
@@ -1293,6 +1293,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
+  const agentRunSpendCapWarning =
+    rateLimitWarning?.warningType === "agent-run-spend-cap"
+      ? rateLimitWarning
+      : undefined;
 
   // UI-level temporary chat flag
   const isTempChat = !isExistingChat && temporaryChatsEnabled;
@@ -1385,6 +1389,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}
+                  agentRunSpendCapWarning={agentRunSpendCapWarning}
                   uploadStatus={uploadStatus}
                   summarizationStatus={summarizationStatus}
                   mode={chatMode ?? (chatData as any)?.default_model_slug}

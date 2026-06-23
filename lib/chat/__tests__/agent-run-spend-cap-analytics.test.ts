@@ -22,6 +22,7 @@ describe("captureAgentRunSpendCapHit", () => {
           runCapDollars: 5,
           monthlyRemainingDollars: 18,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: true,
         },
       });
 
@@ -42,6 +43,7 @@ describe("captureAgentRunSpendCapHit", () => {
           run_cap_dollars: 5,
           monthly_remaining_dollars: 18,
           cap_basis: "fixed_5_dollars",
+          premium_continuation_allowed: true,
           $set: expect.objectContaining({
             subscription_tier: "pro",
             last_agent_run_spend_cap_hit_at: expect.any(String),

@@ -15,6 +15,7 @@ import {
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  canContinueProAgentRunWithPremium,
   PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
   type AgentRunSpendCap,
   type AgentRunSpendCapHit,
@@ -33,6 +34,8 @@ export interface BudgetSnapshot {
   extraUsageBalanceAtStart: number;
   extraUsageAutoReload: boolean;
   extraUsageMonthlyRemainingAtStart?: number;
+  capReasonOnExhaustion?: LimitCapReason;
+  extraUsageOverflowAllowed?: boolean;
 }
 
 /**
@@ -103,6 +106,7 @@ export class BudgetMonitor {
     private readonly subscription: SubscriptionTier,
     private readonly options: {
       agentRunSpendCap?: AgentRunSpendCap | null;
+      extraUsageConfig?: ExtraUsageConfig;
       onAgentRunSpendCapHit?: (hit: AgentRunSpendCapHit) => void;
     } = {},
   ) {
@@ -136,6 +140,9 @@ export class BudgetMonitor {
         monthlyRemainingDollars:
           Math.round(monthlyRemainingDollars * 100) / 100,
         capBasis: agentRunSpendCap.basis,
+        premiumContinuationAllowed: canContinueProAgentRunWithPremium(
+          this.options.extraUsageConfig,
+        ),
       };
       writeRateLimitWarning(this.writer, {
         warningType: "agent-run-spend-cap",
@@ -146,6 +153,7 @@ export class BudgetMonitor {
         runCapDollars: hit.runCapDollars,
         monthlyRemainingDollars: hit.monthlyRemainingDollars,
         capBasis: hit.capBasis,
+        premiumContinuationAllowed: hit.premiumContinuationAllowed,
         midStream: true,
       });
       this.options.onAgentRunSpendCapHit?.(hit);
@@ -178,7 +186,9 @@ export class BudgetMonitor {
           snapshot.extraUsageAutoReload ||
           snapshot.extraUsageBalanceAtStart >= overflowDollars;
         const hasExtraCushion =
-          guardrailAllowsOverflow && balanceAllowsOverflow;
+          snapshot.extraUsageOverflowAllowed !== false &&
+          guardrailAllowsOverflow &&
+          balanceAllowsOverflow;
 
         if (hasExtraCushion) {
           if (threshold <= this.highestThresholdEmitted) {
@@ -195,11 +205,12 @@ export class BudgetMonitor {
           });
         } else {
           const capReason: LimitCapReason =
-            this.subscription === "free"
+            snapshot.capReasonOnExhaustion ??
+            (this.subscription === "free"
               ? "free_monthly_exhausted"
               : !guardrailAllowsOverflow
                 ? "extra_usage_cap"
-                : "monthly_exhausted";
+                : "monthly_exhausted");
           this.emit({
             usedPercent: 100,
             projectedUsedPoints: snapshot.monthlyLimitPoints,

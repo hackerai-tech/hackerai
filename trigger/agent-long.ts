@@ -1336,6 +1336,7 @@ export const agentLongTask = task({
                   subscription,
                   {
                     agentRunSpendCap,
+                    extraUsageConfig,
                     onAgentRunSpendCapHit: (hit) => {
                       captureAgentRunSpendCapHit({
                         userId,

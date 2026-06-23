@@ -129,6 +129,38 @@ describe("BudgetMonitor", () => {
     );
   });
 
+  it("aborts with the paid daily free allowance cap reason when overflow is disabled", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        monthlyLimitPoints: 1000,
+        monthlyRemainingAtStart: 100,
+        monthlyResetTime: new Date("2026-06-12T00:00:00.000Z"),
+        extraUsageBalanceAtStart: 0,
+        extraUsageAutoReload: false,
+        extraUsageOverflowAllowed: false,
+        capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
+      },
+      writer,
+      "pro",
+    );
+
+    const decision = monitor.checkAfterStep(0.02);
+
+    expect(decision).toBe("abort");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "token-bucket",
+          cutOff: true,
+          capReason: "paid_daily_free_allowance_cut_off",
+          limitDollars: 0.1,
+        }),
+      }),
+    );
+  });
+
   it("aborts Pro Agent runs when the per-run spend cap is crossed", () => {
     const writer = makeWriter();
     const onAgentRunSpendCapHit = jest.fn();
@@ -154,6 +186,7 @@ describe("BudgetMonitor", () => {
       runCapDollars: 1,
       monthlyRemainingDollars: 10,
       capBasis: "fixed_5_dollars",
+      premiumContinuationAllowed: false,
     });
     expect(writer.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -165,6 +198,42 @@ describe("BudgetMonitor", () => {
           runCostDollars: 1.25,
           runCapDollars: 1,
           capBasis: "fixed_5_dollars",
+          premiumContinuationAllowed: false,
+        }),
+      }),
+    );
+  });
+
+  it("marks Pro Agent run cap premium continuation as allowed when extra usage is available", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        monthlyLimitPoints: 200_000,
+        monthlyRemainingAtStart: 100_000,
+      },
+      writer,
+      "pro",
+      {
+        agentRunSpendCap: { capDollars: 1, basis: "fixed_5_dollars" },
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: false,
+          balanceDollars: 0,
+          autoReloadEnabled: true,
+        },
+      },
+    );
+
+    const decision = monitor.checkAfterStep(1.25);
+
+    expect(decision).toBe("abort-agent-run-spend-cap");
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: expect.objectContaining({
+          warningType: "agent-run-spend-cap",
+          premiumContinuationAllowed: true,
         }),
       }),
     );

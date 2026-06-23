@@ -92,6 +92,7 @@ export function parseRateLimitWarning(
     const runCapDollars = rawData.runCapDollars;
     const monthlyRemainingDollars = rawData.monthlyRemainingDollars;
     const capBasis = rawData.capBasis;
+    const premiumContinuationAllowed = rawData.premiumContinuationAllowed;
     if (
       subscription !== "pro" ||
       rawData.mode !== "agent" ||
@@ -101,7 +102,8 @@ export function parseRateLimitWarning(
       runCapDollars < 0 ||
       !isNumber(monthlyRemainingDollars) ||
       monthlyRemainingDollars < 0 ||
-      !isAgentRunSpendCapBasis(capBasis)
+      !isAgentRunSpendCapBasis(capBasis) ||
+      typeof premiumContinuationAllowed !== "boolean"
     ) {
       return null;
     }
@@ -115,6 +117,7 @@ export function parseRateLimitWarning(
       runCapDollars,
       monthlyRemainingDollars,
       capBasis,
+      premiumContinuationAllowed,
       ...(midStream && { midStream: true }),
     };
   }
