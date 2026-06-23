@@ -29,13 +29,18 @@
     "url": "https://github.com/hackerai-tech/hackerai.git",
     "directory": "packages/local"
   },
+  "pnpm": {
+    "overrides": {
+      "ws@>=8.0.0 <8.21.0": "8.21.0"
+    }
+  },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "centrifuge": "^5.5.3",
-    "convex": "^1.39.1",
-    "ws": "^8.20.1"
+    "centrifuge": "^5.7.0",
+    "convex": "^1.41.0",
+    "ws": "^8.21.0"
   },
   "optionalDependencies": {
     "node-pty": "^1.2.0-beta.12"
