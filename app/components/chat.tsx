@@ -662,7 +662,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (error instanceof ChatSDKError) {
         const errorMessage =
           typeof error.cause === "string" ? error.cause : error.message;
-        if (error.type !== "rate_limit" || isMobile) {
+        if (error.type !== "rate_limit") {
           toast.error(errorMessage);
         }
       } else if (isMobile && error.name !== "AbortError") {

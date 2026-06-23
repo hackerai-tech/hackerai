@@ -8,18 +8,22 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAddCreditCtaClick,
   captureAddCreditCtaImpression,
+  capturePaidDailyFreeAllowanceClick,
+  capturePaidDailyFreeAllowanceImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  PAID_DAILY_FREE_ASK_CTA_TEXT,
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
+import type { RetryOptions } from "../hooks/useChatHandlers";
 
 interface MessageErrorStateProps {
   error: Error;
-  onRetry: () => void;
+  onRetry: (options?: RetryOptions) => void;
   onReconnect?: () => void;
 }
 
@@ -51,6 +55,7 @@ export const MessageErrorState = ({
   const capReason = metadata?.capReason as LimitCapReason | undefined;
   const upgradeImpressionRef = useRef(false);
   const addCreditImpressionRef = useRef(false);
+  const paidDailyFreeAllowanceImpressionRef = useRef(false);
 
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
 
@@ -92,9 +97,24 @@ export const MessageErrorState = ({
       ? "Keep going"
       : "Upgrade Plan";
   const isSuspensionError = metadata?.suspensionCategory !== undefined;
+  const paidDailyFreeAllowance =
+    metadata?.paidDailyFreeAllowance &&
+    typeof metadata.paidDailyFreeAllowance === "object"
+      ? (metadata.paidDailyFreeAllowance as Record<string, unknown>)
+      : undefined;
+  const canUsePaidDailyFreeAllowance =
+    isRateLimitError &&
+    paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
+    paidDailyFreeAllowance.available === true;
+  const shouldFocusPaidAllowanceActions =
+    canUsePaidDailyFreeAllowance &&
+    extraUsageCta?.analyticsText === "Add Credits";
+  const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
+  const showRateLimitUsage = !shouldFocusPaidAllowanceActions;
+  const showUpgrade = canUpgrade && !shouldFocusPaidAllowanceActions;
 
   useEffect(() => {
-    if (!isRateLimitError || !canUpgrade || upgradeImpressionRef.current)
+    if (!isRateLimitError || !showUpgrade || upgradeImpressionRef.current)
       return;
 
     upgradeImpressionRef.current = true;
@@ -107,10 +127,10 @@ export const MessageErrorState = ({
       cta_text: upgradeCtaText,
     });
   }, [
-    canUpgrade,
     capReason,
     isRateLimitError,
     limitType,
+    showUpgrade,
     subscription,
     upgradeCtaText,
   ]);
@@ -134,6 +154,32 @@ export const MessageErrorState = ({
       cta_text: extraUsageCta.analyticsText,
     });
   }, [capReason, extraUsageCta, isPaidUser, isRateLimitError, subscription]);
+
+  useEffect(() => {
+    if (
+      !canUsePaidDailyFreeAllowance ||
+      paidDailyFreeAllowanceImpressionRef.current
+    ) {
+      return;
+    }
+
+    paidDailyFreeAllowanceImpressionRef.current = true;
+    capturePaidDailyFreeAllowanceImpression({
+      surface: "message_error_state",
+      source: "rate_limit_error",
+      from_tier: subscription,
+      cap_reason: capReason,
+      cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+      allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
+      allowance_cost_remaining_dollars:
+        paidDailyFreeAllowance?.costRemainingDollars,
+    });
+  }, [
+    canUsePaidDailyFreeAllowance,
+    capReason,
+    paidDailyFreeAllowance,
+    subscription,
+  ]);
 
   return (
     <div
@@ -171,26 +217,34 @@ export const MessageErrorState = ({
       <div className="flex gap-2 flex-wrap">
         {isRateLimitError ? (
           <>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={onRetry}
-              disabled={timeRemaining > 0 && !isPaidUser}
-            >
-              {timeRemaining > 0 && !isPaidUser
-                ? `Try again in ${formatCountdown(timeRemaining)}`
-                : "Try Again"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openSettingsDialog("Usage")}
-            >
-              View Usage
-            </Button>
-            {extraUsageCta && (
+            {showRateLimitRetry && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onRetry()}
+                disabled={timeRemaining > 0 && !isPaidUser}
+              >
+                {timeRemaining > 0 && !isPaidUser
+                  ? `Try again in ${formatCountdown(timeRemaining)}`
+                  : "Try Again"}
+              </Button>
+            )}
+            {showRateLimitUsage && (
               <Button
                 variant="outline"
+                size="sm"
+                onClick={() => openSettingsDialog("Usage")}
+              >
+                View Usage
+              </Button>
+            )}
+            {extraUsageCta && (
+              <Button
+                variant={
+                  extraUsageCta.analyticsText === "Add Credits"
+                    ? "default"
+                    : "outline"
+                }
                 size="sm"
                 onClick={() => {
                   captureAddCreditCtaClick({
@@ -206,9 +260,37 @@ export const MessageErrorState = ({
                 {extraUsageCta.label}
               </Button>
             )}
-            {canUpgrade && (
+            {canUsePaidDailyFreeAllowance && (
               <Button
-                variant="default"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  capturePaidDailyFreeAllowanceClick({
+                    surface: "message_error_state",
+                    source: "rate_limit_error",
+                    from_tier: subscription,
+                    cap_reason: capReason,
+                    cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+                    allowance_requests_remaining:
+                      paidDailyFreeAllowance?.requestsRemaining,
+                    allowance_cost_remaining_dollars:
+                      paidDailyFreeAllowance?.costRemainingDollars,
+                  });
+                  onRetry({
+                    limitRescue: { type: "paid_daily_free_allowance" },
+                  });
+                }}
+              >
+                {PAID_DAILY_FREE_ASK_CTA_TEXT}
+              </Button>
+            )}
+            {showUpgrade && (
+              <Button
+                variant={
+                  extraUsageCta?.analyticsText === "Add Credits"
+                    ? "outline"
+                    : "default"
+                }
                 size="sm"
                 onClick={() =>
                   redirectToPricing({
@@ -252,7 +334,11 @@ export const MessageErrorState = ({
                     Reconnect
                   </Button>
                 )}
-                <Button variant="destructive" size="sm" onClick={onRetry}>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => onRetry()}
+                >
                   Retry
                 </Button>
               </>
