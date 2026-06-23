@@ -19,6 +19,13 @@ class MockSubscription extends EventEmitter {
   subscribe = jest.fn();
   unsubscribe = jest.fn();
   publish = jest.fn().mockResolvedValue(undefined);
+  presence = jest.fn().mockResolvedValue({
+    clients: {
+      "sandbox-client": {
+        connInfo: { connectionId: "conn-1" },
+      },
+    },
+  });
 }
 
 class MockCentrifugeClient extends EventEmitter {
@@ -247,6 +254,37 @@ describe("CentrifugoSandbox", () => {
       jest.advanceTimersByTime(timeoutMs + 5000 + 1);
 
       await expect(promise).rejects.toThrow("firstMsg: no");
+    });
+
+    it("fails before publishing when the target connection is absent from channel presence", async () => {
+      const sandbox = createSandbox();
+
+      const { promise } = startCommand(sandbox, "echo lost", {
+        timeoutMs: 1000,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      sub.presence.mockResolvedValueOnce({
+        clients: {
+          "probe-client": {
+            user: "user-1",
+          },
+        },
+      });
+
+      const rejection = expect(promise).rejects.toThrow(
+        "is not subscribed to the command relay",
+      );
+
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      await rejection;
+      expect(sub.publish).not.toHaveBeenCalled();
+      expect(sub.unsubscribe).toHaveBeenCalled();
+      expect(mockClients[0].disconnect).toHaveBeenCalled();
     });
   });
 

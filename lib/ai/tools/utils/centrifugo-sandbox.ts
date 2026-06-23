@@ -7,6 +7,7 @@ import {
   type CommandResponseMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
+import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
@@ -415,55 +416,98 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription.on("subscribed", () => {
           if (settled) return;
           tSubscribed = Date.now();
-          const commandMessage: CommandMessage = {
-            type: "command",
-            commandId,
-            command,
-            env: opts?.envVars,
-            cwd: opts?.cwd,
-            timeout,
-            background: opts?.background,
-            displayName: opts?.displayName,
-            targetConnectionId: this.connectionInfo.connectionId,
-          };
 
-          commandPublishInFlight = true;
-          subscription!
-            .publish(commandMessage)
-            .then(() => {
-              commandPublishInFlight = false;
-              tPublished = Date.now();
-              publishedCommand = true;
-              if (cancelRequested || opts?.signal?.aborted) {
-                publishCancel();
-              }
-            })
-            .catch((err: unknown) => {
-              commandPublishInFlight = false;
-              if (cancelRequested || opts?.signal?.aborted) {
-                resolveCanceled();
-                return;
-              }
-              if (!settled) {
+          void (async () => {
+            try {
+              const presence = await subscription!.presence();
+              if (
+                !presenceHasConnectionId(
+                  presence,
+                  this.connectionInfo.connectionId,
+                )
+              ) {
+                if (settled) return;
                 settled = true;
                 cleanup();
                 reject(
                   new Error(
-                    `Failed to publish command: ${
-                      err instanceof Error
-                        ? err.message
-                        : (() => {
-                            try {
-                              return JSON.stringify(err);
-                            } catch {
-                              return String(err);
-                            }
-                          })()
-                    }`,
+                    `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.`,
                   ),
                 );
+                return;
               }
-            });
+            } catch (error) {
+              console.warn(
+                "[local-command]",
+                JSON.stringify({
+                  event: "local_command_presence_check_failed",
+                  service: "web",
+                  command_id: commandId,
+                  connection_id: this.connectionInfo.connectionId,
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                }),
+              );
+            }
+
+            if (settled) return;
+            const commandMessage: CommandMessage = {
+              type: "command",
+              commandId,
+              command,
+              env: opts?.envVars,
+              cwd: opts?.cwd,
+              timeout,
+              background: opts?.background,
+              displayName: opts?.displayName,
+              targetConnectionId: this.connectionInfo.connectionId,
+            };
+
+            commandPublishInFlight = true;
+            subscription!
+              .publish(commandMessage)
+              .then(() => {
+                commandPublishInFlight = false;
+                tPublished = Date.now();
+                publishedCommand = true;
+                if (cancelRequested || opts?.signal?.aborted) {
+                  publishCancel();
+                }
+              })
+              .catch((err: unknown) => {
+                commandPublishInFlight = false;
+                if (cancelRequested || opts?.signal?.aborted) {
+                  resolveCanceled();
+                  return;
+                }
+                if (!settled) {
+                  settled = true;
+                  cleanup();
+                  reject(
+                    new Error(
+                      `Failed to publish command: ${
+                        err instanceof Error
+                          ? err.message
+                          : (() => {
+                              try {
+                                return JSON.stringify(err);
+                              } catch {
+                                return String(err);
+                              }
+                            })()
+                      }`,
+                    ),
+                  );
+                }
+              });
+          })().catch((err: unknown) => {
+            if (!settled) {
+              commandPublishInFlight = false;
+              settled = true;
+              cleanup();
+              reject(err instanceof Error ? err : new Error(String(err)));
+            }
+          });
         });
 
         subscription.subscribe();
