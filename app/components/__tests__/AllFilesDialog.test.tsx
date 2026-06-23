@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useAction } from "convex/react";
 import { FileUrlCacheProvider } from "@/app/contexts/FileUrlCacheContext";
 import { AllFilesDialog } from "../AllFilesDialog";
+import { toast } from "sonner";
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -27,11 +28,25 @@ jest.mock("@/app/hooks/useTauri", () => ({
 describe("AllFilesDialog", () => {
   let mockGetFileUrlsBatchAction: jest.Mock;
   let cache: Map<string, string>;
+  const originalFetch = global.fetch;
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
 
   beforeEach(() => {
     mockGetFileUrlsBatchAction = useAction({} as any) as unknown as jest.Mock;
     mockGetFileUrlsBatchAction.mockReset();
     cache = new Map();
+    global.fetch = jest.fn() as unknown as typeof fetch;
+    URL.createObjectURL = jest.fn(() => "blob:zip-url");
+    URL.revokeObjectURL = jest.fn();
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+    jest.restoreAllMocks();
   });
 
   function renderWithCache(
@@ -88,5 +103,89 @@ describe("AllFilesDialog", () => {
     expect(mockGetFileUrlsBatchAction.mock.calls[1][0].fileIds).toEqual([
       "file-50",
     ]);
+  });
+
+  it("reports only files successfully added to the ZIP", async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["ok"]),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        blob: async () => new Blob(["missing"]),
+      });
+
+    renderWithCache([
+      {
+        part: {
+          url: "https://files.example/file-1",
+          name: "file-1.txt",
+          mediaType: "text/plain",
+        },
+        partIndex: 0,
+        messageId: "message-1",
+      },
+      {
+        part: {
+          url: "https://files.example/file-2",
+          name: "file-2.txt",
+          mediaType: "text/plain",
+        },
+        partIndex: 1,
+        messageId: "message-1",
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Loading files...")).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Download files" }));
+    fireEvent.click(screen.getByRole("button", { name: /Batch download/ }));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith(
+        "Downloaded 1 files as Files.zip",
+      );
+    });
+    expect(toast.success).not.toHaveBeenCalledWith(
+      "Downloaded 2 files as Files.zip",
+    );
+  });
+
+  it("shows an error instead of downloading an empty ZIP when every file fails", async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 500,
+      blob: async () => new Blob(["error"]),
+    });
+
+    renderWithCache([
+      {
+        part: {
+          url: "https://files.example/file-1",
+          name: "file-1.txt",
+          mediaType: "text/plain",
+        },
+        partIndex: 0,
+        messageId: "message-1",
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Loading files...")).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Download files" }));
+    fireEvent.click(screen.getByRole("button", { name: /Batch download/ }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        "No selected files could be downloaded",
+      );
+    });
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 });

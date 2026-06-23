@@ -10,6 +10,7 @@ import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
+import type { Doc } from "./_generated/dataModel";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
@@ -252,13 +253,21 @@ const fileForStorageLookupValidator = v.union(
     name: v.string(),
     media_type: v.string(),
     size: v.number(),
-    file_token_size: v.number(),
-    content: v.optional(v.string()),
-    is_attached: v.boolean(),
-    _creationTime: v.number(),
   }),
   v.null(),
 );
+
+const toFileForStorageLookup = (file: Doc<"files"> | null) => {
+  if (!file) return null;
+  return {
+    _id: file._id,
+    s3_key: file.s3_key,
+    user_id: file.user_id,
+    name: file.name,
+    media_type: file.media_type,
+    size: file.size,
+  };
+};
 
 /**
  * Internal query to get a file by ID
@@ -271,7 +280,7 @@ export const getFileById = internalQuery({
   returns: fileForStorageLookupValidator,
   handler: async (ctx, args) => {
     const file = await ctx.db.get(args.fileId);
-    return file;
+    return toFileForStorageLookup(file);
   },
 });
 
@@ -285,7 +294,11 @@ export const getFilesByIds = internalQuery({
   },
   returns: v.array(fileForStorageLookupValidator),
   handler: async (ctx, args) => {
-    return await Promise.all(args.fileIds.map((fileId) => ctx.db.get(fileId)));
+    return await Promise.all(
+      args.fileIds.map(async (fileId) =>
+        toFileForStorageLookup(await ctx.db.get(fileId)),
+      ),
+    );
   },
 });
 

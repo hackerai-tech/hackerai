@@ -81,6 +81,45 @@ describe("fileStorage - Aggregate Integration", () => {
   });
 
   describe("service file retrieval ownership", () => {
+    it("returns only storage URL metadata for file lookups", async () => {
+      const { getFilesByIds } = await import("../fileStorage");
+      const mockCtx: any = {
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: testFileId,
+            s3_key: "users/test-user/file.pdf",
+            user_id: testUserId,
+            name: "file.pdf",
+            media_type: "application/pdf",
+            size: 1024,
+            file_token_size: 123,
+            content: "large extracted content",
+            is_attached: true,
+            _creationTime: 123456,
+          }),
+        },
+      };
+
+      const result = await getFilesByIds.handler(mockCtx, {
+        fileIds: [testFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          _id: testFileId,
+          s3_key: "users/test-user/file.pdf",
+          user_id: testUserId,
+          name: "file.pdf",
+          media_type: "application/pdf",
+          size: 1024,
+        },
+      ]);
+      expect(result[0]).not.toHaveProperty("content");
+      expect(result[0]).not.toHaveProperty("file_token_size");
+      expect(result[0]).not.toHaveProperty("is_attached");
+      expect(result[0]).not.toHaveProperty("_creationTime");
+    });
+
     it("should only return token counts for files owned by the requested user", async () => {
       const { getFileTokensByFileIds } = await import("../fileStorage");
       const ownedFileId = "owned-file-id" as Id<"files">;

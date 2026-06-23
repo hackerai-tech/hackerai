@@ -17,8 +17,11 @@ type StorageUsage = {
   availableBytes: number;
 } | null;
 
-/** File record returned by internal.fileStorage.getFileById */
-type FileRecord = Doc<"files"> | null;
+/** Narrow file metadata returned by internal.fileStorage URL lookup queries. */
+type FileRecord = Pick<
+  Doc<"files">,
+  "_id" | "s3_key" | "user_id" | "name" | "media_type" | "size"
+> | null;
 
 const serviceFileUrlInfoValidator = v.object({
   url: v.string(),

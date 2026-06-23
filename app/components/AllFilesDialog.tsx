@@ -330,26 +330,39 @@ const AllFilesDialog = ({
       }
 
       // Use already fetched URLs or fetch missing ones
-      await Promise.all(
-        filesToDownload.map(async ({ file, index }) => {
+      const addedResults = await Promise.all(
+        filesToDownload.map(async ({ file, index }): Promise<boolean> => {
           try {
             let url: string | null | undefined =
               downloadUrls.get(index) || file.part.url;
 
-            if (url) {
-              const response = await fetch(url);
-              const blob = await response.blob();
-              const fileName =
-                file.part.name ||
-                file.part.filename ||
-                `file-${file.partIndex}`;
-              zip.file(fileName, blob);
+            if (!url) {
+              return false;
             }
+
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Failed to download file (${response.status})`);
+            }
+
+            const blob = await response.blob();
+            const fileName =
+              file.part.name || file.part.filename || `file-${file.partIndex}`;
+            zip.file(fileName, blob);
+            return true;
           } catch (error) {
             console.error(`Error adding ${file.part.name} to ZIP:`, error);
+            return false;
           }
         }),
       );
+
+      const addedFileCount = addedResults.filter(Boolean).length;
+      if (addedFileCount === 0) {
+        toast.error("No selected files could be downloaded");
+        handleCancelSelection();
+        return;
+      }
 
       // Generate the ZIP file
       const zipBlob = await zip.generateAsync({ type: "blob" });
@@ -380,7 +393,7 @@ const AllFilesDialog = ({
       URL.revokeObjectURL(blobUrl);
 
       if (isTauriEnvironment()) {
-        toast.success(`Downloaded ${filesToDownload.length} files`, {
+        toast.success(`Downloaded ${addedFileCount} files`, {
           description: `Saved as ${fileName}.zip to Downloads folder`,
           action: {
             label: "Show in folder",
@@ -388,9 +401,7 @@ const AllFilesDialog = ({
           },
         });
       } else {
-        toast.success(
-          `Downloaded ${filesToDownload.length} files as ${fileName}.zip`,
-        );
+        toast.success(`Downloaded ${addedFileCount} files as ${fileName}.zip`);
       }
     } catch (error) {
       console.error("Error creating ZIP file:", error);
