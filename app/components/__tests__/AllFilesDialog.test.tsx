@@ -79,6 +79,7 @@ describe("AllFilesDialog", () => {
 
     await waitFor(() => {
       expect(mockGetFileUrlsBatchAction).toHaveBeenCalledTimes(2);
+      expect(cache.size).toBe(51);
     });
 
     expect(mockGetFileUrlsBatchAction.mock.calls[0][0].fileIds).toHaveLength(
@@ -87,6 +88,5 @@ describe("AllFilesDialog", () => {
     expect(mockGetFileUrlsBatchAction.mock.calls[1][0].fileIds).toEqual([
       "file-50",
     ]);
-    expect(cache.size).toBe(51);
   });
 });
