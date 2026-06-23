@@ -15,6 +15,8 @@ const projectId = process.env.POSTHOG_CLI_PROJECT_ID?.trim();
 const host = process.env.POSTHOG_CLI_HOST?.trim();
 const hasApiKey = Boolean(apiKey);
 const hasProjectId = Boolean(projectId);
+const failOnError =
+  process.env.POSTHOG_SOURCEMAP_UPLOAD_STRICT?.trim().toLowerCase() === "true";
 
 if (!hasApiKey && !hasProjectId) {
   console.log(
@@ -24,10 +26,14 @@ if (!hasApiKey && !hasProjectId) {
 }
 
 if (!hasApiKey || !hasProjectId) {
-  console.error(
-    "[PostHog] Source map upload requires both POSTHOG_CLI_API_KEY and POSTHOG_CLI_PROJECT_ID.",
-  );
-  process.exit(1);
+  const message =
+    "[PostHog] Source map upload requires both POSTHOG_CLI_API_KEY and POSTHOG_CLI_PROJECT_ID.";
+  if (failOnError) {
+    console.error(message);
+    process.exit(1);
+  }
+  console.warn(`${message} Skipping upload.`);
+  process.exit(0);
 }
 
 if (!existsSync(buildDirectory)) {
@@ -74,7 +80,19 @@ const result = spawnSync("posthog-cli", args, {
 
 if (result.error) {
   console.error(`[PostHog] Failed to run posthog-cli: ${result.error.message}`);
-  process.exit(1);
+  process.exit(failOnError ? 1 : 0);
+}
+
+if (result.status !== 0) {
+  console.error(
+    `[PostHog] Source map upload failed with exit code ${result.status ?? 1}.`,
+  );
+  if (!failOnError) {
+    console.warn(
+      "[PostHog] Continuing build because source map upload is best-effort. Set POSTHOG_SOURCEMAP_UPLOAD_STRICT=true to fail on upload errors.",
+    );
+    process.exit(0);
+  }
 }
 
 process.exit(result.status ?? 1);
