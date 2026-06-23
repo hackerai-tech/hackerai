@@ -229,7 +229,7 @@ export async function POST(req: NextRequest) {
       },
       {
         tags: triggerTags,
-        region: triggerRegion,
+        ...(triggerRegion ? { region: triggerRegion } : {}),
         metadata: {
           status: "queued",
           chatId,

@@ -21,20 +21,20 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toBe("eu-central-1");
   });
 
-  test("routes non-European requests to us-east-1", () => {
+  test("uses the dashboard default region for North American requests", () => {
     expect(
       getTriggerRegionForVercelRequest(
         requestWithHeaders({
           "x-vercel-ip-continent": "NA",
         }),
       ),
-    ).toBe("us-east-1");
+    ).toBeUndefined();
   });
 
-  test("defaults to us-east-1 when Vercel headers are unavailable", () => {
-    expect(getTriggerRegionForVercelRequest(requestWithHeaders({}))).toBe(
-      "us-east-1",
-    );
+  test("uses the dashboard default region when Vercel headers are unavailable", () => {
+    expect(
+      getTriggerRegionForVercelRequest(requestWithHeaders({})),
+    ).toBeUndefined();
   });
 
   test("normalizes Vercel header values", () => {
