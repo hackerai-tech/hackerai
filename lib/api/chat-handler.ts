@@ -97,7 +97,11 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import {
+  getMaxStepsForUser,
+  processChatMessages,
+  resolveDeepModeEnabled,
+} from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
@@ -119,7 +123,6 @@ import {
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
-import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
@@ -356,6 +359,11 @@ export const createChatHandler = () => {
         );
       }
 
+      const deepModeEnabled = resolveDeepModeEnabled({
+        mode,
+        selectedModelOverride,
+      });
+
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -368,6 +376,7 @@ export const createChatHandler = () => {
         userCustomization,
         temporary,
         truncatedMessages,
+        deepModeEnabled,
       });
 
       const fileCounts = countFileAttachments(truncatedMessages);
@@ -728,6 +737,7 @@ export const createChatHandler = () => {
               userCustomization,
               temporary,
               sandboxContext,
+              deepModeEnabled,
             );
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
@@ -1043,6 +1053,7 @@ export const createChatHandler = () => {
               streamStartTime,
               contextUsageOn,
               isReasoningModel,
+              deepModeEnabled,
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1296,6 +1307,7 @@ export const createChatHandler = () => {
                                   sandboxInfo,
                                   outcome,
                                   chatLogger,
+                                  deepModeEnabled,
                                 });
                                 shutdownPostHog(posthog);
                                 chatLogger!.emitSuccess({
@@ -1517,6 +1529,7 @@ export const createChatHandler = () => {
                       sandboxInfo,
                       outcome,
                       chatLogger,
+                      deepModeEnabled,
                     });
                     shutdownPostHog(posthog);
                     chatLogger!.emitSuccess({

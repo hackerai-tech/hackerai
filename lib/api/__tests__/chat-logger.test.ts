@@ -93,6 +93,7 @@ describe("captureAgentRun", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        deep_mode_enabled: false,
         sandboxType: "remote-connection",
         sandbox_type: "remote-connection",
       },
@@ -144,6 +145,7 @@ describe("captureFreeAgentValueReached", () => {
         subscription: "free",
         subscription_tier: "free",
         outcome: "success",
+        deep_mode_enabled: false,
         tool_call_count: 2,
         agent_value_event_version: 1,
         sandbox_type: "e2b",
@@ -218,6 +220,7 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "free",
         subscription_tier: "free",
         outcome: "success",
+        deep_mode_enabled: false,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },
@@ -231,6 +234,7 @@ describe("captureAgentCompletionAnalytics", () => {
         endpoint: "/api/agent-long",
         subscription_tier: "free",
         outcome: "success",
+        deep_mode_enabled: false,
         tool_call_count: 1,
       }),
     });
@@ -260,6 +264,38 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        deep_mode_enabled: false,
+        sandboxType: "e2b",
+        sandbox_type: "e2b",
+      },
+    });
+  });
+
+  it("captures Deep mode state on paid agent completion events", () => {
+    const capture = jest.fn();
+
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      chatLogger: { getToolCalls: () => [] } as any,
+      deepModeEnabled: true,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: {
+        mode: "agent",
+        subscription: "pro",
+        subscription_tier: "pro",
+        outcome: "success",
+        deep_mode_enabled: true,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },

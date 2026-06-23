@@ -46,11 +46,23 @@ describe("ModelSelector", () => {
     ).toBeVisible();
     expect(screen.getByText("HackerAI Standard")).toBeVisible();
     expect(screen.getByText("HackerAI Pro")).toBeVisible();
-    expect(screen.getByText("HackerAI Max")).toBeVisible();
+    expect(screen.getByText("Deep")).toBeVisible();
 
     expect(
       screen.getByRole("button", { name: /HackerAI Standard/i }),
     ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("shows Deep for hackerai-max in agent mode", () => {
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+
+    expect(screen.getByText("Deep")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Deep/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("selects Auto as a first-class option", () => {
@@ -109,17 +121,19 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("warns before selecting HackerAI Max on paid tiers above Pro", () => {
+  it("warns before selecting Deep on paid tiers above Pro", () => {
     mockSubscription = "ultra";
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Deep/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
-    expect(screen.getByText(/HackerAI Max is powerful/i)).toBeVisible();
+    expect(screen.getByText(/Deep is built for heavier work/i)).toBeVisible();
+    expect(screen.getByText(/higher usage than Standard/i)).toBeVisible();
+    expect(screen.queryByText(/HackerAI Max/i)).not.toBeInTheDocument();
   });
 
   it("uses team-specific warning copy for team users", () => {

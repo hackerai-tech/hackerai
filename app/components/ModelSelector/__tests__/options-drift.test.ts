@@ -31,6 +31,15 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
+  it("labels hackerai-max as Deep in both selector lineups", () => {
+    expect(ASK_MODEL_OPTIONS.find((o) => o.id === "hackerai-max")?.label).toBe(
+      "Deep",
+    );
+    expect(
+      AGENT_MODEL_OPTIONS.find((o) => o.id === "hackerai-max")?.label,
+    ).toBe("Deep");
+  });
+
   it("HackerAI Standard resolves to different providers per mode", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
       "model-deepseek-v4-pro",
@@ -49,7 +58,7 @@ describe("ModelSelector tier ↔ provider drift", () => {
     );
   });
 
-  it("HackerAI Max resolves to the same provider in both modes", () => {
+  it("hackerai-max resolves to the same provider in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
       "model-opus-4.6",
     );
@@ -64,7 +73,7 @@ describe("ModelSelector tier ↔ provider drift", () => {
   });
 
   it("hover-popup descriptions are present for every HackerAI tier", () => {
-    const tiered = allOptions.filter((o) => o.label.startsWith("HackerAI"));
+    const tiered = allOptions.filter((o) => o.id !== "auto");
     expect(tiered.length).toBeGreaterThan(0);
     for (const option of tiered) {
       expect(option.description).toBeTruthy();

@@ -1046,6 +1046,7 @@ export async function estimatePreflightInputTokens(args: {
   userCustomization: UserCustomization | null | undefined;
   temporary: boolean | undefined;
   truncatedMessages: UIMessage[];
+  deepModeEnabled?: boolean;
 }): Promise<number> {
   const {
     mode,
@@ -1055,6 +1056,7 @@ export async function estimatePreflightInputTokens(args: {
     userCustomization,
     temporary,
     truncatedMessages,
+    deepModeEnabled = false,
   } = args;
   if (!isAgentMode(mode) && subscription === "free") return 0;
 
@@ -1067,6 +1069,7 @@ export async function estimatePreflightInputTokens(args: {
     userCustomization,
     temporary,
     null,
+    deepModeEnabled,
   );
   const systemTokens = safeCountTokens(estimatedSystemPrompt);
   const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;

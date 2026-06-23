@@ -33,6 +33,16 @@ export const getMaxStepsForUser = (
   return subscription === "free" ? 15 : 100;
 };
 
+export function resolveDeepModeEnabled({
+  mode,
+  selectedModelOverride,
+}: {
+  mode: ChatMode;
+  selectedModelOverride?: SelectedModel | null;
+}): boolean {
+  return isAgentMode(mode) && selectedModelOverride === "hackerai-max";
+}
+
 /**
  * Selects the appropriate model based on mode and subscription.
  * @param mode - Chat mode (ask or agent)

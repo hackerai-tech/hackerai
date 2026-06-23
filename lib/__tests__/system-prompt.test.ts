@@ -188,6 +188,42 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("interactsh-client: use for blind callback");
   });
 
+  it("injects Deep validation guidance only for Agent mode", async () => {
+    const agentPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "model-opus-4.6",
+      null,
+      false,
+      null,
+      true,
+    );
+    const askPrompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "model-opus-4.6",
+      null,
+      false,
+      null,
+      true,
+    );
+
+    expect(agentPrompt).toContain("<deep_mode>");
+    expect(agentPrompt).toContain("Finish with evidence");
+    expect(agentPrompt).toContain("reproduction or PoC evidence");
+    expect(agentPrompt).toContain("skipped-validation notes");
+    expect(agentPrompt).toContain(
+      "say what was not validated and include manual verification or Continue steps",
+    );
+    expect(agentPrompt).toContain(
+      "Desktop App, Remote Connection, or a reachable tunnel",
+    );
+    expect(askPrompt).not.toContain("<deep_mode>");
+    expect(askPrompt).not.toContain("validation-driven loop");
+  });
+
   it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {
     const localHostContext = `You are executing commands on Linux 6.8 (x64) in DANGEROUS MODE.
 Commands run directly on the host OS "labbox" without Docker isolation.`;

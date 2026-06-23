@@ -469,3 +469,33 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
   });
 });
+
+describe("Deep mode server wiring", () => {
+  test("/api/chat resolves Deep from the selected model override and passes it into the Agent stream context", () => {
+    expect(chatHandlerSrc).toMatch(
+      /resolveDeepModeEnabled\(\{\s*mode,\s*selectedModelOverride,/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /systemPrompt\([\s\S]*deepModeEnabled[\s\S]*\)/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /const streamCtx: AgentStreamContext = \{[\s\S]*deepModeEnabled,/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /captureAgentCompletionAnalytics\(\{[\s\S]*deepModeEnabled,/,
+    );
+  });
+
+  test("/api/agent-long resolves Deep from the selected model override and passes it into the Agent stream context", () => {
+    expect(taskSrc).toMatch(
+      /resolveDeepModeEnabled\(\{\s*mode,\s*selectedModelOverride,/,
+    );
+    expect(taskSrc).toMatch(/systemPrompt\([\s\S]*deepModeEnabled[\s\S]*\)/);
+    expect(taskSrc).toMatch(
+      /const streamCtx: AgentStreamContext = \{[\s\S]*deepModeEnabled,/,
+    );
+    expect(taskSrc).toMatch(
+      /captureAgentCompletionAnalytics\(\{[\s\S]*deepModeEnabled,/,
+    );
+  });
+});

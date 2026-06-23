@@ -73,6 +73,17 @@ const shouldWarnForPaidHighCostModel = (
   subscription !== "free" &&
   (model === "hackerai-max" || model === "hackerai-pro");
 
+const getHighCostModelUsageNotice = (
+  option: ModelOption | null,
+  usageLabel: string,
+): string => {
+  if (option?.id === "hackerai-max") {
+    return `Deep is built for heavier work and can drive higher usage than Standard, especially on long Agent runs. Long requests can use around $10 of ${usageLabel}.`;
+  }
+
+  return `${option?.label ?? "This model"} is powerful, but it can use a lot more of ${usageLabel} than Standard, and long requests can use around $10 of usage.`;
+};
+
 const AutoOptionButton = ({
   isSelected,
   onSelect,
@@ -434,9 +445,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             <span>High-cost model</span>
           </AlertDialogTitle>
           <AlertDialogDescription className="text-left text-sm leading-relaxed text-foreground/80">
-            {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
-            can use a lot more of {usageLabel} than Standard, and long requests
-            can use around $10 of usage.
+            {getHighCostModelUsageNotice(pendingHighCostNotice, usageLabel)}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

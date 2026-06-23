@@ -810,6 +810,7 @@ type AgentCompletionAnalyticsArgs = {
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
+  deepModeEnabled?: boolean;
 };
 
 export function captureAgentRun({
@@ -819,6 +820,7 @@ export function captureAgentRun({
   subscription,
   sandboxInfo,
   outcome,
+  deepModeEnabled = false,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -826,6 +828,7 @@ export function captureAgentRun({
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  deepModeEnabled?: boolean;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -836,6 +839,7 @@ export function captureAgentRun({
       subscription,
       subscription_tier: subscription,
       outcome,
+      deep_mode_enabled: deepModeEnabled,
       ...(sandboxInfo?.type && {
         sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
@@ -854,6 +858,7 @@ export function captureFreeAgentValueReached({
   sandboxInfo,
   outcome,
   chatLogger,
+  deepModeEnabled = false,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -864,6 +869,7 @@ export function captureFreeAgentValueReached({
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
+  deepModeEnabled?: boolean;
 }) {
   if (!posthog || mode !== "agent" || subscription !== "free") return;
   if (outcome !== "success") return;
@@ -882,6 +888,7 @@ export function captureFreeAgentValueReached({
       subscription,
       subscription_tier: subscription,
       outcome,
+      deep_mode_enabled: deepModeEnabled,
       tool_call_count: toolCallCount,
       agent_value_event_version: 1,
       ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
@@ -899,7 +906,15 @@ export function captureFreeAgentValueReached({
 export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
-  const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  const {
+    posthog,
+    userId,
+    mode,
+    subscription,
+    sandboxInfo,
+    outcome,
+    deepModeEnabled,
+  } = args;
   captureAgentRun({
     posthog,
     userId,
@@ -907,6 +922,7 @@ export function captureAgentCompletionAnalytics(
     subscription,
     sandboxInfo,
     outcome,
+    deepModeEnabled,
   });
   captureFreeAgentValueReached(args);
 }

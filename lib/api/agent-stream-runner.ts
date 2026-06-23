@@ -306,6 +306,7 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
+  deepModeEnabled: boolean;
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
 

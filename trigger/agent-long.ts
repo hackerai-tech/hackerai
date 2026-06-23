@@ -20,7 +20,10 @@ import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import {
+  processChatMessages,
+  resolveDeepModeEnabled,
+} from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
   sendRateLimitWarnings,
@@ -972,6 +975,11 @@ export const agentLongTask = task({
         );
       }
 
+      const deepModeEnabled = resolveDeepModeEnabled({
+        mode,
+        selectedModelOverride,
+      });
+
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -982,6 +990,7 @@ export const agentLongTask = task({
         userCustomization,
         temporary,
         truncatedMessages: messagesForAccounting,
+        deepModeEnabled,
       });
 
       chatLogger.setChat(
@@ -1253,6 +1262,7 @@ export const agentLongTask = task({
               userCustomization,
               temporary,
               sandboxContext,
+              deepModeEnabled,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 
@@ -1467,6 +1477,7 @@ export const agentLongTask = task({
               streamStartTime,
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
+              deepModeEnabled,
               maxDurationMs: agentLongMaxDurationMs,
               writer,
               abortController: userStopSignal,
@@ -1701,6 +1712,7 @@ export const agentLongTask = task({
                                     sandboxInfo,
                                     outcome,
                                     chatLogger,
+                                    deepModeEnabled,
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
                                     chatLogger?.emitSuccess({
@@ -1826,6 +1838,7 @@ export const agentLongTask = task({
                         sandboxInfo,
                         outcome,
                         chatLogger,
+                        deepModeEnabled,
                       });
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({

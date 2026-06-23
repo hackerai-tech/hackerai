@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
 import {
   limitImageParts,
+  resolveDeepModeEnabled,
   selectModel,
   getMaxStepsForUser,
   fixIncompleteMessageParts,
@@ -196,7 +197,7 @@ describe("selectModel", () => {
     });
   });
 
-  // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
+  // Tier override — Standard is content-aware in ask mode; Deep maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
     it("should map HackerAI Pro to Sonnet 4.6 for text-only ask mode", () => {
       expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
@@ -240,7 +241,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6", () => {
+    it("should map Deep to Opus 4.6", () => {
       expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.6");
     });
   });
@@ -259,7 +260,7 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode", () => {
+    it("should map Deep to Opus 4.6 in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-max")).toBe(
         "model-opus-4.6",
       );
@@ -345,6 +346,48 @@ describe("getMaxStepsForUser", () => {
     expect(getMaxStepsForUser("ask", "pro")).toBe(100);
     expect(getMaxStepsForUser("ask", "ultra")).toBe(100);
     expect(getMaxStepsForUser("ask", "team")).toBe(100);
+  });
+});
+
+describe("resolveDeepModeEnabled", () => {
+  it("enables Deep only for Agent mode with hackerai-max selected", () => {
+    expect(
+      resolveDeepModeEnabled({
+        mode: "agent",
+        selectedModelOverride: "hackerai-max",
+      }),
+    ).toBe(true);
+
+    expect(
+      resolveDeepModeEnabled({
+        mode: "ask",
+        selectedModelOverride: "hackerai-max",
+      }),
+    ).toBe(false);
+    expect(
+      resolveDeepModeEnabled({
+        mode: "agent",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(false);
+    expect(
+      resolveDeepModeEnabled({
+        mode: "agent",
+        selectedModelOverride: "auto",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not infer Deep from prompt wording", () => {
+    const userPrompt = "go deep and verify thoroughly";
+
+    expect(userPrompt).toContain("go deep");
+    expect(
+      resolveDeepModeEnabled({
+        mode: "agent",
+        selectedModelOverride: undefined,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -4,7 +4,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 export interface ModelOption {
   id: SelectedModel;
   label: string;
-  /** Short tagline shown in the hover popup (e.g. "Maximum intelligence for complex work") */
+  /** Short tagline shown in the hover popup (e.g. "Validation-driven agent for harder security work") */
   description?: string;
   /** "Powered by …" line shown beneath the description in the hover popup */
   poweredBy?: string;
@@ -26,8 +26,8 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
   },
   {
     id: "hackerai-max",
-    label: "HackerAI Max",
-    description: "Maximum intelligence for complex work",
+    label: "Deep",
+    description: "Highest-intelligence answers for complex analysis",
     poweredBy: "Claude Opus 4.6",
   },
 ];
@@ -49,8 +49,8 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   },
   {
     id: "hackerai-max",
-    label: "HackerAI Max",
-    description: "Maximum intelligence for complex work",
+    label: "Deep",
+    description: "Validation-driven agent for harder security work",
     poweredBy: "Claude Opus 4.6",
     thinking: true,
   },

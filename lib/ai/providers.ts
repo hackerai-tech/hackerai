@@ -376,8 +376,8 @@ export function isGeminiModel(modelName: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard and Pro are mode-aware; Max maps to Opus in both
- * modes.
+ * key instead). Standard and Pro are mode-aware; Deep (`hackerai-max`) maps
+ * to Opus in both modes.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,

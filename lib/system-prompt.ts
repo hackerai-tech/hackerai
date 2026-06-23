@@ -437,6 +437,14 @@ not remind the person of its cutoff date unless it is relevant to the person's m
 </knowledge_cutoff>`;
 };
 
+const DEEP_MODE_SECTION = `<deep_mode>
+Deep is selected in Agent mode. Use a validation-driven loop:
+- Plan the work briefly, act with the available tools, validate the result, evaluate whether the evidence is sufficient, and retry when a reasonable next check is available.
+- Finish with evidence. For security findings, call something confirmed only when you have reproduction or PoC evidence; otherwise label it as a hypothesis or lead.
+- If validation is blocked, too expensive, unsafe, or impossible, include skipped-validation notes: say what was not validated and include manual verification or Continue steps.
+- Preserve sandbox boundaries: the cloud sandbox cannot validate user-local, private LAN, or internal targets without the Desktop App, Remote Connection, or a reachable tunnel.
+</deep_mode>`;
+
 // Core system prompt with optimized structure
 export const systemPrompt = async (
   userId: string,
@@ -446,6 +454,7 @@ export const systemPrompt = async (
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
   sandboxContext?: string | null,
+  deepModeEnabled: boolean = false,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -485,6 +494,9 @@ The current date is ${currentDateTime}.`;
     sections.push(
       getAgentModeSection(mode, sandboxContext, caidoEnabled, caidoPort),
     );
+    if (deepModeEnabled) {
+      sections.push(DEEP_MODE_SECTION);
+    }
   }
 
   if (isDeepSeekModel(modelName)) {
