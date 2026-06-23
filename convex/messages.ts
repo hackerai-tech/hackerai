@@ -420,32 +420,16 @@ export const verifyChatOwnership = internalQuery({
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-      .first();
-
-    if (!chat) {
-      throw new ConvexError({
-        code: "CHAT_NOT_FOUND",
-        message: "This chat doesn't exist",
-      });
-    } else if (chat.user_id !== args.userId) {
-      throw new ConvexError({
-        code: "CHAT_UNAUTHORIZED",
-        message: "You don't have permission to access this chat",
-      });
-    }
-
+    await loadOwnedChat(ctx, args.chatId, args.userId);
     return true;
   },
 });
 
-async function ensureChatWritableForMessageInsert(
-  ctx: MutationCtx,
+async function loadOwnedChat(
+  ctx: { db: GenericDatabaseReader<DataModel> },
   chatId: string,
   userId: string,
-): Promise<void> {
+): Promise<Doc<"chats">> {
   const chat = await ctx.db
     .query("chats")
     .withIndex("by_chat_id", (q) => q.eq("id", chatId))
@@ -464,6 +448,16 @@ async function ensureChatWritableForMessageInsert(
       message: "You don't have permission to access this chat",
     });
   }
+
+  return chat;
+}
+
+async function ensureChatWritableForMessageInsert(
+  ctx: MutationCtx,
+  chatId: string,
+  userId: string,
+): Promise<void> {
+  const chat = await loadOwnedChat(ctx, chatId, userId);
 
   if (chat.canceled_at !== undefined) {
     throw new ConvexError({
