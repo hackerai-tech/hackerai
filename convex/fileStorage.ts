@@ -244,6 +244,22 @@ export const purgeExpiredUnattachedFiles = internalMutation({
   },
 });
 
+const fileForStorageLookupValidator = v.union(
+  v.object({
+    _id: v.id("files"),
+    s3_key: v.optional(v.string()),
+    user_id: v.string(),
+    name: v.string(),
+    media_type: v.string(),
+    size: v.number(),
+    file_token_size: v.number(),
+    content: v.optional(v.string()),
+    is_attached: v.boolean(),
+    _creationTime: v.number(),
+  }),
+  v.null(),
+);
+
 /**
  * Internal query to get a file by ID
  * Used by actions that need to verify file existence and ownership
@@ -252,24 +268,24 @@ export const getFileById = internalQuery({
   args: {
     fileId: v.id("files"),
   },
-  returns: v.union(
-    v.object({
-      _id: v.id("files"),
-      s3_key: v.optional(v.string()),
-      user_id: v.string(),
-      name: v.string(),
-      media_type: v.string(),
-      size: v.number(),
-      file_token_size: v.number(),
-      content: v.optional(v.string()),
-      is_attached: v.boolean(),
-      _creationTime: v.number(),
-    }),
-    v.null(),
-  ),
+  returns: fileForStorageLookupValidator,
   handler: async (ctx, args) => {
     const file = await ctx.db.get(args.fileId);
     return file;
+  },
+});
+
+/**
+ * Internal query to get files by ID in one action system call.
+ * Used by URL-generation actions to avoid one ctx.runQuery per file.
+ */
+export const getFilesByIds = internalQuery({
+  args: {
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(fileForStorageLookupValidator),
+  handler: async (ctx, args) => {
+    return await Promise.all(args.fileIds.map((fileId) => ctx.db.get(fileId)));
   },
 });
 

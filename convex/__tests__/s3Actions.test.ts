@@ -7,6 +7,7 @@ jest.mock("../s3Utils");
 jest.mock("../_generated/server", () => ({
   action: jest.fn((config) => config),
   query: jest.fn((config) => config),
+  internalQuery: jest.fn((config) => config),
 }));
 
 // Mock chats module to avoid circular dependency
@@ -26,6 +27,7 @@ jest.mock("../_generated/api", () => ({
     fileStorage: {
       getUserStorageUsage: "internal.fileStorage.getUserStorageUsage",
       createPendingS3File: "internal.fileStorage.createPendingS3File",
+      getFilesByIds: "internal.fileStorage.getFilesByIds",
     },
   },
 }));
@@ -737,9 +739,7 @@ describe("s3Actions", () => {
         },
         runQuery: jest
           .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2)
-          .mockResolvedValueOnce(mockFile3),
+          .mockResolvedValue([mockFile1, mockFile2, mockFile3]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -751,6 +751,7 @@ describe("s3Actions", () => {
         file2: "https://s3.amazonaws.com/file2-url",
         file3: "https://s3.amazonaws.com/file3-url",
       });
+      expect(mockCtx.runQuery).toHaveBeenCalledTimes(1);
     });
 
     it("should skip files without S3 keys", async () => {
@@ -801,10 +802,7 @@ describe("s3Actions", () => {
             entitlements: ["pro-plan"],
           }),
         },
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2),
+        runQuery: jest.fn().mockResolvedValue([mockFile1, mockFile2]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -864,10 +862,7 @@ describe("s3Actions", () => {
             entitlements: ["pro-plan"],
           }),
         },
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2),
+        runQuery: jest.fn().mockResolvedValue([mockFile1, mockFile2]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -917,10 +912,7 @@ describe("s3Actions", () => {
             entitlements: ["pro-plan"],
           }),
         },
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(null), // File not found
+        runQuery: jest.fn().mockResolvedValue([mockFile1, null]), // File not found
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -959,7 +951,7 @@ describe("s3Actions", () => {
             entitlements: ["pro-plan"],
           }),
         },
-        runQuery: jest.fn().mockResolvedValue(mockFile1),
+        runQuery: jest.fn().mockResolvedValue([mockFile1]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -1033,9 +1025,7 @@ describe("s3Actions", () => {
         },
         runQuery: jest
           .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2)
-          .mockResolvedValueOnce(mockFile3),
+          .mockResolvedValue([mockFile1, mockFile2, mockFile3]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -1143,10 +1133,7 @@ describe("s3Actions", () => {
             entitlements: ["pro-plan"],
           }),
         },
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2),
+        runQuery: jest.fn().mockResolvedValue([mockFile1, mockFile2]),
       } as any;
 
       const result = await getFileUrlsBatchAction.handler(mockCtx, {
@@ -1213,10 +1200,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2),
+        runQuery: jest.fn().mockResolvedValue([mockFile1, mockFile2]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1230,6 +1214,7 @@ describe("s3Actions", () => {
         "https://s3.amazonaws.com/file1-url",
         "https://s3.amazonaws.com/file2-url",
       ]);
+      expect(mockCtx.runQuery).toHaveBeenCalledTimes(1);
     });
 
     it("should generate URL metadata for service callers that request file info", async () => {
@@ -1258,7 +1243,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest.fn().mockResolvedValue(mockFile),
+        runQuery: jest.fn().mockResolvedValue([mockFile]),
       } as any;
 
       const result = await getFileUrlInfosByFileIdsAction.handler(mockCtx, {
@@ -1295,7 +1280,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest.fn().mockResolvedValue(mockFile),
+        runQuery: jest.fn().mockResolvedValue([mockFile]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1349,10 +1334,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2),
+        runQuery: jest.fn().mockResolvedValue([mockFile1, mockFile2]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1371,10 +1353,7 @@ describe("s3Actions", () => {
       const mockFile2Id = "file2" as any;
 
       const mockCtx = {
-        runQuery: jest
-          .fn()
-          .mockResolvedValueOnce(null)
-          .mockResolvedValueOnce(null),
+        runQuery: jest.fn().mockResolvedValue([null, null]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1481,9 +1460,7 @@ describe("s3Actions", () => {
       const mockCtx = {
         runQuery: jest
           .fn()
-          .mockResolvedValueOnce(mockFile1)
-          .mockResolvedValueOnce(mockFile2)
-          .mockResolvedValueOnce(mockFile3),
+          .mockResolvedValue([mockFile1, mockFile2, mockFile3]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1522,7 +1499,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest.fn().mockResolvedValue(mockFile),
+        runQuery: jest.fn().mockResolvedValue([mockFile]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1557,7 +1534,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest.fn().mockResolvedValue(mockFile),
+        runQuery: jest.fn().mockResolvedValue([mockFile]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
@@ -1602,7 +1579,7 @@ describe("s3Actions", () => {
       };
 
       const mockCtx = {
-        runQuery: jest.fn().mockResolvedValue(mockFile1),
+        runQuery: jest.fn().mockResolvedValue([mockFile1]),
       } as any;
 
       const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {

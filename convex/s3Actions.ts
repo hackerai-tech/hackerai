@@ -311,16 +311,32 @@ export const getFileUrlsByFileIdsAction = action({
         `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
+    if (args.fileIds.length === 0) {
+      return [];
+    }
+
+    let files: FileRecord[];
+    try {
+      files = await ctx.runQuery(internal.fileStorage.getFilesByIds, {
+        fileIds: args.fileIds,
+      });
+    } catch (error) {
+      convexLogger.error("file_batch_lookup_failed", {
+        caller: "service",
+        fileCount: args.fileIds.length,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
+      return args.fileIds.map(() => null);
+    }
 
     // Get file records and generate URLs
     const urls: Array<string | null> = await Promise.all(
-      args.fileIds.map(async (fileId): Promise<string | null> => {
+      args.fileIds.map(async (fileId, index): Promise<string | null> => {
         try {
-          // Get file record using internal query
-          const file: FileRecord = await ctx.runQuery(
-            internal.fileStorage.getFileById,
-            { fileId },
-          );
+          const file = files[index];
 
           if (!file || file.user_id !== args.userId) {
             return null;
@@ -371,41 +387,60 @@ export const getFileUrlInfosByFileIdsAction = action({
         `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
+    if (args.fileIds.length === 0) {
+      return [];
+    }
+
+    let files: FileRecord[];
+    try {
+      files = await ctx.runQuery(internal.fileStorage.getFilesByIds, {
+        fileIds: args.fileIds,
+      });
+    } catch (error) {
+      convexLogger.error("file_batch_lookup_failed", {
+        caller: "service-info",
+        fileCount: args.fileIds.length,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
+      return args.fileIds.map(() => null);
+    }
 
     const urls: Array<ServiceFileUrlInfo | null> = await Promise.all(
-      args.fileIds.map(async (fileId): Promise<ServiceFileUrlInfo | null> => {
-        try {
-          const file: FileRecord = await ctx.runQuery(
-            internal.fileStorage.getFileById,
-            { fileId },
-          );
+      args.fileIds.map(
+        async (fileId, index): Promise<ServiceFileUrlInfo | null> => {
+          try {
+            const file = files[index];
 
-          if (!file || file.user_id !== args.userId) {
+            if (!file || file.user_id !== args.userId) {
+              return null;
+            }
+
+            if (file.s3_key) {
+              return {
+                url: await generateS3DownloadUrl(file.s3_key),
+                sizeBytes: file.size,
+                mediaType: file.media_type,
+                name: file.name,
+              };
+            }
+
+            return null;
+          } catch (error) {
+            convexLogger.error("file_batch_url_info_generation_failed", {
+              fileId,
+              caller: "service",
+              error:
+                error instanceof Error
+                  ? { message: error.message, name: error.name }
+                  : String(error),
+            });
             return null;
           }
-
-          if (file.s3_key) {
-            return {
-              url: await generateS3DownloadUrl(file.s3_key),
-              sizeBytes: file.size,
-              mediaType: file.media_type,
-              name: file.name,
-            };
-          }
-
-          return null;
-        } catch (error) {
-          convexLogger.error("file_batch_url_info_generation_failed", {
-            fileId,
-            caller: "service",
-            error:
-              error instanceof Error
-                ? { message: error.message, name: error.name }
-                : String(error),
-          });
-          return null;
-        }
-      }),
+        },
+      ),
     );
 
     return urls;
@@ -445,19 +480,35 @@ export const getFileUrlsBatchAction = action({
         `Batch size exceeds limit: Maximum ${MAX_SERVICE_FILE_URL_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
+    if (args.fileIds.length === 0) {
+      return {};
+    }
 
     const urlMap: Record<string, string> = {};
 
+    let files: FileRecord[];
+    try {
+      files = await ctx.runQuery(internal.fileStorage.getFilesByIds, {
+        fileIds: args.fileIds,
+      });
+    } catch (error) {
+      convexLogger.error("file_batch_lookup_failed", {
+        userId: identity.subject,
+        caller: "user",
+        fileCount: args.fileIds.length,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+      });
+      return urlMap;
+    }
+
     // Process each file - access control per file
-    for (const fileId of args.fileIds) {
+    for (let index = 0; index < args.fileIds.length; index++) {
+      const fileId = args.fileIds[index];
       try {
-        // Get file record using internal query
-        const file: FileRecord = await ctx.runQuery(
-          internal.fileStorage.getFileById,
-          {
-            fileId,
-          },
-        );
+        const file = files[index];
 
         // Skip if file not found
         if (!file) {
