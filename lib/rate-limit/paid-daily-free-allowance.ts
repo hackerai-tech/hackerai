@@ -9,7 +9,7 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
 export const PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY =
   "paid-daily-free-allowance";
 export const PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT = 1;
-export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.1;
+export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
 export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
 
 const PAID_INDIVIDUAL_TIERS = new Set<SubscriptionTier>([

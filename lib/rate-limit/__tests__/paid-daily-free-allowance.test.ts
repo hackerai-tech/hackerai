@@ -118,9 +118,9 @@ describe("paid daily free allowance", () => {
       requestLimit: 1,
       requestsUsed: 0,
       requestsRemaining: 1,
-      costLimitDollars: 0.1,
+      costLimitDollars: 0.25,
       costUsedDollars: 0,
-      costRemainingDollars: 0.1,
+      costRemainingDollars: 0.25,
       resetTimestamp: Date.parse("2026-06-12T00:00:00.000Z"),
     });
   });
@@ -188,14 +188,14 @@ describe("paid daily free allowance", () => {
       recordPaidDailyFreeAllowanceCost,
     } = getIsolatedModule();
 
-    await recordPaidDailyFreeAllowanceCost("user_123", 0.11);
+    await recordPaidDailyFreeAllowanceCost("user_123", 0.26);
 
     await expect(
       getPaidDailyFreeAllowanceStatus(eligibleContext),
     ).resolves.toMatchObject({
       available: false,
       unavailableReason: "cost_limit_reached",
-      costUsedDollars: 0.11,
+      costUsedDollars: 0.26,
       costRemainingDollars: 0,
     });
   });

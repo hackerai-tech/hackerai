@@ -199,7 +199,7 @@ async function main() {
   });
   const userId = await getUserId(user.email);
   const allowanceCostLimitPoints = Math.ceil(
-    Number(process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD ?? "0.10") *
+    Number(process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD ?? "0.25") *
       POINTS_PER_DOLLAR,
   );
   const allowanceRequestLimit = Math.floor(
