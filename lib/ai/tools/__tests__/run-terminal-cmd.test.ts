@@ -379,6 +379,78 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.exitCode).toBe(0);
   });
 
+  test("blocks non-interactive execution when a selected local sandbox falls back", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const { context, sandboxManager, writerWrites } = makeContext({
+      sandbox: e2b,
+    });
+    sandboxManager.consumeFallbackInfo.mockReturnValueOnce({
+      occurred: true,
+      reason: "no_local_connections",
+      requestedPreference: "desktop",
+      actualSandbox: "e2b",
+      actualSandboxName: "Cloud",
+    });
+    const tool = createRunTerminalCmd(context);
+
+    const result = (await runTool(tool, {
+      command: "rm -rf ~/project",
+      brief: "run command",
+      is_background: false,
+      timeout: 5,
+    })) as { result: { error?: string; exitCode: number } };
+
+    expect(e2b.commands.run).not.toHaveBeenCalled();
+    expect(result.result.exitCode).toBe(1);
+    expect(result.result.error).toContain("request couldn't be processed");
+    expect(writerWrites).toContainEqual(
+      expect.objectContaining({
+        type: "data-sandbox-fallback",
+        data: expect.objectContaining({
+          actualSandbox: "e2b",
+          requestedPreference: "desktop",
+        }),
+      }),
+    );
+  });
+
+  test("blocks interactive PTY creation when a selected local sandbox falls back", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const { context, sandboxManager, writerWrites } = makeContext({
+      sandbox: e2b,
+    });
+    sandboxManager.consumeFallbackInfo.mockReturnValueOnce({
+      occurred: true,
+      reason: "connection_unavailable",
+      requestedPreference: "desktop",
+      actualSandbox: "other-local",
+      actualSandboxName: "Other Mac",
+    });
+    const tool = createRunTerminalCmd(context);
+
+    const result = (await runTool(tool, {
+      action: "exec",
+      command: "sh",
+      brief: "open shell",
+      is_background: false,
+      interactive: true,
+      timeout: 1,
+    })) as { result: { error?: string; exitCode: number } };
+
+    expect(mockCreateE2BPtyHandle).not.toHaveBeenCalled();
+    expect(result.result.exitCode).toBe(1);
+    expect(result.result.error).toContain("request couldn't be processed");
+    expect(writerWrites).toContainEqual(
+      expect.objectContaining({
+        type: "data-sandbox-fallback",
+        data: expect.objectContaining({
+          actualSandbox: "other-local",
+          requestedPreference: "desktop",
+        }),
+      }),
+    );
+  });
+
   test("exec + interactive=true on Centrifugo sandbox invokes createCentrifugoPtyHandle", async () => {
     const fakeHandle = makeFakeHandle();
     mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);

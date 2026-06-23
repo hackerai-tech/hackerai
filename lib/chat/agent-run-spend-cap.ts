@@ -63,7 +63,6 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
 }): SelectedModel | undefined {
   const {
     finishReason,
-    isAutoContinue,
     mode,
     subscription,
     selectedModelOverride,
@@ -75,7 +74,6 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
 
   if (
     finishReason !== AGENT_RUN_SPEND_CAP_FINISH_REASON ||
-    !isAutoContinue ||
     mode !== "agent" ||
     subscription !== "pro" ||
     isAlreadyStandardContinuation ||
