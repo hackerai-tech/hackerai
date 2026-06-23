@@ -420,26 +420,52 @@ export const verifyChatOwnership = internalQuery({
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-      .first();
-
-    if (!chat) {
-      throw new ConvexError({
-        code: "CHAT_NOT_FOUND",
-        message: "This chat doesn't exist",
-      });
-    } else if (chat.user_id !== args.userId) {
-      throw new ConvexError({
-        code: "CHAT_UNAUTHORIZED",
-        message: "You don't have permission to access this chat",
-      });
-    }
-
+    await loadOwnedChat(ctx, args.chatId, args.userId);
     return true;
   },
 });
+
+async function loadOwnedChat(
+  ctx: { db: GenericDatabaseReader<DataModel> },
+  chatId: string,
+  userId: string,
+): Promise<Doc<"chats">> {
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
+    .first();
+
+  if (!chat) {
+    throw new ConvexError({
+      code: "CHAT_NOT_FOUND",
+      message: "This chat doesn't exist",
+    });
+  }
+
+  if (chat.user_id !== userId) {
+    throw new ConvexError({
+      code: "CHAT_UNAUTHORIZED",
+      message: "You don't have permission to access this chat",
+    });
+  }
+
+  return chat;
+}
+
+async function ensureChatWritableForMessageInsert(
+  ctx: MutationCtx,
+  chatId: string,
+  userId: string,
+): Promise<void> {
+  const chat = await loadOwnedChat(ctx, chatId, userId);
+
+  if (chat.canceled_at !== undefined) {
+    throw new ConvexError({
+      code: "CHAT_CANCELED",
+      message: "This chat is no longer accepting new messages",
+    });
+  }
+}
 
 /**
  * Save a single message to a chat
@@ -608,18 +634,8 @@ export const saveMessage = mutation({
           return null;
         }
 
-        failureStage = "verify_chat_ownership";
-        const chatExists: boolean = await ctx.runQuery(
-          internal.messages.verifyChatOwnership,
-          {
-            chatId: args.chatId,
-            userId: args.userId,
-          },
-        );
-
-        if (!chatExists) {
-          throw new Error("Chat not found");
-        }
+        failureStage = "verify_chat_writable_for_insert";
+        await ensureChatWritableForMessageInsert(ctx, args.chatId, args.userId);
       }
 
       let newMessageFiles: Doc<"files">[] = [];
@@ -756,14 +772,19 @@ export const saveMessage = mutation({
       }
 
       if (
-        failureStage === "verify_chat_ownership" &&
+        failureStage === "verify_chat_writable_for_insert" &&
         args.role === "assistant" &&
-        getConvexErrorCode(causeData) === "CHAT_NOT_FOUND"
+        (getConvexErrorCode(causeData) === "CHAT_NOT_FOUND" ||
+          getConvexErrorCode(causeData) === "CHAT_CANCELED")
       ) {
+        const convexErrorCode = getConvexErrorCode(causeData);
         console.warn(
           JSON.stringify({
             level: "warn",
-            event: "convex_message_save_skipped_chat_not_found",
+            event:
+              convexErrorCode === "CHAT_CANCELED"
+                ? "convex_message_save_skipped_chat_canceled"
+                : "convex_message_save_skipped_chat_not_found",
             service: "convex",
             timestamp: new Date().toISOString(),
             db_operation: "messages.saveMessage",
@@ -778,7 +799,7 @@ export const saveMessage = mutation({
             update_only: args.updateOnly === true,
             hidden: args.isHidden === true,
             file_count: args.fileIds?.length ?? 0,
-            convex_error_code: "CHAT_NOT_FOUND",
+            convex_error_code: convexErrorCode,
             ...getMessageSaveDiagnostics(args.parts),
           }),
         );

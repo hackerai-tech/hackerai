@@ -22,9 +22,65 @@ export interface ProviderPromptPressure {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const isImageMediaType = (value: unknown): boolean =>
+  typeof value === "string" && value.toLowerCase().startsWith("image/");
+
+const isImageDataUrl = (value: unknown): boolean =>
+  typeof value === "string" && /^data:image\//i.test(value);
+
+const isImageLikeRecord = (value: Record<string, unknown>): boolean =>
+  value.type === "image" ||
+  value.type === "image-data" ||
+  value.kind === "image" ||
+  isImageMediaType(value.mediaType) ||
+  isImageMediaType(value.mimeType) ||
+  isImageMediaType(value.mime);
+
+const compactImagePayload = (value: unknown): string => {
+  if (typeof value === "string") {
+    return `[image data omitted: ${value.length} chars]`;
+  }
+
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    return `[image data omitted: ${value.byteLength} bytes]`;
+  }
+
+  return "[image data omitted]";
+};
+
+const sanitizeForSerializedByteEstimate = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForSerializedByteEstimate);
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const imageLike = isImageLikeRecord(value);
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, childValue] of Object.entries(value)) {
+    if (
+      (imageLike && (key === "data" || key === "image")) ||
+      ((key === "data" || key === "image" || key === "url") &&
+        isImageDataUrl(childValue))
+    ) {
+      sanitized[key] = compactImagePayload(childValue);
+      continue;
+    }
+
+    sanitized[key] = sanitizeForSerializedByteEstimate(childValue);
+  }
+
+  return sanitized;
+};
+
 const getSerializedBytes = (value: unknown): number | undefined => {
   try {
-    return new TextEncoder().encode(JSON.stringify(value)).length;
+    return new TextEncoder().encode(
+      JSON.stringify(sanitizeForSerializedByteEstimate(value)),
+    ).length;
   } catch {
     return undefined;
   }

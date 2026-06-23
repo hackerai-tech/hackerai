@@ -55,7 +55,7 @@ describe("canContinueProAgentRunWithPremium", () => {
 });
 
 describe("resolveAgentRunSpendCapContinuationModel", () => {
-  it("forces Pro Agent spend-cap auto-continues to Standard without extra usage", () => {
+  it("forces Pro Agent spend-cap continuations to Standard without extra usage", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
@@ -85,6 +85,28 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         mode: "agent",
         subscription: "pro",
         selectedModelOverride: undefined,
+        extraUsageConfig: undefined,
+      }),
+    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: false,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-pro",
+        extraUsageConfig: undefined,
+      }),
+    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: undefined,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-max",
         extraUsageConfig: undefined,
       }),
     ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);

@@ -33,7 +33,10 @@ import {
   type PtySession,
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
-import { writeSandboxFallbackEvent } from "./utils/sandbox-fallback";
+import {
+  assertLocalSandboxFallbackAllowed,
+  writeSandboxFallbackEvent,
+} from "./utils/sandbox-fallback";
 import {
   waitForOutput,
   capOutput,
@@ -221,6 +224,7 @@ In using these tools, adhere to the following guidelines:
               fallbackInfo,
               `sandbox-fallback-${toolCallId}`,
             );
+            assertLocalSandboxFallbackAllowed({ fallbackInfo });
           }
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
@@ -374,6 +378,7 @@ In using these tools, adhere to the following guidelines:
             fallbackInfo,
             `sandbox-fallback-${toolCallId}`,
           );
+          assertLocalSandboxFallbackAllowed({ fallbackInfo });
         }
 
         // Bail early if sandbox was already marked unavailable by any tool

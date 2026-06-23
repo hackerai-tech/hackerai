@@ -100,7 +100,7 @@ describe("MessageErrorState", () => {
           type: "paid_daily_free_allowance",
           available: true,
           requestsRemaining: 1,
-          costRemainingDollars: 0.1,
+          costRemainingDollars: 0.25,
         },
       },
     );
@@ -125,7 +125,7 @@ describe("MessageErrorState", () => {
         surface: "message_error_state",
         cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
         allowance_requests_remaining: 1,
-        allowance_cost_remaining_dollars: 0.1,
+        allowance_cost_remaining_dollars: 0.25,
       }),
     );
 

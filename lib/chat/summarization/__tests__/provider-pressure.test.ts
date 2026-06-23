@@ -63,6 +63,44 @@ describe("getProviderPromptPressure", () => {
     });
   });
 
+  it("does not trigger serialized pressure for a single image tool result", () => {
+    const messages = [
+      toolResultMessage(1, {
+        type: "content",
+        value: [
+          { type: "text", text: "Viewing image file: screenshot.png" },
+          {
+            type: "image-data",
+            data: "a".repeat(PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES + 1),
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ] as ModelMessage[];
+
+    expect(getProviderPromptPressure(messages)).toBeNull();
+  });
+
+  it("does not trigger serialized pressure for a single image data URL", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "describe this screenshot" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: `data:image/png;base64,${"a".repeat(
+              PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES + 1,
+            )}`,
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(getProviderPromptPressure(messages)).toBeNull();
+  });
+
   it("does not trigger for small prompts", () => {
     const messages = [
       {
