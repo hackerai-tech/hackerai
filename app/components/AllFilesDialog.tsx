@@ -1,11 +1,17 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { useFileUrlCacheContext } from "@/app/contexts/FileUrlCacheContext";
 import type { FilePart } from "@/types/file";
 import JSZip from "jszip";
@@ -23,12 +29,12 @@ interface AllFilesDialogProps {
   chatTitle?: string | null;
 }
 
+type DialogFile = AllFilesDialogProps["files"][number];
+
+const FILE_URL_BATCH_SIZE = 50;
+
 interface FileItemProps {
-  file: {
-    part: FilePart;
-    partIndex: number;
-    messageId: string;
-  };
+  file: DialogFile;
   isSelected: boolean;
   selectionMode: boolean;
   onToggle: () => void;
@@ -142,12 +148,88 @@ const AllFilesDialog = ({
   files,
   chatTitle,
 }: AllFilesDialogProps) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlsBatchAction = useAction(
+    api.s3Actions.getFileUrlsBatchAction,
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [fileUrls, setFileUrls] = useState<Map<number, string>>(new Map());
   const [isLoadingUrls, setIsLoadingUrls] = useState(false);
+
+  const resolveFileUrls = useCallback(
+    async (
+      items: Array<{
+        file: DialogFile;
+        index: number;
+      }>,
+    ): Promise<Map<number, string>> => {
+      const urlMap = new Map<number, string>();
+      const pendingByFileId = new Map<
+        string,
+        { fileId: Id<"files">; indexes: number[] }
+      >();
+
+      for (const { file, index } of items) {
+        if (file.part.url) {
+          urlMap.set(index, file.part.url);
+          continue;
+        }
+
+        if (!file.part.fileId) {
+          continue;
+        }
+
+        const cachedUrl = fileUrlCache?.getCachedUrl(file.part.fileId);
+        if (cachedUrl) {
+          urlMap.set(index, cachedUrl);
+          continue;
+        }
+
+        const existing = pendingByFileId.get(file.part.fileId);
+        if (existing) {
+          existing.indexes.push(index);
+        } else {
+          pendingByFileId.set(file.part.fileId, {
+            fileId: file.part.fileId as Id<"files">,
+            indexes: [index],
+          });
+        }
+      }
+
+      const pendingFiles = Array.from(pendingByFileId.values());
+      for (
+        let start = 0;
+        start < pendingFiles.length;
+        start += FILE_URL_BATCH_SIZE
+      ) {
+        const chunk = pendingFiles.slice(start, start + FILE_URL_BATCH_SIZE);
+
+        try {
+          const batchUrls = await getFileUrlsBatchAction({
+            fileIds: chunk.map(({ fileId }) => fileId),
+          });
+
+          for (const { fileId, indexes } of chunk) {
+            const url = batchUrls[fileId];
+            if (!url) {
+              continue;
+            }
+
+            for (const index of indexes) {
+              urlMap.set(index, url);
+            }
+            fileUrlCache?.setCachedUrl(fileId, url);
+          }
+        } catch (error) {
+          console.error("Failed to fetch file URL batch:", error);
+        }
+      }
+
+      return urlMap;
+    },
+    [fileUrlCache, getFileUrlsBatchAction],
+  );
 
   const handleOpenChange = (newOpen: boolean) => {
     if (!newOpen) {
@@ -170,44 +252,8 @@ const AllFilesDialog = ({
     async function fetchAllUrls() {
       if (cancelled) return;
       setIsLoadingUrls(true);
-      const urlMap = new Map<number, string>();
-
-      // Fetch URLs in parallel
-      await Promise.all(
-        files.map(async (file, index) => {
-          // If already has URL, use it
-          if (file.part.url) {
-            urlMap.set(index, file.part.url);
-            return;
-          }
-
-          // Check cache first for fileId
-          if (file.part.fileId && fileUrlCache) {
-            const cachedUrl = fileUrlCache.getCachedUrl(file.part.fileId);
-            if (cachedUrl) {
-              urlMap.set(index, cachedUrl);
-              return;
-            }
-          }
-
-          try {
-            let url: string | null = null;
-
-            if (file.part.fileId) {
-              url = await getFileUrlAction({ fileId: file.part.fileId });
-              // Cache it
-              if (url && fileUrlCache) {
-                fileUrlCache.setCachedUrl(file.part.fileId, url);
-              }
-            }
-
-            if (url) {
-              urlMap.set(index, url);
-            }
-          } catch (error) {
-            console.error(`Failed to fetch URL for file ${index}:`, error);
-          }
-        }),
+      const urlMap = await resolveFileUrls(
+        files.map((file, index) => ({ file, index })),
       );
 
       if (!cancelled) {
@@ -221,7 +267,7 @@ const AllFilesDialog = ({
     return () => {
       cancelled = true;
     };
-  }, [open, files, getFileUrlAction, fileUrlCache]);
+  }, [open, files, resolveFileUrls]);
 
   const handleEnterSelectionMode = () => {
     setSelectionMode(true);
@@ -263,20 +309,32 @@ const AllFilesDialog = ({
 
     try {
       const zip = new JSZip();
+      let downloadUrls = new Map(fileUrls);
+      const missingUrlFiles = filesToDownload.filter(({ file, index }) => {
+        return !downloadUrls.get(index) && !file.part.url;
+      });
+
+      if (missingUrlFiles.length > 0) {
+        const resolvedUrls = await resolveFileUrls(missingUrlFiles);
+        downloadUrls = new Map(downloadUrls);
+        for (const [index, url] of resolvedUrls.entries()) {
+          downloadUrls.set(index, url);
+        }
+        setFileUrls((current) => {
+          const next = new Map(current);
+          for (const [index, url] of resolvedUrls.entries()) {
+            next.set(index, url);
+          }
+          return next;
+        });
+      }
 
       // Use already fetched URLs or fetch missing ones
       await Promise.all(
         filesToDownload.map(async ({ file, index }) => {
           try {
             let url: string | null | undefined =
-              fileUrls.get(index) || file.part.url;
-
-            // Fetch URL if not already available
-            if (!url) {
-              if (file.part.fileId) {
-                url = await getFileUrlAction({ fileId: file.part.fileId });
-              }
-            }
+              downloadUrls.get(index) || file.part.url;
 
             if (url) {
               const response = await fetch(url);
@@ -351,6 +409,9 @@ const AllFilesDialog = ({
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">All files in this chat</DialogTitle>
+        <DialogDescription className="sr-only">
+          Download files attached to this chat.
+        </DialogDescription>
         {selectionMode ? (
           <header className="flex items-center justify-between pt-6 pr-6 pl-6 pb-2.5">
             <Button
