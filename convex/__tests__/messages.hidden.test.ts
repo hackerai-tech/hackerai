@@ -1,6 +1,5 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
-import { ConvexError } from "convex/values";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -103,11 +102,38 @@ describe("saveMessage — is_hidden handling", () => {
     };
   });
 
-  function setupExistingMessage(msg: Record<string, any> | null): void {
-    const withIndexMock = jest.fn().mockReturnValue({
-      first: jest.fn<any>().mockResolvedValue(msg),
+  function setupExistingMessage(
+    msg: Record<string, any> | null,
+    chat: Record<string, any> | null = {
+      _id: "chat-doc-1",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      canceled_at: undefined,
+    },
+  ): void {
+    mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "messages") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(msg),
+          }),
+        };
+      }
+
+      if (table === "chats") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(chat),
+          }),
+        };
+      }
+
+      return {
+        withIndex: jest.fn().mockReturnValue({
+          first: jest.fn<any>().mockResolvedValue(null),
+        }),
+      };
     });
-    mockCtx.db.query.mockReturnValue({ withIndex: withIndexMock });
   }
 
   it("should store is_hidden: true on insert", async () => {
@@ -267,13 +293,7 @@ describe("saveMessage — is_hidden handling", () => {
   });
 
   it("skips assistant inserts when the chat was deleted before save", async () => {
-    setupExistingMessage(null);
-    mockCtx.runQuery.mockRejectedValue(
-      new ConvexError({
-        code: "CHAT_NOT_FOUND",
-        message: "This chat doesn't exist",
-      }),
-    );
+    setupExistingMessage(null, null);
 
     const { saveMessage } = await import("../messages");
 
@@ -294,6 +314,66 @@ describe("saveMessage — is_hidden handling", () => {
       expect.stringContaining("convex_message_save_skipped_chat_not_found"),
     );
     expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("skips assistant inserts when the chat is already canceled", async () => {
+    setupExistingMessage(null, {
+      _id: "chat-doc-1",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      canceled_at: Date.now(),
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-assistant-canceled",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "late result" }],
+      }),
+    ).resolves.toBeNull();
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("convex_message_save_skipped_chat_canceled"),
+    );
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("rejects user inserts when the chat is already canceled", async () => {
+    setupExistingMessage(null, {
+      _id: "chat-doc-1",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      canceled_at: Date.now(),
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-user-canceled",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "late user message" }],
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "MESSAGE_SAVE_FAILED",
+        failureStage: "verify_chat_writable_for_insert",
+        causeData: expect.objectContaining({
+          code: "CHAT_CANCELED",
+        }),
+      }),
+    });
+
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
   });
 
   it("rejects unowned file IDs before inserting a new message", async () => {
