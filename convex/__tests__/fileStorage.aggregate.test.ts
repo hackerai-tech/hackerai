@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
+import type { QueryCtx } from "../_generated/server";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -70,6 +71,11 @@ describe("fileStorage - Aggregate Integration", () => {
   const testFileId = "test-file-id" as Id<"files">;
   // 10 GB in bytes
   const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+  type FileLookupQueryCtx = {
+    db: {
+      get: (_id: Id<"files">) => Promise<Doc<"files"> | null>;
+    };
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -83,26 +89,33 @@ describe("fileStorage - Aggregate Integration", () => {
   describe("service file retrieval ownership", () => {
     it("returns only storage URL metadata for file lookups", async () => {
       const { getFilesByIds } = await import("../fileStorage");
-      const mockCtx: any = {
+      const storedFile = {
+        _id: testFileId,
+        s3_key: "users/test-user/file.pdf",
+        user_id: testUserId,
+        name: "file.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 123,
+        content: "large extracted content",
+        is_attached: true,
+        _creationTime: 123456,
+      } as Doc<"files">;
+      const mockDbGet = jest
+        .fn<(_id: Id<"files">) => Promise<Doc<"files"> | null>>()
+        .mockResolvedValue(storedFile);
+      const mockCtx = {
         db: {
-          get: jest.fn<any>().mockResolvedValue({
-            _id: testFileId,
-            s3_key: "users/test-user/file.pdf",
-            user_id: testUserId,
-            name: "file.pdf",
-            media_type: "application/pdf",
-            size: 1024,
-            file_token_size: 123,
-            content: "large extracted content",
-            is_attached: true,
-            _creationTime: 123456,
-          }),
+          get: mockDbGet,
         },
-      };
+      } satisfies FileLookupQueryCtx;
 
-      const result = await getFilesByIds.handler(mockCtx, {
-        fileIds: [testFileId],
-      });
+      const result = await getFilesByIds.handler(
+        mockCtx as unknown as QueryCtx,
+        {
+          fileIds: [testFileId],
+        },
+      );
 
       expect(result).toEqual([
         {
