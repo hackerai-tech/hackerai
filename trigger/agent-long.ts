@@ -841,6 +841,7 @@ export type AgentLongPayload = {
   userId: string;
   subscription: SubscriptionTier;
   organizationId?: string;
+  freeQuotaSubject?: string;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -902,6 +903,7 @@ export const agentLongTask = task({
       userId,
       subscription,
       organizationId,
+      freeQuotaSubject,
       messages,
       localDesktopAttachmentsPrepared,
       sandboxPreference,
@@ -912,6 +914,7 @@ export const agentLongTask = task({
       regenerate,
       isNewChat,
     } = payload;
+    const freeUsageSubject = freeQuotaSubject ?? userId;
 
     // Stable across retries so a failed-then-retried run upserts the same
     // message record rather than creating a duplicate.
@@ -1122,7 +1125,7 @@ export const agentLongTask = task({
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
               const lock = await acquireFreeRunConcurrencyLock(
-                userId,
+                freeUsageSubject,
                 FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
               );
               releaseFreeRunLock = lock.release;
@@ -1143,11 +1146,12 @@ export const agentLongTask = task({
               extraUsageConfig,
               selectedModel,
               organizationId,
+              freeQuotaSubject,
             );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(userId)
+                ? await checkFreeMonthlyCostLimit(freeUsageSubject)
                 : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
@@ -1463,7 +1467,7 @@ export const agentLongTask = task({
                     : undefined;
                 if (subscription === "free") {
                   await recordFreeMonthlyCost(
-                    userId,
+                    freeUsageSubject,
                     usageCostRecord.costDollars,
                   );
                 } else {

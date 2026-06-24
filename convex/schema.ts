@@ -320,6 +320,7 @@ export default defineSchema({
 
   referral_attributions: defineTable({
     referred_user_id: v.string(),
+    referred_identity_hash: v.optional(v.string()),
     referrer_user_id: v.string(),
     referral_code: v.string(),
     referrer_subscription_tier: v.optional(
@@ -365,6 +366,7 @@ export default defineSchema({
   })
     .index("by_referred_user_id", ["referred_user_id"])
     .index("by_referrer_user_id", ["referrer_user_id"])
+    .index("by_referred_identity_hash", ["referred_identity_hash"])
     .index("by_referral_code", ["referral_code"])
     .index("by_stripe_checkout_session_id", ["stripe_checkout_session_id"])
     .index("by_stripe_customer_id", ["stripe_customer_id"])
@@ -402,6 +404,16 @@ export default defineSchema({
       "created_at",
     ])
     .index("by_referred_user_id", ["referred_user_id"]),
+
+  account_identities: defineTable({
+    identity_hash: v.string(),
+    first_seen_at: v.number(),
+    last_seen_at: v.number(),
+    latest_user_id: v.string(),
+    deleted_at: v.optional(v.number()),
+  })
+    .index("by_identity_hash", ["identity_hash"])
+    .index("by_latest_user_id", ["latest_user_id"]),
 
   user_suspensions: defineTable({
     user_id: v.string(),

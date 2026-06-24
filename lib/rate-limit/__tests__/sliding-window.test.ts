@@ -166,5 +166,31 @@ describe("sliding-window", () => {
         [5, 30 * 24 * 60 * 60],
       );
     });
+
+    it("keys referral bonus units by quota subject", async () => {
+      const { grantFreeReferralBonusUnits } = getIsolatedModule();
+      const subject =
+        "free_quota:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+      mockCreateRedisClient.mockReturnValue({
+        eval: mockEvalFn,
+      });
+
+      const result = await grantFreeReferralBonusUnits(
+        subject,
+        5,
+        `referral_signup:${subject}`,
+      );
+
+      expect(result).toEqual({ granted: true, units: 5 });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          `free_referral_bonus:${subject}`,
+          `free_referral_bonus_grant:referral_signup:${subject}`,
+        ],
+        [5, 30 * 24 * 60 * 60],
+      );
+    });
   });
 });

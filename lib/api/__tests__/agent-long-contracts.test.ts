@@ -514,4 +514,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
   });
+
+  test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
+    expect(routeSrc).toMatch(/freeQuotaSubject/);
+    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*freeQuotaSubject/);
+    expect(taskSrc).toMatch(/freeQuotaSubject\?:\s*string/);
+    expect(taskSrc).toMatch(
+      /const freeUsageSubject\s*=\s*freeQuotaSubject\s*\?\?\s*userId/,
+    );
+    expect(taskSrc).toMatch(
+      /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
+    );
+    expect(taskSrc).toMatch(/checkFreeMonthlyCostLimit\(freeUsageSubject\)/);
+    expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
+  });
 });

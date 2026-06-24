@@ -50,6 +50,7 @@ function makeMockCtx(initialTables: Partial<Tables>, userId = USER_ID) {
     referral_attributions: [],
     referral_codes: [],
     referral_rewards: [],
+    account_identities: [],
     extra_usage: [],
     team_extra_usage: [],
     user_customization: [],
@@ -90,6 +91,12 @@ function makeMockCtx(initialTables: Partial<Tables>, userId = USER_ID) {
             );
             const chain = {
               first: jest.fn(async () => matches[0] ?? null),
+              unique: jest.fn(async () => {
+                if (matches.length > 1) {
+                  throw new Error("Expected unique result");
+                }
+                return matches[0] ?? null;
+              }),
               order: jest.fn(() => ({
                 first: jest.fn(async () => matches[0] ?? null),
                 take: jest.fn(async (limit: number) => matches.slice(0, limit)),
@@ -122,6 +129,67 @@ function makeMockCtx(initialTables: Partial<Tables>, userId = USER_ID) {
 }
 
 describe("referral reward notifications", () => {
+  it("blocks referral attribution for an identity deleted within the cooldown", async () => {
+    const { attributeReferredSignup } = await import("../referrals");
+    const now = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, "now").mockReturnValue(now);
+    const identityHash = "free_quota:v1:identity_hash";
+    const { ctx, tables } = makeMockCtx({
+      account_identities: [
+        {
+          _id: "identity_1",
+          identity_hash: identityHash,
+          first_seen_at: now - 2 * 24 * 60 * 60 * 1000,
+          last_seen_at: now - 2 * 24 * 60 * 60 * 1000,
+          latest_user_id: "deleted_user",
+          deleted_at: now - 24 * 60 * 60 * 1000,
+        },
+      ],
+      referral_codes: [
+        {
+          _id: "code_1",
+          user_id: USER_ID,
+          code: "ABC1234",
+          status: "active",
+          referrer_subscription_tier: "pro",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
+    });
+
+    try {
+      const result = await attributeReferredSignup.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        referredUserId: REFERRED_USER_ID,
+        referralCode: "ABC1234",
+        starterBonusUnits: 10,
+        referredIdentityHash: identityHash,
+        userCreatedAtMs: now,
+        maxUserAgeDays: 7,
+        source: "referral_cookie",
+      });
+
+      expect(result).toMatchObject({
+        status: "blocked",
+        reason: "recreated_identity",
+        starterBonusAwarded: false,
+        starterBonusEligible: false,
+      });
+      expect(tables.referral_attributions).toEqual([]);
+      expect(tables.referral_rewards).toEqual([
+        expect.objectContaining({
+          reward_type: "referred_signup",
+          status: "withheld",
+          referred_user_id: REFERRED_USER_ID,
+          reason: "recreated_identity",
+        }),
+      ]);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it("returns only unseen awarded conversion rewards for the signed-in referrer", async () => {
     const { getUnreadRewardNotifications } = await import("../referrals");
     const { ctx } = makeMockCtx({
