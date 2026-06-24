@@ -754,6 +754,42 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it("keeps local sandbox fallback metadata queryable", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_local_fallback",
+        endpoint: "/api/agent-long",
+      });
+
+      chatLogger.emitChatError(
+        new ChatSDKError(
+          "bad_request:api",
+          "The selected local sandbox is unavailable.",
+          {
+            localSandboxFallbackBlocked: true,
+            sandboxFallbackReason: "selected_unavailable",
+            requestedPreference: "desktop",
+            actualSandbox: "remote-connection-1",
+            actualSandboxName: "Lab VM",
+          },
+        ),
+      );
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.error.metadata).toEqual({
+        localSandboxFallbackBlocked: true,
+        sandboxFallbackReason: "selected_unavailable",
+        requestedPreference: "desktop",
+        actualSandbox: "remote-connection-1",
+      });
+      expect(wideEvent.error.metadata).not.toHaveProperty("actualSandboxName");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("emits limit pressure funnel properties for paid monthly exhaustion", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});

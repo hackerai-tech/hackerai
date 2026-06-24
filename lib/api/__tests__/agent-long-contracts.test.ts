@@ -452,6 +452,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
+  test("blocked local sandbox fallback errors are user-correctable diagnostics", () => {
+    expect(taskSrc).toMatch(/localSandboxFallbackBlocked/);
+    expect(taskSrc).toMatch(/"local_sandbox_fallback_blocked"/);
+    expect(taskSrc).toMatch(/sandboxFallbackReason/);
+    expect(taskSrc).toMatch(/requestedPreference/);
+    expect(taskSrc).toMatch(/actualSandbox/);
+    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/user-correctable request error/);
+  });
+
   test("agent-long only passes explicit Trigger.dev region when mapped", () => {
     const routingIdx = routeSrc.indexOf(
       "getTriggerRegionForVercelRequest(req)",
