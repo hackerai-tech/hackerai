@@ -442,6 +442,12 @@ export default defineSchema({
       "status",
       "source_created_at",
     ])
+    .index("by_user_status_category_source_created", [
+      "user_id",
+      "status",
+      "category",
+      "source_created_at",
+    ])
     .index("by_user_and_source", ["user_id", "source_id"])
     .index("by_customer_and_status", ["stripe_customer_id", "status"]),
 

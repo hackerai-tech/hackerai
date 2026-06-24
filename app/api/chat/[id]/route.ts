@@ -4,6 +4,7 @@ import { runs } from "@trigger.dev/sdk";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { deleteChatForBackend, getChatById } from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
+import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 
 export const maxDuration = 30;
 
@@ -18,6 +19,7 @@ export async function DELETE(
     }
 
     const userId = await getUserID(req);
+    await assertUserCanAccessChatHistory(userId);
     const chat = await getChatById({ id: chatId });
 
     if (!chat) {

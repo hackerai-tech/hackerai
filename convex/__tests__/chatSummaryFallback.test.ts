@@ -48,6 +48,11 @@ jest.mock("../chats", () => ({
   ...(jest.requireActual("../chats") as Record<string, any>),
   validateServiceKey: jest.fn(),
 }));
+jest.mock("../lib/suspensionGuards", () => ({
+  assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
+  isUserBlockedByActiveFraudDispute: jest.fn<any>().mockResolvedValue(false),
+  CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
+}));
 
 const SERVICE_KEY = "test-service-key";
 process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;

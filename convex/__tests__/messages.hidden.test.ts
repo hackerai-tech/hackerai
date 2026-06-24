@@ -49,6 +49,11 @@ jest.mock("../_generated/api", () => ({
 jest.mock("../lib/utils", () => ({
   validateServiceKey: jest.fn(),
 }));
+jest.mock("../lib/suspensionGuards", () => ({
+  assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
+  isUserBlockedByActiveFraudDispute: jest.fn<any>().mockResolvedValue(false),
+  CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
+}));
 jest.mock("../fileAggregate", () => ({
   fileCountAggregate: {
     deleteIfExists: jest.fn<any>().mockResolvedValue(undefined),

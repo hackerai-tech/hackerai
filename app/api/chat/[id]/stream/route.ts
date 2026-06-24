@@ -10,6 +10,7 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { phLogger } from "@/lib/posthog/server";
+import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 
 export const maxDuration = 800;
 
@@ -18,12 +19,6 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: chatId } = await params;
-
-  const streamContext = getStreamContext();
-
-  if (!streamContext) {
-    return new Response(null, { status: 204 });
-  }
 
   if (!chatId) {
     return new ChatSDKError("bad_request:api").toResponse();
@@ -36,6 +31,12 @@ export async function GET(
     userId = await getUserID(req);
   } catch (error) {
     return new ChatSDKError("unauthorized:chat").toResponse();
+  }
+  try {
+    await assertUserCanAccessChatHistory(userId);
+  } catch (error) {
+    if (error instanceof ChatSDKError) return error.toResponse();
+    throw error;
   }
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
@@ -56,6 +57,12 @@ export async function GET(
 
   if (chat.user_id !== userId) {
     return new ChatSDKError("forbidden:chat").toResponse();
+  }
+
+  const streamContext = getStreamContext();
+
+  if (!streamContext) {
+    return new Response(null, { status: 204 });
   }
 
   const recentStreamId: string | undefined = chat.active_stream_id;
