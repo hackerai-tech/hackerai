@@ -36,10 +36,12 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-static";
 
-const LAST_UPDATED = "June 10, 2026";
+const LAST_UPDATED = "June 24, 2026";
 
 const HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+
+const STATUS_PAGE_URL = "https://status.hackerai.co/";
 
 interface Subprocessor {
   name: string;
@@ -334,9 +336,12 @@ export default function TrustPage() {
 
             <Section icon={Activity} title="Incident communication">
               <p>
-                We don&apos;t yet operate a public status page. If an incident
-                affects your data, we notify affected users through the service
-                and the help center.
+                For availability updates and scheduled maintenance, check the{" "}
+                <InlineLink href={STATUS_PAGE_URL}>
+                  public status page
+                </InlineLink>
+                . If an incident affects your data, we notify affected users
+                through the service and the help center.
               </p>
             </Section>
           </div>
@@ -374,11 +379,12 @@ export default function TrustPage() {
 
         {/* Related documents */}
         <footer className="mt-12">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
               { href: "/privacy-policy", label: "Privacy Policy" },
               { href: "/terms-of-service", label: "Terms of Service" },
               { href: HELP_CENTER_URL, label: "Help center" },
+              { href: STATUS_PAGE_URL, label: "Status Page" },
             ].map((link) => (
               <a
                 key={link.href}
