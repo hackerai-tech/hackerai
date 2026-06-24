@@ -349,11 +349,12 @@ describe("saveMessage — is_hidden handling", () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it("rejects user inserts when the chat is already canceled", async () => {
+  it("clears stale cancellation state for new user inserts", async () => {
     setupExistingMessage(null, {
       _id: "chat-doc-1",
       id: CHAT_ID,
       user_id: USER_ID,
+      active_stream_id: "old-stream",
       canceled_at: Date.now(),
     });
 
@@ -368,17 +369,20 @@ describe("saveMessage — is_hidden handling", () => {
         role: "user" as const,
         parts: [{ type: "text", text: "late user message" }],
       }),
-    ).rejects.toMatchObject({
-      data: expect.objectContaining({
-        code: "MESSAGE_SAVE_FAILED",
-        failureStage: "verify_chat_writable_for_insert",
-        causeData: expect.objectContaining({
-          code: "CHAT_CANCELED",
-        }),
-      }),
-    });
+    ).resolves.toBeNull();
 
-    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
+      canceled_at: undefined,
+    });
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({
+        id: "msg-user-canceled",
+        role: "user",
+        content: "late user message",
+      }),
+    );
+    expect(console.error).not.toHaveBeenCalled();
   });
 
   it("rejects unowned file IDs before inserting a new message", async () => {

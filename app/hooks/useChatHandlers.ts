@@ -293,34 +293,11 @@ export const useChatHandlers = ({
           clearUploadedFiles();
           return;
         } else if (queueBehavior === "stop-and-send") {
-          // Immediately stop current stream and send right away
-          stop();
-
           // Cancel the trigger.dev run for agent-long streams so the prior
           // run stops burning compute instead of finishing in the background.
           cancelTriggerRun();
 
-          // Cancel the stream in database and save current message state
-          if (!temporaryChatsEnabledRef.current) {
-            cancelStreamMutation({ chatId }).catch((error) => {
-              console.error("Failed to cancel stream:", error);
-            });
-
-            const lastMessage = messages[messages.length - 1];
-            if (lastMessage && lastMessage.role === "assistant") {
-              saveAssistantMessage({
-                id: lastMessage.id,
-                chatId,
-                role: lastMessage.role,
-                parts: getConvexSafeParts(lastMessage.parts),
-              }).catch((error) => {
-                console.error("Failed to save message on stop:", error);
-              });
-            }
-          } else {
-            // Temporary chats: signal cancel via temp stream coordination
-            cancelTempStreamMutation({ chatId }).catch(() => {});
-          }
+          await stopActiveStream();
           // Continue to send the new message immediately below (don't return)
         }
       }

@@ -167,6 +167,63 @@ describe("saveMessage", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("treats wrapped canceled-chat message saves as warnings", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "MESSAGE_SAVE_FAILED",
+      message: "Failed to save message",
+      failureStage: "verify_chat_writable_for_insert",
+      causeData: {
+        code: "CHAT_CANCELED",
+        message: "This chat is no longer accepting new messages",
+      },
+    };
+    mockMutation.mockRejectedValueOnce(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "next prompt" }],
+          },
+        }),
+      ).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "chat",
+        statusCode: 400,
+        cause:
+          "This chat was stopped before your message could be saved. Please send it again.",
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_error_code: "MESSAGE_SAVE_FAILED",
+          db_cause_error_code: "CHAT_CANCELED",
+          db_failure_stage: "verify_chat_writable_for_insert",
+        }),
+      });
+
+      const warnEvents = warnSpy.mock.calls.map(([line]) => {
+        const payload = JSON.parse(String(line));
+        return payload.event;
+      });
+      expect(warnEvents).toContain("message_save_rejected_chat_canceled");
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe("getMessagesByChatId", () => {

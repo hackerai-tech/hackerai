@@ -109,6 +109,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "db_error_name",
   "db_error_message",
   "db_error_code",
+  "db_cause_error_code",
   "db_failure_stage",
   "finish_reason",
   "message_role",

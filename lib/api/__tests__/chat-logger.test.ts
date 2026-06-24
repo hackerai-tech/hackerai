@@ -689,6 +689,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
           db_error_name: "ConvexError",
           db_error_message: "[Request ID: abc] Server Error",
           db_error_code: "CHAT_NOT_FOUND",
+          db_cause_error_code: "CHAT_NOT_FOUND",
           db_failure_stage: "verify_chat_ownership",
           db_error_data: {
             code: "MESSAGE_SAVE_FAILED",
@@ -729,6 +730,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
         db_error_name: "ConvexError",
         db_error_message: "[Request ID: abc] Server Error",
         db_error_code: "CHAT_NOT_FOUND",
+        db_cause_error_code: "CHAT_NOT_FOUND",
         db_failure_stage: "verify_chat_ownership",
         parts_size_kb: 551,
         part_count: 288,
