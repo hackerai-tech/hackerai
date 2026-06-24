@@ -460,10 +460,19 @@ async function ensureChatWritableForMessageInsert(
   ctx: MutationCtx,
   chatId: string,
   userId: string,
+  role: "user" | "assistant" | "system",
 ): Promise<void> {
   const chat = await loadOwnedChat(ctx, chatId, userId);
 
   if (chat.canceled_at !== undefined) {
+    if (role === "user") {
+      await ctx.db.patch(chat._id, {
+        active_stream_id: undefined,
+        canceled_at: undefined,
+      });
+      return;
+    }
+
     throw new ConvexError({
       code: "CHAT_CANCELED",
       message: "This chat is no longer accepting new messages",
@@ -639,7 +648,12 @@ export const saveMessage = mutation({
         }
 
         failureStage = "verify_chat_writable_for_insert";
-        await ensureChatWritableForMessageInsert(ctx, args.chatId, args.userId);
+        await ensureChatWritableForMessageInsert(
+          ctx,
+          args.chatId,
+          args.userId,
+          args.role,
+        );
       }
 
       let newMessageFiles: Doc<"files">[] = [];

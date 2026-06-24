@@ -207,13 +207,23 @@ const getNestedObject = (
     : undefined;
 };
 
-const getDatabaseErrorCode = (data: unknown): string | undefined =>
-  getObjectString(data, "code") ??
+const getDatabasePrimaryErrorCode = (data: unknown): string | undefined =>
+  getObjectString(data, "code");
+
+const getDatabaseCauseErrorCode = (data: unknown): string | undefined =>
   getObjectString(getNestedObject(data, "causeData"), "code");
+
+const getDatabaseErrorCode = (data: unknown): string | undefined =>
+  getDatabasePrimaryErrorCode(data) ?? getDatabaseCauseErrorCode(data);
+
+const hasDatabaseErrorCode = (data: unknown, code: string): boolean =>
+  getDatabasePrimaryErrorCode(data) === code ||
+  getDatabaseCauseErrorCode(data) === code;
 
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
 
+const CHAT_CANCELED_ERROR_CODE = "CHAT_CANCELED";
 const CHAT_UNAUTHORIZED_ERROR_CODE = "CHAT_UNAUTHORIZED";
 const MESSAGE_TOO_LARGE_ERROR_CODE = "MESSAGE_TOO_LARGE";
 
@@ -222,17 +232,24 @@ const isChatNotFoundMessageSaveError = (
   dbErrorData: unknown,
 ): boolean =>
   operation === "messages.saveMessage" &&
-  getDatabaseErrorCode(dbErrorData) === "CHAT_NOT_FOUND";
+  hasDatabaseErrorCode(dbErrorData, "CHAT_NOT_FOUND");
+
+const isChatCanceledMessageSaveError = (
+  operation: string,
+  dbErrorData: unknown,
+): boolean =>
+  operation === "messages.saveMessage" &&
+  hasDatabaseErrorCode(dbErrorData, CHAT_CANCELED_ERROR_CODE);
 
 const isChatUnauthorizedError = (dbErrorData: unknown): boolean =>
-  getDatabaseErrorCode(dbErrorData) === CHAT_UNAUTHORIZED_ERROR_CODE;
+  hasDatabaseErrorCode(dbErrorData, CHAT_UNAUTHORIZED_ERROR_CODE);
 
 const isMessageTooLargeError = (
   operation: string,
   dbErrorData: unknown,
 ): boolean =>
   operation === "messages.saveMessage" &&
-  getDatabaseErrorCode(dbErrorData) === MESSAGE_TOO_LARGE_ERROR_CODE;
+  hasDatabaseErrorCode(dbErrorData, MESSAGE_TOO_LARGE_ERROR_CODE);
 
 const logChatMessagePreparationFailure = (
   event: string,
@@ -263,39 +280,47 @@ const databaseError = (
   const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
   const dbErrorData = getErrorData(error);
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
+  const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
   const isMessageTooLarge = isMessageTooLargeError(operation, dbErrorData);
   const logLevel =
-    isChatNotFound || isChatUnauthorized || isMessageTooLarge
+    isChatNotFound || isChatCanceled || isChatUnauthorized || isMessageTooLarge
       ? "warn"
       : "error";
   const event = isChatNotFound
     ? "database_operation_skipped_chat_not_found"
-    : isChatUnauthorized
-      ? "chat_access_denied"
-      : isMessageTooLarge
-        ? "message_save_rejected_too_large"
-        : "database_operation_failed";
+    : isChatCanceled
+      ? "message_save_rejected_chat_canceled"
+      : isChatUnauthorized
+        ? "chat_access_denied"
+        : isMessageTooLarge
+          ? "message_save_rejected_too_large"
+          : "database_operation_failed";
   const errorCode = isChatNotFound
     ? "not_found:chat"
-    : isChatUnauthorized
-      ? "forbidden:chat"
-      : isMessageTooLarge
-        ? "bad_request:api"
-        : "bad_request:database";
+    : isChatCanceled
+      ? "bad_request:chat"
+      : isChatUnauthorized
+        ? "forbidden:chat"
+        : isMessageTooLarge
+          ? "bad_request:api"
+          : "bad_request:database";
   const errorMessage = isChatNotFound
     ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
-    : isChatUnauthorized
-      ? `Chat access denied while executing database operation: ${operation}: ${dbErrorMessage}`
-      : isMessageTooLarge
-        ? "Your message is too large to save. Please shorten it or attach the content as a file instead."
-        : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+    : isChatCanceled
+      ? "This chat was stopped before your message could be saved. Please send it again."
+      : isChatUnauthorized
+        ? `Chat access denied while executing database operation: ${operation}: ${dbErrorMessage}`
+        : isMessageTooLarge
+          ? "Your message is too large to save. Please shorten it or attach the content as a file instead."
+          : `Database operation failed: ${operation}: ${dbErrorMessage}`;
   const diagnosticMetadata = {
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
     db_error_data: dbErrorData,
     db_error_code: getDatabaseErrorCode(dbErrorData),
+    db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
     ...metadata,
   };
