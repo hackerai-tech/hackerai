@@ -387,8 +387,40 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/errorCategory/);
     expect(taskSrc).toMatch(/loginRequired/);
     expect(taskSrc).toMatch(/login_required/);
-    expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
+    expect(taskSrc).toMatch(/`error_\$\{summary\.category\}`/);
+    expect(taskSrc).toMatch(/`user_correctable_\$\{summary\.category\}`/);
     expect(taskSrc).toMatch(/metadata\.flush\(\)/);
+  });
+
+  test("user-correctable agent-long request errors complete without failing Trigger", () => {
+    expect(taskSrc).toMatch(/USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
+    expect(taskSrc).toMatch(/"user_correctable"/);
+    expect(taskSrc).toMatch(/userCorrectable/);
+    expect(taskSrc).toMatch(/user_correctable_code_/);
+
+    const recordedFailureIdx = taskSrc.indexOf(
+      "const recordedFailure = await recordAgentLongFailureForDashboard",
+    );
+    const syntheticFlushIdx = taskSrc.indexOf(
+      "await waitForErrorStream()",
+      recordedFailureIdx,
+    );
+    const handledReturnGuardIdx = taskSrc.indexOf(
+      "recordedFailure?.userCorrectable === true",
+      syntheticFlushIdx,
+    );
+    const returnIdx = taskSrc.indexOf(
+      "return { chatId, assistantMessageId }",
+      handledReturnGuardIdx,
+    );
+    const throwIdx = taskSrc.indexOf("throw error", returnIdx);
+
+    expect(recordedFailureIdx).toBeGreaterThan(-1);
+    expect(syntheticFlushIdx).toBeGreaterThan(recordedFailureIdx);
+    expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
+    expect(returnIdx).toBeGreaterThan(handledReturnGuardIdx);
+    expect(throwIdx).toBeGreaterThan(returnIdx);
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {
@@ -448,7 +480,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/emptyAfterProcessing/);
     expect(taskSrc).toMatch(/processingInputMessageCount/);
     expect(taskSrc).toMatch(/processingInputUiOnlyPartCount/);
-    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
@@ -458,7 +490,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/sandboxFallbackReason/);
     expect(taskSrc).toMatch(/requestedPreference/);
     expect(taskSrc).toMatch(/actualSandbox/);
-    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 

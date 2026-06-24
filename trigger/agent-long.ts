@@ -344,6 +344,25 @@ const isChatNotFoundError = (error: ChatSDKError): boolean => {
   );
 };
 
+const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
+  "chat_not_found",
+  "empty_prompt",
+  "input_too_large",
+  "empty_after_processing",
+  "local_sandbox_fallback_blocked",
+]);
+
+const isUserCorrectableAgentLongErrorCategory = (category: string): boolean =>
+  USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES.has(category);
+
+const getAgentLongErrorRunStatus = (category: string): string => {
+  if (category === "chat_not_found") return "chat_not_found";
+  if (isUserCorrectableAgentLongErrorCategory(category)) {
+    return "user_correctable";
+  }
+  return "failed";
+};
+
 const TRIGGER_REALTIME_TRANSPORT_ERROR_PATTERNS = [
   /@s2-dev\/streamstore/i,
   /S2AppendSession/i,
@@ -535,6 +554,10 @@ const isTerminalProviderStreamError = (
     | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
+type RecordedAgentLongFailure = {
+  userCorrectable: boolean;
+};
+
 const recordAgentLongFailureForDashboard = async (
   error: unknown,
   context: {
@@ -543,18 +566,25 @@ const recordAgentLongFailureForDashboard = async (
     runId: string;
     phase: "setup" | "streaming";
   },
-) => {
+): Promise<RecordedAgentLongFailure> => {
   const summary = classifyAgentLongError(error);
-  const runStatus =
-    summary.category === "chat_not_found" ? "chat_not_found" : "failed";
+  const runStatus = getAgentLongErrorRunStatus(summary.category);
+  const isExpectedUserCorrectableError =
+    isUserCorrectableAgentLongErrorCategory(summary.category);
+  const terminalAt = new Date().toISOString();
+
   metadata
     .set("status", runStatus)
     .set("errorCategory", summary.category)
     .set("errorName", summary.name)
     .set("errorMessage", summary.message)
     .set("loginRequired", summary.loginRequired)
-    .set("failedPhase", context.phase)
-    .set("failedAt", new Date().toISOString());
+    .set("terminalPhase", context.phase);
+  if (isExpectedUserCorrectableError) {
+    metadata.set("userCorrectable", true).set("endedAt", terminalAt);
+  } else {
+    metadata.set("failedPhase", context.phase).set("failedAt", terminalAt);
+  }
 
   if (summary.code) metadata.set("errorCode", summary.code);
   if (summary.statusCode) metadata.set("errorStatusCode", summary.statusCode);
@@ -631,11 +661,19 @@ const recordAgentLongFailureForDashboard = async (
     );
   }
 
-  const errorTags = [`error_${summary.category}`];
+  const terminalTags = [
+    isExpectedUserCorrectableError
+      ? `user_correctable_${summary.category}`
+      : `error_${summary.category}`,
+  ];
   if (summary.code) {
-    errorTags.push(`error_code_${sanitizeTriggerTagValue(summary.code)}`);
+    terminalTags.push(
+      isExpectedUserCorrectableError
+        ? `user_correctable_code_${sanitizeTriggerTagValue(summary.code)}`
+        : `error_code_${sanitizeTriggerTagValue(summary.code)}`,
+    );
   }
-  await tags.add(errorTags);
+  await tags.add(terminalTags);
 
   const { emptyAfterProcessingMetadata, ...summaryLogFields } = summary;
   const logFields = {
@@ -646,12 +684,6 @@ const recordAgentLongFailureForDashboard = async (
     ...summaryLogFields,
     ...emptyAfterProcessingMetadata,
   };
-  const isExpectedUserCorrectableError =
-    summary.category === "chat_not_found" ||
-    summary.category === "empty_prompt" ||
-    summary.category === "input_too_large" ||
-    summary.category === "empty_after_processing" ||
-    summary.category === "local_sandbox_fallback_blocked";
 
   if (isExpectedUserCorrectableError) {
     triggerLogger.warn(
@@ -668,6 +700,9 @@ const recordAgentLongFailureForDashboard = async (
   }
 
   await metadata.flush();
+  return {
+    userCorrectable: isExpectedUserCorrectableError,
+  };
 };
 
 const recordAgentLongHandledRateLimitForDashboard = async (
@@ -2139,17 +2174,18 @@ export const agentLongTask = task({
         streamPiped &&
         error instanceof ChatSDKError &&
         isChatNotFoundError(error);
-      await recordAgentLongFailureForDashboard(error, {
+      const recordedFailure = await recordAgentLongFailureForDashboard(error, {
         chatId,
         userId,
         runId: ctx.run.id,
         phase: streamPiped ? "streaming" : "setup",
-      }).catch((metadataError) => {
+      }).catch((metadataError): RecordedAgentLongFailure | undefined => {
         metadata.set("status", "failed");
         console.error(
           "[agent-long] failed to record run error metadata:",
           metadataError,
         );
+        return undefined;
       });
       if (!hasObservedUsage()) {
         await usageRefundTracker.refund().catch(() => {});
@@ -2165,16 +2201,12 @@ export const agentLongTask = task({
           console.error("[agent-long] PTY closeAll (outer catch) failed:", err),
         );
 
-      if (chatMissingAfterStream) {
-        await phLogger.flush().catch(() => {});
-        return { chatId, assistantMessageId };
-      }
-
       // Pre-stream setup failed (DB fetch, message processing, etc.). Emit a
       // one-shot UI stream whose onError converts the caught error into the
       // same friendly error chunk format useChat expects. Without this, the
       // frontend transport only sees the run go to FAILED and emits a silent
       // abort, leaving the user stuck on a Stop button with no message.
+      let userVisibleErrorStreamFlushed = streamPiped;
       if (!streamPiped) {
         try {
           const errorStream = createUIMessageStream({
@@ -2191,6 +2223,7 @@ export const agentLongTask = task({
           const { waitUntilComplete: waitForErrorStream } =
             agentUiStream.pipe(errorStream);
           await waitForErrorStream();
+          userVisibleErrorStreamFlushed = true;
         } catch (pipeErr) {
           console.error(
             "[agent-long] Failed to emit synthetic error stream:",
@@ -2200,6 +2233,13 @@ export const agentLongTask = task({
       }
 
       await phLogger.flush().catch(() => {});
+      if (
+        (chatMissingAfterStream || recordedFailure?.userCorrectable === true) &&
+        userVisibleErrorStreamFlushed
+      ) {
+        return { chatId, assistantMessageId };
+      }
+
       throw error;
     } finally {
       if (agentLongTimeout) clearTimeout(agentLongTimeout);
