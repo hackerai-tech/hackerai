@@ -315,6 +315,10 @@ type AgentLongErrorSummary = {
   largestFileToken?: number;
   emptyAfterProcessing?: boolean;
   emptyAfterProcessingMetadata?: Record<string, TriggerMetadataPrimitive>;
+  localSandboxFallbackBlocked?: boolean;
+  sandboxFallbackReason?: string;
+  requestedPreference?: string;
+  actualSandbox?: string;
   uploadFailureKind?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -413,7 +417,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
                 ? "input_too_large"
                 : errorMetadata?.empty_after_processing === true
                   ? "empty_after_processing"
-                  : "chat_error",
+                  : errorMetadata?.localSandboxFallbackBlocked === true
+                    ? "local_sandbox_fallback_blocked"
+                    : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -453,6 +459,17 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata?.empty_after_processing === true || undefined,
       emptyAfterProcessingMetadata:
         getEmptyAfterProcessingTriggerMetadata(errorMetadata),
+      localSandboxFallbackBlocked:
+        errorMetadata?.localSandboxFallbackBlocked === true || undefined,
+      sandboxFallbackReason: getStringMetadata(
+        errorMetadata,
+        "sandboxFallbackReason",
+      ),
+      requestedPreference: getStringMetadata(
+        errorMetadata,
+        "requestedPreference",
+      ),
+      actualSandbox: getStringMetadata(errorMetadata, "actualSandbox"),
       uploadFailureKind: getStringMetadata(
         errorMetadata,
         "upload_failure_kind",
@@ -584,6 +601,15 @@ const recordAgentLongFailureForDashboard = async (
       metadata.set(key, value);
     }
   }
+  if (summary.localSandboxFallbackBlocked) {
+    metadata.set("localSandboxFallbackBlocked", true);
+  }
+  if (summary.sandboxFallbackReason)
+    metadata.set("sandboxFallbackReason", summary.sandboxFallbackReason);
+  if (summary.requestedPreference)
+    metadata.set("requestedPreference", summary.requestedPreference);
+  if (summary.actualSandbox)
+    metadata.set("actualSandbox", summary.actualSandbox);
   if (summary.uploadFailureKind)
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
   if (summary.uploadFailureCause)
@@ -624,7 +650,8 @@ const recordAgentLongFailureForDashboard = async (
     summary.category === "chat_not_found" ||
     summary.category === "empty_prompt" ||
     summary.category === "input_too_large" ||
-    summary.category === "empty_after_processing";
+    summary.category === "empty_after_processing" ||
+    summary.category === "local_sandbox_fallback_blocked";
 
   if (isExpectedUserCorrectableError) {
     triggerLogger.warn(
