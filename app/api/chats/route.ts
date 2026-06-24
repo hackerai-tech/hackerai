@@ -7,6 +7,7 @@ import {
   getActiveTriggerRunsForUser,
 } from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
+import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 
 export const maxDuration = 30;
 
@@ -22,6 +23,7 @@ async function cancelTriggerRuns(triggerRunIds: string[]) {
 export async function DELETE(req: NextRequest) {
   try {
     const userId = await getUserID(req);
+    await assertUserCanAccessChatHistory(userId);
     const activeTriggerRuns = await getActiveTriggerRunsForUser({ userId });
 
     if (activeTriggerRuns.hasMore) {

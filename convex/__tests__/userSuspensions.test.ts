@@ -75,6 +75,13 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
 
     return {
       order: jest.fn((direction: "asc" | "desc") => ({
+        collect: async () => {
+          const sorted = [...filteredRows()].sort(
+            (a, b) => (a.source_created_at ?? 0) - (b.source_created_at ?? 0),
+          );
+          if (direction === "desc") sorted.reverse();
+          return sorted;
+        },
         first: async () => {
           const sorted = [...filteredRows()].sort(
             (a, b) => (a.source_created_at ?? 0) - (b.source_created_at ?? 0),
@@ -234,6 +241,59 @@ describe("userSuspensions", () => {
     });
 
     expect(result.source_id).toBe("dp_newer");
+    expect(ctx.__withIndex).toHaveBeenCalledWith(
+      "by_user_status_source_created",
+      expect.any(Function),
+    );
+  });
+
+  it("returns an active fraud dispute even when another suspension is newer", async () => {
+    const { getActiveFraudDisputeByUser } = await import("../userSuspensions");
+    const { ctx } = makeMockCtx([
+      {
+        _id: "id-1",
+        user_id: "user_123",
+        status: "active",
+        category: "dispute_fraudulent",
+        source: "stripe",
+        source_id: "dp_fraud",
+        stripe_customer_id: "cus_123",
+        created_at: 1_000,
+        updated_at: 1_000,
+        source_created_at: 1_000,
+      },
+      {
+        _id: "id-2",
+        user_id: "user_123",
+        status: "active",
+        category: "dispute_billing_hold",
+        source: "stripe",
+        source_id: "dp_billing_newer",
+        stripe_customer_id: "cus_123",
+        created_at: 2_000,
+        updated_at: 2_000,
+        source_created_at: 9_000,
+      },
+      {
+        _id: "id-3",
+        user_id: "user_123",
+        status: "resolved",
+        category: "dispute_fraudulent",
+        source: "stripe",
+        source_id: "dp_resolved",
+        stripe_customer_id: "cus_123",
+        created_at: 3_000,
+        updated_at: 3_000,
+        source_created_at: 10_000,
+      },
+    ]);
+
+    const result = await (getActiveFraudDisputeByUser as any).handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+    });
+
+    expect(result.source_id).toBe("dp_fraud");
     expect(ctx.__withIndex).toHaveBeenCalledWith(
       "by_user_status_source_created",
       expect.any(Function),

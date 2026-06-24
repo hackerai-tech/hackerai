@@ -11,6 +11,10 @@ import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
+import {
+  assertUserCanAccessChatHistory,
+  isUserBlockedByActiveFraudDispute,
+} from "./lib/suspensionGuards";
 
 /**
  * Extract text content from message parts for search and display
@@ -910,6 +914,7 @@ export const getMessagesByChatId = query({
         continueCursor: "",
       };
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       await ctx.runQuery(internal.messages.verifyChatOwnership, {
@@ -1064,6 +1069,7 @@ export const saveAssistantMessage = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Deduplicate by message id to avoid duplicates when stop is clicked multiple times
@@ -1145,6 +1151,7 @@ export const deleteLastAssistantMessage = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Walk backwards from newest message and collect the entire trailing chain:
@@ -1438,6 +1445,7 @@ export const searchMessages = query({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     const searchQuery = args.searchQuery.trim().replace(/\s+/g, " ");
     const MIN_SEARCH_QUERY_LENGTH = 3;
@@ -1697,6 +1705,7 @@ export const branchChat = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       const message = await ctx.db
@@ -1833,6 +1842,7 @@ export const regenerateWithNewContent = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       const message = await ctx.db
@@ -2056,6 +2066,9 @@ export const getSharedMessages = query({
       if (!chat || !chat.share_id || !chat.share_date) {
         return [];
       }
+      if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+        return [];
+      }
 
       // Read the chat's messages via the existing per-chat index, then apply
       // the frozen-share cutoff locally to avoid a production-wide backfill.
@@ -2141,6 +2154,7 @@ export const getPreviewMessages = query({
     if (!identity) {
       return [];
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     try {
       const chat = await ctx.db

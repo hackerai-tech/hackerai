@@ -79,6 +79,16 @@ describe("shouldDropExpectedConvexException", () => {
         },
       }),
     ).toBe(true);
+
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"CHAT_ACCESS_SUSPENDED","message":"Your account has been suspended due to a fraudulent payment dispute (chargeback)."}',
+        },
+      }),
+    ).toBe(true);
   });
 
   it("drops Convex optimistic concurrency retries from file upload metadata", () => {
