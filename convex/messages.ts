@@ -467,7 +467,6 @@ async function ensureChatWritableForMessageInsert(
   if (chat.canceled_at !== undefined) {
     if (role === "user") {
       await ctx.db.patch(chat._id, {
-        active_stream_id: undefined,
         canceled_at: undefined,
       });
       return;

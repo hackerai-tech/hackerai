@@ -372,7 +372,6 @@ describe("saveMessage — is_hidden handling", () => {
     ).resolves.toBeNull();
 
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
-      active_stream_id: undefined,
       canceled_at: undefined,
     });
     expect(mockCtx.db.insert).toHaveBeenCalledWith(
