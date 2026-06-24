@@ -5,6 +5,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
+  Activity,
   LogOut,
   Sparkle,
   LifeBuoy,
@@ -48,6 +49,8 @@ import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+
+const STATUS_PAGE_URL = "https://status.hackerai.co/";
 
 const REFERRAL_CARD_DISMISSED_COOKIE = "referral_sidebar_dismissed";
 
@@ -320,6 +323,17 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   const handleTrustPage = () => {
     const newWindow = window.open("/trust", "_blank", "noopener,noreferrer");
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleStatusPage = () => {
+    const newWindow = window.open(
+      STATUS_PAGE_URL,
+      "_blank",
+      "noopener,noreferrer",
+    );
     if (newWindow) {
       newWindow.opener = null;
     }
@@ -633,6 +647,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               <DropdownMenuItem onClick={handleHelpCenter} className="py-1.5">
                 <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
                 <span>Help Center</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleStatusPage} className="py-1.5">
+                <Activity className="mr-2 h-4 w-4 text-foreground" />
+                <span>Status Page</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrustPage} className="py-1.5">
                 <ShieldCheck className="mr-2 h-4 w-4 text-foreground" />
