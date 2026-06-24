@@ -389,15 +389,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/login_required/);
     expect(taskSrc).toMatch(/`error_\$\{summary\.category\}`/);
     expect(taskSrc).toMatch(/`user_correctable_\$\{summary\.category\}`/);
+    expect(taskSrc).toMatch(/TRIGGER_TAG_MAX_LENGTH\s*=\s*64/);
+    expect(taskSrc).toMatch(/buildTriggerTag/);
     expect(taskSrc).toMatch(/metadata\.flush\(\)/);
   });
 
   test("user-correctable agent-long request errors complete without failing Trigger", () => {
     expect(taskSrc).toMatch(/USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES/);
     expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
+    expect(taskSrc).toMatch(/"login_required"/);
     expect(taskSrc).toMatch(/"user_correctable"/);
     expect(taskSrc).toMatch(/userCorrectable/);
     expect(taskSrc).toMatch(/user_correctable_code_/);
+    expect(taskSrc).toMatch(/caughtErrorUserCorrectable/);
 
     const recordedFailureIdx = taskSrc.indexOf(
       "const recordedFailure = await recordAgentLongFailureForDashboard",
@@ -407,7 +411,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
-      "recordedFailure?.userCorrectable === true",
+      "recordedFailure.userCorrectable === true",
       syntheticFlushIdx,
     );
     const returnIdx = taskSrc.indexOf(

@@ -147,14 +147,21 @@ const getAgentLongMaxDurationMs = (subscription: SubscriptionTier) =>
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
 
 const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
+const TRIGGER_TAG_MAX_LENGTH = 64;
 
 const truncateForTriggerMetadata = (value: string) =>
   value.length > MAX_TRIGGER_ERROR_MESSAGE_LENGTH
     ? `${value.slice(0, MAX_TRIGGER_ERROR_MESSAGE_LENGTH)}...`
     : value;
 
-const sanitizeTriggerTagValue = (value: string) =>
-  value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+const sanitizeTriggerTagValue = (value: string, maxLength: number) =>
+  value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, maxLength);
+
+const buildTriggerTag = (prefix: string, value: string) =>
+  `${prefix}${sanitizeTriggerTagValue(
+    value,
+    Math.max(0, TRIGGER_TAG_MAX_LENGTH - prefix.length),
+  )}`;
 
 const getStringMetadata = (
   metadata: Record<string, unknown> | undefined,
@@ -346,6 +353,7 @@ const isChatNotFoundError = (error: ChatSDKError): boolean => {
 
 const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "chat_not_found",
+  "login_required",
   "empty_prompt",
   "input_too_large",
   "empty_after_processing",
@@ -669,8 +677,8 @@ const recordAgentLongFailureForDashboard = async (
   if (summary.code) {
     terminalTags.push(
       isExpectedUserCorrectableError
-        ? `user_correctable_code_${sanitizeTriggerTagValue(summary.code)}`
-        : `error_code_${sanitizeTriggerTagValue(summary.code)}`,
+        ? buildTriggerTag("user_correctable_code_", summary.code)
+        : buildTriggerTag("error_code_", summary.code),
     );
   }
   await tags.add(terminalTags);
@@ -725,7 +733,7 @@ const recordAgentLongHandledRateLimitForDashboard = async (
 
   await tags.add([
     "rate_limited",
-    `blocked_code_${sanitizeTriggerTagValue(summary.code ?? "rate_limit_chat")}`,
+    buildTriggerTag("blocked_code_", summary.code ?? "rate_limit_chat"),
   ]);
 
   triggerLogger.info("[agent-long] run rate limited", {
@@ -2174,18 +2182,29 @@ export const agentLongTask = task({
         streamPiped &&
         error instanceof ChatSDKError &&
         isChatNotFoundError(error);
+      const caughtErrorSummary = classifyAgentLongError(error);
+      const caughtErrorUserCorrectable =
+        isUserCorrectableAgentLongErrorCategory(caughtErrorSummary.category);
       const recordedFailure = await recordAgentLongFailureForDashboard(error, {
         chatId,
         userId,
         runId: ctx.run.id,
         phase: streamPiped ? "streaming" : "setup",
-      }).catch((metadataError): RecordedAgentLongFailure | undefined => {
-        metadata.set("status", "failed");
+      }).catch((metadataError): RecordedAgentLongFailure => {
+        metadata
+          .set(
+            "status",
+            getAgentLongErrorRunStatus(caughtErrorSummary.category),
+          )
+          .set("errorCategory", caughtErrorSummary.category);
+        if (caughtErrorUserCorrectable) {
+          metadata.set("userCorrectable", true);
+        }
         console.error(
           "[agent-long] failed to record run error metadata:",
           metadataError,
         );
-        return undefined;
+        return { userCorrectable: caughtErrorUserCorrectable };
       });
       if (!hasObservedUsage()) {
         await usageRefundTracker.refund().catch(() => {});
@@ -2234,7 +2253,7 @@ export const agentLongTask = task({
 
       await phLogger.flush().catch(() => {});
       if (
-        (chatMissingAfterStream || recordedFailure?.userCorrectable === true) &&
+        (chatMissingAfterStream || recordedFailure.userCorrectable === true) &&
         userVisibleErrorStreamFlushed
       ) {
         return { chatId, assistantMessageId };
