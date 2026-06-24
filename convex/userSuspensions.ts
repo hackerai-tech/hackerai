@@ -34,19 +34,16 @@ export const getActiveFraudDisputeByUser = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const activeSuspensions = await ctx.db
+    return await ctx.db
       .query("user_suspensions")
-      .withIndex("by_user_status_source_created", (q) =>
-        q.eq("user_id", args.userId).eq("status", "active"),
+      .withIndex("by_user_status_category_source_created", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("status", "active")
+          .eq("category", "dispute_fraudulent"),
       )
       .order("desc")
-      .collect();
-
-    return (
-      activeSuspensions.find(
-        (suspension) => suspension.category === "dispute_fraudulent",
-      ) ?? null
-    );
+      .first();
   },
 });
 

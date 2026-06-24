@@ -295,7 +295,7 @@ describe("userSuspensions", () => {
 
     expect(result.source_id).toBe("dp_fraud");
     expect(ctx.__withIndex).toHaveBeenCalledWith(
-      "by_user_status_source_created",
+      "by_user_status_category_source_created",
       expect.any(Function),
     );
   });

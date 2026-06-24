@@ -14,19 +14,16 @@ async function getActiveFraudDisputeSuspension(
   ctx: SuspensionReaderCtx,
   userId: string,
 ): Promise<Doc<"user_suspensions"> | null> {
-  const activeSuspensions = await ctx.db
+  return await ctx.db
     .query("user_suspensions")
-    .withIndex("by_user_status_source_created", (q) =>
-      q.eq("user_id", userId).eq("status", "active"),
+    .withIndex("by_user_status_category_source_created", (q) =>
+      q
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .eq("category", "dispute_fraudulent"),
     )
     .order("desc")
-    .collect();
-
-  return (
-    activeSuspensions.find(
-      (suspension) => suspension.category === "dispute_fraudulent",
-    ) ?? null
-  );
+    .first();
 }
 
 export async function isUserBlockedByActiveFraudDispute(

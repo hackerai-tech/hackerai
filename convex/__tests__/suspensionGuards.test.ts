@@ -63,11 +63,12 @@ function makeMockCtx(rows: SuspensionRow[]) {
 
     return {
       order: jest.fn((direction: "asc" | "desc") => ({
-        collect: async () => {
+        first: async () => {
           const sorted = [...filteredRows()].sort(
             (a, b) => (a.source_created_at ?? 0) - (b.source_created_at ?? 0),
           );
-          return direction === "desc" ? sorted.reverse() : sorted;
+          if (direction === "desc") sorted.reverse();
+          return sorted[0] ?? null;
         },
       })),
     };
@@ -105,7 +106,7 @@ describe("suspensionGuards", () => {
       assertUserCanAccessChatHistory(ctx, "user_123"),
     ).resolves.toBeUndefined();
     expect(withIndex).toHaveBeenCalledWith(
-      "by_user_status_source_created",
+      "by_user_status_category_source_created",
       expect.any(Function),
     );
   });

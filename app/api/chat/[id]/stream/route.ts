@@ -20,12 +20,6 @@ export async function GET(
 ) {
   const { id: chatId } = await params;
 
-  const streamContext = getStreamContext();
-
-  if (!streamContext) {
-    return new Response(null, { status: 204 });
-  }
-
   if (!chatId) {
     return new ChatSDKError("bad_request:api").toResponse();
   }
@@ -63,6 +57,12 @@ export async function GET(
 
   if (chat.user_id !== userId) {
     return new ChatSDKError("forbidden:chat").toResponse();
+  }
+
+  const streamContext = getStreamContext();
+
+  if (!streamContext) {
+    return new Response(null, { status: 204 });
   }
 
   const recentStreamId: string | undefined = chat.active_stream_id;
