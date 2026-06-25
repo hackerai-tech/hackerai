@@ -21,6 +21,13 @@ export type AgentFirstDefaultEligibility = {
   userPresent: boolean;
 };
 
+export type AgentFirstDefaultDecision = {
+  eligibleSubscriptionTier: "free" | "ultra";
+  experimentKey: "free_agent_first_v1" | "ultra_agent_default_v1";
+  selectionReason: "eligible_free_user_local_sandbox" | "eligible_ultra_user";
+  useDefaultLocalSandbox: boolean;
+};
+
 export function normalizeAgentFirstSandboxType(
   preference: SandboxPreference | null,
 ): AgentFirstSandboxType {
@@ -30,7 +37,7 @@ export function normalizeAgentFirstSandboxType(
   return "remote-connection";
 }
 
-export function shouldDefaultFreeUserToAgent({
+export function getAgentFirstDefaultDecision({
   chatMode,
   defaultLocalSandboxPreference,
   hasLocalSandbox,
@@ -42,18 +49,58 @@ export function shouldDefaultFreeUserToAgent({
   subscriptionResolved,
   temporaryChatsEnabled,
   userPresent,
-}: AgentFirstDefaultEligibility): boolean {
-  return (
+}: AgentFirstDefaultEligibility): AgentFirstDefaultDecision | null {
+  const baseEligible =
     userPresent &&
     subscriptionResolved &&
-    subscription === "free" &&
     !isCheckingProPlan &&
-    isMobile === false &&
     !temporaryChatsEnabled &&
     chatMode === "ask" &&
     !hasSavedChatMode &&
-    !hasUserSelectedModeThisSession &&
+    !hasUserSelectedModeThisSession;
+
+  if (!baseEligible) return null;
+
+  if (
+    subscription === "free" &&
+    isMobile === false &&
     hasLocalSandbox &&
     Boolean(defaultLocalSandboxPreference)
+  ) {
+    return {
+      eligibleSubscriptionTier: "free",
+      experimentKey: "free_agent_first_v1",
+      selectionReason: "eligible_free_user_local_sandbox",
+      useDefaultLocalSandbox: true,
+    };
+  }
+
+  if (subscription === "ultra") {
+    return {
+      eligibleSubscriptionTier: "ultra",
+      experimentKey: "ultra_agent_default_v1",
+      selectionReason: "eligible_ultra_user",
+      useDefaultLocalSandbox: false,
+    };
+  }
+
+  return null;
+}
+
+export function shouldDefaultFreeUserToAgent(
+  eligibility: AgentFirstDefaultEligibility,
+): boolean {
+  return (
+    getAgentFirstDefaultDecision(eligibility)?.eligibleSubscriptionTier ===
+    "free"
+  );
+}
+
+export function shouldDefaultUltraUserToAgent(
+  eligibility: AgentFirstDefaultEligibility,
+): boolean {
+  return (
+    getAgentFirstDefaultDecision(eligibility)?.eligibleSubscriptionTier ===
+    "ultra"
   );
 }

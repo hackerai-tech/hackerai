@@ -1,8 +1,10 @@
 import { describe, expect, it } from "@jest/globals";
 import {
+  getAgentFirstDefaultDecision,
   normalizeAgentFirstSandboxType,
   type AgentFirstDefaultEligibility,
   shouldDefaultFreeUserToAgent,
+  shouldDefaultUltraUserToAgent,
 } from "../agent-first-default";
 
 const baseEligibility: AgentFirstDefaultEligibility = {
@@ -95,6 +97,88 @@ describe("shouldDefaultFreeUserToAgent", () => {
         temporaryChatsEnabled: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldDefaultUltraUserToAgent", () => {
+  const ultraEligibility: AgentFirstDefaultEligibility = {
+    ...baseEligibility,
+    defaultLocalSandboxPreference: null,
+    hasLocalSandbox: false,
+    subscription: "ultra",
+  };
+
+  it("defaults an eligible first-time Ultra user to Agent without requiring a local sandbox", () => {
+    expect(shouldDefaultUltraUserToAgent(ultraEligibility)).toBe(true);
+  });
+
+  it("does not override a saved mode preference", () => {
+    expect(
+      shouldDefaultUltraUserToAgent({
+        ...ultraEligibility,
+        hasSavedChatMode: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not override a mode selected during the current session", () => {
+    expect(
+      shouldDefaultUltraUserToAgent({
+        ...ultraEligibility,
+        hasUserSelectedModeThisSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not default Pro or Pro Plus users through the Ultra default", () => {
+    expect(
+      shouldDefaultUltraUserToAgent({
+        ...ultraEligibility,
+        subscription: "pro",
+      }),
+    ).toBe(false);
+    expect(
+      shouldDefaultUltraUserToAgent({
+        ...ultraEligibility,
+        subscription: "pro-plus",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not default temporary chats to Agent", () => {
+    expect(
+      shouldDefaultUltraUserToAgent({
+        ...ultraEligibility,
+        temporaryChatsEnabled: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("getAgentFirstDefaultDecision", () => {
+  it("returns the free-user decision with the local sandbox requirement", () => {
+    expect(getAgentFirstDefaultDecision(baseEligibility)).toEqual({
+      eligibleSubscriptionTier: "free",
+      experimentKey: "free_agent_first_v1",
+      selectionReason: "eligible_free_user_local_sandbox",
+      useDefaultLocalSandbox: true,
+    });
+  });
+
+  it("returns the Ultra decision without the local sandbox requirement", () => {
+    expect(
+      getAgentFirstDefaultDecision({
+        ...baseEligibility,
+        defaultLocalSandboxPreference: null,
+        hasLocalSandbox: false,
+        subscription: "ultra",
+      }),
+    ).toEqual({
+      eligibleSubscriptionTier: "ultra",
+      experimentKey: "ultra_agent_default_v1",
+      selectionReason: "eligible_ultra_user",
+      useDefaultLocalSandbox: false,
+    });
   });
 });
 
