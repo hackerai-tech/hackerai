@@ -558,8 +558,8 @@ describe("createChatLogger provider stream termination", () => {
         active_tool_count: 12,
         active_tools_mode: "all",
         reasoning_enabled: true,
-        fallback_model_count: 2,
-        fallback_model_slugs: ["google/gemini-3.5-flash", "x-ai/grok-4.3"],
+        fallback_model_count: 1,
+        fallback_model_slugs: ["x-ai/grok-4.3"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };
@@ -746,7 +746,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "ask",
         model: "ask-model",
-        requestedModelSlug: "google/gemini-3.5-flash",
+        requestedModelSlug: "x-ai/grok-4.3",
       });
       chatLogger.emitUnexpectedError(err);
 

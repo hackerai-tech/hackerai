@@ -246,16 +246,19 @@ const openrouter = createOpenRouter({
 type OpenRouterInstance = typeof openrouter;
 
 const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
-const GEMINI_3_5_FLASH_SLUG = "google/gemini-3.5-flash";
+const GROK_4_3_SLUG = "x-ai/grok-4.3";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
-    "ask-model": or(GEMINI_3_5_FLASH_SLUG),
+    "ask-model": or(GROK_4_3_SLUG),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or(KIMI_K2_7_CODE_SLUG),
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
-    "model-gemini-3-flash": or(GEMINI_3_5_FLASH_SLUG),
+    "model-grok-4.3": or(GROK_4_3_SLUG),
+    // Compatibility alias for stale internal references persisted before the
+    // paid Ask media route moved from Gemini 3.5 Flash to Grok 4.3.
+    "model-gemini-3-flash": or(GROK_4_3_SLUG),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
@@ -265,7 +268,8 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
     "fallback-agent-model": or("google/gemini-3-flash-preview"),
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
-    "fallback-gemini-3.5-flash": or("google/gemini-3.5-flash"),
+    // Compatibility alias for old multimodal fallback chains.
+    "fallback-gemini-3.5-flash": or(GROK_4_3_SLUG),
     "fallback-grok-4.3": or("x-ai/grok-4.3"),
     "title-generator-model": or("google/gemini-3-flash-preview"),
   }) as Record<string, any>;
@@ -276,12 +280,13 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "January 2025",
+  "ask-model": "April 2026",
   "ask-model-free": "May 2025",
   "agent-model": "June 2025",
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
-  "model-gemini-3-flash": "January 2025",
+  "model-grok-4.3": "April 2026",
+  "model-gemini-3-flash": "April 2026",
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
@@ -289,8 +294,8 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
-  "fallback-gemini-3.5-flash": "May 2026",
-  "fallback-grok-4.3": "December 2025",
+  "fallback-gemini-3.5-flash": "April 2026",
+  "fallback-grok-4.3": "April 2026",
   "title-generator-model": "January 2025",
 };
 
@@ -301,7 +306,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
-  "model-gemini-3-flash": "Google Gemini 3.5 Flash",
+  "model-grok-4.3": "xAI Grok 4.3",
+  "model-gemini-3-flash": "xAI Grok 4.3",
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
@@ -309,7 +315,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-gemini-3.5-flash": "Google Gemini 3.5 Flash",
+  "fallback-gemini-3.5-flash": "xAI Grok 4.3",
   "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "Google Gemini 3 Flash",
 };
@@ -370,7 +376,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 }
 
 export function isGeminiModel(modelName: string): boolean {
-  return modelName === "ask-model" || modelName === "model-gemini-3-flash";
+  return modelName.toLowerCase().includes("gemini");
 }
 
 /**

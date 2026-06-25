@@ -7,17 +7,21 @@ import {
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("keeps Gemini and stale Kimi compatibility keys pointed at their active slugs", () => {
+  it("keeps paid Ask media and stale Kimi compatibility keys pointed at their active slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("google/gemini-3.5-flash");
+    ).toBe("x-ai/grok-4.3");
+    expect(
+      (myProvider.languageModel("model-grok-4.3") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.3");
     expect(
       (
         myProvider.languageModel("model-gemini-3-flash") as {
           modelId: string;
         }
       ).modelId,
-    ).toBe("google/gemini-3.5-flash");
+    ).toBe("x-ai/grok-4.3");
     expect(
       (
         myProvider.languageModel("model-kimi-k2.6") as {
@@ -25,9 +29,8 @@ describe("provider registry", () => {
         }
       ).modelId,
     ).toBe("moonshotai/kimi-k2.7-code:exacto");
-    expect(getModelDisplayName("model-gemini-3-flash")).toBe(
-      "Google Gemini 3.5 Flash",
-    );
+    expect(getModelDisplayName("model-grok-4.3")).toBe("xAI Grok 4.3");
+    expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.3");
   });
 });
 
@@ -256,6 +259,7 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("allows multimodal fallback keys and slugs used after image tool results", () => {
+    expect(supportsMultimodalToolResults("model-grok-4.3")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-gemini-3.5-flash")).toBe(
       true,
     );

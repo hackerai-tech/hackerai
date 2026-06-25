@@ -22,15 +22,14 @@ jest.mock("@/lib/logger", () => ({
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
 const GEMINI_PREVIEW_SLUG = "google/gemini-3-flash-preview";
-const GEMINI_3_5_SLUG = "google/gemini-3.5-flash";
 const GROK_SLUG = "x-ai/grok-4.3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 
 describe("buildProviderOptions fallback chain", () => {
-  it("resolves Opus 4.6 ask chain to Gemini", () => {
+  it("resolves Opus 4.6 ask chain to Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_3_5_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
@@ -48,7 +47,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 multimodal agent chain to Gemini 3.5 then Grok slugs", () => {
+  it("resolves Opus 4.6 multimodal agent chain to Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -57,12 +56,12 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_3_5_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("resolves Sonnet 4.6 ask chain to Gemini", () => {
+  it("resolves Sonnet 4.6 ask chain to Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -70,7 +69,7 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_3_5_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
@@ -88,7 +87,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 multimodal agent chain to Gemini 3.5 then Grok slugs", () => {
+  it("resolves Sonnet 4.6 multimodal agent chain to Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -97,7 +96,7 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_3_5_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
       user: "user-1",
     });
   });
@@ -120,8 +119,8 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
 
-    expect(opus.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
-    expect(sonnet.openrouter.models).toEqual([GEMINI_3_5_SLUG, GROK_SLUG]);
+    expect(opus.openrouter.models).toEqual([GROK_SLUG]);
+    expect(sonnet.openrouter.models).toEqual([GROK_SLUG]);
     expect(opus.openrouter.models).not.toContain(KIMI_SLUG);
     expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
   });
@@ -168,10 +167,18 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from the Gemini media route to Grok", () => {
+  it("falls back from the Grok media route to Gemini preview", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-grok-4.3");
+    expect(opts.openrouter).toMatchObject({
+      models: [GEMINI_PREVIEW_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("keeps the stale Gemini media route alias on the Grok fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [GEMINI_PREVIEW_SLUG],
       user: "user-1",
     });
   });
@@ -215,14 +222,13 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter.models).toEqual([GEMINI_PREVIEW_SLUG]);
   });
 
-  it.each(["ask-model", "model-gemini-3-flash"])(
-    "enables hidden minimal reasoning for Gemini 3.5 ask mode model %s",
+  it.each(["ask-model", "model-grok-4.3", "model-gemini-3-flash"])(
+    "enables low reasoning for Grok ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
       expect(opts.openrouter.reasoning).toEqual({
         enabled: true,
-        effort: "minimal",
-        exclude: true,
+        effort: "low",
       });
     },
   );
@@ -280,7 +286,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(multimodal.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [GEMINI_3_5_SLUG, GROK_SLUG],
+      models: [GROK_SLUG],
     });
   });
 });
