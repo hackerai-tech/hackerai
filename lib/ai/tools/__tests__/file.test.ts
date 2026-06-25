@@ -493,6 +493,56 @@ describe("file tool image view", () => {
     expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
   });
 
+  test("keeps successful image handoff when success telemetry throws", async () => {
+    mockPhEvent.mockImplementationOnce(() => {
+      throw new Error("PostHog unavailable");
+    });
+
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        path: "/tmp/screenshot.png",
+        filename: "screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+      }),
+    ).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: VALID_PNG_BASE64,
+          mediaType: "image/png",
+        },
+      ],
+    });
+  });
+
   test("returns a text error instead of invalid image-data for corrupt sandbox images", async () => {
     const commandRun = jest.fn(async (_command, opts) => {
       expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");

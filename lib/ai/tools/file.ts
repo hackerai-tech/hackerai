@@ -1501,17 +1501,21 @@ ${instructionsDescription}`,
               true,
             );
 
-            captureFileViewImageUsage({
-              context,
-              sandbox,
-              path: viewOutput.path,
-              stage: "model_output",
-              outcome: "success",
-              durationMs: Date.now() - viewStartedAt,
-              mediaType: viewPayload.mediaType,
-              sizeBytes: viewPayload.sizeBytes,
-              previewUploadSucceeded: viewOutput.previewUploadSucceeded,
-            });
+            try {
+              captureFileViewImageUsage({
+                context,
+                sandbox,
+                path: viewOutput.path,
+                stage: "model_output",
+                outcome: "success",
+                durationMs: Date.now() - viewStartedAt,
+                mediaType: viewPayload.mediaType,
+                sizeBytes: viewPayload.sizeBytes,
+                previewUploadSucceeded: viewOutput.previewUploadSucceeded,
+              });
+            } catch {
+              // Telemetry must never break a successful image handoff.
+            }
 
             return {
               type: "content" as const,
