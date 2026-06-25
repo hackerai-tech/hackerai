@@ -20,6 +20,7 @@ import {
   resolveSubscriptionTier,
 } from "../lib/auth/entitlements";
 import { convexLogger } from "./lib/logger";
+import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -328,6 +329,7 @@ export const getChatByIdFromClient = query({
       if (!identity) {
         return null;
       }
+      await assertUserCanAccessChatHistory(ctx, identity.subject);
 
       const chat = await ctx.db
         .query("chats")
@@ -670,6 +672,7 @@ export const getUserChats = query({
         continueCursor: "",
       };
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     try {
       const MAX_PINNED_CHATS = 100;
@@ -794,6 +797,7 @@ export const pinChat = mutation({
         message: "Unauthorized: User not authenticated",
       });
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chat = await ctx.db
       .query("chats")
@@ -837,6 +841,7 @@ export const unpinChat = mutation({
         message: "Unauthorized: User not authenticated",
       });
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chat = await ctx.db
       .query("chats")
@@ -881,6 +886,7 @@ export const deleteChat = mutation({
         message: "Unauthorized: User not authenticated",
       });
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Find the chat
@@ -998,6 +1004,7 @@ export const renameChat = mutation({
         message: "Unauthorized: User not authenticated",
       });
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Find the chat
@@ -1071,6 +1078,7 @@ export const deleteAllChats = mutation({
         message: "Unauthorized: User not authenticated",
       });
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       await deleteNextUserChatBatch(ctx, user.subject);

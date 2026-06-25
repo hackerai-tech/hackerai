@@ -129,6 +129,12 @@ function generateConvexServiceRoleKey(): string {
   return crypto.randomBytes(32).toString("base64");
 }
 
+function generateAccountIdentityHmacSecret(): string {
+  console.log(`\n${chalk.bold("Generating ACCOUNT_IDENTITY_HMAC_SECRET")}`);
+  console.log("Generated a secure random key for free quota identity hashing");
+  return crypto.randomBytes(32).toString("base64");
+}
+
 async function configureWorkOSDashboard() {
   console.log(`\n${chalk.bold("Configure WorkOS Dashboard")}`);
   console.log("Please complete the following steps in your WorkOS dashboard:");
@@ -180,6 +186,10 @@ WORKOS_CLIENT_ID=${envVars.WORKOS_CLIENT_ID}
 # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 WORKOS_COOKIE_PASSWORD=${envVars.WORKOS_COOKIE_PASSWORD}
 NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
+
+# Server-only HMAC key for privacy-preserving free quota identity hashes.
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+ACCOUNT_IDENTITY_HMAC_SECRET=${envVars.ACCOUNT_IDENTITY_HMAC_SECRET}
 
 # =============================================================================
 # CONVEX DATABASE (Required)
@@ -422,6 +432,7 @@ async function main() {
   const NEXT_PUBLIC_WORKOS_REDIRECT_URI = `${NEXT_PUBLIC_BASE_URL}/callback`;
   const WORKOS_COOKIE_PASSWORD = generateWorkOSCookiePassword();
   const CONVEX_SERVICE_ROLE_KEY = generateConvexServiceRoleKey();
+  const ACCOUNT_IDENTITY_HMAC_SECRET = generateAccountIdentityHmacSecret();
 
   // Configure WorkOS dashboard
   await configureWorkOSDashboard();
@@ -440,6 +451,7 @@ async function main() {
     WORKOS_CLIENT_ID,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,
     WORKOS_COOKIE_PASSWORD,
+    ACCOUNT_IDENTITY_HMAC_SECRET,
     NEXT_PUBLIC_CONVEX_URL,
     CONVEX_DEPLOYMENT,
     CONVEX_SERVICE_ROLE_KEY,

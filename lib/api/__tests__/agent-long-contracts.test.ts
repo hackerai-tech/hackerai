@@ -387,8 +387,44 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/errorCategory/);
     expect(taskSrc).toMatch(/loginRequired/);
     expect(taskSrc).toMatch(/login_required/);
-    expect(taskSrc).toMatch(/error_\$\{summary\.category\}/);
+    expect(taskSrc).toMatch(/`error_\$\{summary\.category\}`/);
+    expect(taskSrc).toMatch(/`user_correctable_\$\{summary\.category\}`/);
+    expect(taskSrc).toMatch(/TRIGGER_TAG_MAX_LENGTH\s*=\s*64/);
+    expect(taskSrc).toMatch(/buildTriggerTag/);
     expect(taskSrc).toMatch(/metadata\.flush\(\)/);
+  });
+
+  test("user-correctable agent-long request errors complete without failing Trigger", () => {
+    expect(taskSrc).toMatch(/USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
+    expect(taskSrc).toMatch(/"login_required"/);
+    expect(taskSrc).toMatch(/"user_correctable"/);
+    expect(taskSrc).toMatch(/userCorrectable/);
+    expect(taskSrc).toMatch(/user_correctable_code_/);
+    expect(taskSrc).toMatch(/caughtErrorUserCorrectable/);
+
+    const recordedFailureIdx = taskSrc.indexOf(
+      "const recordedFailure = await recordAgentLongFailureForDashboard",
+    );
+    const syntheticFlushIdx = taskSrc.indexOf(
+      "await waitForErrorStream()",
+      recordedFailureIdx,
+    );
+    const handledReturnGuardIdx = taskSrc.indexOf(
+      "recordedFailure.userCorrectable === true",
+      syntheticFlushIdx,
+    );
+    const returnIdx = taskSrc.indexOf(
+      "return { chatId, assistantMessageId }",
+      handledReturnGuardIdx,
+    );
+    const throwIdx = taskSrc.indexOf("throw error", returnIdx);
+
+    expect(recordedFailureIdx).toBeGreaterThan(-1);
+    expect(syntheticFlushIdx).toBeGreaterThan(recordedFailureIdx);
+    expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
+    expect(returnIdx).toBeGreaterThan(handledReturnGuardIdx);
+    expect(throwIdx).toBeGreaterThan(returnIdx);
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {
@@ -448,7 +484,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/emptyAfterProcessing/);
     expect(taskSrc).toMatch(/processingInputMessageCount/);
     expect(taskSrc).toMatch(/processingInputUiOnlyPartCount/);
-    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
@@ -458,7 +494,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/sandboxFallbackReason/);
     expect(taskSrc).toMatch(/requestedPreference/);
     expect(taskSrc).toMatch(/actualSandbox/);
-    expect(taskSrc).toMatch(/isExpectedUserCorrectableError/);
+    expect(taskSrc).toMatch(/isUserCorrectableAgentLongErrorCategory/);
     expect(taskSrc).toMatch(/user-correctable request error/);
   });
 
@@ -477,5 +513,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
+  });
+
+  test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
+    expect(routeSrc).toMatch(/freeQuotaSubject/);
+    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*freeQuotaSubject/);
+    expect(taskSrc).toMatch(/freeQuotaSubject\?:\s*string/);
+    expect(taskSrc).toMatch(
+      /const freeUsageSubject\s*=\s*freeQuotaSubject\s*\?\?\s*userId/,
+    );
+    expect(taskSrc).toMatch(
+      /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
+    );
+    expect(taskSrc).toMatch(/checkFreeMonthlyCostLimit\(freeUsageSubject\)/);
+    expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 });

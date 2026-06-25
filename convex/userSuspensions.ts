@@ -26,6 +26,27 @@ export const getActiveByUser = query({
   },
 });
 
+export const getActiveFraudDisputeByUser = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    return await ctx.db
+      .query("user_suspensions")
+      .withIndex("by_user_status_category_source_created", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("status", "active")
+          .eq("category", "dispute_fraudulent"),
+      )
+      .order("desc")
+      .first();
+  },
+});
+
 export const upsertActive = mutation({
   args: {
     serviceKey: v.string(),

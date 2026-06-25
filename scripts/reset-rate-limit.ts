@@ -26,7 +26,11 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
-import { isUserRateLimitKey } from "../lib/rate-limit/key-cleanup";
+import {
+  isFreeQuotaSubjectRateLimitKey,
+  isUserRateLimitKey,
+} from "../lib/rate-limit/key-cleanup";
+import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
 import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -113,9 +117,19 @@ async function resetRateLimitForUser(
   try {
     // Scan broadly for the user ID, then delete only known rate-limit keys.
     const pattern = `*${userId}*`;
-    const allKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
+    const userKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
+    const freeQuotaSubject = createFreeQuotaSubjectWithSecret(
+      userEmail,
+      process.env.ACCOUNT_IDENTITY_HMAC_SECRET,
+    );
+    const identityKeys = freeQuotaSubject
+      ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
+          isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
+        )
+      : [];
+    const allKeys = Array.from(new Set([...userKeys, ...identityKeys]));
 
     if (!allKeys || allKeys.length === 0) {
       console.log(`ℹ️  No rate limit keys found for ${userEmail}`);
@@ -186,7 +200,8 @@ Test Users:
   ultra  -> ${TEST_USERS.ultra.email}
 
 Note: This script automatically looks up user IDs from WorkOS
-      and deletes all rate limit keys for the specified user.
+      and deletes user-scoped keys plus identity-scoped free quota keys when
+      ACCOUNT_IDENTITY_HMAC_SECRET is configured locally.
 `);
     process.exit(0);
   }

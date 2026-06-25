@@ -1,6 +1,10 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { convexLogger } from "./lib/logger";
+import {
+  assertUserCanAccessChatHistory,
+  isUserBlockedByActiveFraudDispute,
+} from "./lib/suspensionGuards";
 
 /**
  * Share a chat by creating a public share link.
@@ -21,6 +25,7 @@ export const shareChat = mutation({
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chat = await ctx.db
       .query("chats")
@@ -99,6 +104,7 @@ export const updateShareDate = mutation({
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chat = await ctx.db
       .query("chats")
@@ -162,6 +168,7 @@ export const unshareChat = mutation({
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chat = await ctx.db
       .query("chats")
@@ -224,6 +231,9 @@ export const getSharedChat = query({
     if (!chat || !chat.share_id || !chat.share_date) {
       return null;
     }
+    if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+      return null;
+    }
 
     // Return chat without user_id for anonymity
     return {
@@ -259,6 +269,7 @@ export const getUserSharedChats = query({
     if (!identity) {
       return [];
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const chats = await ctx.db
       .query("chats")
@@ -299,6 +310,7 @@ export const forkSharedChat = mutation({
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     // Validate UUID format
     const UUID_REGEX =
@@ -313,6 +325,9 @@ export const forkSharedChat = mutation({
       .first();
 
     if (!chat || !chat.share_id || !chat.share_date) {
+      throw new Error("Shared chat not found");
+    }
+    if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
       throw new Error("Shared chat not found");
     }
 
@@ -388,6 +403,7 @@ export const unshareAllChats = mutation({
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     const sharedChats = await ctx.db
       .query("chats")

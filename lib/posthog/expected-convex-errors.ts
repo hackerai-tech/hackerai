@@ -10,6 +10,7 @@ const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "PAID_PLAN_REQUIRED",
   "Paid plan required for file uploads",
   "CHAT_UNAUTHORIZED",
+  "CHAT_ACCESS_SUSPENDED",
   "Unauthorized: Chat does not belong to user",
   "OptimisticConcurrencyControlFailure",
   'Documents read from or written to the "btreeNode" table changed',

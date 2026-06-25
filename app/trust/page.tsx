@@ -278,6 +278,7 @@ export default function TrustPage() {
                   "Delete your terminal sandboxes",
                   "Revoke links to chats you have shared",
                   "Delete your account, which removes database records, cancels your Stripe subscription, and deletes your authentication record",
+                  "Deleting and recreating an account does not reset usage limits or referral eligibility",
                 ]}
               />
             </Section>
