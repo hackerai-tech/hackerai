@@ -29,7 +29,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import type { UploadedFileState } from "@/types/file";
 
 interface ChatInputProps {
-  onSubmit: (e: React.FormEvent) => void;
+  onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
@@ -144,11 +144,43 @@ export const ChatInput = ({
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
 
-  const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  const draftId =
+    isNewChat && (!hasMessages || temporaryChatsEnabled)
+      ? "new"
+      : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedPastedTextDraftAttachmentsRef = useRef(false);
+  const uploadedFilesRef = useRef(uploadedFiles);
+  const prevDraftIdRef = useRef(draftId);
 
   useEffect(() => {
+    uploadedFilesRef.current = uploadedFiles;
+  });
+
+  useEffect(() => {
+    const prevDraftId = prevDraftIdRef.current;
+    prevDraftIdRef.current = draftId;
+
+    if (prevDraftId === "new" && draftId !== "new") {
+      const generatedPastedTextAttachments = uploadedFilesRef.current
+        .map(uploadedFileToDraftAttachment)
+        .filter(
+          (attachment): attachment is NonNullable<typeof attachment> =>
+            attachment !== null,
+        );
+
+      if (generatedPastedTextAttachments.length > 0) {
+        upsertDraftAttachments(draftId, generatedPastedTextAttachments);
+        removeDraftAttachments("new");
+        hasPersistedPastedTextDraftAttachmentsRef.current = true;
+      }
+
+      if (uploadedFilesRef.current.length > 0) {
+        skipNextAttachmentPersistRef.current = true;
+        return;
+      }
+    }
+
     const draftAttachments = getDraftAttachmentsById(draftId);
     hasPersistedPastedTextDraftAttachmentsRef.current =
       draftAttachments.length > 0;
@@ -226,7 +258,7 @@ export const ChatInput = ({
     }
   }, [temporaryChatsEnabled, chatMode, setChatMode]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -234,8 +266,8 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
-      onSubmit(e);
-      if (clearDraftOnSubmit) {
+      const accepted = await onSubmit(e);
+      if (clearDraftOnSubmit && accepted !== false) {
         removeDraft(draftId);
         setTimeout(() => setInput(""), 0);
       }
