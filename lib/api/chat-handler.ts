@@ -136,6 +136,7 @@ import {
   getProviderStatusCode,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
+import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -164,23 +165,6 @@ function getStreamContext() {
 }
 
 export { getStreamContext };
-
-const getValueKind = (value: unknown): string =>
-  value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-
-const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
-  if (Array.isArray(messages)) return messages;
-
-  throw new ChatSDKError(
-    "bad_request:api",
-    "Invalid chat request: messages must be an array.",
-    {
-      invalid_request_field: "messages",
-      invalid_request_field_type: getValueKind(messages),
-      new_messages_count: 0,
-    },
-  );
-};
 
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
