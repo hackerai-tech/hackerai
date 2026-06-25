@@ -146,9 +146,12 @@ export const ChatInput = ({
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
+  const hasPersistedPastedTextDraftAttachmentsRef = useRef(false);
 
   useEffect(() => {
     const draftAttachments = getDraftAttachmentsById(draftId);
+    hasPersistedPastedTextDraftAttachmentsRef.current =
+      draftAttachments.length > 0;
     skipNextAttachmentPersistRef.current = true;
     setUploadedFiles(draftAttachments.map(draftAttachmentToUploadedFile));
   }, [draftId, setUploadedFiles]);
@@ -168,8 +171,10 @@ export const ChatInput = ({
 
     if (generatedPastedTextAttachments.length > 0) {
       upsertDraftAttachments(draftId, generatedPastedTextAttachments);
-    } else {
+      hasPersistedPastedTextDraftAttachmentsRef.current = true;
+    } else if (hasPersistedPastedTextDraftAttachmentsRef.current) {
       removeDraftAttachments(draftId);
+      hasPersistedPastedTextDraftAttachmentsRef.current = false;
     }
   }, [draftId, uploadedFiles]);
 
