@@ -14,7 +14,11 @@ jest.mock("react-hotkeys-hook", () => ({
 jest.mock("@/lib/utils/client-storage", () => ({
   NULL_THREAD_DRAFT_ID: "null-thread",
   getDraftContentById: jest.fn(() => null),
+  getDraftAttachmentsById: jest.fn(() => []),
+  hasDraftAttachmentsById: jest.fn(() => false),
   upsertDraft: jest.fn(),
+  upsertDraftAttachments: jest.fn(),
+  removeDraftAttachments: jest.fn(),
   removeDraft: jest.fn(),
 }));
 
@@ -33,6 +37,7 @@ jest.mock("../../hooks/useFileUpload", () => ({
     handleRemoveFile: jest.fn(),
     handleAttachClick: jest.fn(),
     handlePasteEvent: jest.fn(),
+    handlePastedTextAttachment: jest.fn(),
   }),
 }));
 

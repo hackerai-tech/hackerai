@@ -113,7 +113,7 @@ export const useChatHandlers = ({
     !file.error &&
     (file.storage === "local-desktop"
       ? !!file.localAttachmentId && !!file.localPath
-      : !!file.url && !!file.fileId);
+      : !!file.fileId);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,

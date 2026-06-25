@@ -1,10 +1,15 @@
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import {
+  getDraftAttachmentsById,
   readSelectedModel,
+  removeDraftAttachments,
   writeSelectedModel,
   clearSelectedModelFromStorage,
   hasAuthenticatedBefore,
+  hasDraftAttachmentsById,
   markHasAuthenticatedBefore,
+  upsertDraft,
+  upsertDraftAttachments,
 } from "../client-storage";
 
 const STORAGE_KEY = "selected_model";
@@ -147,5 +152,72 @@ describe("client-storage auth marker", () => {
   it("persists that this browser has authenticated before", () => {
     markHasAuthenticatedBefore();
     expect(hasAuthenticatedBefore()).toBe(true);
+  });
+});
+
+describe("client-storage draft attachments", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("persists generated pasted-text attachments without draft text", () => {
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "pasted-text",
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        tokens: 120,
+        timestamp: 123456,
+      },
+    ]);
+
+    expect(hasDraftAttachmentsById("chat-1")).toBe(true);
+    expect(getDraftAttachmentsById("chat-1")).toEqual([
+      {
+        kind: "pasted-text",
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        tokens: 120,
+        timestamp: 123456,
+      },
+    ]);
+  });
+
+  it("preserves draft attachments when text autosave updates content", () => {
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "pasted-text",
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        timestamp: 123456,
+      },
+    ]);
+
+    upsertDraft("chat-1", "follow-up question", 234567);
+
+    expect(getDraftAttachmentsById("chat-1")).toHaveLength(1);
+  });
+
+  it("removes an attachment-only draft when attachments are cleared", () => {
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "pasted-text",
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        timestamp: 123456,
+      },
+    ]);
+
+    removeDraftAttachments("chat-1");
+
+    expect(hasDraftAttachmentsById("chat-1")).toBe(false);
   });
 });

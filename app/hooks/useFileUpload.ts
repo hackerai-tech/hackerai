@@ -248,6 +248,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       uploadIndex: number,
       options: {
         fallbackLocalFile?: LocalDesktopFile & { path: string };
+        generatedSource?: "pasted-text";
       } = {},
     ) => {
       try {
@@ -393,7 +394,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Helper function to start file uploads
   const startFileUploads = useCallback(
-    (files: File[]) => {
+    (
+      files: File[],
+      options: {
+        generatedSource?: "pasted-text";
+      } = {},
+    ) => {
       const startingIndex = uploadedFiles.length;
 
       files.forEach((file, index) => {
@@ -402,10 +408,16 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           file,
           uploading: true,
           uploaded: false,
+          storage: "s3",
+          ...(options.generatedSource
+            ? { generatedSource: options.generatedSource }
+            : {}),
         });
 
         // Start upload in background with correct index
-        uploadFileToS3(file, startingIndex + index);
+        uploadFileToS3(file, startingIndex + index, {
+          generatedSource: options.generatedSource,
+        });
       });
     },
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
@@ -596,11 +608,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Unified file processing function
   const processFiles = useCallback(
-    async (files: File[], source: FileSource) => {
+    async (
+      files: File[],
+      source: FileSource,
+      options: {
+        generatedSource?: "pasted-text";
+      } = {},
+    ): Promise<boolean> => {
       // Check if user has pro plan for file uploads
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
-        return;
+        return false;
       }
 
       const result = await validateAndFilterFiles(files);
@@ -615,8 +633,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
       // Start uploads for valid files
       if (result.validFiles.length > 0 && hasRemainingSlots) {
-        startFileUploads(result.validFiles);
+        startFileUploads(result.validFiles, options);
+        return true;
       }
+
+      return false;
     },
     [
       subscription,
@@ -690,6 +711,27 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     }
     fileInputRef.current?.click();
   };
+
+  const handlePastedTextAttachment = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (!text.trim()) return false;
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const file = new File([text], `pasted-text-${timestamp}.txt`, {
+        type: "text/plain",
+        lastModified: Date.now(),
+      });
+
+      const started = await processFiles([file], "paste", {
+        generatedSource: "pasted-text",
+      });
+      if (started) {
+        toast.info("Pasted text added as an attachment");
+      }
+      return started;
+    },
+    [processFiles],
+  );
 
   const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
     const items = event.clipboardData?.items;
@@ -796,6 +838,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     handleRemoveFile,
     handleAttachClick,
     handlePasteEvent,
+    handlePastedTextAttachment,
     getUploadedFileMessageParts,
     allFilesUploaded,
     anyFilesUploading,

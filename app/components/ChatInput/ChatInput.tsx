@@ -8,7 +8,13 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  getDraftAttachmentsById,
+  removeDraft,
+  removeDraftAttachments,
+  upsertDraftAttachments,
+  type ConversationDraftAttachment,
+} from "@/lib/utils/client-storage";
 import {
   RateLimitWarning,
   type RateLimitWarningData,
@@ -20,6 +26,7 @@ import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { useIsMobile } from "@/hooks/use-mobile";
+import type { UploadedFileState } from "@/types/file";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -39,6 +46,52 @@ interface ChatInputProps {
   placeholder?: string;
   autoFocus?: boolean;
 }
+
+const draftAttachmentToUploadedFile = (
+  attachment: ConversationDraftAttachment,
+): UploadedFileState => ({
+  file: {
+    name: attachment.name,
+    type: attachment.mediaType,
+    size: attachment.size,
+    lastModified: attachment.timestamp,
+  },
+  uploading: false,
+  uploaded: true,
+  storage: "s3",
+  generatedSource: "pasted-text",
+  fileId: attachment.fileId,
+  tokens: attachment.tokens,
+});
+
+const uploadedFileToDraftAttachment = (
+  uploadedFile: UploadedFileState,
+): ConversationDraftAttachment | null => {
+  if (
+    uploadedFile.generatedSource !== "pasted-text" ||
+    !uploadedFile.uploaded ||
+    uploadedFile.uploading ||
+    uploadedFile.error ||
+    !uploadedFile.fileId ||
+    uploadedFile.storage === "local-desktop"
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "pasted-text",
+    fileId: uploadedFile.fileId,
+    name: uploadedFile.file.name,
+    mediaType: uploadedFile.file.type || "text/plain",
+    size: uploadedFile.file.size,
+    tokens: uploadedFile.tokens,
+    timestamp:
+      "lastModified" in uploadedFile.file &&
+      typeof uploadedFile.file.lastModified === "number"
+        ? uploadedFile.file.lastModified
+        : Date.now(),
+  };
+};
 
 export const ChatInput = ({
   onSubmit,
@@ -64,6 +117,7 @@ export const ChatInput = ({
     chatMode,
     setChatMode,
     uploadedFiles,
+    setUploadedFiles,
     isUploadingFiles,
     messageQueue,
     removeQueuedMessage,
@@ -91,6 +145,33 @@ export const ChatInput = ({
   const isAgent = isAgentMode(chatMode);
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  const skipNextAttachmentPersistRef = useRef(false);
+
+  useEffect(() => {
+    const draftAttachments = getDraftAttachmentsById(draftId);
+    skipNextAttachmentPersistRef.current = true;
+    setUploadedFiles(draftAttachments.map(draftAttachmentToUploadedFile));
+  }, [draftId, setUploadedFiles]);
+
+  useEffect(() => {
+    if (skipNextAttachmentPersistRef.current) {
+      skipNextAttachmentPersistRef.current = false;
+      return;
+    }
+
+    const generatedPastedTextAttachments = uploadedFiles
+      .map(uploadedFileToDraftAttachment)
+      .filter(
+        (attachment): attachment is NonNullable<typeof attachment> =>
+          attachment !== null,
+      );
+
+    if (generatedPastedTextAttachments.length > 0) {
+      upsertDraftAttachments(draftId, generatedPastedTextAttachments);
+    } else {
+      removeDraftAttachments(draftId);
+    }
+  }, [draftId, uploadedFiles]);
 
   // Free agent mode constraints:
   // 1. Requires local sandbox — fall back to ask mode if disconnected
