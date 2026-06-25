@@ -40,7 +40,7 @@ export const getMaxStepsForUser = (
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
- *   to Gemini 3.5 Flash for native media support. Free ASK stays on DeepSeek
+ *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek
  *   V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
  * @returns Model name to use
  */
@@ -80,7 +80,7 @@ export function selectModel(
   // the auto-router label.
   if (selectedModel === "hackerai-standard" && !isAgent) {
     return hasAskImage || hasAskPdf
-      ? "model-gemini-3-flash"
+      ? "model-grok-4.3"
       : "model-deepseek-v4-pro";
   }
 

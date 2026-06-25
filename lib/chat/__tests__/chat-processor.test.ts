@@ -165,19 +165,19 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (Gemini) for paid ask when an image is attached", () => {
+    it("should return ask-model (Grok) for paid ask when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "ask-model",
       );
     });
 
-    it("should return ask-model (Gemini) for paid ask when a PDF is attached", () => {
+    it("should return ask-model (Grok) for paid ask when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
         "ask-model",
       );
     });
 
-    it("should prefer ask-model (Gemini) when paid ask has both image and PDF attachments", () => {
+    it("should prefer ask-model (Grok) when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
         "ask-model",
       );
@@ -222,21 +222,21 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Gemini 3.5 Flash when an image is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.3 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-gemini-3-flash",
+        "model-grok-4.3",
       );
     });
 
-    it("should promote HackerAI Standard to Gemini 3.5 Flash when a PDF is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.3 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-gemini-3-flash",
+        "model-grok-4.3",
       );
     });
 
-    it("should prefer Gemini 3.5 Flash for HackerAI Standard when image and PDF are both attached", () => {
+    it("should prefer Grok 4.3 for HackerAI Standard when image and PDF are both attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
-        "model-gemini-3-flash",
+        "model-grok-4.3",
       );
     });
 

@@ -28,11 +28,13 @@ export { isUserRateLimitKey } from "./key-cleanup";
 /** Model pricing: $/1M tokens per model. */
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
-  "ask-model": { input: 1.5, output: 9.0 },
+  "ask-model": { input: 1.25, output: 2.5 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  "model-gemini-3-flash": { input: 1.5, output: 9.0 },
+  "model-grok-4.3": { input: 1.25, output: 2.5 },
+  "model-gemini-3-flash": { input: 1.25, output: 2.5 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
-  "fallback-gemini-3.5-flash": { input: 1.5, output: 9.0 },
+  "fallback-gemini-3.5-flash": { input: 1.25, output: 2.5 },
+  "fallback-grok-4.3": { input: 1.25, output: 2.5 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // "agent-model" and "model-kimi-k2.7-code" route to
   // moonshotai/kimi-k2.7-code:exacto via lib/ai/providers.ts. Rates from OpenRouter:

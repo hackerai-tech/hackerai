@@ -94,7 +94,18 @@ function posthogProviderException(
   details: Record<string, unknown>,
 ): Error {
   const message = getProviderDiagnosticMessage(details);
-  if (!(error instanceof Error)) return new Error(message);
+  if (!(error instanceof Error)) {
+    const enriched = new Error(message);
+    const errorName = details.errorName;
+    if (
+      typeof errorName === "string" &&
+      errorName.length > 0 &&
+      errorName !== "UnknownError"
+    ) {
+      enriched.name = errorName;
+    }
+    return enriched;
+  }
   if (message === "Provider streaming error" || message === error.message) {
     return error;
   }
@@ -218,6 +229,31 @@ const providerErrorMessage = (category: ProviderErrorCategory): string =>
         ? "Provider stream timeout"
         : "Provider streaming error";
 
+const SYNTHETIC_SSE_JSON_ERROR_MESSAGE = "JSON error injected into SSE stream";
+
+const providerCategoryDiagnosticMessage = (
+  category: ProviderErrorCategory,
+  statusCode?: number,
+): string => {
+  const suffix = statusCode ? ` (${statusCode})` : "";
+  switch (category) {
+    case "rate_limited":
+      return `Provider rate limited${suffix}`;
+    case "content_blocked":
+      return `Provider content blocked${suffix}`;
+    case "provider_5xx":
+      return `Provider server error${suffix}`;
+    case "provider_4xx":
+      return `Provider request rejected${suffix}`;
+    case "stream_terminated":
+      return "Provider stream terminated";
+    case "timeout":
+      return "Provider stream timeout";
+    case "unknown":
+      return "Provider streaming error";
+  }
+};
+
 const providerWideErrorType = (
   category: ProviderErrorCategory | undefined,
 ): string => {
@@ -231,14 +267,29 @@ const providerWideErrorType = (
 const getProviderDiagnosticMessage = (
   details: Record<string, unknown>,
 ): string => {
-  for (const key of [
-    "providerRawError",
-    "providerErrorMessage",
-    "errorMessage",
-  ] as const) {
+  for (const key of ["providerRawError", "providerErrorMessage"] as const) {
     const value = details[key];
     if (typeof value === "string" && value.length > 0 && value !== "undefined")
       return value;
+  }
+
+  const errorMessage = details.errorMessage;
+  if (
+    typeof errorMessage === "string" &&
+    errorMessage.length > 0 &&
+    errorMessage !== "undefined"
+  ) {
+    if (errorMessage !== SYNTHETIC_SSE_JSON_ERROR_MESSAGE) {
+      return errorMessage;
+    }
+
+    const category = getProviderErrorCategory(details);
+    if (category !== "unknown") {
+      return providerCategoryDiagnosticMessage(
+        category,
+        getProviderStatusCode(details),
+      );
+    }
   }
 
   return "Provider streaming error";
@@ -474,6 +525,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
+      const diagnosticMessage = getProviderDiagnosticMessage(details);
       const providerName = nonEmptyString(details.providerName);
       const configuredModel =
         nonEmptyString(providerContext.model) ??
@@ -508,6 +560,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_diagnostic_message: diagnosticMessage,
+        ...(providerStatusCode && { provider_status_code: providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
@@ -530,6 +584,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        providerDiagnosticMessage: diagnosticMessage,
+        ...(providerStatusCode && { providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
@@ -548,7 +604,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         statusCode: providerStatusCode,
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
-        message: getProviderDiagnosticMessage(details),
+        message: diagnosticMessage,
         retriable:
           typeof details.isRetryable === "boolean"
             ? details.isRetryable

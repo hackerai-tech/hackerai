@@ -25,8 +25,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isImageMediaType = (value: unknown): boolean =>
   typeof value === "string" && value.toLowerCase().startsWith("image/");
 
+const isPdfMediaType = (value: unknown): boolean =>
+  typeof value === "string" && value.toLowerCase() === "application/pdf";
+
 const isImageDataUrl = (value: unknown): boolean =>
   typeof value === "string" && /^data:image\//i.test(value);
+
+const isPdfDataUrl = (value: unknown): boolean =>
+  typeof value === "string" && /^data:application\/pdf[;,]/i.test(value);
+
+const isInlineMediaDataUrl = (value: unknown): boolean =>
+  isImageDataUrl(value) || isPdfDataUrl(value);
 
 const isImageLikeRecord = (value: Record<string, unknown>): boolean =>
   value.type === "image" ||
@@ -36,16 +45,21 @@ const isImageLikeRecord = (value: Record<string, unknown>): boolean =>
   isImageMediaType(value.mimeType) ||
   isImageMediaType(value.mime);
 
-const compactImagePayload = (value: unknown): string => {
+const isPdfLikeRecord = (value: Record<string, unknown>): boolean =>
+  isPdfMediaType(value.mediaType) ||
+  isPdfMediaType(value.mimeType) ||
+  isPdfMediaType(value.mime);
+
+const compactInlineMediaPayload = (value: unknown): string => {
   if (typeof value === "string") {
-    return `[image data omitted: ${value.length} chars]`;
+    return `[inline media data omitted: ${value.length} chars]`;
   }
 
   if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
-    return `[image data omitted: ${value.byteLength} bytes]`;
+    return `[inline media data omitted: ${value.byteLength} bytes]`;
   }
 
-  return "[image data omitted]";
+  return "[inline media data omitted]";
 };
 
 const sanitizeForSerializedByteEstimate = (value: unknown): unknown => {
@@ -57,16 +71,16 @@ const sanitizeForSerializedByteEstimate = (value: unknown): unknown => {
     return value;
   }
 
-  const imageLike = isImageLikeRecord(value);
+  const inlineMediaLike = isImageLikeRecord(value) || isPdfLikeRecord(value);
   const sanitized: Record<string, unknown> = {};
 
   for (const [key, childValue] of Object.entries(value)) {
     if (
-      (imageLike && (key === "data" || key === "image")) ||
+      (inlineMediaLike && (key === "data" || key === "image")) ||
       ((key === "data" || key === "image" || key === "url") &&
-        isImageDataUrl(childValue))
+        isInlineMediaDataUrl(childValue))
     ) {
-      sanitized[key] = compactImagePayload(childValue);
+      sanitized[key] = compactInlineMediaPayload(childValue);
       continue;
     }
 

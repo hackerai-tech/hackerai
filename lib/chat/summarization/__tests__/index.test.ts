@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
 import type {
   UIMessage,
   UIMessageStreamWriter,
@@ -161,8 +168,13 @@ describe("checkAndSummarizeIfNeeded", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.spyOn(console, "info").mockImplementation(() => {});
     mockSaveChatSummary.mockResolvedValue(undefined);
     mockWriter = createMockWriter();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("should cap reserved summarization headroom at 20k tokens", () => {
@@ -291,6 +303,70 @@ describe("checkAndSummarizeIfNeeded", () => {
         }),
       }),
     );
+  });
+
+  it("logs compact compaction diagnostics without file contents", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Pressure summary" });
+
+    await checkAndSummarizeIfNeeded({
+      uiMessages: [
+        {
+          id: "msg-pdf",
+          role: "user",
+          parts: [
+            { type: "text", text: "tell me about this pdf" },
+            {
+              type: "file",
+              fileId: "file_large_pdf" as any,
+              mediaType: "application/pdf",
+              name: "sensitive-report.pdf",
+            },
+          ],
+        },
+      ],
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "ask",
+      writer: mockWriter,
+      chatId: "chat-pressure-log",
+      fileTokens: {
+        file_large_pdf: 42_000,
+        file_small: 7,
+      } as any,
+      chatSystemPrompt: "test-system-prompt",
+      providerPromptPressure: {
+        reason: "serialized_message_bytes",
+        reasons: ["serialized_message_bytes"],
+        serializedMessageBytes: 500_000,
+        toolResultCount: 0,
+        messageCount: 1,
+        summarizationMaxTokensOverride: 128_000,
+      },
+    });
+
+    const logCall = (console.info as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('"event":"chat_context_compaction_started"'),
+    );
+    expect(logCall).toBeTruthy();
+
+    const log = JSON.parse(String(logCall?.[0]));
+    expect(log).toMatchObject({
+      level: "info",
+      event: "chat_context_compaction_started",
+      service: "chat-handler",
+      chat_id: "chat-pressure-log",
+      mode: "ask",
+      subscription: "pro",
+      reason: "provider_pressure",
+      provider_pressure_reason: "serialized_message_bytes",
+      provider_pressure_reasons: ["serialized_message_bytes"],
+      provider_pressure_serialized_message_bytes: 500_000,
+      file_count: 2,
+      total_file_tokens: 42_007,
+      largest_file_tokens: 42_000,
+      cutoff_message_id: "msg-pdf",
+    });
+    expect(JSON.stringify(log)).not.toContain("sensitive-report.pdf");
   });
 
   it("should ignore a zero max token override instead of summarizing every free ask message", async () => {
