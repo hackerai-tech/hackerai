@@ -154,6 +154,11 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { shouldRetryProviderStreamWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
+import {
+  captureFreeAskReasoningExperimentExposure,
+  captureFreeAskReasoningExperimentResult,
+  resolveFreeAskReasoningExperiment,
+} from "@/lib/experiments/free-ask-reasoning";
 
 function getStreamContext() {
   try {
@@ -178,12 +183,51 @@ export const createChatHandler = () => {
     // Wide event logger for structured logging
     let chatLogger: ChatLogger | undefined;
     let outerChatId: string | undefined;
+    let posthog: ReturnType<typeof PostHogClient> = null;
+    let freeAskReasoningExperiment: Awaited<
+      ReturnType<typeof resolveFreeAskReasoningExperiment>
+    > = null;
+    let freeAskReasoningResultContext: {
+      userId: string;
+      chatId: string;
+      subscription: string;
+      mode: ChatMode;
+      selectedModel: string;
+    } | null = null;
+    let freeAskReasoningResultRecorded = false;
     let releaseFreeRunLock: (() => Promise<void>) | undefined;
     const releaseFreeRunLockOnce = async () => {
       const release = releaseFreeRunLock;
       if (!release) return;
       releaseFreeRunLock = undefined;
       await release();
+    };
+    const captureFreeAskReasoningTerminalResult = ({
+      outcome,
+      generationTimeMs,
+      finishReason,
+    }: {
+      outcome: "success" | "aborted" | "error";
+      generationTimeMs?: number;
+      finishReason?: string;
+    }) => {
+      if (
+        !freeAskReasoningResultContext ||
+        !freeAskReasoningExperiment ||
+        freeAskReasoningResultRecorded
+      ) {
+        return;
+      }
+
+      captureFreeAskReasoningExperimentResult({
+        posthog,
+        ...freeAskReasoningResultContext,
+        assignment: freeAskReasoningExperiment,
+        outcome,
+        generationTimeMs,
+        finishReason,
+      });
+      freeAskReasoningResultRecorded = true;
     };
 
     try {
@@ -380,7 +424,30 @@ export const createChatHandler = () => {
         truncatedMessages,
       });
 
+      // PostHog client for analytics and server-side experiment evaluation.
+      posthog = PostHogClient();
+
       const fileCounts = countFileAttachments(truncatedMessages);
+      const eligibilityFileCounts = countFileAttachments(
+        fetched.truncatedMessages,
+      );
+      freeAskReasoningExperiment = await resolveFreeAskReasoningExperiment({
+        posthog,
+        userId,
+        subscription,
+        mode,
+        selectedModel,
+        fileCount: eligibilityFileCounts.totalFiles,
+      });
+      freeAskReasoningResultContext = freeAskReasoningExperiment
+        ? {
+            userId,
+            chatId,
+            subscription,
+            mode,
+            selectedModel,
+          }
+        : null;
       const chatLogContext = {
         messageCount: truncatedMessages.length,
         estimatedInputTokens,
@@ -390,6 +457,17 @@ export const createChatHandler = () => {
         notesEnabled,
       };
       chatLogger.setChat(chatLogContext, selectedModel);
+      captureFreeAskReasoningExperimentExposure({
+        posthog,
+        userId,
+        chatId,
+        subscription,
+        mode,
+        selectedModel,
+        assignment: freeAskReasoningExperiment,
+        estimatedInputTokens,
+        isNewChat,
+      });
 
       let paidDailyFreeAllowanceReservation:
         | PaidDailyFreeAllowanceReservation
@@ -517,9 +595,6 @@ export const createChatHandler = () => {
         },
         extraUsageConfig,
       );
-
-      // PostHog client for analytics (initialized once, used at end of request)
-      const posthog = PostHogClient();
 
       const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
@@ -859,6 +934,11 @@ export const createChatHandler = () => {
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
+            const activeFreeAskReasoningExperiment =
+              selectedModel === "ask-model-free" &&
+              freeAskReasoningResultContext?.selectedModel === selectedModel
+                ? freeAskReasoningExperiment
+                : null;
 
             const usageTracker = new UsageTracker();
             let hasRecordedUsage = false;
@@ -1023,6 +1103,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  freeAskReasoningExperiment: activeFreeAskReasoningExperiment,
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(
@@ -1054,6 +1135,12 @@ export const createChatHandler = () => {
               streamStartTime,
               contextUsageOn,
               isReasoningModel,
+              ...(activeFreeAskReasoningExperiment?.reasoning.enabled && {
+                providerReasoningOverride: {
+                  modelName: selectedModel,
+                  reasoning: activeFreeAskReasoningExperiment.reasoning,
+                },
+              }),
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1308,7 +1395,6 @@ export const createChatHandler = () => {
                                   outcome,
                                   chatLogger,
                                 });
-                                shutdownPostHog(posthog);
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
                                   wasAborted: retryAborted,
@@ -1444,6 +1530,13 @@ export const createChatHandler = () => {
 
                                 // Deduct accumulated usage (includes both original + retry streams)
                                 await deductAccumulatedUsage();
+                                captureFreeAskReasoningTerminalResult({
+                                  outcome,
+                                  generationTimeMs:
+                                    Date.now() - streamStartTime,
+                                  finishReason: state.streamFinishReason,
+                                });
+                                shutdownPostHog(posthog);
                               } finally {
                                 await releaseFreeRunLockOnce();
                               }
@@ -1529,7 +1622,6 @@ export const createChatHandler = () => {
                       outcome,
                       chatLogger,
                     });
-                    shutdownPostHog(posthog);
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,
                       wasAborted: isAborted,
@@ -1673,6 +1765,12 @@ export const createChatHandler = () => {
                           }),
                         );
                         await deductAccumulatedUsage();
+                        captureFreeAskReasoningTerminalResult({
+                          outcome,
+                          generationTimeMs: Date.now() - streamStartTime,
+                          finishReason: state.streamFinishReason,
+                        });
+                        shutdownPostHog(posthog);
                         return;
                       }
 
@@ -1807,6 +1905,12 @@ export const createChatHandler = () => {
                     }
 
                     await deductAccumulatedUsage();
+                    captureFreeAskReasoningTerminalResult({
+                      outcome,
+                      generationTimeMs: Date.now() - streamStartTime,
+                      finishReason: state.streamFinishReason,
+                    });
+                    shutdownPostHog(posthog);
                   } finally {
                     if (!retryScheduled) {
                       await releaseFreeRunLockOnce();
@@ -1857,6 +1961,8 @@ export const createChatHandler = () => {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
       await releaseFreeRunLockOnce();
+      captureFreeAskReasoningTerminalResult({ outcome: "error" });
+      shutdownPostHog(posthog);
 
       // Best-effort PTY cleanup — the stream may never have reached onFinish.
       if (outerChatId) {

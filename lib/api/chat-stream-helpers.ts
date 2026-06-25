@@ -541,6 +541,13 @@ const isAskKimiReasoningModel = (modelName?: string): boolean =>
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
+  reasoningOverride?: ProviderReasoningOverride;
+};
+
+export type ProviderReasoningOverride = {
+  enabled: boolean;
+  effort?: string;
+  exclude?: boolean;
 };
 
 const getFallbackKeys = (
@@ -617,22 +624,24 @@ export function buildProviderOptions(
   const isGemini35Flash =
     modelId?.startsWith("google/gemini-3.5-flash") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning = isReasoningModel
-    ? {
-        enabled: true,
-        ...(isDeepSeekV4 && { effort: "xhigh" }),
-      }
-    : mode === "ask" && isAskKimiReasoningModel(modelName)
+  const reasoning =
+    options.reasoningOverride ??
+    (isReasoningModel
       ? {
           enabled: true,
+          ...(isDeepSeekV4 && { effort: "xhigh" }),
         }
-      : mode === "ask" && isAskMediumReasoningModel(modelName)
+      : mode === "ask" && isAskKimiReasoningModel(modelName)
         ? {
             enabled: true,
-            effort: isGemini35Flash ? "minimal" : "medium",
-            ...(isGemini35Flash && { exclude: true }),
           }
-        : { enabled: false };
+        : mode === "ask" && isAskMediumReasoningModel(modelName)
+          ? {
+              enabled: true,
+              effort: isGemini35Flash ? "minimal" : "medium",
+              ...(isGemini35Flash && { exclude: true }),
+            }
+          : { enabled: false });
 
   return {
     openrouter: {
