@@ -154,6 +154,11 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { shouldRetryProviderStreamWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
+import {
+  captureFreeAskReasoningExperimentExposure,
+  captureFreeAskReasoningExperimentResult,
+  resolveFreeAskReasoningExperiment,
+} from "@/lib/experiments/free-ask-reasoning";
 
 function getStreamContext() {
   try {
@@ -178,6 +183,17 @@ export const createChatHandler = () => {
     // Wide event logger for structured logging
     let chatLogger: ChatLogger | undefined;
     let outerChatId: string | undefined;
+    let posthog: ReturnType<typeof PostHogClient> = null;
+    let freeAskReasoningExperiment: Awaited<
+      ReturnType<typeof resolveFreeAskReasoningExperiment>
+    > = null;
+    let freeAskReasoningResultContext: {
+      userId: string;
+      chatId: string;
+      subscription: string;
+      mode: ChatMode;
+      selectedModel: string;
+    } | null = null;
     let releaseFreeRunLock: (() => Promise<void>) | undefined;
     const releaseFreeRunLockOnce = async () => {
       const release = releaseFreeRunLock;
@@ -380,7 +396,27 @@ export const createChatHandler = () => {
         truncatedMessages,
       });
 
+      // PostHog client for analytics and server-side experiment evaluation.
+      posthog = PostHogClient();
+
       const fileCounts = countFileAttachments(truncatedMessages);
+      freeAskReasoningExperiment = await resolveFreeAskReasoningExperiment({
+        posthog,
+        userId,
+        subscription,
+        mode,
+        selectedModel,
+        fileCount: fileCounts.totalFiles,
+      });
+      freeAskReasoningResultContext = freeAskReasoningExperiment
+        ? {
+            userId,
+            chatId,
+            subscription,
+            mode,
+            selectedModel,
+          }
+        : null;
       const chatLogContext = {
         messageCount: truncatedMessages.length,
         estimatedInputTokens,
@@ -390,6 +426,17 @@ export const createChatHandler = () => {
         notesEnabled,
       };
       chatLogger.setChat(chatLogContext, selectedModel);
+      captureFreeAskReasoningExperimentExposure({
+        posthog,
+        userId,
+        chatId,
+        subscription,
+        mode,
+        selectedModel,
+        assignment: freeAskReasoningExperiment,
+        estimatedInputTokens,
+        isNewChat,
+      });
 
       let paidDailyFreeAllowanceReservation:
         | PaidDailyFreeAllowanceReservation
@@ -517,9 +564,6 @@ export const createChatHandler = () => {
         },
         extraUsageConfig,
       );
-
-      // PostHog client for analytics (initialized once, used at end of request)
-      const posthog = PostHogClient();
 
       const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
@@ -1023,6 +1067,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  freeAskReasoningExperiment,
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(
@@ -1054,6 +1099,12 @@ export const createChatHandler = () => {
               streamStartTime,
               contextUsageOn,
               isReasoningModel,
+              ...(freeAskReasoningExperiment?.reasoning.enabled && {
+                providerReasoningOverride: {
+                  modelName: selectedModel,
+                  reasoning: freeAskReasoningExperiment.reasoning,
+                },
+              }),
               maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
               writer,
               abortController: userStopSignal,
@@ -1308,6 +1359,17 @@ export const createChatHandler = () => {
                                   outcome,
                                   chatLogger,
                                 });
+                                if (freeAskReasoningResultContext) {
+                                  captureFreeAskReasoningExperimentResult({
+                                    posthog,
+                                    ...freeAskReasoningResultContext,
+                                    assignment: freeAskReasoningExperiment,
+                                    outcome,
+                                    generationTimeMs:
+                                      Date.now() - fallbackStartTime,
+                                    finishReason: state.streamFinishReason,
+                                  });
+                                }
                                 shutdownPostHog(posthog);
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1529,6 +1591,16 @@ export const createChatHandler = () => {
                       outcome,
                       chatLogger,
                     });
+                    if (freeAskReasoningResultContext) {
+                      captureFreeAskReasoningExperimentResult({
+                        posthog,
+                        ...freeAskReasoningResultContext,
+                        assignment: freeAskReasoningExperiment,
+                        outcome,
+                        generationTimeMs: Date.now() - streamStartTime,
+                        finishReason: state.streamFinishReason,
+                      });
+                    }
                     shutdownPostHog(posthog);
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,
@@ -1857,6 +1929,15 @@ export const createChatHandler = () => {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
       await releaseFreeRunLockOnce();
+      if (freeAskReasoningResultContext) {
+        captureFreeAskReasoningExperimentResult({
+          posthog,
+          ...freeAskReasoningResultContext,
+          assignment: freeAskReasoningExperiment,
+          outcome: "error",
+        });
+      }
+      shutdownPostHog(posthog);
 
       // Best-effort PTY cleanup — the stream may never have reached onFinish.
       if (outerChatId) {

@@ -306,6 +306,14 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
+  providerReasoningOverride?: {
+    modelName: string;
+    reasoning: {
+      enabled: boolean;
+      effort?: string;
+      exclude?: boolean;
+    };
+  };
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
 
@@ -377,6 +385,9 @@ export async function createAgentStream(
       ctx.mode,
       {
         hasMultimodalToolResults: streamHasImageViewResults,
+        ...(ctx.providerReasoningOverride?.modelName === modelName && {
+          reasoningOverride: ctx.providerReasoningOverride.reasoning,
+        }),
       },
     );
   const prepareProviderMessages = (

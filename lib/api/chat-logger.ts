@@ -43,6 +43,10 @@ import {
   isPaidMonthlyCapHitReason,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
+import {
+  getFreeAskReasoningExperimentProperties,
+  type FreeAskReasoningExperimentAssignment,
+} from "@/lib/experiments/free-ask-reasoning";
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -931,6 +935,7 @@ export function captureUsageCost({
   mode,
   usage,
   paidDailyFreeAllowance,
+  freeAskReasoningExperiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -947,6 +952,7 @@ export function captureUsageCost({
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
+  freeAskReasoningExperiment?: FreeAskReasoningExperimentAssignment | null;
 }) {
   if (!posthog) return;
   posthog.capture({
@@ -975,6 +981,9 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(freeAskReasoningExperiment && {
+        ...getFreeAskReasoningExperimentProperties(freeAskReasoningExperiment),
+      }),
       ...(paidDailyFreeAllowance?.active && {
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,

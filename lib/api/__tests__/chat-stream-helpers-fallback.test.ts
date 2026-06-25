@@ -197,6 +197,24 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
+  it("allows a scoped reasoning override for the free Ask experiment", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "ask-model-free",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "medium" },
+      },
+    );
+
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "medium",
+    });
+    expect(opts.openrouter.models).toEqual([GEMINI_PREVIEW_SLUG]);
+  });
+
   it.each(["ask-model", "model-gemini-3-flash"])(
     "enables hidden minimal reasoning for Gemini 3.5 ask mode model %s",
     (modelName) => {
