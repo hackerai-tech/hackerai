@@ -165,6 +165,23 @@ function getStreamContext() {
 
 export { getStreamContext };
 
+const getValueKind = (value: unknown): string =>
+  value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+
+const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
+  if (Array.isArray(messages)) return messages;
+
+  throw new ChatSDKError(
+    "bad_request:api",
+    "Invalid chat request: messages must be an array.",
+    {
+      invalid_request_field: "messages",
+      invalid_request_field_type: getValueKind(messages),
+      new_messages_count: 0,
+    },
+  );
+};
+
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
@@ -200,7 +217,7 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
       }: {
-        messages: UIMessage[];
+        messages: unknown;
         mode: ChatMode;
         chatId: string;
         todos?: Todo[];
@@ -226,6 +243,7 @@ export const createChatHandler = () => {
         isTemporary: !!temporary,
         isRegenerate: !!regenerate,
       });
+      const requestMessages = requireChatMessagesArray(messages);
 
       const { userId, subscription, organizationId } =
         await getUserIDAndPro(req);
@@ -275,7 +293,7 @@ export const createChatHandler = () => {
         chatId,
         userId,
         subscription,
-        newMessages: messages,
+        newMessages: requestMessages,
         regenerate,
         isTemporary: temporary,
         mode,

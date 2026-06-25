@@ -104,6 +104,44 @@ describe("chat deletion cancellation contracts", () => {
     expect(deleteChatRowIdx).toBeGreaterThan(prepareCallIdx);
   });
 
+  test("Convex single-chat deletion uses bounded scheduled batches", () => {
+    const scheduleHelperIdx = convexChatsSrc.indexOf(
+      "async function scheduleDeleteChatDocumentBatch",
+    );
+    const internalBatchIdx = convexChatsSrc.indexOf(
+      "internal.chats.deleteChatForBackendBatch",
+      scheduleHelperIdx,
+    );
+    const helperIdx = convexChatsSrc.indexOf(
+      "async function deleteChatDocument",
+    );
+    const collectIdx = convexChatsSrc.indexOf(".collect()", helperIdx);
+    const messageTakeIdx = convexChatsSrc.indexOf(
+      ".take(DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE + 1)",
+      helperIdx,
+    );
+    const scheduleCallIdx = convexChatsSrc.indexOf(
+      "await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id)",
+      messageTakeIdx,
+    );
+    const summaryTakeIdx = convexChatsSrc.indexOf(
+      ".take(DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE + 1)",
+      scheduleCallIdx,
+    );
+    const internalMutationIdx = convexChatsSrc.indexOf(
+      "export const deleteChatForBackendBatch = internalMutation",
+    );
+
+    expect(scheduleHelperIdx).toBeGreaterThan(-1);
+    expect(internalBatchIdx).toBeGreaterThan(scheduleHelperIdx);
+    expect(helperIdx).toBeGreaterThan(-1);
+    expect(messageTakeIdx).toBeGreaterThan(helperIdx);
+    expect(scheduleCallIdx).toBeGreaterThan(messageTakeIdx);
+    expect(summaryTakeIdx).toBeGreaterThan(scheduleCallIdx);
+    expect(internalMutationIdx).toBeGreaterThan(-1);
+    expect(collectIdx === -1 || collectIdx > internalMutationIdx).toBe(true);
+  });
+
   test("Convex delete-all batches prepare each chat for cancellation before deleting messages", () => {
     const batchHelperIdx = convexChatsSrc.indexOf(
       "async function deleteNextUserChatBatch",
