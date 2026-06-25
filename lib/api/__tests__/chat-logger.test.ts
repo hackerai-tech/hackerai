@@ -727,6 +727,68 @@ describe("createChatLogger provider stream termination", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("normalizes synthetic SSE JSON wrapper errors using provider status", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_sse_json_wrapper",
+        endpoint: "/api/chat",
+      });
+      const err = {
+        name: "Error",
+        message: "JSON error injected into SSE stream",
+        code: 429,
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "ask",
+        model: "ask-model",
+        requestedModelSlug: "google/gemini-3.5-flash",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const structuredErrorLog = errorSpy.mock.calls
+        .map((call) => call[0])
+        .find(
+          (value) =>
+            typeof value === "string" &&
+            value.includes('"provider_diagnostic_message"'),
+        ) as string | undefined;
+      const posthogErrorCall = errorSpy.mock.calls.find(
+        (call) =>
+          call[0] === "Provider streaming error" &&
+          typeof call[1] === "object" &&
+          call[1] !== null,
+      );
+      const fields = posthogErrorCall?.[1] as
+        | { error?: unknown; providerDiagnosticMessage?: unknown }
+        | undefined;
+      const capturedError = fields?.error as Error | undefined;
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+
+      expect(structuredErrorLog).toContain(
+        '"provider_diagnostic_message":"Provider rate limited (429)"',
+      );
+      expect(structuredErrorLog).toContain('"provider_status_code":429');
+      expect(capturedError).toBeInstanceOf(Error);
+      expect(capturedError?.message).toBe("Provider rate limited (429)");
+      expect(fields?.providerDiagnosticMessage).toBe(
+        "Provider rate limited (429)",
+      );
+      expect(wideEvent.error.message).toBe("Provider rate limited (429)");
+      expect(wideEvent.provider_error).toMatchObject({
+        category: "rate_limited",
+        status_code: 429,
+        message: "Provider rate limited (429)",
+      });
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger ChatSDKError metadata", () => {
