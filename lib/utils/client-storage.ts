@@ -30,6 +30,7 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
 
@@ -176,6 +177,7 @@ const normalizeDraftAttachments = (
   attachments: unknown,
 ): ConversationDraftAttachment[] => {
   if (!Array.isArray(attachments)) return [];
+  const cutoff = Date.now() - DRAFT_ATTACHMENT_RESTORE_TTL_MS;
 
   return attachments.filter(
     (attachment): attachment is ConversationDraftAttachment => {
@@ -189,7 +191,8 @@ const normalizeDraftAttachments = (
         value.name.length > 0 &&
         typeof value.mediaType === "string" &&
         typeof value.size === "number" &&
-        typeof value.timestamp === "number"
+        typeof value.timestamp === "number" &&
+        value.timestamp > cutoff
       );
     },
   );

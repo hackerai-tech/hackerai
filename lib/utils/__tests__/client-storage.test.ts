@@ -161,6 +161,7 @@ describe("client-storage draft attachments", () => {
   });
 
   it("persists generated pasted-text attachments without draft text", () => {
+    const timestamp = Date.now();
     upsertDraftAttachments("chat-1", [
       {
         kind: "pasted-text",
@@ -169,7 +170,7 @@ describe("client-storage draft attachments", () => {
         mediaType: "text/plain",
         size: 512,
         tokens: 120,
-        timestamp: 123456,
+        timestamp,
       },
     ]);
 
@@ -182,7 +183,7 @@ describe("client-storage draft attachments", () => {
         mediaType: "text/plain",
         size: 512,
         tokens: 120,
-        timestamp: 123456,
+        timestamp,
       },
     ]);
   });
@@ -195,7 +196,7 @@ describe("client-storage draft attachments", () => {
         name: "pasted-text.txt",
         mediaType: "text/plain",
         size: 512,
-        timestamp: 123456,
+        timestamp: Date.now(),
       },
     ]);
 
@@ -212,12 +213,28 @@ describe("client-storage draft attachments", () => {
         name: "pasted-text.txt",
         mediaType: "text/plain",
         size: 512,
-        timestamp: 123456,
+        timestamp: Date.now(),
       },
     ]);
 
     removeDraftAttachments("chat-1");
 
+    expect(hasDraftAttachmentsById("chat-1")).toBe(false);
+  });
+
+  it("does not restore pasted-text attachments older than the orphan file purge window", () => {
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "pasted-text",
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        timestamp: Date.now() - 25 * 60 * 60 * 1000,
+      },
+    ]);
+
+    expect(getDraftAttachmentsById("chat-1")).toEqual([]);
     expect(hasDraftAttachmentsById("chat-1")).toBe(false);
   });
 });
