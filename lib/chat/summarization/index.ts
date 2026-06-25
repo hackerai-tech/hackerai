@@ -9,6 +9,7 @@ import {
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
+import { countMessagesTokens } from "@/lib/token-utils";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
@@ -42,6 +43,11 @@ import {
 export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
 export type EnsureSandbox = () => Promise<AnySandbox>;
+
+type CompactionLogReason =
+  | "provider_pressure"
+  | "provider_input_tokens"
+  | "estimated_token_threshold";
 
 export interface CheckAndSummarizeOptions {
   uiMessages: UIMessage[];
@@ -87,6 +93,104 @@ Transcript location:
    - Tool results (model format): separate role "tool" messages with "tool-result" content
    - Text: parts with type "text"
    - Reasoning: parts with type "reasoning"`;
+
+const summarizeFileTokensForLog = (fileTokens: Record<Id<"files">, number>) => {
+  const values = Object.values(fileTokens).filter(
+    (tokens) => Number.isFinite(tokens) && tokens > 0,
+  );
+
+  return {
+    file_count: values.length,
+    total_file_tokens: values.reduce((total, tokens) => total + tokens, 0),
+    largest_file_tokens: values.length > 0 ? Math.max(...values) : 0,
+  };
+};
+
+const getCompactionLogReason = ({
+  providerPromptPressure,
+  providerInputTokens,
+  summarizationThreshold,
+}: {
+  providerPromptPressure?: ProviderPromptPressure | null;
+  providerInputTokens: number;
+  summarizationThreshold: number;
+}): CompactionLogReason => {
+  if (providerPromptPressure) return "provider_pressure";
+  if (providerInputTokens > summarizationThreshold) {
+    return "provider_input_tokens";
+  }
+  return "estimated_token_threshold";
+};
+
+const logContextCompactionStarted = ({
+  chatId,
+  mode,
+  subscription,
+  reason,
+  totalEstimatedTokens,
+  systemPromptTokens,
+  providerInputTokens,
+  maxTokens,
+  summarizationThreshold,
+  providerPromptPressure,
+  fileTokens,
+  cutoffMessageId,
+  retainedTail,
+}: {
+  chatId: string | null;
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  reason: CompactionLogReason;
+  totalEstimatedTokens: number;
+  systemPromptTokens: number;
+  providerInputTokens: number;
+  maxTokens: number;
+  summarizationThreshold: number;
+  providerPromptPressure?: ProviderPromptPressure | null;
+  fileTokens: Record<Id<"files">, number>;
+  cutoffMessageId: string;
+  retainedTail?: {
+    budget_tokens: number;
+    retained_tokens: number;
+    retained_message_count: number;
+    retained_part_count: number;
+    projected_part_count: number;
+  };
+}) => {
+  const fileTokenSummary = summarizeFileTokensForLog(fileTokens);
+
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "chat_context_compaction_started",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      chat_id: chatId ?? undefined,
+      mode,
+      subscription,
+      reason,
+      total_estimated_tokens: totalEstimatedTokens,
+      system_prompt_tokens: systemPromptTokens,
+      provider_input_tokens: providerInputTokens,
+      max_tokens: maxTokens,
+      threshold_tokens: summarizationThreshold,
+      ...fileTokenSummary,
+      provider_pressure_reason: providerPromptPressure?.reason,
+      provider_pressure_reasons: providerPromptPressure?.reasons,
+      provider_pressure_serialized_message_bytes:
+        providerPromptPressure?.serializedMessageBytes,
+      provider_pressure_tool_result_count:
+        providerPromptPressure?.toolResultCount,
+      provider_pressure_message_count: providerPromptPressure?.messageCount,
+      cutoff_message_id: cutoffMessageId,
+      retained_tail_budget_tokens: retainedTail?.budget_tokens,
+      retained_tail_tokens: retainedTail?.retained_tokens,
+      retained_tail_message_count: retainedTail?.retained_message_count,
+      retained_tail_part_count: retainedTail?.retained_part_count,
+      retained_tail_projected_part_count: retainedTail?.projected_part_count,
+    }),
+  );
+};
 
 /**
  * Writes a JSON transcript of the summarized messages to the sandbox.
@@ -204,6 +308,8 @@ export const checkAndSummarizeIfNeeded = async ({
     effectiveMaxTokensOverride,
   );
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
+  const totalEstimatedTokens =
+    countMessagesTokens(uiMessages, fileTokens) + systemPromptTokens;
   if (
     !providerPromptPressure &&
     !isAboveTokenThreshold(
@@ -252,6 +358,25 @@ export const checkAndSummarizeIfNeeded = async ({
     : tailSelection.headMessages;
 
   const cutoffMessageId = tailSelection.cutoffMessageId;
+  logContextCompactionStarted({
+    chatId,
+    mode,
+    subscription,
+    reason: getCompactionLogReason({
+      providerPromptPressure,
+      providerInputTokens,
+      summarizationThreshold,
+    }),
+    totalEstimatedTokens,
+    systemPromptTokens,
+    providerInputTokens,
+    maxTokens,
+    summarizationThreshold,
+    providerPromptPressure,
+    fileTokens,
+    cutoffMessageId,
+    retainedTail: tailSelection.retainedTail,
+  });
 
   writeSummarizationStarted(writer);
 
