@@ -12,8 +12,9 @@ Create a PostHog feature flag or experiment with:
   - `control`: no reasoning
   - `reasoning_medium`: DeepSeek V4 Flash with `reasoning.enabled=true` and
     `effort=medium`
-- Targeting: free users only. The server also enforces eligibility, so paid
-  users, Agent mode, non-Ask requests, and requests with files are excluded.
+- Targeting: free users on the `ask-model-free` path only. The server also
+  enforces eligibility, so paid users, Agent mode, non-Ask requests, other Ask
+  model selections, and requests with files are excluded.
 - Rollout: start with `reasoning_medium` at 10-20% of eligible traffic and keep
   the rest in `control`.
 

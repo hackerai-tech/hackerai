@@ -541,11 +541,13 @@ const isAskKimiReasoningModel = (modelName?: string): boolean =>
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
-  reasoningOverride?: {
-    enabled: boolean;
-    effort?: string;
-    exclude?: boolean;
-  };
+  reasoningOverride?: ProviderReasoningOverride;
+};
+
+export type ProviderReasoningOverride = {
+  enabled: boolean;
+  effort?: string;
+  exclude?: boolean;
 };
 
 const getFallbackKeys = (

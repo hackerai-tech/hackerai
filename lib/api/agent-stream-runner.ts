@@ -76,7 +76,10 @@ import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type { BudgetMonitor } from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
-import type { SummarizationTracker } from "@/lib/api/chat-stream-helpers";
+import type {
+  ProviderReasoningOverride,
+  SummarizationTracker,
+} from "@/lib/api/chat-stream-helpers";
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
@@ -308,11 +311,7 @@ export type AgentStreamContext = {
   isReasoningModel: boolean;
   providerReasoningOverride?: {
     modelName: string;
-    reasoning: {
-      enabled: boolean;
-      effort?: string;
-      exclude?: boolean;
-    };
+    reasoning: ProviderReasoningOverride;
   };
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
