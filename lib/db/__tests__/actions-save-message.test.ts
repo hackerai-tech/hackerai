@@ -30,8 +30,10 @@ const loadSaveMessageWithMocks = async () => {
     compactMessageForStorage: mockCompactMessageForStorage,
   }));
 
-  const { getMessagesByChatId, saveMessage } = await import("../actions");
+  const { deleteChatForBackend, getMessagesByChatId, saveMessage } =
+    await import("../actions");
   return {
+    deleteChatForBackend,
     getMessagesByChatId,
     mockCompactMessageForStorage,
     mockMutation,
@@ -224,9 +226,138 @@ describe("saveMessage", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("classifies nested message ownership denials without logging Convex error data", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "MESSAGE_SAVE_FAILED",
+      message: "Failed to save message",
+      failureStage: "verify_existing_message_ownership",
+      causeData: {
+        code: "MESSAGE_UNAUTHORIZED",
+        message: "You don't have permission to update this message",
+      },
+      causeMessage:
+        '{"code":"MESSAGE_UNAUTHORIZED","message":"You don\'t have permission to update this message"}',
+      chatId: "nested-chat-id",
+      messageId: "nested-message-id",
+      operation: "messages.saveMessage",
+    };
+    mockMutation.mockRejectedValueOnce(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await saveMessage({
+        chatId: "test1",
+        userId: "user-1",
+        message: {
+          id: "1",
+          role: "user",
+          parts: [{ type: "text", text: "hi" }],
+        },
+      }).catch((error) => error);
+
+      expect(thrown).toMatchObject({
+        type: "forbidden",
+        surface: "chat",
+        statusCode: 403,
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_error_name: "ConvexError",
+          db_error_message: "[Request ID: abc] Server Error",
+          db_error_code: "MESSAGE_SAVE_FAILED",
+          db_cause_error_code: "MESSAGE_UNAUTHORIZED",
+          db_failure_stage: "verify_existing_message_ownership",
+        }),
+      });
+      expect(thrown.metadata).not.toHaveProperty("db_error_data");
+
+      const warnPayloads = warnSpy.mock.calls.map(([line]) =>
+        JSON.parse(String(line)),
+      );
+      const accessDeniedPayload = warnPayloads.find(
+        (payload) => payload.event === "chat_access_denied",
+      );
+      expect(accessDeniedPayload).toMatchObject({
+        level: "warn",
+        db_operation: "messages.saveMessage",
+        db_error_code: "MESSAGE_SAVE_FAILED",
+        db_cause_error_code: "MESSAGE_UNAUTHORIZED",
+        db_failure_stage: "verify_existing_message_ownership",
+        chat_id: "test1",
+        user_id: "user-1",
+        message_id: "1",
+      });
+      expect(accessDeniedPayload).not.toHaveProperty("db_error_data");
+      expect(JSON.stringify(accessDeniedPayload)).not.toContain("causeData");
+      expect(JSON.stringify(accessDeniedPayload)).not.toContain(
+        "You don't have permission to update this message",
+      );
+      expect(JSON.stringify(accessDeniedPayload)).not.toContain(
+        "nested-chat-id",
+      );
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe("getMessagesByChatId", () => {
+  it("logs empty prompts as warnings instead of errors", async () => {
+    const { getMessagesByChatId } = await loadSaveMessageWithMocks();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        getMessagesByChatId({
+          chatId: "chat-empty",
+          userId: "user-1",
+          subscription: "free",
+          newMessages: [],
+          regenerate: true,
+          isTemporary: true,
+          mode: "ask",
+        }),
+      ).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "api",
+        statusCode: 400,
+        metadata: expect.objectContaining({
+          empty_prompt: true,
+          all_messages_count: 0,
+          new_messages_count: 0,
+        }),
+      });
+
+      const warnPayloads = warnSpy.mock.calls.map(([line]) =>
+        JSON.parse(String(line)),
+      );
+      expect(warnPayloads).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          event: "chat_prompt_empty",
+          chat_id: "chat-empty",
+          user_id: "user-1",
+          all_messages_count: 0,
+          new_messages_count: 0,
+        }),
+      );
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("treats chat history authorization denials as warnings and forbidden chat errors", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {
@@ -315,5 +446,51 @@ describe("getMessagesByChatId", () => {
       "context_summary",
     );
     expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("deleteChatForBackend", () => {
+  it("classifies Convex access denials as warnings and forbidden chat errors", async () => {
+    const { deleteChatForBackend, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "ACCESS_DENIED",
+      message: "Unauthorized: Chat does not belong to user",
+    };
+    mockMutation.mockRejectedValueOnce(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        deleteChatForBackend({
+          chatId: "chat-1",
+          userId: "user-1",
+        }),
+      ).rejects.toMatchObject({
+        type: "forbidden",
+        surface: "chat",
+        statusCode: 403,
+        metadata: expect.objectContaining({
+          db_operation: "chats.deleteChatForBackend",
+          db_error_code: "ACCESS_DENIED",
+        }),
+      });
+
+      const warnEvents = warnSpy.mock.calls.map(([line]) => {
+        const payload = JSON.parse(String(line));
+        return payload.event;
+      });
+      expect(warnEvents).toContain("chat_access_denied");
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

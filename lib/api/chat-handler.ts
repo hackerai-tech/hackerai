@@ -136,6 +136,7 @@ import {
   getProviderStatusCode,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
+import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -244,7 +245,7 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
       }: {
-        messages: UIMessage[];
+        messages: unknown;
         mode: ChatMode;
         chatId: string;
         todos?: Todo[];
@@ -270,6 +271,7 @@ export const createChatHandler = () => {
         isTemporary: !!temporary,
         isRegenerate: !!regenerate,
       });
+      const requestMessages = requireChatMessagesArray(messages);
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
@@ -320,7 +322,7 @@ export const createChatHandler = () => {
         chatId,
         userId,
         subscription,
-        newMessages: messages,
+        newMessages: requestMessages,
         regenerate,
         isTemporary: temporary,
         mode,

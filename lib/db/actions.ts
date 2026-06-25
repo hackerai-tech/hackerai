@@ -223,8 +223,10 @@ const hasDatabaseErrorCode = (data: unknown, code: string): boolean =>
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
 
+const ACCESS_DENIED_ERROR_CODE = "ACCESS_DENIED";
 const CHAT_CANCELED_ERROR_CODE = "CHAT_CANCELED";
 const CHAT_UNAUTHORIZED_ERROR_CODE = "CHAT_UNAUTHORIZED";
+const MESSAGE_UNAUTHORIZED_ERROR_CODE = "MESSAGE_UNAUTHORIZED";
 const MESSAGE_TOO_LARGE_ERROR_CODE = "MESSAGE_TOO_LARGE";
 
 const isChatNotFoundMessageSaveError = (
@@ -242,7 +244,9 @@ const isChatCanceledMessageSaveError = (
   hasDatabaseErrorCode(dbErrorData, CHAT_CANCELED_ERROR_CODE);
 
 const isChatUnauthorizedError = (dbErrorData: unknown): boolean =>
-  hasDatabaseErrorCode(dbErrorData, CHAT_UNAUTHORIZED_ERROR_CODE);
+  hasDatabaseErrorCode(dbErrorData, ACCESS_DENIED_ERROR_CODE) ||
+  hasDatabaseErrorCode(dbErrorData, CHAT_UNAUTHORIZED_ERROR_CODE) ||
+  hasDatabaseErrorCode(dbErrorData, MESSAGE_UNAUTHORIZED_ERROR_CODE);
 
 const isMessageTooLargeError = (
   operation: string,
@@ -318,7 +322,6 @@ const databaseError = (
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
-    db_error_data: dbErrorData,
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
@@ -1027,7 +1030,7 @@ export async function getMessagesByChatId({
         allMessages.length === 0
           ? "chat_prompt_empty"
           : "chat_truncation_dropped_all_messages",
-        "error",
+        allMessages.length === 0 ? "warn" : "error",
         emptyPromptMetadata,
       );
     } catch {}
