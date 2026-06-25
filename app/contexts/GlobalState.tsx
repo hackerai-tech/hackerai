@@ -50,8 +50,8 @@ import {
 } from "@/lib/utils/client-storage";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
+  getAgentFirstDefaultDecision,
   normalizeAgentFirstSandboxType,
-  shouldDefaultFreeUserToAgent,
 } from "@/lib/activation/agent-first-default";
 
 interface GlobalStateType {
@@ -453,44 +453,59 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const savedModePresent = initialSavedChatModeRef.current !== null;
     const userSelectedModeThisSession =
       hasUserSelectedModeThisSessionRef.current;
-    const sandboxType = normalizeAgentFirstSandboxType(
+    const agentDefaultDecision = getAgentFirstDefaultDecision({
+      chatMode,
       defaultLocalSandboxPreference,
-    );
+      hasLocalSandbox,
+      hasSavedChatMode: savedModePresent,
+      hasUserSelectedModeThisSession: userSelectedModeThisSession,
+      isCheckingProPlan,
+      isMobile,
+      subscription: selectedSubscription,
+      subscriptionResolved,
+      temporaryChatsEnabled,
+      userPresent: Boolean(user),
+    });
+
+    if (!agentDefaultDecision) {
+      return;
+    }
+
+    const localSandboxPreference = agentDefaultDecision.useDefaultLocalSandbox
+      ? defaultLocalSandboxPreference
+      : null;
 
     if (
-      !shouldDefaultFreeUserToAgent({
-        chatMode,
-        defaultLocalSandboxPreference,
-        hasLocalSandbox,
-        hasSavedChatMode: savedModePresent,
-        hasUserSelectedModeThisSession: userSelectedModeThisSession,
-        isCheckingProPlan,
-        isMobile,
-        subscription: selectedSubscription,
-        subscriptionResolved,
-        temporaryChatsEnabled,
-        userPresent: Boolean(user),
-      })
+      agentDefaultDecision.useDefaultLocalSandbox &&
+      !localSandboxPreference
     ) {
       return;
     }
 
+    const appliedSandboxPreference =
+      localSandboxPreference ?? sandboxPreference;
+    const sandboxType = normalizeAgentFirstSandboxType(
+      appliedSandboxPreference ?? null,
+    );
+
     agentFirstDefaultAppliedRef.current = true;
     setChatModeState("agent");
-    setSandboxPreference(defaultLocalSandboxPreference!);
+    if (localSandboxPreference) {
+      setSandboxPreference(localSandboxPreference);
+    }
     if (selectedModel !== "auto") {
       setSelectedModelRaw("auto");
     }
 
     const now = new Date().toISOString();
     const agentFirstProperties = {
-      experiment_key: "free_agent_first_v1",
+      experiment_key: agentDefaultDecision.experimentKey,
       first_experience_event_version: 2,
       variant: "agent_first",
       subscription: selectedSubscription,
-      eligible_subscription_tier: "free",
+      eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
       selected_subscription_tier: selectedSubscription,
-      selection_reason: "eligible_free_user_local_sandbox",
+      selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
       sandbox_type: sandboxType,
@@ -517,6 +532,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     hasLocalSandbox,
     isCheckingProPlan,
     isMobile,
+    sandboxPreference,
     selectedModel,
     setSandboxPreference,
     subscription,
