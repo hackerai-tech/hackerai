@@ -25,7 +25,6 @@ import type {
 import {
   isAnthropicModel,
   isDeepSeekModel,
-  isGeminiModel,
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
@@ -586,9 +585,6 @@ export function getRetryFallbackModel(
     modelName === "model-gemini-3-flash"
   ) {
     return "fallback-ask-model";
-  }
-  if (isGeminiModel(modelName)) {
-    return "fallback-grok-4.3";
   }
   return "fallback-grok-4.3";
 }
