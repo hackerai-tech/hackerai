@@ -8,7 +8,13 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
-import { removeDraft } from "@/lib/utils/client-storage";
+import {
+  getDraftAttachmentsById,
+  removeDraft,
+  removeDraftAttachments,
+  upsertDraftAttachments,
+  type ConversationDraftAttachment,
+} from "@/lib/utils/client-storage";
 import {
   RateLimitWarning,
   type RateLimitWarningData,
@@ -20,9 +26,10 @@ import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { useIsMobile } from "@/hooks/use-mobile";
+import type { UploadedFileState } from "@/types/file";
 
 interface ChatInputProps {
-  onSubmit: (e: React.FormEvent) => void;
+  onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
@@ -39,6 +46,52 @@ interface ChatInputProps {
   placeholder?: string;
   autoFocus?: boolean;
 }
+
+const draftAttachmentToUploadedFile = (
+  attachment: ConversationDraftAttachment,
+): UploadedFileState => ({
+  file: {
+    name: attachment.name,
+    type: attachment.mediaType,
+    size: attachment.size,
+    lastModified: attachment.timestamp,
+  },
+  uploading: false,
+  uploaded: true,
+  storage: "s3",
+  generatedSource: "pasted-text",
+  fileId: attachment.fileId,
+  tokens: attachment.tokens,
+});
+
+const uploadedFileToDraftAttachment = (
+  uploadedFile: UploadedFileState,
+): ConversationDraftAttachment | null => {
+  if (
+    uploadedFile.generatedSource !== "pasted-text" ||
+    !uploadedFile.uploaded ||
+    uploadedFile.uploading ||
+    uploadedFile.error ||
+    !uploadedFile.fileId ||
+    uploadedFile.storage === "local-desktop"
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "pasted-text",
+    fileId: uploadedFile.fileId,
+    name: uploadedFile.file.name,
+    mediaType: uploadedFile.file.type || "text/plain",
+    size: uploadedFile.file.size,
+    tokens: uploadedFile.tokens,
+    timestamp:
+      "lastModified" in uploadedFile.file &&
+      typeof uploadedFile.file.lastModified === "number"
+        ? uploadedFile.file.lastModified
+        : Date.now(),
+  };
+};
 
 export const ChatInput = ({
   onSubmit,
@@ -64,6 +117,7 @@ export const ChatInput = ({
     chatMode,
     setChatMode,
     uploadedFiles,
+    setUploadedFiles,
     isUploadingFiles,
     messageQueue,
     removeQueuedMessage,
@@ -90,7 +144,71 @@ export const ChatInput = ({
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
 
-  const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  const draftId =
+    isNewChat && (!hasMessages || temporaryChatsEnabled)
+      ? "new"
+      : chatId || NULL_THREAD_DRAFT_ID;
+  const skipNextAttachmentPersistRef = useRef(false);
+  const hasPersistedPastedTextDraftAttachmentsRef = useRef(false);
+  const uploadedFilesRef = useRef(uploadedFiles);
+  const prevDraftIdRef = useRef(draftId);
+
+  useEffect(() => {
+    uploadedFilesRef.current = uploadedFiles;
+  });
+
+  useEffect(() => {
+    const prevDraftId = prevDraftIdRef.current;
+    prevDraftIdRef.current = draftId;
+
+    if (prevDraftId === "new" && draftId !== "new") {
+      const generatedPastedTextAttachments = uploadedFilesRef.current
+        .map(uploadedFileToDraftAttachment)
+        .filter(
+          (attachment): attachment is NonNullable<typeof attachment> =>
+            attachment !== null,
+        );
+
+      if (generatedPastedTextAttachments.length > 0) {
+        upsertDraftAttachments(draftId, generatedPastedTextAttachments);
+        removeDraftAttachments("new");
+        hasPersistedPastedTextDraftAttachmentsRef.current = true;
+      }
+
+      if (uploadedFilesRef.current.length > 0) {
+        skipNextAttachmentPersistRef.current = true;
+        return;
+      }
+    }
+
+    const draftAttachments = getDraftAttachmentsById(draftId);
+    hasPersistedPastedTextDraftAttachmentsRef.current =
+      draftAttachments.length > 0;
+    skipNextAttachmentPersistRef.current = true;
+    setUploadedFiles(draftAttachments.map(draftAttachmentToUploadedFile));
+  }, [draftId, setUploadedFiles]);
+
+  useEffect(() => {
+    if (skipNextAttachmentPersistRef.current) {
+      skipNextAttachmentPersistRef.current = false;
+      return;
+    }
+
+    const generatedPastedTextAttachments = uploadedFiles
+      .map(uploadedFileToDraftAttachment)
+      .filter(
+        (attachment): attachment is NonNullable<typeof attachment> =>
+          attachment !== null,
+      );
+
+    if (generatedPastedTextAttachments.length > 0) {
+      upsertDraftAttachments(draftId, generatedPastedTextAttachments);
+      hasPersistedPastedTextDraftAttachmentsRef.current = true;
+    } else if (hasPersistedPastedTextDraftAttachmentsRef.current) {
+      removeDraftAttachments(draftId);
+      hasPersistedPastedTextDraftAttachmentsRef.current = false;
+    }
+  }, [draftId, uploadedFiles]);
 
   // Free agent mode constraints:
   // 1. Requires local sandbox — fall back to ask mode if disconnected
@@ -140,7 +258,7 @@ export const ChatInput = ({
     }
   }, [temporaryChatsEnabled, chatMode, setChatMode]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -148,8 +266,8 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
-      onSubmit(e);
-      if (clearDraftOnSubmit) {
+      const accepted = await onSubmit(e);
+      if (clearDraftOnSubmit && accepted !== false) {
         removeDraft(draftId);
         setTimeout(() => setInput(""), 0);
       }

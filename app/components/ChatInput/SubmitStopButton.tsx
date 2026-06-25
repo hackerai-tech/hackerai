@@ -41,7 +41,7 @@ export interface SubmitStopButtonProps {
   isGenerating: boolean;
   hideStop: boolean;
   onStop: () => void;
-  onSubmit: (e: React.FormEvent) => void;
+  onSubmit: (e: React.FormEvent) => void | Promise<void>;
   status: ChatStatus;
   isUploadingFiles: boolean;
   input: string;
