@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { createHash } from "crypto";
 import type { AnySandbox, ToolContext } from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
 import { supportsMultimodalToolResults } from "@/lib/ai/providers";
@@ -44,6 +45,7 @@ type ViewMetadata = {
   mediaType: string;
   sizeBytes: number;
   kind: ViewKind;
+  previewUploadSucceeded?: boolean;
   previewFiles?: ViewPreviewFile[];
   previewError?: string;
 };
@@ -60,6 +62,15 @@ type FileViewImageUsageOutcome =
   | "success"
   | "unsupported_model"
   | "inspection_failed";
+
+type FileViewStage = "initial_inspection" | "model_output";
+
+type FileViewErrorClassification = {
+  failureReason: string;
+  failureDetail: string;
+  errorName?: string;
+  errorMessageHash: string;
+};
 
 const VIEW_FILE_SCRIPT = String.raw`
 import base64
@@ -284,49 +295,155 @@ function getActiveModelName(context: ToolContext): string | undefined {
   return context.getCurrentModelName?.() ?? context.modelName;
 }
 
-function classifyFileViewError(error: unknown): string {
+function hashTelemetryValue(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function getPathPrefixClass(path: string): string {
+  const normalizedPath = path.replace(/\\/g, "/");
+  const lowerPath = normalizedPath.toLowerCase();
+
+  if (path.trim() === "") return "empty";
+  if (lowerPath.startsWith("/tmp/") || lowerPath.startsWith("c:/temp/")) {
+    return "tmp";
+  }
+  if (lowerPath.startsWith("/home/") || lowerPath.startsWith("c:/users/")) {
+    return "home";
+  }
+  if (lowerPath.startsWith("/workspace/") || lowerPath.includes("/workdir/")) {
+    return "workspace";
+  }
+  if (normalizedPath.startsWith("/") || /^[a-z]:\//i.test(normalizedPath)) {
+    return "absolute_other";
+  }
+  return "relative";
+}
+
+function getPathDepth(path: string): number {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part.length > 0).length;
+}
+
+function getPathTelemetry(path: string, userId: string) {
+  return {
+    path_fingerprint: hashTelemetryValue(`${userId}:${path}`),
+    path_prefix_class: getPathPrefixClass(path),
+    path_is_absolute: path.startsWith("/") || /^[a-z]:[\\/]/i.test(path),
+    path_has_extension: Boolean(getFileExtension(path)),
+    path_depth: getPathDepth(path),
+    path_length: path.length,
+  };
+}
+
+function classifyFileViewError(error: unknown): FileViewErrorClassification {
   const message = error instanceof Error ? error.message : String(error);
+  const base = {
+    errorName: error instanceof Error ? error.name : undefined,
+    errorMessageHash: hashTelemetryValue(message),
+  };
 
   if (message.includes("Unsupported media type")) {
-    return "unsupported_media_type";
+    return {
+      ...base,
+      failureReason: "unsupported_media_type",
+      failureDetail: "unsupported_media_type",
+    };
   }
   if (message.includes("too large")) {
-    return "file_too_large";
+    return {
+      ...base,
+      failureReason: "file_too_large",
+      failureDetail: "file_too_large",
+    };
   }
   if (message.includes("File not found")) {
-    return "file_not_found";
+    return {
+      ...base,
+      failureReason: "file_not_found",
+      failureDetail: "file_not_found",
+    };
   }
   if (message.includes("Windows local sandboxes")) {
-    return "unsupported_sandbox";
+    return {
+      ...base,
+      failureReason: "unsupported_sandbox",
+      failureDetail: "windows_local_sandbox",
+    };
   }
   if (message.includes("SVG files")) {
-    return "unsupported_svg";
+    return {
+      ...base,
+      failureReason: "unsupported_svg",
+      failureDetail: "unsupported_svg",
+    };
+  }
+  if (message.includes("Failed to inspect file for view")) {
+    return {
+      ...base,
+      failureReason: "inspection_error",
+      failureDetail: "invalid_inspection_output",
+    };
+  }
+  if (message.includes("View inspection returned an invalid payload")) {
+    return {
+      ...base,
+      failureReason: "inspection_error",
+      failureDetail: "invalid_payload",
+    };
+  }
+  if (message.includes("View inspection did not return image data")) {
+    return {
+      ...base,
+      failureReason: "inspection_error",
+      failureDetail: "missing_image_data",
+    };
+  }
+  if (message.includes("View inspection found invalid image data")) {
+    return {
+      ...base,
+      failureReason: "inspection_error",
+      failureDetail: "invalid_image_data",
+    };
   }
 
-  return "inspection_error";
+  return {
+    ...base,
+    failureReason: "inspection_error",
+    failureDetail: "inspection_error",
+  };
 }
 
 function captureFileViewImageUsage(args: {
   context: ToolContext;
   sandbox: any;
   path: string;
+  stage: FileViewStage;
   outcome: FileViewImageUsageOutcome;
   durationMs: number;
   mediaType?: string;
   sizeBytes?: number;
   previewUploadSucceeded?: boolean;
   failureReason?: string;
+  failureDetail?: string;
+  errorName?: string;
+  errorMessageHash?: string;
 }) {
   const {
     context,
     sandbox,
     path,
+    stage,
     outcome,
     durationMs,
     mediaType,
     sizeBytes,
     previewUploadSucceeded,
     failureReason,
+    failureDetail,
+    errorName,
+    errorMessageHash,
   } = args;
 
   phLogger.event("file_view_image_used", {
@@ -340,15 +457,20 @@ function captureFileViewImageUsage(args: {
     configured_model: context.modelName,
     sandbox_type: getViewSandboxType(sandbox),
     file_extension: getFileExtension(path),
+    stage,
     outcome,
     success: outcome === "success",
     duration_ms: durationMs,
+    ...getPathTelemetry(path, context.userID),
     ...(mediaType && { media_type: mediaType }),
     ...(typeof sizeBytes === "number" && { size_bytes: sizeBytes }),
     ...(typeof previewUploadSucceeded === "boolean" && {
       preview_upload_succeeded: previewUploadSucceeded,
     }),
     ...(failureReason && { failure_reason: failureReason }),
+    ...(failureDetail && { failure_detail: failureDetail }),
+    ...(errorName && { error_name: errorName }),
+    ...(errorMessageHash && { error_message_hash: errorMessageHash }),
   });
 }
 
@@ -1047,9 +1169,11 @@ ${instructionsDescription}`,
                 context,
                 sandbox,
                 path,
+                stage: "initial_inspection",
                 outcome: "unsupported_model",
                 durationMs: Date.now() - viewStartedAt,
                 failureReason: "unsupported_model",
+                failureDetail: "unsupported_model",
               });
               return { error: MULTIMODAL_UPGRADE_MESSAGE };
             }
@@ -1058,13 +1182,18 @@ ${instructionsDescription}`,
             try {
               viewPayload = await readSandboxFileForView(sandbox, path, false);
             } catch (error) {
+              const classification = classifyFileViewError(error);
               captureFileViewImageUsage({
                 context,
                 sandbox,
                 path,
+                stage: "initial_inspection",
                 outcome: "inspection_failed",
                 durationMs: Date.now() - viewStartedAt,
-                failureReason: classifyFileViewError(error),
+                failureReason: classification.failureReason,
+                failureDetail: classification.failureDetail,
+                errorName: classification.errorName,
+                errorMessageHash: classification.errorMessageHash,
               });
               throw error;
             }
@@ -1100,17 +1229,6 @@ ${instructionsDescription}`,
               );
             }
 
-            captureFileViewImageUsage({
-              context,
-              sandbox,
-              path,
-              outcome: "success",
-              durationMs: Date.now() - viewStartedAt,
-              mediaType: viewPayload.mediaType,
-              sizeBytes: viewPayload.sizeBytes,
-              previewUploadSucceeded: !previewUploadError,
-            });
-
             return {
               action: "view",
               content: `Viewing image file: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).`,
@@ -1119,6 +1237,7 @@ ${instructionsDescription}`,
               mediaType: viewPayload.mediaType,
               sizeBytes: viewPayload.sizeBytes,
               kind: viewPayload.kind,
+              previewUploadSucceeded: !previewUploadError,
               previewFiles,
               ...(previewUploadError
                 ? { previewError: previewUploadError }
@@ -1371,13 +1490,28 @@ ${instructionsDescription}`,
             };
           }
 
+          const viewStartedAt = Date.now();
+          let outputSandbox: any | undefined;
           try {
             const { sandbox } = await sandboxManager.getSandbox();
+            outputSandbox = sandbox;
             const viewPayload = await readSandboxFileForView(
               sandbox,
               viewOutput.path,
               true,
             );
+
+            captureFileViewImageUsage({
+              context,
+              sandbox,
+              path: viewOutput.path,
+              stage: "model_output",
+              outcome: "success",
+              durationMs: Date.now() - viewStartedAt,
+              mediaType: viewPayload.mediaType,
+              sizeBytes: viewPayload.sizeBytes,
+              previewUploadSucceeded: viewOutput.previewUploadSucceeded,
+            });
 
             return {
               type: "content" as const,
@@ -1391,6 +1525,28 @@ ${instructionsDescription}`,
               ],
             };
           } catch (error) {
+            try {
+              const sandbox =
+                outputSandbox ?? (await sandboxManager.getSandbox()).sandbox;
+              const classification = classifyFileViewError(error);
+              captureFileViewImageUsage({
+                context,
+                sandbox,
+                path: viewOutput.path,
+                stage: "model_output",
+                outcome: "inspection_failed",
+                durationMs: Date.now() - viewStartedAt,
+                mediaType: viewOutput.mediaType,
+                sizeBytes: viewOutput.sizeBytes,
+                previewUploadSucceeded: viewOutput.previewUploadSucceeded,
+                failureReason: classification.failureReason,
+                failureDetail: classification.failureDetail,
+                errorName: classification.errorName,
+                errorMessageHash: classification.errorMessageHash,
+              });
+            } catch {
+              // Preserve the model-visible error if telemetry capture itself fails.
+            }
             return {
               type: "text" as const,
               value: `Error: ${

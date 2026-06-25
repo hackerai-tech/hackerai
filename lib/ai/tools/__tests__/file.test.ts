@@ -12,6 +12,7 @@ jest.mock("@/lib/logger", () => ({
 
 import { createFile } from "../file";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
+import { phLogger } from "@/lib/posthog/server";
 import type { ToolContext } from "@/types";
 
 type FakeCommandResult = {
@@ -24,6 +25,9 @@ const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
     typeof uploadSandboxFileToConvex
   >;
+const mockPhEvent = phLogger.event as jest.MockedFunction<
+  typeof phLogger.event
+>;
 
 const VALID_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
@@ -353,6 +357,7 @@ describe("file tool large text safety", () => {
 describe("file tool image view", () => {
   beforeEach(() => {
     mockUploadSandboxFileToConvex.mockReset();
+    mockPhEvent.mockReset();
   });
 
   test("allows Kimi to view sandbox images as multimodal tool output", async () => {
@@ -421,6 +426,71 @@ describe("file tool image view", () => {
         },
       ],
     });
+
+    expect(mockPhEvent).toHaveBeenCalledTimes(1);
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "file_view_image_used",
+      expect.objectContaining({
+        user_id: "user-1",
+        chat_id: "chat-1",
+        stage: "model_output",
+        outcome: "success",
+        success: true,
+        media_type: "image/png",
+        size_bytes: 68,
+        preview_upload_succeeded: true,
+        file_extension: "png",
+        path_prefix_class: "tmp",
+        path_is_absolute: true,
+        path_has_extension: true,
+        path_depth: 2,
+        path_length: "/tmp/screenshot.png".length,
+        path_fingerprint: expect.any(String),
+      }),
+    );
+    expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
+  });
+
+  test("logs initial inspection failures with safe path diagnostics", async () => {
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        error: "File not found or is not a regular file: /tmp/missing",
+      }),
+      stderr: "",
+      exitCode: 2,
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(makeContext(sandbox));
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/missing",
+      brief: "Inspect a missing image",
+    });
+
+    expect(result).toEqual({
+      error: "File not found or is not a regular file: /tmp/missing",
+    });
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "file_view_image_used",
+      expect.objectContaining({
+        stage: "initial_inspection",
+        outcome: "inspection_failed",
+        success: false,
+        failure_reason: "file_not_found",
+        failure_detail: "file_not_found",
+        error_name: "Error",
+        error_message_hash: expect.any(String),
+        file_extension: undefined,
+        path_prefix_class: "tmp",
+        path_is_absolute: true,
+        path_has_extension: false,
+        path_depth: 2,
+        path_length: "/tmp/missing".length,
+        path_fingerprint: expect.any(String),
+      }),
+    );
+    expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
   });
 
   test("returns a text error instead of invalid image-data for corrupt sandbox images", async () => {
@@ -458,5 +528,22 @@ describe("file tool image view", () => {
       value:
         "Error: View inspection found invalid image data (missing_png_ihdr).",
     });
+
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "file_view_image_used",
+      expect.objectContaining({
+        stage: "model_output",
+        outcome: "inspection_failed",
+        success: false,
+        failure_reason: "inspection_error",
+        failure_detail: "invalid_image_data",
+        error_name: "Error",
+        error_message_hash: expect.any(String),
+        media_type: "image/png",
+        size_bytes: 8,
+        file_extension: "png",
+        path_prefix_class: "tmp",
+      }),
+    );
   });
 });
