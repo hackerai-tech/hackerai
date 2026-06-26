@@ -465,7 +465,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper Kimi fallback
+ * this fallback can fire. Claude agent calls use the cheaper MiniMax fallback
  * while the run is text-only, then switch to multimodal-capable fallbacks once
  * image tool results enter the context.
  *
@@ -482,6 +482,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model": ["fallback-grok-4.3"],
   "model-grok-4.3": ["fallback-ask-model"],
   "model-gemini-3-flash": ["fallback-ask-model"],
+  "model-minimax-m3": ["fallback-grok-4.3"],
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -509,7 +510,7 @@ export function isAutoModelSelectionForRetry({
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-kimi-k2.7-code", "fallback-grok-4.3"],
+    agent: ["model-minimax-m3", "fallback-grok-4.3"],
     ask: ["model-grok-4.3"],
   };
 
