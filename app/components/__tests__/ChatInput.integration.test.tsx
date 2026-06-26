@@ -399,6 +399,7 @@ describe("ChatInput - Integration Tests", () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
+            onSendNow={jest.fn()}
             status="ready"
             isNewChat={true}
             restoreDraftAttachments={false}
