@@ -348,24 +348,40 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
-  const getActiveTools = async (): Promise<
-    Array<keyof typeof ctx.tools> | undefined
-  > => {
+  const getActiveToolsWithExclusions = async (
+    excludedToolNames: ReadonlySet<string> = new Set(),
+  ): Promise<Array<keyof typeof ctx.tools> | undefined> => {
+    const hasExclusions = excludedToolNames.size > 0;
+    const withoutExcludedTools = (toolName: string) =>
+      !excludedToolNames.has(toolName);
     let supportsPty: boolean | undefined;
     try {
       supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
     } catch (error) {
       console.warn("[agent-stream] PTY capability probe failed:", error);
-      return undefined;
+      return hasExclusions
+        ? (Object.keys(ctx.tools).filter(withoutExcludedTools) as Array<
+            keyof typeof ctx.tools
+          >)
+        : undefined;
     }
     if (supportsPty !== false) {
-      return undefined;
+      return hasExclusions
+        ? (Object.keys(ctx.tools).filter(withoutExcludedTools) as Array<
+            keyof typeof ctx.tools
+          >)
+        : undefined;
     }
 
     return Object.keys(ctx.tools).filter(
-      (toolName) => toolName !== "interact_terminal_session",
+      (toolName) =>
+        toolName !== "interact_terminal_session" &&
+        withoutExcludedTools(toolName),
     ) as Array<keyof typeof ctx.tools>;
   };
+  const getActiveTools = async (): Promise<
+    Array<keyof typeof ctx.tools> | undefined
+  > => getActiveToolsWithExclusions();
   const initialActiveTools = await getActiveTools();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
@@ -545,9 +561,10 @@ export async function createAgentStream(
         const loopCheck = detectDoomLoop(
           steps as unknown as Parameters<typeof detectDoomLoop>[0],
         );
+        let excludedToolsForStep: ReadonlySet<string> | undefined;
         if (loopCheck.severity !== "none") {
           console.log(
-            `[doom-loop] severity=${loopCheck.severity} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${steps.length}`,
+            `[doom-loop] severity=${loopCheck.severity} reason=${loopCheck.reason ?? "unknown"} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${steps.length}`,
           );
           if (loopCheck.severity === "warning") {
             const nudge = generateDoomLoopNudge(loopCheck);
@@ -556,10 +573,28 @@ export async function createAgentStream(
               ...updatedMessages,
               { role: "user", content: nudge },
             ] as typeof updatedMessages;
+
+            if (loopCheck.activeToolExclusions?.length) {
+              excludedToolsForStep = new Set(loopCheck.activeToolExclusions);
+              console.warn("[doom-loop] Applying active tool exclusions", {
+                event: "empty_todo_write_loop_recovery",
+                chatId: ctx.chatId,
+                modelName,
+                requestedModel: requestedSlug,
+                responseModel: state.responseModel,
+                reason: loopCheck.reason,
+                consecutiveCount: loopCheck.consecutiveCount,
+                rawInput: {},
+                excludedTools: loopCheck.activeToolExclusions,
+              });
+            }
           }
         }
 
-        const activeTools = await getActiveTools();
+        const activeTools =
+          excludedToolsForStep && excludedToolsForStep.size > 0
+            ? await getActiveToolsWithExclusions(excludedToolsForStep)
+            : await getActiveTools();
         const providerOptions = getStepProviderOptions();
         const preparedMessages = prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(

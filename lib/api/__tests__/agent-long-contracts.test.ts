@@ -57,6 +57,11 @@ const chatHandlerSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentStreamRunnerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-stream-runner.ts"),
+  "utf8",
+);
+
 describe("agent-long-transport — direct UI stream reader", () => {
   test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
     expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
@@ -124,6 +129,20 @@ describe("agent-long-transport — direct UI stream reader", () => {
     );
     expect(transportSrc).toMatch(
       /userAborted\s*\|\|\s*timedOutAfterFinish\s*\|\|\s*completedRunDrainElapsed/,
+    );
+  });
+});
+
+describe("agent stream runner — empty todo_write recovery", () => {
+  test("temporarily excludes todo_write when the doom-loop detector requests it", () => {
+    expect(agentStreamRunnerSrc).toMatch(/activeToolExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/getActiveToolsWithExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/excludedToolsForStep/);
+    expect(agentStreamRunnerSrc).toMatch(
+      /event:\s*"empty_todo_write_loop_recovery"/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /await getActiveToolsWithExclusions\(excludedToolsForStep\)/,
     );
   });
 });
