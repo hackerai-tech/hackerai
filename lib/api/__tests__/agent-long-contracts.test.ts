@@ -161,6 +161,25 @@ describe("agent-long-transport — direct UI stream reader", () => {
       /cancel\(\)\s*\{[\s\S]*cancelConsumerRealtime\(\)/,
     );
   });
+
+  test("does not close an already errored browser stream controller", () => {
+    const abortAndCloseIdx = transportSrc.indexOf(
+      "const sendAbortAndClose = () =>",
+    );
+    const closeHelperIdx = transportSrc.indexOf("const close = () =>");
+
+    expect(abortAndCloseIdx).toBeGreaterThan(-1);
+    expect(closeHelperIdx).toBeGreaterThan(abortAndCloseIdx);
+    expect(transportSrc).toMatch(/controller\.desiredSize\s*===\s*null/);
+    const abortAndCloseSrc = transportSrc.slice(
+      abortAndCloseIdx,
+      closeHelperIdx,
+    );
+    expect(abortAndCloseSrc).toMatch(
+      /if\s*\(\s*!isControllerErrored\(\)\s*\)[\s\S]*controller\.enqueue\(/,
+    );
+    expect(abortAndCloseSrc).toMatch(/controller\.close\(\)/);
+  });
 });
 
 describe("agent stream runner — empty todo_write recovery", () => {
@@ -206,8 +225,10 @@ describe("agent-long chat UI — completion reconciliation", () => {
   test("polls the resume endpoint and clears useChat state after backend completion", () => {
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
+    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
     expect(chatComponentSrc).toMatch(/\/api\/agent-long\/resume\?chatId=/);
     expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
+    expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/stop\(\)/);
     expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
@@ -237,6 +258,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     expect(globalStateSrc).toMatch(/optimisticChatId:\s*string\s*\|\s*null/);
     expect(globalStateSrc).toMatch(/setOptimisticChatId/);
+  });
+
+  test("suppresses only the known agent-long double-close browser noise", () => {
+    expect(chatComponentSrc).toMatch(/suppressAgentLongDoubleCloseNoise/);
+    expect(chatComponentSrc).toMatch(
+      /shouldUseAgentLongForCurrentChatRef\.current/,
+    );
+    expect(chatComponentSrc).toMatch(/Cannot close an errored readable stream/);
+    expect(chatComponentSrc).toMatch(/event\.preventDefault\(\)/);
   });
 
   test("guards auto-resume and stream data against stale chat switches", () => {

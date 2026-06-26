@@ -65,6 +65,7 @@ import { HackingSuggestions } from "./HackingSuggestions";
 const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
+const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 
 const getAgentLongPartFingerprint = (part: unknown): string => {
   if (typeof part !== "object" || part === null) return String(part);
@@ -442,6 +443,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const hasManuallyStoppedRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   const isChatMountedRef = useRef(false);
+  const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   activeChatIdRef.current = chatId;
 
@@ -682,6 +684,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: () => {
+      browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -697,6 +700,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      browserStreamFinishedRef.current = true;
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -745,17 +749,76 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           (chatDataForCurrentChat as any).default_model_slug === "agent" ||
           (chatDataForCurrentChat as any).default_model_slug ===
             "agent-long")));
+  const shouldUseAgentLongForCurrentChatRef = useRef(
+    shouldUseAgentLongForCurrentChat,
+  );
+  shouldUseAgentLongForCurrentChatRef.current =
+    shouldUseAgentLongForCurrentChat;
   const stopActiveBrowserStream = useCallback(() => {
     cancelAgentLongRealtimeStreams(activeChatIdRef.current);
+    const streamAlreadyFinished =
+      shouldUseAgentLongForCurrentChatRef.current &&
+      browserStreamFinishedRef.current;
     if (
-      statusRef.current === "streaming" ||
-      statusRef.current === "submitted"
+      !streamAlreadyFinished &&
+      (statusRef.current === "streaming" || statusRef.current === "submitted")
     ) {
       stopRef.current();
     }
     setDataStream([]);
     setIsAutoResuming(false);
   }, [setDataStream, setIsAutoResuming]);
+
+  useEffect(() => {
+    if (
+      shouldUseAgentLongForCurrentChat &&
+      (status === "streaming" || status === "submitted")
+    ) {
+      browserStreamFinishedRef.current = false;
+    }
+  }, [shouldUseAgentLongForCurrentChat, status]);
+
+  useEffect(() => {
+    const isAgentLongDoubleCloseNoise = (message: unknown) =>
+      shouldUseAgentLongForCurrentChatRef.current &&
+      typeof message === "string" &&
+      message.includes("Cannot close an errored readable stream");
+
+    const suppressAgentLongDoubleCloseNoise = (event: ErrorEvent) => {
+      if (isAgentLongDoubleCloseNoise(event.message)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const previousOnError = window.onerror;
+    const suppressAgentLongDoubleCloseOnError: OnErrorEventHandler = (
+      message,
+      source,
+      lineno,
+      colno,
+      error,
+    ) => {
+      if (isAgentLongDoubleCloseNoise(message)) return true;
+      if (typeof previousOnError === "function") {
+        return previousOnError(message, source, lineno, colno, error);
+      }
+      return false;
+    };
+    window.onerror = suppressAgentLongDoubleCloseOnError;
+
+    window.addEventListener("error", suppressAgentLongDoubleCloseNoise, true);
+    return () => {
+      if (window.onerror === suppressAgentLongDoubleCloseOnError) {
+        window.onerror = previousOnError;
+      }
+      window.removeEventListener(
+        "error",
+        suppressAgentLongDoubleCloseNoise,
+        true,
+      );
+    };
+  }, []);
 
   useEffect(() => {
     setDataStream([]);
@@ -798,6 +861,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     let stopped = false;
     let pollInterval: ReturnType<typeof setInterval> | undefined;
+    let finishTimeout: ReturnType<typeof setTimeout> | undefined;
     const abortController = new AbortController();
 
     const finishLocally = () => {
@@ -815,6 +879,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
 
+    const scheduleFinishLocally = () => {
+      if (stopped || finishTimeout !== undefined) return;
+
+      // The transport also polls the resume endpoint and can deliver a
+      // synthetic finish after a terminal 204. Give it a brief chance to close
+      // normally before falling back to stop(), which aborts the active stream.
+      finishTimeout = setTimeout(() => {
+        finishTimeout = undefined;
+        if (
+          statusRef.current === "streaming" ||
+          statusRef.current === "submitted"
+        ) {
+          finishLocally();
+        }
+      }, AGENT_LONG_COMPLETION_STOP_GRACE_MS);
+    };
+
     const checkRunCompletion = async () => {
       if (
         Date.now() - agentLongLastMessageChangeAtRef.current <
@@ -829,7 +910,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           { method: "GET", signal: abortController.signal },
         );
         if (response.status === 204) {
-          finishLocally();
+          scheduleFinishLocally();
         }
       } catch (error) {
         if ((error as Error).name !== "AbortError") {
@@ -850,6 +931,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       stopped = true;
       abortController.abort();
       clearTimeout(pollDelay);
+      if (finishTimeout !== undefined) {
+        clearTimeout(finishTimeout);
+      }
       if (pollInterval !== undefined) {
         clearInterval(pollInterval);
       }

@@ -16,9 +16,19 @@ export async function sendAndWaitForResponse(
   message: string,
   timeout: number = TIMEOUTS.LONG,
 ): Promise<void> {
+  const assistantSnapshot = await chat.getAssistantMessageSnapshot();
+  const generationResponsePromise = chat.waitForGenerationResponse(timeout);
   await chat.sendMessage(message);
   await chat.expectStreamingVisible();
+  const generationResponse = await generationResponsePromise;
+  if (generationResponse) {
+    await Promise.race([
+      generationResponse.finished().catch(() => null),
+      chat.waitForAssistantMessageAfter(assistantSnapshot, timeout),
+    ]);
+  }
   await chat.expectStreamingNotVisible(timeout);
+  await chat.waitForAssistantMessageAfter(assistantSnapshot, timeout);
 }
 
 /**
