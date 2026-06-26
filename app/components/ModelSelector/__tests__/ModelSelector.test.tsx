@@ -109,8 +109,7 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("warns before selecting HackerAI Max on paid tiers above Pro", () => {
-    mockSubscription = "ultra";
+  it("warns before selecting HackerAI Max on Pro Plus", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
@@ -120,6 +119,21 @@ describe("ModelSelector", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
     expect(screen.getByText(/HackerAI Max is powerful/i)).toBeVisible();
+  });
+
+  it("selects high-cost models without warning for Ultra users", () => {
+    mockSubscription = "ultra";
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    expect(
+      screen.queryByTestId("high-cost-model-warning"),
+    ).not.toBeInTheDocument();
+    expect(mockDismissHighCostModelUsageNotice).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledWith("hackerai-max");
   });
 
   it("uses team-specific warning copy for team users", () => {
