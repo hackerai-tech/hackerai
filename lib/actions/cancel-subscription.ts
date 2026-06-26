@@ -269,5 +269,6 @@ export default async function cancelSubscriptionAction(
     currentPeriodEnd:
       currentPeriodEndMs(updatedSubscription) ??
       subscriptionContext.currentPeriodEnd,
+    alreadyScheduled: false,
   };
 }
