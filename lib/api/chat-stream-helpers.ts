@@ -517,8 +517,18 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
   "fallback-grok-4.3",
 ] as const satisfies readonly ModelName[];
 
-const ASK_MEDIUM_REASONING_MODELS = [
+// Standard Ask can route text-only prompts to DeepSeek and media prompts to
+// Grok. Keep those route keys and their persisted Grok alias on one effort
+// level so they do not drift.
+const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
+  "ask-model",
+  "model-grok-4.3",
+  "model-gemini-3-flash",
+] as const satisfies readonly ModelName[];
+
+const ASK_MEDIUM_REASONING_MODELS = [
+  ...ASK_STANDARD_REASONING_MODELS,
   "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -526,16 +536,6 @@ const ASK_MEDIUM_REASONING_MODELS = [
 const isAskMediumReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
-
-const ASK_GROK_REASONING_MODELS = [
-  "ask-model",
-  "model-grok-4.3",
-  "model-gemini-3-flash",
-] as const satisfies readonly ModelName[];
-
-const isAskGrokReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_GROK_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const ASK_KIMI_REASONING_MODELS = [
   "model-kimi-k2.7-code",
@@ -644,17 +644,12 @@ export function buildProviderOptions(
         ? {
             enabled: true,
           }
-        : mode === "ask" && isAskGrokReasoningModel(modelName)
+        : mode === "ask" && isAskMediumReasoningModel(modelName)
           ? {
               enabled: true,
-              effort: "low",
+              effort: "medium",
             }
-          : mode === "ask" && isAskMediumReasoningModel(modelName)
-            ? {
-                enabled: true,
-                effort: "medium",
-              }
-            : { enabled: false });
+          : { enabled: false });
 
   return {
     openrouter: {

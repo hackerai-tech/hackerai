@@ -222,17 +222,6 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter.models).toEqual([GEMINI_PREVIEW_SLUG]);
   });
 
-  it.each(["ask-model", "model-grok-4.3", "model-gemini-3-flash"])(
-    "enables low reasoning for Grok ask mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "low",
-      });
-    },
-  );
-
   it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
     "enables reasoning for Kimi ask mode route %s",
     (modelName) => {
@@ -243,16 +232,20 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each(["model-deepseek-v4-pro", "model-sonnet-4.6", "model-opus-4.6"])(
-    "enables medium reasoning for ask mode model %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-        effort: "medium",
-      });
-    },
-  );
+  it.each([
+    "model-deepseek-v4-pro",
+    "ask-model",
+    "model-grok-4.3",
+    "model-gemini-3-flash",
+    "model-sonnet-4.6",
+    "model-opus-4.6",
+  ])("enables medium reasoning for ask mode model %s", (modelName) => {
+    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "medium",
+    });
+  });
 
   it("includes reasoning settings independent of fallback chain", () => {
     const reasoning = buildProviderOptions(
