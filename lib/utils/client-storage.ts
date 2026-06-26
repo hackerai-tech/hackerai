@@ -13,11 +13,12 @@ export type ConversationDraft = {
 };
 
 export type ConversationDraftAttachment = {
-  kind: "pasted-text";
+  kind: "file" | "pasted-text";
   fileId: string;
   name: string;
   mediaType: string;
   size: number;
+  generatedSource?: "pasted-text";
   tokens?: number;
   timestamp: number;
 };
@@ -183,8 +184,12 @@ const normalizeDraftAttachments = (
     (attachment): attachment is ConversationDraftAttachment => {
       if (!attachment || typeof attachment !== "object") return false;
       const value = attachment as Partial<ConversationDraftAttachment>;
+      const validKind = value.kind === "file" || value.kind === "pasted-text";
+
       return (
-        value.kind === "pasted-text" &&
+        validKind &&
+        (typeof value.generatedSource === "undefined" ||
+          value.generatedSource === "pasted-text") &&
         typeof value.fileId === "string" &&
         value.fileId.length > 0 &&
         typeof value.name === "string" &&

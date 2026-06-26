@@ -1,11 +1,21 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { ChatInput } from "../ChatInput";
-import { GlobalStateProvider } from "../../contexts/GlobalState";
+import {
+  GlobalStateProvider,
+  useGlobalState,
+} from "../../contexts/GlobalState";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReactNode } from "react";
 import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
+import type { UploadedFileState } from "@/types/file";
 
 // Mock only external dependencies, not contexts
 jest.mock("react-hotkeys-hook", () => ({
@@ -37,6 +47,22 @@ const TestWrapper = ({ children }: { children: ReactNode }) => {
     <GlobalStateProvider>
       <TooltipProvider>{children}</TooltipProvider>
     </GlobalStateProvider>
+  );
+};
+
+const UploadedFilesSetter = ({
+  files,
+  label,
+}: {
+  files: UploadedFileState[];
+  label: string;
+}) => {
+  const { setUploadedFiles } = useGlobalState();
+
+  return (
+    <button type="button" onClick={() => setUploadedFiles(files)}>
+      {label}
+    </button>
   );
 };
 
@@ -304,6 +330,114 @@ describe("ChatInput - Integration Tests", () => {
       );
 
       expect(await screen.findByText("pasted-text.txt")).toBeInTheDocument();
+    });
+
+    it("restores regular S3 draft attachments", async () => {
+      const draftAttachment = {
+        kind: "file" as const,
+        fileId: "file_regular",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+        tokens: 42,
+        timestamp: Date.now(),
+      };
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "chat-1",
+              content: "",
+              timestamp: Date.now(),
+              attachments: [draftAttachment],
+            },
+          ],
+        }),
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+    });
+
+    it("persists regular S3 uploaded files into draft attachments", async () => {
+      const browserFile = new File(["x".repeat(2048)], "report.pdf", {
+        type: "application/pdf",
+        lastModified: 123456,
+      });
+      const pendingFile: UploadedFileState = {
+        file: browserFile,
+        uploading: true,
+        uploaded: false,
+        storage: "s3",
+      };
+      const uploadedFile: UploadedFileState = {
+        file: browserFile,
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_regular",
+        tokens: 84,
+      };
+
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[pendingFile]} label="Start upload" />
+          <UploadedFilesSetter files={[uploadedFile]} label="Complete upload" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      await act(async () => {});
+      fireEvent.click(screen.getByText("Start upload"));
+      await waitFor(() => {
+        expect(screen.getByText("report.pdf")).toBeInTheDocument();
+      });
+      await act(async () => {});
+      const beforeCompletion = Date.now();
+      fireEvent.click(screen.getByText("Complete upload"));
+
+      await waitFor(() => {
+        const store = JSON.parse(
+          window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY) ?? "{}",
+        );
+        expect(store.drafts).toEqual([
+          expect.objectContaining({
+            id: "chat-1",
+            attachments: [
+              {
+                kind: "file",
+                fileId: "file_regular",
+                name: "report.pdf",
+                mediaType: "application/pdf",
+                size: 2048,
+                tokens: 84,
+                timestamp: expect.any(Number),
+              },
+            ],
+          }),
+        ]);
+        expect(store.drafts[0].attachments[0].timestamp).toBeGreaterThanOrEqual(
+          beforeCompletion,
+        );
+      });
     });
 
     it("keeps restored pasted-text drafts when submit is rejected", async () => {

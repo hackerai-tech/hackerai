@@ -188,6 +188,34 @@ describe("client-storage draft attachments", () => {
     ]);
   });
 
+  it("persists regular S3 draft attachments without draft text", () => {
+    const timestamp = Date.now();
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "file",
+        fileId: "file_regular",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+        tokens: 42,
+        timestamp,
+      },
+    ]);
+
+    expect(hasDraftAttachmentsById("chat-1")).toBe(true);
+    expect(getDraftAttachmentsById("chat-1")).toEqual([
+      {
+        kind: "file",
+        fileId: "file_regular",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+        tokens: 42,
+        timestamp,
+      },
+    ]);
+  });
+
   it("preserves draft attachments when text autosave updates content", () => {
     upsertDraftAttachments("chat-1", [
       {
