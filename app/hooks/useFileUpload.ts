@@ -60,6 +60,7 @@ const isExpectedFileUploadError = (error: unknown): boolean => {
   return (
     code === "FILE_TOKEN_LIMIT_EXCEEDED" ||
     code === "FILE_UPLOAD_RATE_LIMIT" ||
+    code === "STORAGE_LIMIT_EXCEEDED" ||
     code === "PAID_PLAN_REQUIRED"
   );
 };

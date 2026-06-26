@@ -3,6 +3,7 @@ const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "Invalid arguments provided",
   "FILE_TOKEN_LIMIT_EXCEEDED",
   "FILE_UPLOAD_RATE_LIMIT",
+  "STORAGE_LIMIT_EXCEEDED",
   "exceeds the maximum token limit",
   "cloud file upload limit",
   "INVALID_FILE_SIZE",
