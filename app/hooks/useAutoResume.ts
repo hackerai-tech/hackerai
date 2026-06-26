@@ -6,9 +6,11 @@ import type { ChatMessage } from "@/types/chat";
 import {
   useDataStreamState,
   useDataStreamDispatch,
+  type ScopedDataUIPart,
 } from "@/app/components/DataStreamProvider";
 
 export interface UseAutoResumeParams {
+  chatId: string;
   autoResume: boolean;
   initialMessages: ChatMessage[];
   resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
@@ -21,6 +23,7 @@ export interface UseAutoResumeParams {
 }
 
 export function useAutoResume({
+  chatId,
   autoResume,
   initialMessages,
   resumeStream,
@@ -30,6 +33,13 @@ export function useAutoResume({
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming } = useDataStreamDispatch();
   const hasAutoResumedRef = useRef(false);
+
+  const isPartForCurrentChat = (part: ScopedDataUIPart) =>
+    part.__chatId === undefined || part.__chatId === chatId;
+
+  useEffect(() => {
+    hasAutoResumedRef.current = false;
+  }, [chatId]);
 
   useEffect(() => {
     if (!autoResume || hasAutoResumedRef.current) return;
@@ -50,10 +60,12 @@ export function useAutoResume({
   }, [autoResume, initialMessages.length > 0, hasActiveStream]);
 
   useEffect(() => {
+    if (!autoResume || !hasAutoResumedRef.current) return;
     if (!dataStream) return;
     if (dataStream.length === 0) return;
 
-    const dataPart = dataStream[0];
+    const dataPart = dataStream.find(isPartForCurrentChat);
+    if (!dataPart) return;
     if (dataPart.type === "data-appendMessage") {
       const message = JSON.parse(dataPart.data);
       setMessages([...initialMessages, message]);
@@ -61,5 +73,5 @@ export function useAutoResume({
       setIsAutoResuming(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataStream, initialMessages, setMessages]);
+  }, [autoResume, dataStream, initialMessages, setMessages]);
 }
