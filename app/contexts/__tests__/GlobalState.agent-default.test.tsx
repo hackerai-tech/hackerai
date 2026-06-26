@@ -94,16 +94,31 @@ describe("GlobalStateProvider agent defaults", () => {
       }),
     );
     window.history.pushState({}, "", "/?refresh=entitlements");
-    global.fetch = jest.fn(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            entitlements: ["pro-plan"],
-            subscription: "pro",
-          }),
-      }),
-    ) as unknown as typeof fetch;
+    global.fetch = jest.fn((input) => {
+      const url = String(input);
+      if (url === "/api/entitlements") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              entitlements: ["pro-plan"],
+              subscription: "pro",
+            }),
+        });
+      }
+
+      if (url === "/api/referrals/attribution") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+      }
+
+      return Promise.resolve({
+        ok: false,
+        json: () => Promise.resolve({}),
+      });
+    }) as unknown as typeof fetch;
 
     render(
       <GlobalStateProvider>
