@@ -47,6 +47,7 @@ type CancelSubscriptionDialogProps = {
 
 type CancellationResult = {
   currentPeriodEnd?: number;
+  alreadyScheduled?: boolean;
 };
 
 type CancellationStep = "feedback" | "confirm";
@@ -188,8 +189,13 @@ export const CancelSubscriptionDialog = ({
       }
       setCancellationResult({
         currentPeriodEnd: result.currentPeriodEnd,
+        alreadyScheduled: result.alreadyScheduled,
       });
-      toast.success("Subscription scheduled to cancel");
+      toast.success(
+        result.alreadyScheduled
+          ? "Subscription already scheduled to cancel"
+          : "Subscription scheduled to cancel",
+      );
     } catch (error) {
       if (!openRef.current || requestIdRef.current !== requestId) {
         return;

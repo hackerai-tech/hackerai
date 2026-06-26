@@ -32,6 +32,7 @@ type SubscriptionContext = {
   plan?: string;
   tier?: SubscriptionTier;
   currentPeriodEnd?: number;
+  cancelAtPeriodEnd: boolean;
 };
 
 function parseCancellationReasonInput(
@@ -102,10 +103,6 @@ async function getActiveSubscriptionContext(
     throw new Error("No active subscription found");
   }
 
-  if (currentSubscription.cancel_at_period_end) {
-    throw new Error("Your subscription is already scheduled to cancel");
-  }
-
   const price = currentSubscription.items.data[0]?.price;
   return {
     id: currentSubscription.id,
@@ -113,6 +110,7 @@ async function getActiveSubscriptionContext(
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
   };
 }
 
@@ -136,6 +134,15 @@ export default async function cancelSubscriptionAction(
     await getBillingActionContext();
   const subscriptionContext =
     await getActiveSubscriptionContext(stripeCustomerId);
+
+  if (subscriptionContext.cancelAtPeriodEnd) {
+    return {
+      canceled: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: subscriptionContext.currentPeriodEnd,
+      alreadyScheduled: true,
+    };
+  }
 
   const now = Date.now();
   const accountCreatedAt = parseCreatedAtMs(user);
@@ -262,5 +269,6 @@ export default async function cancelSubscriptionAction(
     currentPeriodEnd:
       currentPeriodEndMs(updatedSubscription) ??
       subscriptionContext.currentPeriodEnd,
+    alreadyScheduled: false,
   };
 }
