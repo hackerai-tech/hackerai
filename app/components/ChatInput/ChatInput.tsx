@@ -47,28 +47,40 @@ interface ChatInputProps {
   autoFocus?: boolean;
 }
 
+const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
+  typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
+
 const draftAttachmentToUploadedFile = (
   attachment: ConversationDraftAttachment,
-): UploadedFileState => ({
-  file: {
-    name: attachment.name,
-    type: attachment.mediaType,
-    size: attachment.size,
-    lastModified: attachment.timestamp,
-  },
-  uploading: false,
-  uploaded: true,
-  storage: "s3",
-  generatedSource: "pasted-text",
-  fileId: attachment.fileId,
-  tokens: attachment.tokens,
-});
+): UploadedFileState => {
+  const uploadedFile: UploadedFileState = {
+    file: {
+      name: attachment.name,
+      type: attachment.mediaType,
+      size: attachment.size,
+      lastModified: attachment.timestamp,
+    },
+    uploading: false,
+    uploaded: true,
+    storage: "s3",
+    fileId: attachment.fileId,
+    tokens: attachment.tokens,
+  };
+
+  if (
+    attachment.kind === "pasted-text" ||
+    attachment.generatedSource === "pasted-text"
+  ) {
+    uploadedFile.generatedSource = "pasted-text";
+  }
+
+  return uploadedFile;
+};
 
 const uploadedFileToDraftAttachment = (
   uploadedFile: UploadedFileState,
 ): ConversationDraftAttachment | null => {
   if (
-    uploadedFile.generatedSource !== "pasted-text" ||
     !uploadedFile.uploaded ||
     uploadedFile.uploading ||
     uploadedFile.error ||
@@ -79,17 +91,16 @@ const uploadedFileToDraftAttachment = (
   }
 
   return {
-    kind: "pasted-text",
+    kind:
+      uploadedFile.generatedSource === "pasted-text" ? "pasted-text" : "file",
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
-    mediaType: uploadedFile.file.type || "text/plain",
+    mediaType: uploadedFile.file.type || "application/octet-stream",
     size: uploadedFile.file.size,
     tokens: uploadedFile.tokens,
-    timestamp:
-      "lastModified" in uploadedFile.file &&
-      typeof uploadedFile.file.lastModified === "number"
-        ? uploadedFile.file.lastModified
-        : Date.now(),
+    timestamp: isBrowserFile(uploadedFile.file)
+      ? Date.now()
+      : uploadedFile.file.lastModified,
   };
 };
 
@@ -149,7 +160,7 @@ export const ChatInput = ({
       ? "new"
       : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
-  const hasPersistedPastedTextDraftAttachmentsRef = useRef(false);
+  const hasPersistedDraftAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
 
@@ -162,17 +173,17 @@ export const ChatInput = ({
     prevDraftIdRef.current = draftId;
 
     if (prevDraftId === "new" && draftId !== "new") {
-      const generatedPastedTextAttachments = uploadedFilesRef.current
+      const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
         .filter(
           (attachment): attachment is NonNullable<typeof attachment> =>
             attachment !== null,
         );
 
-      if (generatedPastedTextAttachments.length > 0) {
-        upsertDraftAttachments(draftId, generatedPastedTextAttachments);
+      if (draftAttachments.length > 0) {
+        upsertDraftAttachments(draftId, draftAttachments);
         removeDraftAttachments("new");
-        hasPersistedPastedTextDraftAttachmentsRef.current = true;
+        hasPersistedDraftAttachmentsRef.current = true;
       }
 
       if (uploadedFilesRef.current.length > 0) {
@@ -182,8 +193,7 @@ export const ChatInput = ({
     }
 
     const draftAttachments = getDraftAttachmentsById(draftId);
-    hasPersistedPastedTextDraftAttachmentsRef.current =
-      draftAttachments.length > 0;
+    hasPersistedDraftAttachmentsRef.current = draftAttachments.length > 0;
     skipNextAttachmentPersistRef.current = true;
     setUploadedFiles(draftAttachments.map(draftAttachmentToUploadedFile));
   }, [draftId, setUploadedFiles]);
@@ -194,19 +204,19 @@ export const ChatInput = ({
       return;
     }
 
-    const generatedPastedTextAttachments = uploadedFiles
+    const draftAttachments = uploadedFiles
       .map(uploadedFileToDraftAttachment)
       .filter(
         (attachment): attachment is NonNullable<typeof attachment> =>
           attachment !== null,
       );
 
-    if (generatedPastedTextAttachments.length > 0) {
-      upsertDraftAttachments(draftId, generatedPastedTextAttachments);
-      hasPersistedPastedTextDraftAttachmentsRef.current = true;
-    } else if (hasPersistedPastedTextDraftAttachmentsRef.current) {
+    if (draftAttachments.length > 0) {
+      upsertDraftAttachments(draftId, draftAttachments);
+      hasPersistedDraftAttachmentsRef.current = true;
+    } else if (hasPersistedDraftAttachmentsRef.current) {
       removeDraftAttachments(draftId);
-      hasPersistedPastedTextDraftAttachmentsRef.current = false;
+      hasPersistedDraftAttachmentsRef.current = false;
     }
   }, [draftId, uploadedFiles]);
 
