@@ -157,6 +157,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).not.toMatch(
       /\[\.\.\.paginatedMessages\.results\]\.reverse\(\)/,
     );
+    expect(chatComponentSrc).not.toMatch(/message\.chat_id\s*===\s*undefined/);
     expect(chatComponentSrc).toMatch(/message\.chat_id\s*===\s*chatId/);
     expect(chatComponentSrc).toMatch(/__chatId:\s*chatId/);
     expect(chatComponentSrc).toMatch(/activeChatIdRef\.current\s*!==\s*chatId/);

@@ -406,8 +406,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     paginatedMessages.results &&
     paginatedMessages.results.length > 0 &&
     paginatedMessages.results.every(
-      (message: any) =>
-        message.chat_id === undefined || message.chat_id === chatId,
+      (message: any) => message.chat_id === chatId,
     )
       ? paginatedMessages.results
       : undefined;
