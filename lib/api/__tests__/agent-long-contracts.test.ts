@@ -57,6 +57,11 @@ const chatHandlerSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentStreamRunnerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-stream-runner.ts"),
+  "utf8",
+);
+
 describe("agent-long-transport — direct UI stream reader", () => {
   test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
     expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
@@ -124,6 +129,45 @@ describe("agent-long-transport — direct UI stream reader", () => {
     );
     expect(transportSrc).toMatch(
       /userAborted\s*\|\|\s*timedOutAfterFinish\s*\|\|\s*completedRunDrainElapsed/,
+    );
+  });
+});
+
+describe("agent stream runner — empty todo_write recovery", () => {
+  test("temporarily excludes todo_write when the doom-loop detector requests it", () => {
+    expect(agentStreamRunnerSrc).toMatch(/activeToolExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/getActiveToolsWithExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/getActiveToolsForRecovery/);
+    expect(agentStreamRunnerSrc).toMatch(
+      /event:\s*"empty_todo_write_loop_recovery"/,
+    );
+
+    const recoveryIdx = agentStreamRunnerSrc.indexOf(
+      "const loopRecovery = getDoomLoopRecovery(steps, steps.length)",
+    );
+    const summarizationIdx = agentStreamRunnerSrc.indexOf(
+      "runSummarizationStep({",
+    );
+    const summarizedActiveToolsIdx = agentStreamRunnerSrc.indexOf(
+      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      summarizationIdx,
+    );
+    const normalActiveToolsIdx = agentStreamRunnerSrc.indexOf(
+      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      summarizedActiveToolsIdx + 1,
+    );
+    const summarizedNudgeIdx = agentStreamRunnerSrc.indexOf(
+      "loopRecovery.nudge",
+      summarizationIdx,
+    );
+
+    expect(recoveryIdx).toBeGreaterThan(-1);
+    expect(summarizationIdx).toBeGreaterThan(recoveryIdx);
+    expect(summarizedActiveToolsIdx).toBeGreaterThan(summarizationIdx);
+    expect(normalActiveToolsIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(summarizedNudgeIdx).toBeGreaterThan(summarizationIdx);
+    expect(agentStreamRunnerSrc).toMatch(
+      /getActiveToolsWithExclusions\(recovery\.excludedTools\)/,
     );
   });
 });
