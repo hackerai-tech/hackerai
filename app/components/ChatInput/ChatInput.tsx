@@ -45,6 +45,7 @@ interface ChatInputProps {
   onDismissRateLimitWarning?: () => void;
   placeholder?: string;
   autoFocus?: boolean;
+  restoreDraftAttachments?: boolean;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -121,6 +122,7 @@ export const ChatInput = ({
   onDismissRateLimitWarning,
   placeholder,
   autoFocus,
+  restoreDraftAttachments = true,
 }: ChatInputProps) => {
   const {
     input,
@@ -172,6 +174,13 @@ export const ChatInput = ({
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
+    if (!restoreDraftAttachments) {
+      hasPersistedDraftAttachmentsRef.current = false;
+      skipNextAttachmentPersistRef.current = true;
+      setUploadedFiles([]);
+      return;
+    }
+
     if (prevDraftId === "new" && draftId !== "new") {
       const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
@@ -196,11 +205,15 @@ export const ChatInput = ({
     hasPersistedDraftAttachmentsRef.current = draftAttachments.length > 0;
     skipNextAttachmentPersistRef.current = true;
     setUploadedFiles(draftAttachments.map(draftAttachmentToUploadedFile));
-  }, [draftId, setUploadedFiles]);
+  }, [draftId, restoreDraftAttachments, setUploadedFiles]);
 
   useEffect(() => {
     if (skipNextAttachmentPersistRef.current) {
       skipNextAttachmentPersistRef.current = false;
+      return;
+    }
+
+    if (!restoreDraftAttachments) {
       return;
     }
 
@@ -218,7 +231,7 @@ export const ChatInput = ({
       removeDraftAttachments(draftId);
       hasPersistedDraftAttachmentsRef.current = false;
     }
-  }, [draftId, uploadedFiles]);
+  }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
   // 1. Requires local sandbox — fall back to ask mode if disconnected
