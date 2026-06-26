@@ -30,6 +30,7 @@ describe("resolveUserIdsFromCustomer", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -83,6 +84,33 @@ describe("resolveUserIdsFromCustomer", () => {
       reason: "missing_workos_organization_metadata",
     });
     expect(mockListMemberships).not.toHaveBeenCalled();
+  });
+
+  it("classifies legacy user metadata separately from broken WorkOS metadata", async () => {
+    mockRetrieveCustomer.mockResolvedValueOnce({
+      deleted: false,
+      metadata: { userId: "b8c832c4-3e1e-4a76-89c1-28a5b4f56302" },
+    } as never);
+
+    const { resolveUserIdsFromCustomer } =
+      await import("../billing/resolve-customer-users");
+
+    const result = await resolveUserIdsFromCustomer(
+      "cus_legacy",
+      "Test Webhook",
+    );
+
+    expect(result).toEqual({
+      userIds: [],
+      orgId: null,
+      reason: "legacy_user_metadata",
+      legacyUserId: "b8c832c4-3e1e-4a76-89c1-28a5b4f56302",
+    });
+    expect(mockListMemberships).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[Test Webhook] Customer cus_legacy has legacy user metadata but no workOSOrganizationId metadata",
+    );
+    expect(console.error).not.toHaveBeenCalled();
   });
 
   it("returns a deleted-customer reason without querying WorkOS memberships", async () => {
