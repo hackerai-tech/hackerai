@@ -154,6 +154,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /chatDataForCurrentChat\?\.active_trigger_run_id/,
     );
     expect(chatComponentSrc).toMatch(/paginatedMessageResults/);
+    expect(chatComponentSrc).not.toMatch(
+      /\[\.\.\.paginatedMessages\.results\]\.reverse\(\)/,
+    );
     expect(chatComponentSrc).toMatch(/message\.chat_id\s*===\s*chatId/);
     expect(chatComponentSrc).toMatch(/__chatId:\s*chatId/);
     expect(chatComponentSrc).toMatch(/activeChatIdRef\.current\s*!==\s*chatId/);

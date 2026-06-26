@@ -129,7 +129,8 @@ type StreamingAction =
       type: "SET_RATE_LIMIT_WARNING";
       payload: StreamingEphemeralState["rateLimitWarning"];
     }
-  | { type: "RESET_ON_FINISH" };
+  | { type: "RESET_ON_FINISH" }
+  | { type: "RESET_ON_CHAT_CHANGE" };
 
 const initialStreamingState: StreamingEphemeralState = {
   uploadStatus: null,
@@ -158,6 +159,15 @@ function streamingReducer(
         uploadStatus: null,
         summarizationStatus: null,
       };
+    case "RESET_ON_CHAT_CHANGE":
+      if (
+        state.uploadStatus === null &&
+        state.summarizationStatus === null &&
+        state.rateLimitWarning === null
+      ) {
+        return state;
+      }
+      return initialStreamingState;
     default:
       return state;
   }
@@ -744,6 +754,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     setDataStream([]);
     setIsAutoResuming(false);
+    dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });
   }, [chatId, setDataStream, setIsAutoResuming]);
 
   useEffect(() => {
@@ -1094,12 +1105,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) {
       return;
     }
-    if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
+    if (!paginatedMessageResults || paginatedMessageResults.length === 0) {
       return;
     }
 
     const uiMessages = convertToUIMessages(
-      [...paginatedMessages.results].reverse(),
+      [...paginatedMessageResults].reverse(),
     );
 
     // Skip if useChat already has the same messages (same IDs, same part count).
@@ -1149,7 +1160,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
+  }, [paginatedMessageResults, setMessages, isExistingChat, chatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();

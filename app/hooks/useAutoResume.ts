@@ -64,7 +64,10 @@ export function useAutoResume({
     if (!dataStream) return;
     if (dataStream.length === 0) return;
 
-    const dataPart = dataStream.find(isPartForCurrentChat);
+    const dataPart = dataStream.find(
+      (part) =>
+        isPartForCurrentChat(part) && part.type === "data-appendMessage",
+    );
     if (!dataPart) return;
     if (dataPart.type === "data-appendMessage") {
       const message = JSON.parse(dataPart.data);
