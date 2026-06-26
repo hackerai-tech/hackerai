@@ -371,6 +371,51 @@ describe("ChatInput - Integration Tests", () => {
       expect(await screen.findByText("report.pdf")).toBeInTheDocument();
     });
 
+    it("does not restore draft attachments when attachment restoration is disabled", async () => {
+      const draftAttachment = {
+        kind: "file" as const,
+        fileId: "file_regular",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        size: 1024,
+        timestamp: Date.now(),
+      };
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "new",
+              content: "",
+              timestamp: Date.now(),
+              attachments: [draftAttachment],
+            },
+          ],
+        }),
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+            isNewChat={true}
+            restoreDraftAttachments={false}
+          />
+        </TestWrapper>,
+      );
+
+      await act(async () => {});
+
+      expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
+      const store = JSON.parse(
+        window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY) ?? "{}",
+      );
+      expect(store.drafts[0].attachments).toEqual([draftAttachment]);
+    });
+
     it("persists regular S3 uploaded files into draft attachments", async () => {
       const browserFile = new File(["x".repeat(2048)], "report.pdf", {
         type: "application/pdf",

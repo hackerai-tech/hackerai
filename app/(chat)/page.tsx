@@ -97,6 +97,7 @@ const UnauthenticatedContent = () => {
               clearDraftOnSubmit={false}
               placeholder={animatedPlaceholder}
               autoFocus={false}
+              restoreDraftAttachments={false}
             />
           </div>
         </div>
