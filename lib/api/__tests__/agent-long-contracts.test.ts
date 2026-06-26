@@ -126,6 +126,15 @@ describe("agent-long-transport — direct UI stream reader", () => {
       /userAborted\s*\|\|\s*timedOutAfterFinish\s*\|\|\s*completedRunDrainElapsed/,
     );
   });
+
+  test("browser stream cancellation releases Trigger realtime subscriptions", () => {
+    expect(transportSrc).toMatch(/cancelRealtimeSubscriptions/);
+    expect(transportSrc).toMatch(/statusSubscription\?\.unsubscribe\?\.\(\)/);
+    expect(transportSrc).toMatch(/streamIterator\?\.return\?\.\(undefined\)/);
+    expect(transportSrc).toMatch(
+      /cancel\(\)\s*\{\s*consumerCanceled\s*=\s*true;[\s\S]*cancelRealtimeSubscriptions\?\.\(\)/,
+    );
+  });
 });
 
 describe("agent-long chat UI — completion reconciliation", () => {
@@ -138,6 +147,13 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/stop\(\)/);
     expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+  });
+
+  test("stops the local stream when a streaming chat unmounts", () => {
+    expect(chatComponentSrc).toMatch(/const stopRef = useLatestRef\(stop\)/);
+    expect(chatComponentSrc).toMatch(
+      /const stopCurrentStream = stopRef\.current[\s\S]*statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopCurrentStream\(\)/,
+    );
   });
 });
 

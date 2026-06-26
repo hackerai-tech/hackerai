@@ -87,12 +87,21 @@ const buildSSEResponseFromRun = (
   const { runId, publicAccessToken } = handle;
   const encoder = new TextEncoder();
   const chatId = options?.chatId ?? handle.chatId;
+  let cancelRealtimeSubscriptions: (() => Promise<void> | void) | undefined;
+  let consumerCanceled = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
       let readAbortController: AbortController | undefined;
       let statusSubscription: { unsubscribe?: () => void } | undefined;
+      let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
+
+      cancelRealtimeSubscriptions = async () => {
+        readAbortController?.abort();
+        statusSubscription?.unsubscribe?.();
+        await streamIterator?.return?.(undefined).catch(() => undefined);
+      };
 
       // Always close with an abort rather than controller.error() so useChat
       // reliably exits streaming state even when subscription throws.
@@ -131,7 +140,7 @@ const buildSSEResponseFromRun = (
       }, STREAM_TIMEOUT_MS);
 
       // Short-circuit if the consumer already aborted before we got here.
-      if (signal?.aborted) {
+      if (signal?.aborted || consumerCanceled) {
         clearTimeout(timeoutId);
         sendAbortAndClose();
         return;
@@ -149,7 +158,7 @@ const buildSSEResponseFromRun = (
 
         await auth.withAuth({ accessToken: publicAccessToken }, async () => {
           readAbortController = new AbortController();
-          if (signal?.aborted) {
+          if (signal?.aborted || consumerCanceled) {
             userAborted = true;
             readAbortController.abort();
             return;
@@ -341,6 +350,7 @@ const buildSSEResponseFromRun = (
           });
 
           const iter = uiStream[Symbol.asyncIterator]();
+          streamIterator = iter;
           const readNextChunk = () => {
             if (!sawFinishChunk) {
               return Promise.race([
@@ -478,7 +488,7 @@ const buildSSEResponseFromRun = (
           if (userAborted || timedOutAfterFinish || completedRunDrainElapsed) {
             // Release the trigger.dev subscription so it doesn't keep
             // streaming chunks into a dead controller.
-            await iter.return?.(undefined).catch(() => undefined);
+            await cancelRealtimeSubscriptions?.();
           }
 
           if (!sawTerminalChunk) {
@@ -499,11 +509,18 @@ const buildSSEResponseFromRun = (
       } catch {
         clearTimeout(timeoutId);
         // Always send an abort on error so useChat cleans up.
-        sendAbortAndClose();
+        if (!consumerCanceled) {
+          sendAbortAndClose();
+        }
       } finally {
         signal?.removeEventListener("abort", onAbort);
         statusSubscription?.unsubscribe?.();
+        cancelRealtimeSubscriptions = undefined;
       }
+    },
+    cancel() {
+      consumerCanceled = true;
+      return cancelRealtimeSubscriptions?.();
     },
   });
 

@@ -694,6 +694,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
   const statusRef = useRef(status);
   statusRef.current = status;
+  const stopRef = useLatestRef(stop);
+
+  useEffect(() => {
+    const stopCurrentStream = stopRef.current;
+    return () => {
+      if (
+        statusRef.current === "streaming" ||
+        statusRef.current === "submitted"
+      ) {
+        stopCurrentStream();
+      }
+    };
+  }, [stopRef]);
 
   const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
