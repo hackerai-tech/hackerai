@@ -1,4 +1,12 @@
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  expect,
+  it,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
+import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
@@ -31,6 +39,8 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 describe("cancelSubscriptionAction", () => {
+  const originalConvexServiceRoleKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
@@ -43,6 +53,14 @@ describe("cancelSubscriptionAction", () => {
       },
       stripeCustomerId: "cus_123",
     } as never);
+  });
+
+  afterEach(() => {
+    if (originalConvexServiceRoleKey === undefined) {
+      delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    } else {
+      process.env.CONVEX_SERVICE_ROLE_KEY = originalConvexServiceRoleKey;
+    }
   });
 
   it("returns success without updating Stripe when cancellation is already scheduled", async () => {
@@ -145,6 +163,15 @@ describe("cancelSubscriptionAction", () => {
         feedback: "other",
       },
     });
-    expect(mockPostHogEvent).toHaveBeenCalledTimes(2);
+    expect(mockPostHogEvent).toHaveBeenNthCalledWith(
+      1,
+      PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
+      expect.any(Object),
+    );
+    expect(mockPostHogEvent).toHaveBeenNthCalledWith(
+      2,
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      expect.any(Object),
+    );
   });
 });
