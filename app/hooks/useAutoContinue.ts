@@ -5,12 +5,14 @@ import type { ChatStatus, MessageMetadata, Todo } from "@/types";
 import {
   useDataStreamState,
   useDataStreamDispatch,
+  type ScopedDataUIPart,
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
 export const MAX_AUTO_CONTINUES = 5;
 
 export interface UseAutoContinueParams {
+  chatId: string;
   status: ChatStatus;
   chatMode: string;
   sendMessage: (
@@ -25,6 +27,7 @@ export interface UseAutoContinueParams {
 }
 
 export function useAutoContinue({
+  chatId,
   status,
   chatMode,
   sendMessage,
@@ -45,16 +48,25 @@ export function useAutoContinue({
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const selectedModelRef = useLatestRef(selectedModel);
+  const isPartForCurrentChat = (part: ScopedDataUIPart) =>
+    part.__chatId === undefined || part.__chatId === chatId;
+
+  useEffect(() => {
+    pendingAutoContinueRef.current = false;
+    lastProcessedIndexRef.current = 0;
+  }, [chatId]);
 
   // Detect data-auto-continue signal and immediately mark pending
   useEffect(() => {
     if (!dataStream?.length) return;
-    const newParts = dataStream.slice(lastProcessedIndexRef.current);
+    const currentChatDataStream = dataStream.filter(isPartForCurrentChat);
+    const newParts = currentChatDataStream.slice(lastProcessedIndexRef.current);
     if (newParts.some((part) => part.type === "data-auto-continue")) {
       pendingAutoContinueRef.current = true;
       setIsAutoResuming(true);
     }
-    lastProcessedIndexRef.current = dataStream.length;
+    lastProcessedIndexRef.current = currentChatDataStream.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataStream, setIsAutoResuming]);
 
   // Fire auto-continue when status is ready and signal was detected.
@@ -95,6 +107,7 @@ export function useAutoContinue({
     dataStream,
     chatMode,
     hasManuallyStoppedRef,
+    setAutoContinueCount,
     setIsAutoResuming,
     sendMessageRef,
     todosRef,

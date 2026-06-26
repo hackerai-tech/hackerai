@@ -42,6 +42,11 @@ const chatComponentSrc = fs.readFileSync(
   "utf8",
 );
 
+const convexMessagesSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../convex/messages.ts"),
+  "utf8",
+);
+
 const taskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
@@ -182,6 +187,27 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/stop\(\)/);
     expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+  });
+
+  test("guards auto-resume and stream data against stale chat switches", () => {
+    expect(chatComponentSrc).toMatch(/chatDataForCurrentChat/);
+    expect(chatComponentSrc).toMatch(
+      /chatDataForCurrentChat\?\.active_stream_id/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /chatDataForCurrentChat\?\.active_trigger_run_id/,
+    );
+    expect(chatComponentSrc).toMatch(/paginatedMessageResults/);
+    expect(chatComponentSrc).not.toMatch(
+      /\[\.\.\.paginatedMessages\.results\]\.reverse\(\)/,
+    );
+    expect(chatComponentSrc).not.toMatch(/message\.chat_id\s*===\s*undefined/);
+    expect(chatComponentSrc).toMatch(/message\.chat_id\s*===\s*chatId/);
+    expect(chatComponentSrc).toMatch(/__chatId:\s*chatId/);
+    expect(chatComponentSrc).toMatch(/activeChatIdRef\.current\s*!==\s*chatId/);
+    expect(chatComponentSrc).toMatch(/shouldUseAgentLongForCurrentChat/);
+    expect(convexMessagesSrc).toMatch(/chat_id:\s*v\.string\(\)/);
+    expect(convexMessagesSrc).toMatch(/chat_id:\s*message\.chat_id/);
   });
 });
 
