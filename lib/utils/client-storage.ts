@@ -184,11 +184,7 @@ const normalizeDraftAttachments = (
     (attachment): attachment is ConversationDraftAttachment => {
       if (!attachment || typeof attachment !== "object") return false;
       const value = attachment as Partial<ConversationDraftAttachment>;
-      const validKind =
-        value.kind === "file" ||
-        (value.kind === "pasted-text" &&
-          (typeof value.generatedSource === "undefined" ||
-            value.generatedSource === "pasted-text"));
+      const validKind = value.kind === "file" || value.kind === "pasted-text";
 
       return (
         validKind &&
