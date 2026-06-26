@@ -65,6 +65,10 @@ export const FinishReasonNotice = ({
       return <>Paused at the Pro Agent per-run safety cap.</>;
     }
 
+    if (finishReason === "budget-exhausted") {
+      return <>Paused at the usage budget limit.</>;
+    }
+
     return null;
   };
 

@@ -35,6 +35,12 @@ Your previous response was paused by the Pro Agent per-run spend cap. \
 This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
 resume the task exactly where you left off without repeating what was already done.
 </resume_context>`;
+  } else if (finishReason === "budget-exhausted") {
+    return `<resume_context>
+Your previous response was paused because the monthly usage budget or extra usage spending limit was reached. \
+This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
+resume the task exactly where you left off without repeating completed work or starting the task over.
+</resume_context>`;
   }
 
   return "";

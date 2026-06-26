@@ -128,6 +128,10 @@ describe("FinishReasonNotice", () => {
         finishReason: "context-limit",
         expectedText: "Reached the context limit for this conversation",
       },
+      {
+        finishReason: "budget-exhausted",
+        expectedText: "Paused at the usage budget limit",
+      },
     ])(
       "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
       ({ finishReason, expectedText }) => {
@@ -212,6 +216,7 @@ describe("FinishReasonNotice", () => {
       "context-limit",
       "preemptive-timeout",
       "agent-run-spend-cap",
+      "budget-exhausted",
     ])("renders the Continue button for finishReason=%s", (finishReason) => {
       const onContinue = jest.fn();
       renderNotice(
