@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { ConvexError } from "convex/values";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -52,6 +52,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { cancelAgentLongRealtimeStreams } from "@/lib/chat/agent-long-transport";
 import { ShareDialog } from "./ShareDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
 
@@ -65,6 +66,17 @@ interface ChatItemProps {
   isPinned?: boolean;
   isStreaming?: boolean;
 }
+
+const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
+  const match = pathname?.match(/^\/c\/([^/?#]+)/);
+  const routeChatId = match?.[1];
+  if (!routeChatId) return null;
+  try {
+    return decodeURIComponent(routeChatId);
+  } catch {
+    return routeChatId;
+  }
+};
 
 const ChatItem: React.FC<ChatItemProps> = ({
   id,
@@ -92,14 +104,27 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
+    optimisticChatId,
+    setOptimisticChatId,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const renameChat = useMutation(api.chats.renameChat);
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
 
-  // Check if this chat is currently active based on URL (usePathname so we re-render when route changes)
-  const isCurrentlyActive = pathname === `/c/${id}`;
+  const routeChatId = getRouteChatIdFromPathname(pathname);
+  const selectedChatId = optimisticChatId ?? routeChatId;
+
+  // Check if this chat is currently active based on URL (usePathname so we re-render when route changes).
+  // During a route transition, prefer the clicked chat immediately so a busy
+  // streaming chat does not keep the old row highlighted until navigation commits.
+  const isCurrentlyActive = selectedChatId === id;
+
+  useEffect(() => {
+    if (optimisticChatId && optimisticChatId === routeChatId) {
+      setOptimisticChatId(null);
+    }
+  }, [optimisticChatId, routeChatId, setOptimisticChatId]);
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
@@ -115,6 +140,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
     // Clear input and transient state only when switching to a different chat
     if (!isCurrentlyActive) {
+      setOptimisticChatId(id);
+      if (routeChatId && routeChatId !== id) {
+        cancelAgentLongRealtimeStreams(routeChatId);
+      }
       initializeChat(id);
     }
 

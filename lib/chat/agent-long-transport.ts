@@ -26,6 +26,67 @@ type RunHandle = {
   chatId?: string;
 };
 
+type AgentLongRealtimeCancel = () => Promise<void> | void;
+
+const activeAgentLongRealtimeCancels = new Map<
+  string,
+  Set<AgentLongRealtimeCancel>
+>();
+
+const registerAgentLongRealtimeCancel = (
+  chatId: string | undefined,
+  cancel: AgentLongRealtimeCancel,
+): (() => void) | undefined => {
+  if (!chatId) return undefined;
+
+  let cancels = activeAgentLongRealtimeCancels.get(chatId);
+  if (!cancels) {
+    cancels = new Set();
+    activeAgentLongRealtimeCancels.set(chatId, cancels);
+  }
+  cancels.add(cancel);
+
+  return () => {
+    const currentCancels = activeAgentLongRealtimeCancels.get(chatId);
+    if (!currentCancels) return;
+    currentCancels.delete(cancel);
+    if (currentCancels.size === 0) {
+      activeAgentLongRealtimeCancels.delete(chatId);
+    }
+  };
+};
+
+export const cancelAgentLongRealtimeStreams = (chatId?: string): void => {
+  const cancels =
+    chatId === undefined
+      ? Array.from(activeAgentLongRealtimeCancels.values()).flatMap((set) =>
+          Array.from(set),
+        )
+      : Array.from(activeAgentLongRealtimeCancels.get(chatId) ?? []);
+
+  for (const cancel of cancels) {
+    void Promise.resolve(cancel()).catch(() => undefined);
+  }
+};
+
+const createLinkedAbortController = (
+  signal: AbortSignal | undefined,
+): { controller: AbortController; cleanup: () => void } => {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
+
+  return {
+    controller,
+    cleanup: () => signal?.removeEventListener("abort", abort),
+  };
+};
+
 const sseHeaders: HeadersInit = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache, no-transform",
@@ -88,7 +149,19 @@ const buildSSEResponseFromRun = (
   const encoder = new TextEncoder();
   const chatId = options?.chatId ?? handle.chatId;
   let cancelRealtimeSubscriptions: (() => Promise<void> | void) | undefined;
+  let closeConsumerStream: (() => void) | undefined;
   let consumerCanceled = false;
+  let unregisterRealtimeCancel: (() => void) | undefined;
+  const cancelConsumerRealtime = async () => {
+    consumerCanceled = true;
+    closeConsumerStream?.();
+    await cancelRealtimeSubscriptions?.();
+    unregisterRealtimeCancel?.();
+  };
+  unregisterRealtimeCancel = registerAgentLongRealtimeCancel(
+    chatId,
+    cancelConsumerRealtime,
+  );
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -121,6 +194,7 @@ const buildSSEResponseFromRun = (
           // ignore if already closed
         }
       };
+      closeConsumerStream = sendAbortAndClose;
 
       const close = () => {
         if (closed) return;
@@ -516,11 +590,14 @@ const buildSSEResponseFromRun = (
         signal?.removeEventListener("abort", onAbort);
         statusSubscription?.unsubscribe?.();
         cancelRealtimeSubscriptions = undefined;
+        closeConsumerStream = undefined;
+        unregisterRealtimeCancel?.();
       }
     },
     cancel() {
-      consumerCanceled = true;
-      return cancelRealtimeSubscriptions?.();
+      return cancelConsumerRealtime().finally(() => {
+        unregisterRealtimeCancel?.();
+      });
     },
   });
 
@@ -530,31 +607,57 @@ const buildSSEResponseFromRun = (
 export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
 ): Promise<Response> => {
-  const startResponse = await fetchWithErrorHandlers("/api/agent-long", init);
-  if (!startResponse.ok) return startResponse;
-
-  const handle: RunHandle = await startResponse.json();
-  return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
-    chatId: getChatIdFromRequestInit(init),
+  const chatId = getChatIdFromRequestInit(init);
+  const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
+  const unregisterStartCancel = registerAgentLongRealtimeCancel(chatId, () => {
+    linkedAbort.controller.abort();
   });
+
+  try {
+    const startResponse = await fetchWithErrorHandlers("/api/agent-long", {
+      ...init,
+      signal: linkedAbort.controller.signal,
+    });
+    if (!startResponse.ok) return startResponse;
+
+    const handle: RunHandle = await startResponse.json();
+    return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
+      chatId,
+    });
+  } finally {
+    unregisterStartCancel?.();
+    linkedAbort.cleanup();
+  }
 };
 
 export const resumeAgentLongStream = async (
   url: string,
   init: RequestInit | undefined,
 ): Promise<Response> => {
+  const chatId = getChatIdFromResumeUrl(url);
+  const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
+  const unregisterStartCancel = registerAgentLongRealtimeCancel(chatId, () => {
+    linkedAbort.controller.abort();
+  });
+
   // useChat's reconnectToStream signals "nothing to resume" by treating a
   // 204 as null. /api/agent-long/resume returns 204 when the chat has no
   // active run (or the stored run hit a terminal state); pass that through.
-  const response = await fetchWithErrorHandlers(url, {
-    ...init,
-    method: "GET",
-  });
-  if (response.status === 204) return response;
-  if (!response.ok) return response;
+  try {
+    const response = await fetchWithErrorHandlers(url, {
+      ...init,
+      method: "GET",
+      signal: linkedAbort.controller.signal,
+    });
+    if (response.status === 204) return response;
+    if (!response.ok) return response;
 
-  const handle: RunHandle = await response.json();
-  return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
-    chatId: getChatIdFromResumeUrl(url),
-  });
+    const handle: RunHandle = await response.json();
+    return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
+      chatId,
+    });
+  } finally {
+    unregisterStartCancel?.();
+    linkedAbort.cleanup();
+  }
 };

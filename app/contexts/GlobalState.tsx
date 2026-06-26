@@ -88,6 +88,8 @@ interface GlobalStateType {
   // Chat sidebar state (left side)
   chatSidebarOpen: boolean;
   setChatSidebarOpen: (open: boolean) => void;
+  optimisticChatId: string | null;
+  setOptimisticChatId: (chatId: string | null) => void;
 
   // Todos state
   todos: Todo[];
@@ -335,6 +337,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile ?? false),
   );
+  const [optimisticChatId, setOptimisticChatId] = useState<string | null>(null);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
   const mergeTodos = useCallback((newTodos: TodoLike[]) => {
@@ -968,6 +971,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarContent,
     chatSidebarOpen,
     setChatSidebarOpen,
+    optimisticChatId,
+    setOptimisticChatId,
     todos,
     setTodos,
     mergeTodos,
