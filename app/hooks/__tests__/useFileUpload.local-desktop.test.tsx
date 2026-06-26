@@ -6,6 +6,7 @@ import {
   pickLocalFiles,
   readLocalFile,
 } from "@/app/hooks/useTauri";
+import { toast } from "sonner";
 
 const addUploadedFile = jest.fn();
 const updateUploadedFile = jest.fn();
@@ -41,6 +42,13 @@ jest.mock("@/app/hooks/useTauri", () => ({
   pickLocalFiles: jest.fn(),
   getLocalFileMetadata: jest.fn(),
   readLocalFile: jest.fn(),
+}));
+
+jest.mock("sonner", () => ({
+  toast: {
+    error: jest.fn(),
+    warning: jest.fn(),
+  },
 }));
 
 describe("useFileUpload desktop-local agent attachments", () => {
@@ -223,6 +231,44 @@ describe("useFileUpload desktop-local agent attachments", () => {
       );
     });
     expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("shows storage quota errors without logging an unexpected upload failure", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const message =
+      "Storage limit exceeded. You are using 10.00 GB of 10 GB and this file requires 37.94 MB. Please delete some files to upload new ones.";
+    generateS3UploadUrlAction.mockRejectedValueOnce(
+      new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message,
+      }),
+    );
+    const file = new File(["hello"], "report.txt", { type: "text/plain" });
+    const { result } = renderHook(() => useFileUpload("ask"));
+
+    await act(async () => {
+      await result.current.handleFileUploadEvent({
+        target: { files: [file] },
+      } as any);
+    });
+
+    await waitFor(() => {
+      expect(updateUploadedFile).toHaveBeenCalledWith(
+        0,
+        expect.objectContaining({
+          uploading: false,
+          uploaded: false,
+          error: message,
+        }),
+      );
+    });
+    expect(toast.error).toHaveBeenCalledWith(message);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
   });
 
   it("keeps the S3 upload path outside desktop Agent mode", async () => {

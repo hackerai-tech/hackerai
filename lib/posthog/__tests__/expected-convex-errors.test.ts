@@ -47,6 +47,18 @@ describe("shouldDropExpectedConvexException", () => {
     ).toBe(true);
   });
 
+  it("drops file storage quota errors", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"STORAGE_LIMIT_EXCEEDED","message":"Storage limit exceeded. You are using 10.00 GB of 10 GB and this file requires 37.94 MB. Please delete some files to upload new ones."}',
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("drops expected upload validation errors", () => {
     expect(
       shouldDropExpectedConvexException({
