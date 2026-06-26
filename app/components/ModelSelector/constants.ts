@@ -37,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "Moonshot Kimi K2.7 Code",
+    poweredBy: "MiniMax M3",
     thinking: true,
   },
   {

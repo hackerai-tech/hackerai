@@ -147,9 +147,7 @@ const ModelOptionButton = ({
           {option.thinking && (
             <Brain className="h-3 w-3 text-muted-foreground/60" />
           )}
-          {option.id !== "auto" && (
-            <CostIndicator modelId={option.id} mode={mode} />
-          )}
+          {option.id !== "auto" && <CostIndicator modelId={option.id} />}
         </div>
       </div>
       {isFreeUser ? (

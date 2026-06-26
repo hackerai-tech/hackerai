@@ -245,11 +245,11 @@ describe("selectModel", () => {
     });
   });
 
-  // Agent mode — Standard resolves to Kimi instead of Gemini
+  // Agent mode — Standard resolves to MiniMax instead of Gemini
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to Kimi K2.7 Code in agent mode", () => {
+    it("should map HackerAI Standard to MiniMax M3 in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
-        "model-kimi-k2.7-code",
+        "model-minimax-m3",
       );
     });
 
