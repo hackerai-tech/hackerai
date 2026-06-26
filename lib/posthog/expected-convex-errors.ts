@@ -1,17 +1,17 @@
+import {
+  getConvexErrorCodeFromText,
+  isExpectedConvexErrorCode,
+} from "@/lib/utils/expected-convex-errors";
+
+export { isExpectedConvexErrorCode };
+
 const IGNORED_CONVEX_EXCEPTION_MESSAGES = [
   "Unauthorized: User not authenticated",
   "Invalid arguments provided",
-  "FILE_TOKEN_LIMIT_EXCEEDED",
-  "FILE_UPLOAD_RATE_LIMIT",
-  "STORAGE_LIMIT_EXCEEDED",
   "exceeds the maximum token limit",
   "cloud file upload limit",
-  "INVALID_FILE_SIZE",
   "Batch size exceeds limit",
-  "PAID_PLAN_REQUIRED",
   "Paid plan required for file uploads",
-  "CHAT_UNAUTHORIZED",
-  "CHAT_ACCESS_SUSPENDED",
   "Unauthorized: Chat does not belong to user",
   "OptimisticConcurrencyControlFailure",
   'Documents read from or written to the "btreeNode" table changed',
@@ -44,14 +44,21 @@ const collectStrings = (value: unknown, strings: string[] = []): string[] => {
   return strings;
 };
 
+const shouldDropExpectedConvexMessage = (message: string): boolean => {
+  const code = getConvexErrorCodeFromText(message);
+  if (isExpectedConvexErrorCode(code)) {
+    return true;
+  }
+
+  return IGNORED_CONVEX_EXCEPTION_MESSAGES.some((ignoredMessage) =>
+    message.includes(ignoredMessage),
+  );
+};
+
 export function shouldDropExpectedConvexException(event: PostHogEventLike) {
   if (event.event !== "$exception") {
     return false;
   }
 
-  return collectStrings(event.properties).some((message) =>
-    IGNORED_CONVEX_EXCEPTION_MESSAGES.some((ignoredMessage) =>
-      message.includes(ignoredMessage),
-    ),
-  );
+  return collectStrings(event.properties).some(shouldDropExpectedConvexMessage);
 }

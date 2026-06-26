@@ -1,4 +1,7 @@
-import { shouldDropExpectedConvexException } from "../expected-convex-errors";
+import {
+  isExpectedConvexErrorCode,
+  shouldDropExpectedConvexException,
+} from "../expected-convex-errors";
 
 describe("shouldDropExpectedConvexException", () => {
   it("drops paid-plan upload errors from nested exception values", () => {
@@ -97,10 +100,51 @@ describe("shouldDropExpectedConvexException", () => {
         event: "$exception",
         properties: {
           $exception_message:
-            'Uncaught ConvexError: {"code":"CHAT_ACCESS_SUSPENDED","message":"Your account has been suspended due to a fraudulent payment dispute (chargeback)."}',
+            'Uncaught ConvexError: {"code":"CHAT_ACCESS_SUSPENDED","message":"Your account has been suspended due to a fraudulent payment dispute (chargeback). Please contact support via chat at https://help.hackerai.co/ if you believe this is a mistake.","suspensionCategory":"dispute_fraudulent","suspensionSource":"stripe"}',
         },
       }),
     ).toBe(true);
+  });
+
+  it("drops expected Convex exceptions by code even when the message changes", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"IMAGE_SIZE_EXCEEDED","message":"The image copy can change without updating this filter."}',
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("drops expected Convex exceptions when the JSON payload is escaped", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {\\"code\\":\\"FILE_SIZE_EXCEEDED\\",\\"message\\":\\"Too large\\"}',
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps Convex exceptions with unknown codes", () => {
+    expect(
+      shouldDropExpectedConvexException({
+        event: "$exception",
+        properties: {
+          $exception_message:
+            'Uncaught ConvexError: {"code":"NEW_UNHANDLED_CONVEX_ERROR","message":"Something changed"}',
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("classifies expected Convex error codes", () => {
+    expect(isExpectedConvexErrorCode("CHAT_ACCESS_SUSPENDED")).toBe(true);
+    expect(isExpectedConvexErrorCode("NEW_UNHANDLED_CONVEX_ERROR")).toBe(false);
   });
 
   it("drops Convex optimistic concurrency retries from file upload metadata", () => {

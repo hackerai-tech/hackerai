@@ -3,6 +3,7 @@
 import React, { Component, ReactNode } from "react";
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
+import { isExpectedConvexErrorCode } from "@/lib/utils/expected-convex-errors";
 
 interface Props {
   children: ReactNode;
@@ -25,11 +26,12 @@ export class ConvexErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("ConvexErrorBoundary caught an error:", error, errorInfo);
-
     // Handle ConvexError with toast
     if (error instanceof ConvexError) {
       const errorData = error.data as { code?: string; message?: string };
+      if (!isExpectedConvexErrorCode(errorData?.code)) {
+        console.error("ConvexErrorBoundary caught an error:", error, errorInfo);
+      }
 
       // Note: CHAT_NOT_FOUND is now handled gracefully in the query itself
       // by returning empty results, so we don't need to handle it here
@@ -43,6 +45,7 @@ export class ConvexErrorBoundary extends Component<Props, State> {
         });
       }
     } else {
+      console.error("ConvexErrorBoundary caught an error:", error, errorInfo);
       toast.error("Something went wrong", {
         description: "Please try refreshing the page.",
       });
