@@ -465,9 +465,9 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper MiniMax fallback
- * while the run is text-only, then switch to multimodal-capable fallbacks once
- * image tool results enter the context.
+ * this fallback can fire. Claude agent calls use the cheaper MiniMax and Kimi
+ * fallback chain while the run is text-only, then switch to multimodal-capable
+ * fallbacks once image tool results enter the context.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -479,10 +479,10 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-deepseek-v4-flash": ["fallback-ask-model"],
   "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-ask-model"],
-  "agent-model": ["fallback-grok-4.3"],
+  "agent-model": ["model-kimi-k2.6", "fallback-grok-4.3"],
   "model-grok-4.3": ["fallback-ask-model"],
   "model-gemini-3-flash": ["fallback-ask-model"],
-  "model-minimax-m3": ["fallback-grok-4.3"],
+  "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -510,7 +510,7 @@ export function isAutoModelSelectionForRetry({
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-minimax-m3", "fallback-grok-4.3"],
+    agent: ["model-minimax-m3", "model-kimi-k2.6", "fallback-grok-4.3"],
     ask: ["model-grok-4.3"],
   };
 

@@ -35,7 +35,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to MiniMax then Grok slugs", () => {
+  it("resolves Opus 4.6 text-only agent chain to MiniMax, Kimi, then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -43,7 +43,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [MINIMAX_SLUG, GROK_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -75,7 +75,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 text-only agent chain to MiniMax then Grok slugs", () => {
+  it("resolves Sonnet 4.6 text-only agent chain to MiniMax, Kimi, then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -83,7 +83,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [MINIMAX_SLUG, GROK_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -102,7 +102,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("keeps Anthropic multimodal agent fallback off text-only MiniMax once image tool results exist", () => {
+  it("keeps Anthropic multimodal agent fallback off text-only MiniMax and Kimi once image tool results exist", () => {
     const opus = buildProviderOptions(
       false,
       "user-1",
@@ -124,17 +124,19 @@ describe("buildProviderOptions fallback chain", () => {
     expect(sonnet.openrouter.models).toEqual([GROK_SLUG]);
     expect(opus.openrouter.models).not.toContain(MINIMAX_SLUG);
     expect(sonnet.openrouter.models).not.toContain(MINIMAX_SLUG);
+    expect(opus.openrouter.models).not.toContain(KIMI_SLUG);
+    expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
   });
 
-  it("falls back from auto agent MiniMax to Grok", () => {
+  it("falls back from auto agent MiniMax to Kimi then Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from explicit MiniMax to Grok", () => {
+  it("falls back from explicit MiniMax to Kimi then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -142,7 +144,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -277,7 +279,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(reasoning.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [MINIMAX_SLUG, GROK_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
     });
 
     const noReasoning = buildProviderOptions(
@@ -288,7 +290,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
-      models: [MINIMAX_SLUG, GROK_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
     });
 
     const multimodal = buildProviderOptions(
