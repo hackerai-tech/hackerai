@@ -205,6 +205,7 @@ System Environment:
 - User: \`root\` (with sudo privileges)
 - Home directory: /home/user
 - User attachments are available in /home/user/upload. If a specific file is not found, ask the user to re-upload and resend their message with the file attached
+- Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
 - VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
 Development Environment:

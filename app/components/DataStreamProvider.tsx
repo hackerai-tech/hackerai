@@ -9,16 +9,20 @@ import React, {
 } from "react";
 import type { DataUIPart } from "ai";
 
+export type ScopedDataUIPart = DataUIPart<any> & {
+  __chatId?: string;
+};
+
 // --- State context (changes frequently during streaming) ---
 interface DataStreamStateValue {
-  dataStream: DataUIPart<any>[];
+  dataStream: ScopedDataUIPart[];
   isAutoResuming: boolean;
   autoContinueCount: number;
 }
 
 // --- Dispatch context (stable references, never causes re-renders) ---
 interface DataStreamDispatchValue {
-  setDataStream: React.Dispatch<React.SetStateAction<DataUIPart<any>[]>>;
+  setDataStream: React.Dispatch<React.SetStateAction<ScopedDataUIPart[]>>;
   setIsAutoResuming: React.Dispatch<React.SetStateAction<boolean>>;
   setAutoContinueCount: React.Dispatch<React.SetStateAction<number>>;
 }
@@ -33,7 +37,7 @@ export function DataStreamProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const [dataStream, setDataStream] = useState<DataUIPart<any>[]>([]);
+  const [dataStream, setDataStream] = useState<ScopedDataUIPart[]>([]);
   const [isAutoResuming, setIsAutoResuming] = useState<boolean>(false);
   const [autoContinueCount, setAutoContinueCount] = useState<number>(0);
 

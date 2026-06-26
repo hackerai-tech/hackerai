@@ -129,7 +129,8 @@ type StreamingAction =
       type: "SET_RATE_LIMIT_WARNING";
       payload: StreamingEphemeralState["rateLimitWarning"];
     }
-  | { type: "RESET_ON_FINISH" };
+  | { type: "RESET_ON_FINISH" }
+  | { type: "RESET_ON_CHAT_CHANGE" };
 
 const initialStreamingState: StreamingEphemeralState = {
   uploadStatus: null,
@@ -158,6 +159,15 @@ function streamingReducer(
         uploadStatus: null,
         summarizationStatus: null,
       };
+    case "RESET_ON_CHAT_CHANGE":
+      if (
+        state.uploadStatus === null &&
+        state.summarizationStatus === null &&
+        state.rateLimitWarning === null
+      ) {
+        return state;
+      }
+      return initialStreamingState;
     default:
       return state;
   }
@@ -199,6 +209,7 @@ function getLatestTodoWriteOutput(messages: ChatMessage[]):
 // Without this boundary, Chat subscribes to DataStreamStateContext
 // through these hooks and re-renders on every stream chunk.
 function StreamEffects({
+  chatId,
   autoResume,
   serverMessages,
   resumeStream,
@@ -214,6 +225,7 @@ function StreamEffects({
   resetRef,
   hasActiveStream,
 }: {
+  chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
   resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
@@ -233,6 +245,7 @@ function StreamEffects({
   hasActiveStream: boolean | undefined;
 }) {
   useAutoResume({
+    chatId,
     autoResume,
     initialMessages: serverMessages,
     resumeStream,
@@ -241,6 +254,7 @@ function StreamEffects({
   });
 
   const { resetAutoContinueCount } = useAutoContinue({
+    chatId,
     status,
     chatMode,
     sendMessage,
@@ -386,24 +400,37 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldFetchMessages ? { id: chatId } : "skip",
   );
 
+  const chatDataForCurrentChat =
+    chatData && (chatData as any).id === chatId ? chatData : undefined;
+  const paginatedMessageResults =
+    paginatedMessages.results &&
+    paginatedMessages.results.length > 0 &&
+    paginatedMessages.results.every(
+      (message: any) => message.chat_id === chatId,
+    )
+      ? paginatedMessages.results
+      : undefined;
+
   // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
-  const storedSandboxType = (chatData as any)?.sandbox_type as
+  const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
     | string
     | undefined;
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
-  const chatTitle = streamedTitle ?? chatData?.title ?? null;
+  const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunRef = useLatestRef(
-    (chatData as any)?.active_trigger_run_id as string | undefined,
+    (chatDataForCurrentChat as any)?.active_trigger_run_id as
+      | string
+      | undefined,
   );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages: ChatMessage[] =
-    paginatedMessages.results && paginatedMessages.results.length > 0
-      ? convertToUIMessages([...paginatedMessages.results].reverse())
+    paginatedMessageResults && paginatedMessageResults.length > 0
+      ? convertToUIMessages([...paginatedMessageResults].reverse())
       : [];
 
   // State to prevent double-processing of queue
@@ -413,6 +440,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const isChatMountedRef = useRef(false);
+  const activeChatIdRef = useRef(chatId);
+  activeChatIdRef.current = chatId;
+
+  useEffect(() => {
+    isChatMountedRef.current = true;
+    return () => {
+      isChatMountedRef.current = false;
+    };
+  }, []);
 
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
@@ -545,7 +582,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     transport: transportRef.current,
 
     onData: (dataPart) => {
-      setDataStream((ds) => (ds ? [...ds, dataPart] : []));
+      if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
+        return;
+      }
+      setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
         case "data-upload-status": {
           const uploadData = dataPart.data as {
@@ -694,19 +734,40 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
   const statusRef = useRef(status);
   statusRef.current = status;
-  const stopRef = useLatestRef(stop);
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  const shouldUseAgentLongForCurrentChat =
+    shouldUseAgentLong &&
+    (!isExistingChat ||
+      (!!chatDataForCurrentChat &&
+        (!!chatDataForCurrentChat.active_trigger_run_id ||
+          (chatDataForCurrentChat as any).default_model_slug === "agent" ||
+          (chatDataForCurrentChat as any).default_model_slug ===
+            "agent-long")));
+  const shouldUseAgentLongForCurrentChatRef = useRef(
+    shouldUseAgentLongForCurrentChat,
+  );
+  shouldUseAgentLongForCurrentChatRef.current =
+    shouldUseAgentLongForCurrentChat;
 
   useEffect(() => {
-    const stopCurrentStream = stopRef.current;
+    setDataStream([]);
+    setIsAutoResuming(false);
+    dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });
+  }, [chatId, setDataStream, setIsAutoResuming]);
+
+  useEffect(() => {
     return () => {
       if (
-        statusRef.current === "streaming" ||
-        statusRef.current === "submitted"
+        shouldUseAgentLongForCurrentChatRef.current &&
+        (statusRef.current === "streaming" || statusRef.current === "submitted")
       ) {
-        stopCurrentStream();
+        stopRef.current();
       }
+      setDataStream([]);
+      setIsAutoResuming(false);
     };
-  }, [stopRef]);
+  }, [setDataStream, setIsAutoResuming]);
 
   const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
@@ -729,7 +790,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status !== "streaming" ||
-      !shouldUseAgentLong ||
+      !shouldUseAgentLongForCurrentChat ||
       temporaryChatsEnabled
     ) {
       return;
@@ -797,7 +858,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
-    shouldUseAgentLong,
+    shouldUseAgentLongForCurrentChat,
     status,
     stop,
     temporaryChatsEnabled,
@@ -1043,12 +1104,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) {
       return;
     }
-    if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
+    if (!paginatedMessageResults || paginatedMessageResults.length === 0) {
       return;
     }
 
     const uiMessages = convertToUIMessages(
-      [...paginatedMessages.results].reverse(),
+      [...paginatedMessageResults].reverse(),
     );
 
     // Skip if useChat already has the same messages (same IDs, same part count).
@@ -1098,7 +1159,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
+  }, [paginatedMessageResults, setMessages, isExistingChat, chatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -1315,8 +1376,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isTempChat = !isExistingChat && temporaryChatsEnabled;
 
   // Get branched chat info directly from chatData (no additional query needed)
-  const branchedFromChatId = chatData?.branched_from_chat_id;
-  const branchedFromChatTitle = (chatData as any)?.branched_from_title;
+  const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
+  const branchedFromChatTitle = (chatDataForCurrentChat as any)
+    ?.branched_from_title;
 
   // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
   const isChatNotFound =
@@ -1329,6 +1391,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     <ConvexErrorBoundary>
       <StreamEffects
         key={chatId}
+        chatId={chatId}
         autoResume={autoResume}
         serverMessages={serverMessages}
         resumeStream={resumeStream}
@@ -1343,9 +1406,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
-          chatData === undefined
+          chatData === undefined || (chatData && !chatDataForCurrentChat)
             ? undefined
-            : !!chatData?.active_stream_id || !!chatData?.active_trigger_run_id
+            : !!chatDataForCurrentChat?.active_stream_id ||
+              !!chatDataForCurrentChat?.active_trigger_run_id
         }
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
@@ -1358,7 +1422,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               hasActiveChat={isExistingChat}
               chatTitle={chatTitle}
               id={chatId}
-              chatData={chatData}
+              chatData={chatDataForCurrentChat}
               chatSidebarOpen={chatSidebarOpen}
               isExistingChat={isExistingChat}
               isChatNotFound={isChatNotFound}
@@ -1401,11 +1465,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   isTemporaryChat={isTempChat}
                   isMobile={isMobile}
                   tempChatFileDetails={tempChatFileDetails}
-                  finishReason={chatData?.finish_reason}
+                  finishReason={chatDataForCurrentChat?.finish_reason}
                   agentRunSpendCapWarning={agentRunSpendCapWarning}
                   uploadStatus={uploadStatus}
                   summarizationStatus={summarizationStatus}
-                  mode={chatMode ?? (chatData as any)?.default_model_slug}
+                  mode={
+                    chatMode ??
+                    (chatDataForCurrentChat as any)?.default_model_slug
+                  }
                   chatTitle={chatTitle}
                   branchedFromChatId={branchedFromChatId}
                   branchedFromChatTitle={branchedFromChatTitle}

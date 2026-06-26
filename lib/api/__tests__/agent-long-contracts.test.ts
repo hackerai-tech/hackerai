@@ -42,6 +42,11 @@ const chatComponentSrc = fs.readFileSync(
   "utf8",
 );
 
+const convexMessagesSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../convex/messages.ts"),
+  "utf8",
+);
+
 const taskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
@@ -54,6 +59,11 @@ const dbActionsSrc = fs.readFileSync(
 
 const chatHandlerSrc = fs.readFileSync(
   path.resolve(__dirname, "../chat-handler.ts"),
+  "utf8",
+);
+
+const agentStreamRunnerSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-stream-runner.ts"),
   "utf8",
 );
 
@@ -137,6 +147,45 @@ describe("agent-long-transport — direct UI stream reader", () => {
   });
 });
 
+describe("agent stream runner — empty todo_write recovery", () => {
+  test("temporarily excludes todo_write when the doom-loop detector requests it", () => {
+    expect(agentStreamRunnerSrc).toMatch(/activeToolExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/getActiveToolsWithExclusions/);
+    expect(agentStreamRunnerSrc).toMatch(/getActiveToolsForRecovery/);
+    expect(agentStreamRunnerSrc).toMatch(
+      /event:\s*"empty_todo_write_loop_recovery"/,
+    );
+
+    const recoveryIdx = agentStreamRunnerSrc.indexOf(
+      "const loopRecovery = getDoomLoopRecovery(steps, steps.length)",
+    );
+    const summarizationIdx = agentStreamRunnerSrc.indexOf(
+      "runSummarizationStep({",
+    );
+    const summarizedActiveToolsIdx = agentStreamRunnerSrc.indexOf(
+      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      summarizationIdx,
+    );
+    const normalActiveToolsIdx = agentStreamRunnerSrc.indexOf(
+      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      summarizedActiveToolsIdx + 1,
+    );
+    const summarizedNudgeIdx = agentStreamRunnerSrc.indexOf(
+      "loopRecovery.nudge",
+      summarizationIdx,
+    );
+
+    expect(recoveryIdx).toBeGreaterThan(-1);
+    expect(summarizationIdx).toBeGreaterThan(recoveryIdx);
+    expect(summarizedActiveToolsIdx).toBeGreaterThan(summarizationIdx);
+    expect(normalActiveToolsIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(summarizedNudgeIdx).toBeGreaterThan(summarizationIdx);
+    expect(agentStreamRunnerSrc).toMatch(
+      /getActiveToolsWithExclusions\(recovery\.excludedTools\)/,
+    );
+  });
+});
+
 describe("agent-long chat UI — completion reconciliation", () => {
   test("polls the resume endpoint and clears useChat state after backend completion", () => {
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
@@ -150,10 +199,31 @@ describe("agent-long chat UI — completion reconciliation", () => {
   });
 
   test("stops the local stream when a streaming chat unmounts", () => {
-    expect(chatComponentSrc).toMatch(/const stopRef = useLatestRef\(stop\)/);
+    expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(
-      /const stopCurrentStream = stopRef\.current[\s\S]*statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopCurrentStream\(\)/,
+      /shouldUseAgentLongForCurrentChatRef\.current[\s\S]*statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
     );
+  });
+
+  test("guards auto-resume and stream data against stale chat switches", () => {
+    expect(chatComponentSrc).toMatch(/chatDataForCurrentChat/);
+    expect(chatComponentSrc).toMatch(
+      /chatDataForCurrentChat\?\.active_stream_id/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /chatDataForCurrentChat\?\.active_trigger_run_id/,
+    );
+    expect(chatComponentSrc).toMatch(/paginatedMessageResults/);
+    expect(chatComponentSrc).not.toMatch(
+      /\[\.\.\.paginatedMessages\.results\]\.reverse\(\)/,
+    );
+    expect(chatComponentSrc).not.toMatch(/message\.chat_id\s*===\s*undefined/);
+    expect(chatComponentSrc).toMatch(/message\.chat_id\s*===\s*chatId/);
+    expect(chatComponentSrc).toMatch(/__chatId:\s*chatId/);
+    expect(chatComponentSrc).toMatch(/activeChatIdRef\.current\s*!==\s*chatId/);
+    expect(chatComponentSrc).toMatch(/shouldUseAgentLongForCurrentChat/);
+    expect(convexMessagesSrc).toMatch(/chat_id:\s*v\.string\(\)/);
+    expect(convexMessagesSrc).toMatch(/chat_id:\s*message\.chat_id/);
   });
 });
 

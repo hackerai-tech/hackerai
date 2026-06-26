@@ -8,7 +8,7 @@ import {
 import { useAutoContinue, MAX_AUTO_CONTINUES } from "../useAutoContinue";
 import type { UseAutoContinueParams } from "../useAutoContinue";
 
-type DataStreamEntry = { type: string; data?: unknown };
+type DataStreamEntry = { type: string; data?: unknown; __chatId?: string };
 
 function useTestHarness(params: UseAutoContinueParams) {
   const autoContinue = useAutoContinue(params);
@@ -26,6 +26,7 @@ function buildParams(
   overrides: Partial<UseAutoContinueParams> = {},
 ): UseAutoContinueParams {
   return {
+    chatId: "chat-1",
     status: "ready",
     chatMode: "agent",
     sendMessage: jest.fn(),
@@ -69,6 +70,31 @@ describe("useAutoContinue", () => {
     pushAutoContinue(result);
 
     expect(result.current.isAutoResuming).toBe(true);
+  });
+
+  it("ignores data-auto-continue from another chat", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    act(() => {
+      result.current.setDataStream([
+        { type: "data-auto-continue", data: {}, __chatId: "other-chat" },
+      ] as any);
+    });
+
+    expect(result.current.isAutoResuming).toBe(false);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("sends message with full body when signal arrives during streaming then status becomes ready", () => {

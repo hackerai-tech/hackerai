@@ -881,6 +881,7 @@ export const getMessagesByChatId = query({
     page: v.array(
       v.object({
         id: v.string(),
+        chat_id: v.string(),
         role: v.union(
           v.literal("user"),
           v.literal("assistant"),
@@ -1007,6 +1008,7 @@ export const getMessagesByChatId = query({
 
         enhancedMessages.push({
           id: message.id,
+          chat_id: message.chat_id,
           role: message.role,
           parts: message.parts,
           created_at: message._creationTime,

@@ -5,6 +5,7 @@ import {
   generateDoomLoopNudge,
   DOOM_LOOP_WARNING_THRESHOLD,
   DOOM_LOOP_HALT_THRESHOLD,
+  EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD,
 } from "../doom-loop-detection";
 
 function makeStep(toolCalls: Array<{ toolName: string; input: unknown }>) {
@@ -98,6 +99,39 @@ describe("detectDoomLoop", () => {
     expect(result.severity).toBe("warning");
     expect(result.toolNames).toEqual(["file"]);
     expect(result.consecutiveCount).toBe(DOOM_LOOP_WARNING_THRESHOLD);
+    expect(result.reason).toBe("repeated_tool_call");
+  });
+
+  it("returns a todo-specific warning after repeated empty todo_write calls", () => {
+    const step = makeStep([{ toolName: "todo_write", input: {} }]);
+    const steps = Array(EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD).fill(step);
+
+    const result = detectDoomLoop(steps);
+
+    expect(result).toMatchObject({
+      severity: "warning",
+      reason: "empty_todo_write_input",
+      toolNames: ["todo_write"],
+      consecutiveCount: EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD,
+      activeToolExclusions: ["todo_write"],
+    });
+  });
+
+  it("treats missing todo_write input as empty for recovery", () => {
+    const step = makeStep([{ toolName: "todo_write", input: undefined }]);
+    const steps = Array(EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD).fill(step);
+
+    const result = detectDoomLoop(steps);
+
+    expect(result.reason).toBe("empty_todo_write_input");
+    expect(result.activeToolExclusions).toEqual(["todo_write"]);
+  });
+
+  it("does not apply todo recovery to other empty tool calls", () => {
+    const step = makeStep([{ toolName: "list_notes", input: {} }]);
+    const steps = Array(EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD).fill(step);
+
+    expect(detectDoomLoop(steps).severity).toBe("none");
   });
 
   it("returns warning between warning and halt thresholds", () => {
@@ -116,6 +150,17 @@ describe("detectDoomLoop", () => {
     const result = detectDoomLoop(steps);
     expect(result.severity).toBe("halt");
     expect(result.consecutiveCount).toBe(DOOM_LOOP_HALT_THRESHOLD);
+  });
+
+  it("still halts after enough repeated empty todo_write calls", () => {
+    const step = makeStep([{ toolName: "todo_write", input: {} }]);
+    const steps = Array(DOOM_LOOP_HALT_THRESHOLD).fill(step);
+
+    const result = detectDoomLoop(steps);
+
+    expect(result.severity).toBe("halt");
+    expect(result.reason).toBe("empty_todo_write_input");
+    expect(result.activeToolExclusions).toEqual(["todo_write"]);
   });
 
   it("returns halt above halt threshold", () => {
@@ -223,5 +268,19 @@ describe("generateDoomLoopNudge", () => {
     expect(nudge).toContain("file");
     expect(nudge).toContain("run_terminal_cmd");
     expect(nudge).toContain("4 times");
+  });
+
+  it("gives specific recovery guidance for empty todo_write calls", () => {
+    const nudge = generateDoomLoopNudge({
+      severity: "warning",
+      toolNames: ["todo_write"],
+      consecutiveCount: 2,
+      reason: "empty_todo_write_input",
+      activeToolExclusions: ["todo_write"],
+    });
+
+    expect(nudge).toContain("[TODO UPDATE SKIPPED]");
+    expect(nudge).toContain("todo_write is unavailable");
+    expect(nudge).toContain("merge and todos");
   });
 });

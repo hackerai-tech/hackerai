@@ -12,6 +12,7 @@ const mockListPrices = jest.fn();
 const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
 const mockRetrieveCustomer = jest.fn();
+const mockUpdateCustomer = jest.fn();
 const mockCreateCheckoutSession = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogFlush = jest.fn();
@@ -56,6 +57,7 @@ jest.mock("@/app/api/stripe", () => ({
       list: mockListCustomers,
       create: mockCreateCustomer,
       retrieve: mockRetrieveCustomer,
+      update: mockUpdateCustomer,
     },
     checkout: {
       sessions: {
@@ -118,6 +120,16 @@ describe("POST /api/subscribe", () => {
       id: "cs_123",
       url: "https://stripe.example/checkout",
     } as never);
+    mockUpdateCustomer.mockImplementation(
+      async (
+        customerId: string,
+        params: { metadata?: Record<string, string> },
+      ) =>
+        ({
+          id: customerId,
+          metadata: params.metadata ?? {},
+        }) as never,
+    );
   });
 
   it("rejects existing organization members who are not billing admins", async () => {
@@ -178,6 +190,11 @@ describe("POST /api/subscribe", () => {
       checkoutAttemptId: expect.stringMatching(/^ca_/),
     });
     expect(mockRetrieveCustomer).toHaveBeenCalledWith("cus_existing_org");
+    expect(mockUpdateCustomer).toHaveBeenCalledWith("cus_existing_org", {
+      metadata: {
+        workOSOrganizationId: "org_team",
+      },
+    });
     expect(mockListCustomers).not.toHaveBeenCalled();
     expect(mockCreateCustomer).not.toHaveBeenCalled();
     expect(mockUpdateOrganization).not.toHaveBeenCalled();

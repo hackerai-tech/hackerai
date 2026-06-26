@@ -12,13 +12,17 @@
 
 export const DOOM_LOOP_WARNING_THRESHOLD = 3;
 export const DOOM_LOOP_HALT_THRESHOLD = 5;
+export const EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD = 2;
 
 export type DoomLoopSeverity = "none" | "warning" | "halt";
+export type DoomLoopReason = "repeated_tool_call" | "empty_todo_write_input";
 
 export interface DoomLoopResult {
   severity: DoomLoopSeverity;
   toolNames: string[];
   consecutiveCount: number;
+  reason?: DoomLoopReason;
+  activeToolExclusions?: string[];
 }
 
 interface MinimalToolCall {
@@ -42,6 +46,29 @@ function stripCosmeticFields(input: unknown): unknown {
     ([key]) => !COSMETIC_INPUT_FIELDS.has(key),
   );
   return Object.fromEntries(entries);
+}
+
+function isEmptyToolInput(input: unknown): boolean {
+  if (input === undefined || input === null) return true;
+  if (Array.isArray(input) || typeof input !== "object") return false;
+  return Object.keys(input as Record<string, unknown>).length === 0;
+}
+
+function isEmptyTodoWriteStep(step: MinimalStep | undefined): boolean {
+  if (!step?.toolCalls || step.toolCalls.length !== 1) return false;
+  const [toolCall] = step.toolCalls;
+  return toolCall.toolName === "todo_write" && isEmptyToolInput(toolCall.input);
+}
+
+function getTrailingEmptyTodoWriteCount(steps: MinimalStep[]): number {
+  let count = 0;
+
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (!isEmptyTodoWriteStep(steps[i])) break;
+    count++;
+  }
+
+  return count;
 }
 
 /**
@@ -73,6 +100,18 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
     toolNames: [],
     consecutiveCount: 0,
   };
+
+  const emptyTodoWriteCount = getTrailingEmptyTodoWriteCount(steps);
+  if (emptyTodoWriteCount >= EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD) {
+    return {
+      severity:
+        emptyTodoWriteCount >= DOOM_LOOP_HALT_THRESHOLD ? "halt" : "warning",
+      toolNames: ["todo_write"],
+      consecutiveCount: emptyTodoWriteCount,
+      reason: "empty_todo_write_input",
+      activeToolExclusions: ["todo_write"],
+    };
+  }
 
   if (steps.length < DOOM_LOOP_WARNING_THRESHOLD) {
     return none;
@@ -107,6 +146,7 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
     severity: count >= DOOM_LOOP_HALT_THRESHOLD ? "halt" : "warning",
     toolNames,
     consecutiveCount: count,
+    reason: "repeated_tool_call",
   };
 }
 
@@ -116,6 +156,14 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
  */
 export function generateDoomLoopNudge(result: DoomLoopResult): string {
   const toolList = result.toolNames.join(", ");
+
+  if (result.reason === "empty_todo_write_input") {
+    return (
+      `[TODO UPDATE SKIPPED] The last ${result.consecutiveCount} todo_write calls had empty arguments, so todo_write is unavailable for this step. ` +
+      `Do NOT call todo_write again now. Continue the user's task with the current plan and other tools. ` +
+      `Only try todo_write later if you can provide both top-level fields: merge and todos.`
+    );
+  }
 
   return (
     `[LOOP DETECTED] You have called ${toolList} ${result.consecutiveCount} times in a row with identical arguments. ` +

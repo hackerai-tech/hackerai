@@ -246,6 +246,15 @@ export const POST = async (req: NextRequest) => {
           { status: 403 },
         );
       }
+
+      if (!customer.metadata.workOSOrganizationId) {
+        customer = await stripe.customers.update(customer.id, {
+          metadata: {
+            ...customer.metadata,
+            workOSOrganizationId: organization.id,
+          },
+        });
+      }
     }
 
     if (!customer) {

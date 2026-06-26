@@ -725,6 +725,26 @@ const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
   });
 };
 
+const isProviderVisibleAgentImagePart = (part: any): boolean => {
+  if (part?.type !== "file") return false;
+  if (providerUnsafeImageParts.has(part)) return false;
+  const mediaType = part.mediaType ?? "";
+  if (!isSupportedImageMediaType(mediaType)) return false;
+
+  const size =
+    typeof part.size === "number"
+      ? part.size
+      : typeof part.sizeBytes === "number"
+        ? part.sizeBytes
+        : 0;
+
+  return !isSandboxOnlyAgentUpload({
+    mode: "agent",
+    size,
+    mediaType,
+  });
+};
+
 const applyModeSpecificTransforms = async (
   messages: UIMessage[],
   mode: ChatMode,
@@ -739,6 +759,8 @@ const applyModeSpecificTransforms = async (
   if (mode === "agent") {
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath, {
       allowLocalDesktopFiles,
+      getAttachmentTagKind: (part) =>
+        isProviderVisibleAgentImagePart(part) ? "inline-image" : "attachment",
     });
     removeNonMediaAndOversizedImageFileParts(messages);
   } else {
