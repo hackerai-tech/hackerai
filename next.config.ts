@@ -19,6 +19,31 @@ if (
 const nextConfig: NextConfig = {
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
+  async headers() {
+    const iconCacheHeaders = [
+      {
+        key: "Cache-Control",
+        value: "public, max-age=86400, stale-while-revalidate=604800",
+      },
+    ];
+
+    return [
+      {
+        source: "/manifest.json",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, stale-while-revalidate=86400",
+          },
+        ],
+      },
+      { source: "/favicon.ico", headers: iconCacheHeaders },
+      { source: "/apple-touch-icon.png", headers: iconCacheHeaders },
+      { source: "/icon-192x192.png", headers: iconCacheHeaders },
+      { source: "/icon-256x256.png", headers: iconCacheHeaders },
+      { source: "/icon-512x512.png", headers: iconCacheHeaders },
+    ];
+  },
   experimental: {
     optimizePackageImports: ["lucide-react", "date-fns"],
   },

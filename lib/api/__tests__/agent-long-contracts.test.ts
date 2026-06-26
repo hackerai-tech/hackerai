@@ -42,6 +42,16 @@ const chatComponentSrc = fs.readFileSync(
   "utf8",
 );
 
+const chatItemSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/components/ChatItem.tsx"),
+  "utf8",
+);
+
+const globalStateSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/contexts/GlobalState.tsx"),
+  "utf8",
+);
+
 const convexMessagesSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../convex/messages.ts"),
   "utf8",
@@ -136,6 +146,21 @@ describe("agent-long-transport — direct UI stream reader", () => {
       /userAborted\s*\|\|\s*timedOutAfterFinish\s*\|\|\s*completedRunDrainElapsed/,
     );
   });
+
+  test("browser stream cancellation releases Trigger realtime subscriptions", () => {
+    expect(transportSrc).toMatch(/cancelRealtimeSubscriptions/);
+    expect(transportSrc).toMatch(/activeAgentLongRealtimeCancels/);
+    expect(transportSrc).toMatch(/cancelAgentLongRealtimeStreams/);
+    expect(transportSrc).toMatch(/registerAgentLongRealtimeCancel/);
+    expect(transportSrc).toMatch(/statusSubscription\?\.unsubscribe\?\.\(\)/);
+    expect(transportSrc).toMatch(/streamIterator\?\.return\?\.\(undefined\)/);
+    expect(transportSrc).toMatch(
+      /cancelConsumerRealtime[\s\S]*consumerCanceled\s*=\s*true/,
+    );
+    expect(transportSrc).toMatch(
+      /cancel\(\)\s*\{[\s\S]*cancelConsumerRealtime\(\)/,
+    );
+  });
 });
 
 describe("agent stream runner — empty todo_write recovery", () => {
@@ -187,6 +212,31 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/stop\(\)/);
     expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+  });
+
+  test("stops the local stream when a streaming chat unmounts", () => {
+    expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
+    expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
+    expect(chatComponentSrc).toMatch(
+      /cancelAgentLongRealtimeStreams\(activeChatIdRef\.current\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /return\s*\(\)\s*=>\s*\{\s*stopActiveBrowserStream\(\);[\s\S]*\}/,
+    );
+  });
+
+  test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
+    expect(chatItemSrc).toMatch(/cancelAgentLongRealtimeStreams/);
+    expect(chatItemSrc).toMatch(/setOptimisticChatId\(id\)/);
+    expect(chatItemSrc).toMatch(/optimisticChatId\s*\?\?\s*routeChatId/);
+    expect(chatItemSrc).toMatch(
+      /routeChatId\s*&&\s*routeChatId\s*!==\s*id[\s\S]*cancelAgentLongRealtimeStreams\(routeChatId\)/,
+    );
+    expect(globalStateSrc).toMatch(/optimisticChatId:\s*string\s*\|\s*null/);
+    expect(globalStateSrc).toMatch(/setOptimisticChatId/);
   });
 
   test("guards auto-resume and stream data against stale chat switches", () => {

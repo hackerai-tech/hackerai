@@ -29,6 +29,7 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import {
+  cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
   resumeAgentLongStream,
 } from "@/lib/chat/agent-long-transport";
@@ -744,11 +745,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           (chatDataForCurrentChat as any).default_model_slug === "agent" ||
           (chatDataForCurrentChat as any).default_model_slug ===
             "agent-long")));
-  const shouldUseAgentLongForCurrentChatRef = useRef(
-    shouldUseAgentLongForCurrentChat,
-  );
-  shouldUseAgentLongForCurrentChatRef.current =
-    shouldUseAgentLongForCurrentChat;
+  const stopActiveBrowserStream = useCallback(() => {
+    cancelAgentLongRealtimeStreams(activeChatIdRef.current);
+    if (
+      statusRef.current === "streaming" ||
+      statusRef.current === "submitted"
+    ) {
+      stopRef.current();
+    }
+    setDataStream([]);
+    setIsAutoResuming(false);
+  }, [setDataStream, setIsAutoResuming]);
 
   useEffect(() => {
     setDataStream([]);
@@ -758,16 +765,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   useEffect(() => {
     return () => {
-      if (
-        shouldUseAgentLongForCurrentChatRef.current &&
-        (statusRef.current === "streaming" || statusRef.current === "submitted")
-      ) {
-        stopRef.current();
-      }
-      setDataStream([]);
-      setIsAutoResuming(false);
+      stopActiveBrowserStream();
     };
-  }, [setDataStream, setIsAutoResuming]);
+  }, [stopActiveBrowserStream]);
 
   const agentLongMessageFingerprint = getAgentLongMessageFingerprint(messages);
   const agentLongMessageFingerprintRef = useRef(agentLongMessageFingerprint);
@@ -873,6 +873,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
+      stopActiveBrowserStream();
       setMessages([]);
       setChatId(uuidv4());
       setIsExistingChat(false);
@@ -881,16 +882,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setStreamedTitle(null);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      // Clear DataStreamProvider state so stale parts from the previous chat
-      // don't feed into useAutoResume/useAutoContinue in the next conversation.
-      setDataStream([]);
-      setIsAutoResuming(false);
       setHasUserDismissedRateLimitWarning(false);
       resetAutoContinueCount();
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setTodos, resetAutoContinueCount]);
+  }, [
+    setChatReset,
+    setMessages,
+    setTodos,
+    resetAutoContinueCount,
+    stopActiveBrowserStream,
+  ]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
