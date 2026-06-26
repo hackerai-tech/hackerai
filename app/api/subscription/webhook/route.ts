@@ -146,11 +146,6 @@ async function resolveSubscription(
     const price = subscription.items?.data[0]?.price;
     const lookupKey = price?.lookup_key ?? null;
 
-    if (lookupKey) {
-      const tier = planLookupKeyToTier(lookupKey);
-      return tier ? { kind: "resolved", tier, subscription } : null;
-    }
-
     // Fallback: infer tier from product name or metadata when lookup_key is missing
     const product = price?.product;
     const productObj =
@@ -163,6 +158,11 @@ async function resolveSubscription(
         `[Subscription Webhook] Subscription ${subscriptionId} uses legacy PentestGPT product; skipping HackerAI subscription handling`,
       );
       return { kind: "legacy_pentestgpt", subscription };
+    }
+
+    if (lookupKey) {
+      const tier = planLookupKeyToTier(lookupKey);
+      return tier ? { kind: "resolved", tier, subscription } : null;
     }
 
     const tier =

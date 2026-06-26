@@ -76,11 +76,14 @@ jest.mock("@/convex/_generated/api", () => ({
     unitEconomics: {
       recordRevenueEvent: "unitEconomics.recordRevenueEvent",
       recordPaidStartMix: "unitEconomics.recordPaidStartMix",
+      recordPaidStartEvent: "unitEconomics.recordPaidStartEvent",
     },
     cancellationReasons: {
       recordCancellation: "cancellationReasons.recordCancellation",
       completeCancellationReason:
         "cancellationReasons.completeCancellationReason",
+      markCancellationCompleted:
+        "cancellationReasons.markCancellationCompleted",
     },
   },
 }));
@@ -183,18 +186,22 @@ describe("POST /api/subscription/webhook", () => {
     expect(console.info).toHaveBeenCalledWith(
       "[Subscription Webhook] invoice.paid: skipping legacy customer invoice in_legacy for customer cus_legacy",
     );
-    expect(mockConvexMutation).toHaveBeenCalledWith(
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      1,
       "extraUsage.checkAndMarkWebhook",
-      expect.objectContaining({
+      {
+        serviceKey: "service_key",
         eventId: "evt_invoice_paid_legacy",
         checkOnly: true,
-      }),
+      },
     );
-    expect(mockConvexMutation).toHaveBeenCalledWith(
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
       "extraUsage.checkAndMarkWebhook",
-      expect.objectContaining({
+      {
+        serviceKey: "service_key",
         eventId: "evt_invoice_paid_legacy",
-      }),
+      },
     );
   });
 
@@ -239,7 +246,7 @@ describe("POST /api/subscription/webhook", () => {
             quantity: 1,
             price: {
               id: "price_legacy",
-              lookup_key: null,
+              lookup_key: "pro-monthly-plan",
               recurring: { interval: "month", interval_count: 1 },
               product: {
                 id: "prod_legacy",
