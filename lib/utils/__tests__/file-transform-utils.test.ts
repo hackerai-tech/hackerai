@@ -308,6 +308,57 @@ describe("processMessageFiles image size guards", () => {
     });
   });
 
+  it("marks small Agent images as already visible while still staging a sandbox copy", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/small.png", {
+        sizeBytes: 2 * 1024 * 1024,
+        name: "small.png",
+      }),
+    ]);
+    global.fetch = jest.fn(async () => {
+      return responseLike({
+        headers: { "content-length": String(VALID_PNG_BYTES.byteLength) },
+        body: streamBody(VALID_PNG_BYTES),
+      });
+    }) as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_small",
+        name: "small.png",
+        url: "https://example.com/small.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toEqual([
+      {
+        kind: "url",
+        url: "https://storage.example/small.png",
+        localPath: "/home/user/upload/small.png",
+      },
+    ]);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      expect.objectContaining({
+        type: "file",
+        mediaType: "image/png",
+        name: "small.png",
+        url: "https://storage.example/small.png",
+        size: 2 * 1024 * 1024,
+      }),
+      {
+        type: "text",
+        text: '<inline_image_attachment filename="small.png" sandbox_path="/home/user/upload/small.png" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />',
+      },
+    ]);
+  });
+
   it("omits stored images whose storage URL does not return valid image bytes", async () => {
     const notImageBytes = new TextEncoder().encode("<html>not an image</html>");
     mockConvexAction.mockResolvedValue([
