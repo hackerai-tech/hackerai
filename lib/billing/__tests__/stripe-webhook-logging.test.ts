@@ -14,7 +14,8 @@ describe("stripe webhook logging", () => {
 
   it("logs signature failures without the raw payload or signature header", () => {
     const rawBody =
-      '{"id":"evt_test_credit_001","metadata":{"userId":"user_secret"}}';
+      '{"id":"evt_test_credit_001","metadata":{"label":"über","userId":"user_secret"}}';
+    const expectedPayloadBytes = new TextEncoder().encode(rawBody).byteLength;
     const rawSignature =
       "t=1782534490,v1=fd2db5102f05f92772c0a9e2d0b07c314dde57f8352696e0318217c95ff5e527";
     const error = Object.assign(new Error("No signatures found matching"), {
@@ -42,7 +43,7 @@ describe("stripe webhook logging", () => {
         webhook: "extra_usage",
         route: "/api/extra-usage/webhook",
         request_id: "iad1::abc123",
-        payload_bytes: rawBody.length,
+        payload_bytes: expectedPayloadBytes,
         signature_header_present: true,
         signature_timestamp: 1782534490,
         signature_has_v1: true,
@@ -63,12 +64,15 @@ describe("stripe webhook logging", () => {
   });
 
   it("logs missing signatures as handled rejected webhook traffic", () => {
+    const body = "{}";
+    const expectedPayloadBytes = new TextEncoder().encode(body).byteLength;
+
     logStripeWebhookMissingSignature({
       logPrefix: "[Fraud Webhook]",
       webhook: "fraud",
       route: "/api/fraud/webhook",
       requestHeaders: new Headers(),
-      body: "{}",
+      body,
       signature: null,
     });
 
@@ -78,7 +82,7 @@ describe("stripe webhook logging", () => {
         event: "stripe_webhook_missing_signature",
         level: "warn",
         webhook: "fraud",
-        payload_bytes: 2,
+        payload_bytes: expectedPayloadBytes,
         signature_header_present: false,
         signature_has_v1: false,
       }),

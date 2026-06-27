@@ -147,7 +147,8 @@ describe("POST /api/subscription/webhook", () => {
 
   it("rejects invalid signatures with a sanitized warning before side effects", async () => {
     const rawBody =
-      '{"id":"evt_test_reset_001","metadata":{"userId":"user_secret"}}';
+      '{"id":"evt_test_reset_001","metadata":{"label":"über","userId":"user_secret"}}';
+    const expectedPayloadBytes = new TextEncoder().encode(rawBody).byteLength;
     const rawSignature =
       "t=1782534490,v1=24cdc6311e7ea9669746b0e1cd1e8ac53b51ad96070e7919be7172b1dc1e9f30";
     const signatureError = Object.assign(
@@ -179,7 +180,7 @@ describe("POST /api/subscription/webhook", () => {
         event: "stripe_webhook_signature_verification_failed",
         webhook: "subscription",
         route: "/api/subscription/webhook",
-        payload_bytes: rawBody.length,
+        payload_bytes: expectedPayloadBytes,
         signature_header_present: true,
         signature_timestamp: 1782534490,
         signature_has_v1: true,
