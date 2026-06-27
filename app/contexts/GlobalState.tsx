@@ -10,7 +10,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
   type SelectedModel,
@@ -33,6 +33,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
+import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
@@ -197,7 +198,14 @@ interface LocalSandboxConnection {
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
-  const { user, entitlements, loading: authLoading } = useAuth();
+  const {
+    user,
+    entitlements,
+    loading: authLoading,
+    organizationId,
+    refreshAuth,
+  } = useAuth();
+  const { refresh: refreshAccessToken } = useAccessToken();
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
   const shownReferralRewardNotificationsRef = useRef(new Set<string>());
@@ -229,6 +237,28 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (!Array.isArray(entitlements)) return null;
     return resolveSubscriptionTier(entitlements);
   }, [entitlements]);
+  const refreshAuthTokenAfterEntitlementRefresh = useCallback(async () => {
+    clearSharedToken();
+
+    try {
+      if (refreshAuth) {
+        await refreshAuth(organizationId ? { organizationId } : undefined);
+      }
+    } catch {
+      // Keep going: the access-token refresh below may still pick up the
+      // sealed session written by /api/entitlements.
+    }
+
+    try {
+      const token = await refreshAccessToken();
+      if (token) {
+        setSharedToken(token);
+      }
+    } catch {
+      // Non-fatal. The UI still reflects /api/entitlements, and AuthKit will
+      // retry token refresh through its normal path.
+    }
+  }, [organizationId, refreshAccessToken, refreshAuth]);
 
   // Persist chat mode preference to localStorage on change
   useEffect(() => {
@@ -631,6 +661,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         if (!response.ok) return;
 
         const data = await response.json();
+        await refreshAuthTokenAfterEntitlementRefresh();
         setSubscriptionWithNormalize(
           resolveSubscriptionTier(
             Array.isArray(data.entitlements) ? data.entitlements : [],
@@ -644,7 +675,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
 
     refreshDesktopEntitlements();
-  }, [user, entitlements, setSubscriptionWithNormalize]);
+  }, [
+    user,
+    entitlements,
+    refreshAuthTokenAfterEntitlementRefresh,
+    setSubscriptionWithNormalize,
+  ]);
 
   // Refresh entitlements only when explicitly requested via URL param
   useEffect(() => {
@@ -675,6 +711,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
         if (response.ok) {
           const data = await response.json();
+          await refreshAuthTokenAfterEntitlementRefresh();
           const tier = data.subscription as SubscriptionTier | undefined;
           setSubscription(
             tier === "ultra" ||
@@ -705,7 +742,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
 
     refreshFromUrl();
-  }, [user, setSubscriptionWithNormalize]);
+  }, [
+    user,
+    refreshAuthTokenAfterEntitlementRefresh,
+    setSubscriptionWithNormalize,
+  ]);
 
   // Listen for URL changes to sync temporary chat state
   useEffect(() => {

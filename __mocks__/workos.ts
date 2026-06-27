@@ -6,8 +6,8 @@ export const useAuth = jest.fn(() => ({
   signOut: jest.fn(),
 }));
 
-export const useAccessToken = () => ({
+export const useAccessToken = jest.fn(() => ({
   getAccessToken: jest.fn().mockResolvedValue("mock-access-token"),
   accessToken: "mock-access-token",
   refresh: jest.fn().mockResolvedValue("mock-access-token"),
-});
+}));

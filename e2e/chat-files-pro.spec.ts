@@ -1,13 +1,38 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { ChatComponent } from "./page-objects";
 import {
   setupChat,
   sendMessageWithFileAndVerifyContent,
   attachTestFile,
+  sendAndWaitForResponse,
 } from "./helpers/test-helpers";
 import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
 import path from "path";
+import fs from "fs";
+
+test.setTimeout(TIMEOUTS.AGENT_LONG);
+
+async function writeJpegFixture(
+  page: Page,
+  outputPath: string,
+): Promise<string> {
+  const base64 = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 12;
+    canvas.height = 12;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Canvas context unavailable");
+    context.fillStyle = "#111827";
+    context.fillRect(0, 0, 12, 12);
+    context.fillStyle = "#22c55e";
+    context.fillRect(3, 3, 6, 6);
+    return canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
+  });
+
+  fs.writeFileSync(outputPath, Buffer.from(base64, "base64"));
+  return outputPath;
+}
 
 test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
   test.describe("Pro Tier", () => {
@@ -45,6 +70,58 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
         "pdf",
         "What is the secret word in the file?",
         TEST_DATA.SECRETS.PDF,
+        TIMEOUTS.AGENT,
+      );
+    });
+
+    test("should attach markdown and CSV files and AI reads content", async ({
+      page,
+    }) => {
+      const chat = await setupChat(page);
+
+      const markdownFile = path.join(
+        process.cwd(),
+        TEST_DATA.RESOURCES.MARKDOWN_FILE,
+      );
+      const csvFile = path.join(process.cwd(), TEST_DATA.RESOURCES.CSV_FILE);
+
+      await chat.attachFiles([markdownFile, csvFile]);
+
+      await chat.expectAttachedFileCount(2);
+      await chat.expectFileAttached("secret.md");
+      await chat.expectFileAttached("secret.csv");
+
+      await sendAndWaitForResponse(
+        chat,
+        "What are the secret words in the attached markdown and CSV files?",
+        TIMEOUTS.AGENT,
+      );
+
+      await chat.expectMessageContains(TEST_DATA.SECRETS.MARKDOWN);
+      await chat.expectMessageContains(TEST_DATA.SECRETS.CSV);
+    });
+
+    test("should attach jpg and jpeg images", async ({ page }, testInfo) => {
+      const chat = await setupChat(page);
+
+      const jpgFile = await writeJpegFixture(
+        page,
+        testInfo.outputPath("sample.jpg"),
+      );
+      const jpegFile = await writeJpegFixture(
+        page,
+        testInfo.outputPath("sample.jpeg"),
+      );
+
+      await chat.attachFiles([jpgFile, jpegFile]);
+
+      await chat.expectAttachedFileCount(2);
+      await chat.expectFileAttached("sample.jpg");
+      await chat.expectFileAttached("sample.jpeg");
+
+      await sendAndWaitForResponse(
+        chat,
+        "Confirm the two attached images uploaded.",
         TIMEOUTS.AGENT,
       );
     });

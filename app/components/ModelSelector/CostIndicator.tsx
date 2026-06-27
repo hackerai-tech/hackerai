@@ -3,17 +3,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { ChatMode } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 type CostTier = "low" | "medium" | "high" | "very-high";
 
-// Cost tier per HackerAI tier id. Standard and Pro are mode-aware in ask;
-// Agent keeps the higher-cost coding/automation models, including Kimi K2.7 Code.
-export function getCostTier(modelId: string, mode?: ChatMode): CostTier {
+// Cost tier per HackerAI tier id. Standard stays low cost in both modes;
+// Pro and Max intentionally surface the higher-cost model choices.
+export function getCostTier(modelId: string): CostTier {
   switch (modelId) {
     case "hackerai-standard":
-      return mode && isAgentMode(mode) ? "medium" : "low";
+      return "low";
     case "hackerai-pro":
       return "high";
     case "hackerai-max":
@@ -52,14 +50,8 @@ const COST_CONFIG: Record<
 
 const MAX_DOLLARS = 3;
 
-export function CostIndicator({
-  modelId,
-  mode,
-}: {
-  modelId: string;
-  mode?: ChatMode;
-}) {
-  const tier = getCostTier(modelId, mode);
+export function CostIndicator({ modelId }: { modelId: string }) {
+  const tier = getCostTier(modelId);
   const config = COST_CONFIG[tier];
 
   return (

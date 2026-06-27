@@ -6,6 +6,19 @@ import {
 } from "./helpers/test-helpers";
 import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
+import fs from "fs";
+
+test.setTimeout(TIMEOUTS.AGENT_LONG);
+
+function writeLargeAgentOnlyFile(outputPath: string): string {
+  const targetBytes = 21 * 1024 * 1024;
+  fs.writeFileSync(outputPath, Buffer.alloc(targetBytes, "a"));
+  fs.appendFileSync(
+    outputPath,
+    `\nSECRET_MARKER=${TEST_DATA.SECRETS.AGENT_LARGE}\n`,
+  );
+  return outputPath;
+}
 
 test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
   test.describe("Pro Tier", () => {
@@ -82,6 +95,29 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       );
 
       await chat.expectMessageContains(TEST_DATA.SECRETS.PDF);
+    });
+
+    test("should stage and read a large Agent-only file", async ({
+      page,
+    }, testInfo) => {
+      const chat = await setupChat(page);
+
+      await chat.switchToAgentMode();
+      await chat.expectMode("agent");
+
+      const largeFile = writeLargeAgentOnlyFile(
+        testInfo.outputPath("large-agent-only.txt"),
+      );
+      await chat.attachFile(largeFile);
+      await chat.expectFileAttached("large-agent-only.txt");
+
+      await sendAndWaitForResponse(
+        chat,
+        "Use terminal tools to inspect the attached large file. What is the SECRET_MARKER value?",
+        TIMEOUTS.AGENT_LONG,
+      );
+
+      await chat.expectMessageContains(TEST_DATA.SECRETS.AGENT_LARGE);
     });
 
     test("should handle multiple operations in Agent mode", async ({

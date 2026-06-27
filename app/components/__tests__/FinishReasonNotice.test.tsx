@@ -128,6 +128,10 @@ describe("FinishReasonNotice", () => {
         finishReason: "context-limit",
         expectedText: "Reached the context limit for this conversation",
       },
+      {
+        finishReason: "budget-exhausted",
+        expectedText: "Stopped at a usage guardrail for this run",
+      },
     ])(
       "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
       ({ finishReason, expectedText }) => {

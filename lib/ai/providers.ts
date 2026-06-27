@@ -246,13 +246,14 @@ const openrouter = createOpenRouter({
 type OpenRouterInstance = typeof openrouter;
 
 const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 const GROK_4_3_SLUG = "x-ai/grok-4.3";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or(GROK_4_3_SLUG),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
-    "agent-model": or(KIMI_K2_7_CODE_SLUG),
+    "agent-model": or(MINIMAX_M3_SLUG),
     "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.3": or(GROK_4_3_SLUG),
@@ -262,9 +263,10 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
+    "model-minimax-m3": or(MINIMAX_M3_SLUG),
     "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
     // Compatibility alias for stale internal references persisted before the
-    // Kimi 2.7 Code rollout. New selections should use model-kimi-k2.7-code.
+    // Kimi 2.7 Code rollout. New Agent Standard selections use model-minimax-m3.
     "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
     "fallback-agent-model": or("google/gemini-3-flash-preview"),
     "fallback-ask-model": or("google/gemini-3-flash-preview"),
@@ -282,7 +284,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
   "ask-model": "April 2026",
   "ask-model-free": "May 2025",
-  "agent-model": "June 2025",
+  "agent-model": "May 2026",
   "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.3": "April 2026",
@@ -290,6 +292,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
+  "model-minimax-m3": "May 2026",
   "model-kimi-k2.7-code": "June 2025",
   "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "January 2025",
@@ -311,6 +314,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-minimax-m3": "MiniMax M3",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -344,11 +348,19 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "agent-model" ||
     normalized === "model-kimi-k2.7-code" ||
     normalized === "model-kimi-k2.6" ||
     normalized.includes("moonshotai/kimi") ||
     normalized.includes("kimi-")
+  );
+}
+
+export function isMiniMaxModel(modelName: string): boolean {
+  const normalized = modelName.toLowerCase();
+  return (
+    normalized === "agent-model" ||
+    normalized === "model-minimax-m3" ||
+    normalized.includes("minimax/minimax-m3")
   );
 }
 
@@ -360,6 +372,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   return (
     normalized === "ask-model" ||
     isKimiModel(normalized) ||
+    isMiniMaxModel(normalized) ||
     normalized.includes("gemini") ||
     normalized.includes("google/") ||
     isAnthropicModel(normalized) ||
@@ -392,9 +405,7 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return isAgentMode(mode)
-        ? "model-kimi-k2.7-code"
-        : "model-deepseek-v4-pro";
+      return isAgentMode(mode) ? "model-minimax-m3" : "model-deepseek-v4-pro";
     case "hackerai-pro":
       return "model-sonnet-4.6";
     case "hackerai-max":
