@@ -1063,7 +1063,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         const diagDir = escapedDir || (useBash ? "/" : '"."');
         const diagCmd = useBash
           ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
-          : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false)`;
+          : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
         throw new Error(
           `Failed to download file: ${result.stderr}\n` +

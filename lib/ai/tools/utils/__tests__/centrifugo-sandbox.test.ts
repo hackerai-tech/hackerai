@@ -618,6 +618,30 @@ describe("CentrifugoSandbox", () => {
       return { sandbox, runs, runOptions };
     }
 
+    function createWindowsCmdSandbox() {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      (sandbox as any).shellKind = "cmd";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: true,
+      };
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      return { sandbox, runs };
+    }
+
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
       // Mock validateDownloadUrl is real; use an https URL it accepts.
@@ -715,6 +739,47 @@ describe("CentrifugoSandbox", () => {
         expect(diagCmd).toContain("target_dir_exists");
         expect(diagCmd).toContain("target_dir_writable");
         expect(diagCmd).not.toContain("ls -la");
+        expect(diagCmd).not.toContain("dir ");
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
+    it("downloadFromUrl cmd diagnostics include writability without listing contents", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const { sandbox, runs } = createWindowsCmdSandbox();
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd.includes("target_dir_exists")) {
+          return {
+            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return {
+          stdout: "",
+          stderr: "curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK",
+          exitCode: 35,
+        };
+      });
+
+      try {
+        const assertion = expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/image.png",
+            "/tmp/hackerai-upload/image.png",
+          ),
+        ).rejects.toThrow("Failed to download file");
+        await jest.advanceTimersByTimeAsync(5_000);
+        await assertion;
+
+        const diagCmd = runs[runs.length - 1];
+        expect(diagCmd).toContain("target_dir_exists");
+        expect(diagCmd).toContain("target_dir_writable");
+        expect(diagCmd).toContain("pushd");
         expect(diagCmd).not.toContain("dir ");
       } finally {
         consoleWarnSpy.mockRestore();
