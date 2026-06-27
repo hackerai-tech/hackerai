@@ -604,6 +604,7 @@ describe("CentrifugoSandbox", () => {
       (sandbox as any).curlCaps = {
         retryAllErrors: true,
         retryConnrefused: true,
+        sslNoRevoke: true,
       };
       const runs: string[] = [];
       const runOptions: unknown[] = [];
@@ -627,6 +628,7 @@ describe("CentrifugoSandbox", () => {
       const cmd = runs[0];
       expect(cmd).toContain("mkdir -p '/c/temp/hackerai-upload'");
       expect(cmd).toContain("curl -fsSL");
+      expect(cmd).toContain("--ssl-no-revoke");
       expect(cmd).toContain("--retry 3");
       expect(cmd).toContain("--retry-delay 1");
       expect(cmd).toContain("--retry-all-errors");
@@ -638,6 +640,85 @@ describe("CentrifugoSandbox", () => {
         displayName: "Downloading: image.png",
         timeoutMs: 120000,
       });
+    });
+
+    it("downloadFromUrl omits --ssl-no-revoke when Windows curl lacks support", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+        sslNoRevoke: false,
+      };
+
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png",
+        "/tmp/hackerai-upload/image.png",
+      );
+
+      expect(runs[0]).toContain("curl -fsSL");
+      expect(runs[0]).not.toContain("--ssl-no-revoke");
+    });
+
+    it("uploadToUrl emits Windows curl with --ssl-no-revoke when supported", async () => {
+      const { sandbox, runs, runOptions } = createWindowsBashSandbox();
+
+      await sandbox.files.uploadToUrl(
+        "/tmp/hackerai-upload/report.txt",
+        "https://example.com/upload",
+        "text/plain",
+      );
+
+      expect(runs[0]).toContain("curl -fsSL --ssl-no-revoke -X PUT");
+      expect(runs[0]).toContain("-H 'Content-Type: text/plain'");
+      expect(runs[0]).toContain(
+        "--data-binary @'/c/temp/hackerai-upload/report.txt'",
+      );
+      expect(runOptions[0]).toMatchObject({
+        displayName: "Uploading: report.txt",
+        timeoutMs: 120000,
+      });
+    });
+
+    it("downloadFromUrl failure diagnostics do not list local directory contents", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const { sandbox, runs } = createWindowsBashSandbox();
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        if (cmd.includes("target_dir_exists")) {
+          return {
+            stdout:
+              "target_dir_exists=true\ntarget_dir_writable=true\nFilesystem Size Used Avail Use% Mounted on\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return {
+          stdout: "",
+          stderr: "curl: (35) schannel: CRYPT_E_NO_REVOCATION_CHECK",
+          exitCode: 35,
+        };
+      });
+
+      try {
+        const assertion = expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/image.png",
+            "/tmp/hackerai-upload/image.png",
+          ),
+        ).rejects.toThrow("Failed to download file");
+        await jest.advanceTimersByTimeAsync(5_000);
+        await assertion;
+
+        const diagCmd = runs[runs.length - 1];
+        expect(diagCmd).toContain("target_dir_exists");
+        expect(diagCmd).toContain("target_dir_writable");
+        expect(diagCmd).not.toContain("ls -la");
+        expect(diagCmd).not.toContain("dir ");
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
     });
 
     it("downloadFromUrl retries local command wrapper timeouts", async () => {
