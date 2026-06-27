@@ -119,6 +119,65 @@ describe("saveMessage", () => {
     });
   });
 
+  it("retries transient Convex WorkerOverloaded save failures before surfacing an error", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "MESSAGE_SAVE_FAILED",
+      message: "Failed to save message",
+      failureStage: "insert_message",
+      causeName: "WorkerOverloaded",
+      causeMessage: "Worker overloaded",
+    };
+    mockMutation
+      .mockRejectedValueOnce(convexError as never)
+      .mockRejectedValueOnce(convexError as never)
+      .mockResolvedValueOnce({ id: "message-1" } as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: {
+            id: "message-1",
+            role: "assistant",
+            parts: [{ type: "text", text: "done" }],
+          },
+        }),
+      ).resolves.toEqual({ id: "message-1" });
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "message_save_retry_scheduled");
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "worker_overloaded",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        message_id: "message-1",
+      });
+      expect(retryEvents[1]).toMatchObject({
+        retry_reason: "worker_overloaded",
+        attempt: 2,
+        next_attempt: 3,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        message_id: "message-1",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("maps Convex message-size rejections to a user-facing bad request", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {

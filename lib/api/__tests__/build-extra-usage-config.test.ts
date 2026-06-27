@@ -169,7 +169,7 @@ describe("buildExtraUsageConfig — team users", () => {
     });
   });
 
-  it("returns undefined when team pool has no balance and no auto-reload", async () => {
+  it("keeps disabled-for-overflow telemetry when team pool has no balance and no auto-reload", async () => {
     mockGetTeamState.mockResolvedValue({
       enabled: true,
       balanceDollars: 0,
@@ -183,7 +183,12 @@ describe("buildExtraUsageConfig — team users", () => {
       userCustomization: null,
       organizationId: ORG_ID,
     });
-    expect(config).toBeUndefined();
+    expect(config).toEqual({
+      enabled: true,
+      hasBalance: false,
+      balanceDollars: 0,
+      autoReloadEnabled: false,
+    });
   });
 });
 
@@ -262,6 +267,34 @@ describe("buildExtraUsageConfig — individual paid users (pro / pro-plus / ultr
       enabled: true,
       hasBalance: true,
       autoReloadEnabled: false,
+    });
+  });
+
+  it("keeps enabled-but-empty balance context for billing telemetry", async () => {
+    mockGetUserBalance.mockResolvedValue({
+      balanceDollars: 0,
+      balancePoints: 0,
+      enabled: true,
+      autoReloadEnabled: false,
+      monthlyCapDollars: 25,
+      monthlySpentDollars: 0,
+      monthlyRemainingDollars: 25,
+    });
+
+    const config = await buildExtraUsageConfig({
+      userId: USER_ID,
+      subscription: "ultra",
+      userCustomization: { extra_usage_enabled: true } as any,
+    });
+
+    expect(config).toEqual({
+      enabled: true,
+      hasBalance: false,
+      balanceDollars: 0,
+      autoReloadEnabled: false,
+      monthlyCapDollars: 25,
+      monthlySpentDollars: 0,
+      monthlyRemainingDollars: 25,
     });
   });
 });

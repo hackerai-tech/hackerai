@@ -10,6 +10,8 @@ import {
 import { useLatestRef } from "./useLatestRef";
 
 export const MAX_AUTO_CONTINUES = 5;
+export const AUTO_CONTINUE_PROMPT =
+  "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
 
 export interface UseAutoContinueParams {
   chatId: string;
@@ -87,7 +89,10 @@ export function useAutoContinue({
 
     const timeout = setTimeout(() => {
       sendMessageRef.current(
-        { text: "continue", metadata: { isAutoContinue: true } },
+        {
+          text: AUTO_CONTINUE_PROMPT,
+          metadata: { isAutoContinue: true },
+        },
         {
           body: {
             mode: chatMode,

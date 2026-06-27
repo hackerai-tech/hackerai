@@ -5,7 +5,11 @@ import {
   DataStreamProvider,
   useDataStream,
 } from "@/app/components/DataStreamProvider";
-import { useAutoContinue, MAX_AUTO_CONTINUES } from "../useAutoContinue";
+import {
+  AUTO_CONTINUE_PROMPT,
+  useAutoContinue,
+  MAX_AUTO_CONTINUES,
+} from "../useAutoContinue";
 import type { UseAutoContinueParams } from "../useAutoContinue";
 
 type DataStreamEntry = { type: string; data?: unknown; __chatId?: string };
@@ -125,7 +129,10 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
-      { text: "continue", metadata: { isAutoContinue: true } },
+      {
+        text: AUTO_CONTINUE_PROMPT,
+        metadata: { isAutoContinue: true },
+      },
       {
         body: {
           mode: "agent",
@@ -159,7 +166,10 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
-      { text: "continue", metadata: { isAutoContinue: true } },
+      {
+        text: AUTO_CONTINUE_PROMPT,
+        metadata: { isAutoContinue: true },
+      },
       {
         body: expect.objectContaining({
           isAutoContinue: true,

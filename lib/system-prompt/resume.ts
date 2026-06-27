@@ -20,7 +20,9 @@ one step at a time rather than trying to output everything at once.
 Your previous response was stopped because the conversation's accumulated token usage exceeded \
 the context limit, even after earlier messages were summarized. The context has been condensed \
 but you may be missing details from the earlier conversation. If the user says "continue" or similar, \
-resume the task where you left off. Consult the transcript file on the sandbox if you need to recover \
+resume the task where you left off. Do not restart the original task or repeat completed tool work. \
+First inspect the latest assistant progress, todos, files, and current sandbox state when needed, then continue \
+with only the remaining work. Consult the transcript file on the sandbox if you need to recover \
 specific details from the earlier conversation.
 </resume_context>`;
   } else if (finishReason === "preemptive-timeout") {

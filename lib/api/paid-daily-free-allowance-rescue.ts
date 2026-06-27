@@ -47,6 +47,8 @@ export function createPaidDailyFreeAllowanceBudgetSnapshot(
     monthlyLimitPoints: reservation.status.costLimitPoints,
     monthlyRemainingAtStart: reservation.status.costRemainingPoints,
     monthlyResetTime: reservation.status.resetTime,
+    extraUsageEnabledAtStart: false,
+    extraUsageHasBalanceAtStart: false,
     extraUsageBalanceAtStart: 0,
     extraUsageAutoReload: false,
     extraUsageOverflowAllowed: false,

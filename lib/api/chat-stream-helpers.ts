@@ -998,24 +998,21 @@ export async function buildExtraUsageConfig(args: {
       return { enabled: true, hasBalance: true, autoReloadEnabled: false };
     }
     if (!state.enabled || state.memberDisabled) return undefined;
-    if (state.balanceDollars > 0 || state.autoReloadEnabled) {
-      return {
-        enabled: true,
-        hasBalance: state.balanceDollars > 0,
-        balanceDollars: state.balanceDollars,
-        autoReloadEnabled: state.autoReloadEnabled,
-        ...(state.monthlyCapDollars !== undefined && {
-          monthlyCapDollars: state.monthlyCapDollars,
-        }),
-        ...(state.monthlySpentDollars !== undefined && {
-          monthlySpentDollars: state.monthlySpentDollars,
-        }),
-        ...(state.monthlyRemainingDollars !== undefined && {
-          monthlyRemainingDollars: state.monthlyRemainingDollars,
-        }),
-      };
-    }
-    return undefined;
+    return {
+      enabled: true,
+      hasBalance: state.balanceDollars > 0,
+      balanceDollars: state.balanceDollars,
+      autoReloadEnabled: state.autoReloadEnabled,
+      ...(state.monthlyCapDollars !== undefined && {
+        monthlyCapDollars: state.monthlyCapDollars,
+      }),
+      ...(state.monthlySpentDollars !== undefined && {
+        monthlySpentDollars: state.monthlySpentDollars,
+      }),
+      ...(state.monthlyRemainingDollars !== undefined && {
+        monthlyRemainingDollars: state.monthlyRemainingDollars,
+      }),
+    };
   }
 
   if (!(userCustomization?.extra_usage_enabled ?? false)) return undefined;
@@ -1029,24 +1026,21 @@ export async function buildExtraUsageConfig(args: {
     return { enabled: true, hasBalance: true, autoReloadEnabled: false };
   }
 
-  if (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled) {
-    return {
-      enabled: true,
-      hasBalance: balanceInfo.balanceDollars > 0,
-      balanceDollars: balanceInfo.balanceDollars,
-      autoReloadEnabled: balanceInfo.autoReloadEnabled,
-      ...(balanceInfo.monthlyCapDollars !== undefined && {
-        monthlyCapDollars: balanceInfo.monthlyCapDollars,
-      }),
-      ...(balanceInfo.monthlySpentDollars !== undefined && {
-        monthlySpentDollars: balanceInfo.monthlySpentDollars,
-      }),
-      ...(balanceInfo.monthlyRemainingDollars !== undefined && {
-        monthlyRemainingDollars: balanceInfo.monthlyRemainingDollars,
-      }),
-    };
-  }
-  return undefined;
+  return {
+    enabled: true,
+    hasBalance: balanceInfo.balanceDollars > 0,
+    balanceDollars: balanceInfo.balanceDollars,
+    autoReloadEnabled: balanceInfo.autoReloadEnabled,
+    ...(balanceInfo.monthlyCapDollars !== undefined && {
+      monthlyCapDollars: balanceInfo.monthlyCapDollars,
+    }),
+    ...(balanceInfo.monthlySpentDollars !== undefined && {
+      monthlySpentDollars: balanceInfo.monthlySpentDollars,
+    }),
+    ...(balanceInfo.monthlyRemainingDollars !== undefined && {
+      monthlyRemainingDollars: balanceInfo.monthlyRemainingDollars,
+    }),
+  };
 }
 
 /**

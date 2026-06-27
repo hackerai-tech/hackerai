@@ -80,6 +80,7 @@ import {
   getEmptyProcessedMessagesMetadata,
 } from "@/lib/utils/local-attachment-messages";
 import {
+  captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
@@ -1529,6 +1530,7 @@ export const agentLongTask = task({
               currentSystemPrompt,
               tools,
               mode,
+              endpoint: "/api/agent-long",
               userId,
               subscription,
               chatId,
@@ -1552,6 +1554,21 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              onBudgetAbort: (details) =>
+                captureAgentBudgetAbort({
+                  posthog,
+                  userId,
+                  subscription,
+                  chatId,
+                  endpoint: "/api/agent-long",
+                  mode,
+                  selectedModel,
+                  selectedModelOverride,
+                  configuredModelId,
+                  responseModel: state.responseModel,
+                  isAutoContinue,
+                  details,
+                }),
               getHardTimeoutReason: () =>
                 agentLongDurationExceeded
                   ? PREEMPTIVE_TIMEOUT_FINISH_REASON
@@ -1596,6 +1613,7 @@ export const agentLongTask = task({
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
+                state.budgetAbortDetails = undefined;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
@@ -1678,6 +1696,7 @@ export const agentLongTask = task({
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
+                        state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
@@ -1775,6 +1794,9 @@ export const agentLongTask = task({
                                     sandboxInfo,
                                     outcome,
                                     chatLogger,
+                                    finishReason: state.streamFinishReason,
+                                    budgetAbortDetails:
+                                      state.budgetAbortDetails,
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
                                     chatLogger?.emitSuccess({
@@ -1900,6 +1922,8 @@ export const agentLongTask = task({
                         sandboxInfo,
                         outcome,
                         chatLogger,
+                        finishReason: state.streamFinishReason,
+                        budgetAbortDetails: state.budgetAbortDetails,
                       });
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({
