@@ -65,7 +65,7 @@ async function tryLoadFromStorageStateFile(
   );
   await page.context().addCookies(state.cookies);
   await page.goto("/");
-  return true;
+  return await isAuthenticatedUiVisible(page);
 }
 
 function isSessionValid(cache: SessionCache): boolean {
@@ -77,6 +77,20 @@ function isSessionValid(cache: SessionCache): boolean {
   return cache.cookies.some((cookie) => {
     return cookie.expires === -1 || cookie.expires > now / 1000;
   });
+}
+
+async function isAuthenticatedUiVisible(page: Page): Promise<boolean> {
+  const url = page.url();
+  const isWorkOSAuthPage =
+    /workos/i.test(url) && /sign[-_]?in|sign[-_]?up|auth/i.test(url);
+  if (isWorkOSAuthPage) return false;
+
+  const userMenuButton = page
+    .getByTestId("user-menu-button")
+    .or(page.getByTestId("user-menu-button-collapsed"));
+  return await userMenuButton
+    .isVisible({ timeout: TIMEOUTS.SHORT })
+    .catch(() => false);
 }
 
 export interface AuthOptions {
@@ -113,6 +127,8 @@ export async function authenticateUser(
         await page.context().storageState({ path: storagePath });
         return;
       }
+      sessionCache.delete(cacheKey);
+      await page.context().clearCookies();
     }
 
     // 2. Try in-memory session cache (same process only)
@@ -121,17 +137,13 @@ export async function authenticateUser(
       await page.context().addCookies(cached.cookies);
       await page.goto("/");
 
-      const userMenuButton = page
-        .getByTestId("user-menu-button")
-        .or(page.getByTestId("user-menu-button-collapsed"));
-      const isAuthenticated = await userMenuButton
-        .isVisible({ timeout: TIMEOUTS.SHORT })
-        .catch(() => false);
+      const isAuthenticated = await isAuthenticatedUiVisible(page);
       if (isAuthenticated) {
         await page.context().storageState({ path: getStorageStatePath(user) });
         return;
       }
       sessionCache.delete(cacheKey);
+      await page.context().clearCookies();
     }
   }
 

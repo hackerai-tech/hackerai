@@ -169,6 +169,7 @@ const buildSSEResponseFromRun = (
       let statusSubscription: { unsubscribe?: () => void } | undefined;
       let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
+      const isControllerErrored = () => controller.desiredSize === null;
 
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
@@ -181,17 +182,19 @@ const buildSSEResponseFromRun = (
       const sendAbortAndClose = () => {
         if (closed) return;
         closed = true;
-        try {
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
-          );
-        } catch {
-          // controller may already be closed
-        }
-        try {
-          controller.close();
-        } catch {
-          // ignore if already closed
+        if (!isControllerErrored()) {
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ type: "abort" })}\n\n`),
+            );
+          } catch {
+            // controller may already be closed
+          }
+          try {
+            controller.close();
+          } catch {
+            // ignore if already closed
+          }
         }
       };
       closeConsumerStream = sendAbortAndClose;
@@ -199,10 +202,12 @@ const buildSSEResponseFromRun = (
       const close = () => {
         if (closed) return;
         closed = true;
-        try {
-          controller.close();
-        } catch {
-          // already closed by sendAbortAndClose
+        if (!isControllerErrored()) {
+          try {
+            controller.close();
+          } catch {
+            // already closed by sendAbortAndClose
+          }
         }
       };
 
