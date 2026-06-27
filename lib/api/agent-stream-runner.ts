@@ -727,8 +727,12 @@ export async function createAgentStream(
       } else if (budgetDecision?.type === "abort") {
         state.stoppedDueToBudgetExhaustion = true;
         state.budgetAbortDetails = budgetDecision.details;
-        ctx.onBudgetAbort?.({ ...budgetDecision.details, model: modelName });
         ctx.abortController.abort();
+        try {
+          ctx.onBudgetAbort?.({ ...budgetDecision.details, model: modelName });
+        } catch (error) {
+          console.error("[agent-stream] onBudgetAbort failed:", error);
+        }
       }
     },
 

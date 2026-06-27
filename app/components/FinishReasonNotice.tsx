@@ -9,9 +9,8 @@ import {
   AGENT_RUN_SPEND_CAP_REASON,
   AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
 } from "@/lib/chat/agent-run-spend-cap";
+import { BUDGET_EXHAUSTION_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { SelectedModel } from "@/types/chat";
-
-const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;

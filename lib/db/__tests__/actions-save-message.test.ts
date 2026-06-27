@@ -161,6 +161,15 @@ describe("saveMessage", () => {
         retry_reason: "worker_overloaded",
         attempt: 1,
         next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        message_id: "message-1",
+      });
+      expect(retryEvents[1]).toMatchObject({
+        retry_reason: "worker_overloaded",
+        attempt: 2,
+        next_attempt: 3,
+        retry_delay_ms: 0,
         chat_id: "chat-1",
         message_id: "message-1",
       });

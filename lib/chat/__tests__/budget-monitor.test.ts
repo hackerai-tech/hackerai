@@ -166,6 +166,41 @@ describe("BudgetMonitor", () => {
     });
   });
 
+  it("aborts when extra usage is disabled even if balance remains", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        ...baseSnapshot,
+        extraUsageEnabledAtStart: false,
+        extraUsageAutoReload: false,
+        extraUsageBalanceAtStart: 10,
+        extraUsageMonthlyRemainingAtStart: 20,
+      },
+      writer,
+      "ultra",
+    );
+
+    const decision = monitor.checkAfterStep(0.002);
+
+    expect(decision).toMatchObject({
+      type: "abort",
+      details: {
+        capReason: "monthly_exhausted",
+        billingStopReason: "extra_usage_disabled",
+        extraUsageAvailable: false,
+        extraUsageBalanceDollars: 10,
+        extraUsageMonthlyRemainingDollars: 20,
+      },
+    });
+    expect(writer.write).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warningType: "extra-usage-active",
+        }),
+      }),
+    );
+  });
+
   it("aborts with the paid daily free allowance cap reason when overflow is disabled", () => {
     const writer = makeWriter();
     const monitor = new BudgetMonitor(

@@ -218,6 +218,7 @@ export class BudgetMonitor {
           snapshot.extraUsageBalanceAtStart >= overflowDollars;
         const hasExtraCushion =
           snapshot.extraUsageOverflowAllowed !== false &&
+          snapshot.extraUsageEnabledAtStart &&
           guardrailAllowsOverflow &&
           balanceAllowsOverflow;
 

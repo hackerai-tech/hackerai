@@ -324,6 +324,85 @@ type ExtraUsageTelemetryContext = {
   autoReloadEnabled?: boolean;
 };
 
+const numberMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+};
+
+const booleanMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): boolean | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
+};
+
+const extraUsageTelemetryFromConfig = (
+  extraUsageConfig: ExtraUsageConfig | undefined,
+): ExtraUsageTelemetryContext | undefined =>
+  extraUsageConfig
+    ? {
+        enabled: extraUsageConfig.enabled,
+        hasBalance: extraUsageConfig.hasBalance,
+        balanceDollars: extraUsageConfig.balanceDollars,
+        monthlyCapDollars: extraUsageConfig.monthlyCapDollars,
+        monthlySpentDollars: extraUsageConfig.monthlySpentDollars,
+        monthlyRemainingDollars: extraUsageConfig.monthlyRemainingDollars,
+        autoReloadEnabled: extraUsageConfig.autoReloadEnabled,
+      }
+    : undefined;
+
+const extraUsageTelemetryFromMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): ExtraUsageTelemetryContext | undefined => {
+  const enabled = booleanMetadata(metadata, "extraUsageEnabled");
+  const hasBalance = booleanMetadata(metadata, "extraUsageHasBalance");
+  const autoReloadEnabled = booleanMetadata(
+    metadata,
+    "extraUsageAutoReloadEnabled",
+  );
+  const balanceDollars = numberMetadata(metadata, "extraUsageBalanceDollars");
+  const monthlyCapDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlyCapDollars",
+  );
+  const monthlySpentDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlySpentDollars",
+  );
+  const monthlyRemainingDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlyRemainingDollars",
+  );
+
+  if (
+    enabled === undefined &&
+    hasBalance === undefined &&
+    autoReloadEnabled === undefined &&
+    balanceDollars === undefined &&
+    monthlyCapDollars === undefined &&
+    monthlySpentDollars === undefined &&
+    monthlyRemainingDollars === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled,
+    hasBalance,
+    balanceDollars,
+    monthlyCapDollars,
+    monthlySpentDollars,
+    monthlyRemainingDollars,
+    autoReloadEnabled,
+  };
+};
+
 const getAgentBillingStopReason = (
   capReason: LimitCapReason,
   extraUsage: ExtraUsageTelemetryContext | undefined,
@@ -420,17 +499,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         freeRemaining:
           context.subscription === "free" ? context.remaining : undefined,
       });
-      extraUsageTelemetry = extraUsageConfig
-        ? {
-            enabled: extraUsageConfig.enabled,
-            hasBalance: extraUsageConfig.hasBalance,
-            balanceDollars: extraUsageConfig.balanceDollars,
-            monthlyCapDollars: extraUsageConfig.monthlyCapDollars,
-            monthlySpentDollars: extraUsageConfig.monthlySpentDollars,
-            monthlyRemainingDollars: extraUsageConfig.monthlyRemainingDollars,
-            autoReloadEnabled: extraUsageConfig.autoReloadEnabled,
-          }
-        : undefined;
+      extraUsageTelemetry = extraUsageTelemetryFromConfig(extraUsageConfig);
     },
 
     /**
@@ -741,6 +810,9 @@ export function createChatLogger(config: ChatLoggerConfig) {
           typeof error.metadata.paidDailyFreeAllowance === "object"
             ? (error.metadata.paidDailyFreeAllowance as Record<string, unknown>)
             : undefined;
+        const rateLimitExtraUsageTelemetry =
+          extraUsageTelemetry ??
+          extraUsageTelemetryFromMetadata(error.metadata);
 
         phLogger.event(
           PAID_FUNNEL_EVENTS.limitHit,
@@ -794,7 +866,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
             limit_type: pressure.limitType,
             billing_stop_reason: getAgentBillingStopReason(
               capReason,
-              extraUsageTelemetry,
+              rateLimitExtraUsageTelemetry,
             ),
             mid_stream: false,
             monthly_remaining_percent: monthlyRemainingPercent,
@@ -803,15 +875,16 @@ export function createChatLogger(config: ChatLoggerConfig) {
             add_credit_available: pressure.addCreditAvailable,
             primary_cta: pressure.primaryCta,
             eligible_ctas: pressure.eligibleCtas,
-            extra_usage_enabled: extraUsageTelemetry?.enabled,
-            extra_usage_has_balance: extraUsageTelemetry?.hasBalance,
-            extra_usage_balance_dollars: extraUsageTelemetry?.balanceDollars,
+            extra_usage_enabled: rateLimitExtraUsageTelemetry?.enabled,
+            extra_usage_has_balance: rateLimitExtraUsageTelemetry?.hasBalance,
+            extra_usage_balance_dollars:
+              rateLimitExtraUsageTelemetry?.balanceDollars,
             extra_usage_auto_reload_enabled:
-              extraUsageTelemetry?.autoReloadEnabled,
+              rateLimitExtraUsageTelemetry?.autoReloadEnabled,
             extra_usage_monthly_remaining_dollars:
-              extraUsageTelemetry?.monthlyRemainingDollars,
+              rateLimitExtraUsageTelemetry?.monthlyRemainingDollars,
             monthly_spending_cap_remaining_dollars:
-              extraUsageTelemetry?.monthlyRemainingDollars,
+              rateLimitExtraUsageTelemetry?.monthlyRemainingDollars,
             $set: {
               subscription_tier: subscription,
               last_agent_billing_stop_at: new Date().toISOString(),

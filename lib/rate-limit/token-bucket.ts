@@ -321,6 +321,22 @@ export const checkTokenBucketLimit = async (
       resetTimestamp: reset,
       subscription,
       capReason,
+      extraUsageEnabled: extraUsageConfig?.enabled ?? false,
+      extraUsageHasBalance: extraUsageConfig?.hasBalance ?? false,
+      extraUsageAutoReloadEnabled: extraUsageConfig?.autoReloadEnabled ?? false,
+      ...(extraUsageConfig?.balanceDollars !== undefined && {
+        extraUsageBalanceDollars: extraUsageConfig.balanceDollars,
+      }),
+      ...(extraUsageConfig?.monthlyCapDollars !== undefined && {
+        extraUsageMonthlyCapDollars: extraUsageConfig.monthlyCapDollars,
+      }),
+      ...(extraUsageConfig?.monthlySpentDollars !== undefined && {
+        extraUsageMonthlySpentDollars: extraUsageConfig.monthlySpentDollars,
+      }),
+      ...(extraUsageConfig?.monthlyRemainingDollars !== undefined && {
+        extraUsageMonthlyRemainingDollars:
+          extraUsageConfig.monthlyRemainingDollars,
+      }),
       ...getLimitPressureContext({ subscription, capReason }),
       ...extra,
     });

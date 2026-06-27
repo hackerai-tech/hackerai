@@ -1619,7 +1619,12 @@ export const createChatHandler = () => {
 
                     // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
                     // This prevents showing "going off course" message when user clicks stop
-                    if (isAborted && !isPreemptiveAbort) {
+                    if (
+                      isAborted &&
+                      !isPreemptiveAbort &&
+                      !state.stoppedDueToBudgetExhaustion &&
+                      !state.stoppedDueToAgentRunSpendCap
+                    ) {
                       state.streamFinishReason = undefined;
                     }
 

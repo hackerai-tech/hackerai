@@ -1057,6 +1057,56 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it("emits agent billing-stop extra-usage metadata without setRateLimit", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_preflight_empty_extra",
+        endpoint: "/api/agent-long",
+      });
+      chatLogger.setRequestDetails({
+        mode: "agent",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "ultra" });
+
+      chatLogger.emitChatError(
+        new ChatSDKError("rate_limit:chat", "Monthly limit hit", {
+          capReason: "monthly_exhausted",
+          resetTimestamp: 1_800_000_000_000,
+          extraUsageEnabled: true,
+          extraUsageHasBalance: false,
+          extraUsageBalanceDollars: 0,
+          extraUsageAutoReloadEnabled: false,
+          extraUsageMonthlyRemainingDollars: 25,
+        }),
+      );
+
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          chat_id: "chat_preflight_empty_extra",
+          endpoint: "/api/agent-long",
+          mode: "agent",
+          cap_reason: "monthly_exhausted",
+          billing_stop_reason: "extra_usage_balance_empty",
+          extra_usage_enabled: true,
+          extra_usage_has_balance: false,
+          extra_usage_balance_dollars: 0,
+          extra_usage_auto_reload_enabled: false,
+          extra_usage_monthly_remaining_dollars: 25,
+          monthly_spending_cap_remaining_dollars: 25,
+        }),
+      );
+    } finally {
+      eventSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
   it("does not emit monthly_cap_hit for paid billing service outages", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
