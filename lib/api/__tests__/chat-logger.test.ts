@@ -5,6 +5,7 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Headers = class Headers {};
 
 const {
+  captureAgentBudgetAbort,
   createChatLogger,
   captureAgentCompletionAnalytics,
   captureAgentRun,
@@ -112,6 +113,67 @@ describe("captureAgentRun", () => {
     });
 
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureAgentBudgetAbort", () => {
+  it("captures mid-stream Agent budget abort reason and extra-usage state", () => {
+    const capture = jest.fn();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+
+    try {
+      captureAgentBudgetAbort({
+        posthog: { capture } as any,
+        userId: "user_123",
+        subscription: "ultra",
+        chatId: "chat_123",
+        endpoint: "/api/agent-long",
+        mode: "agent",
+        selectedModel: "agent-model",
+        selectedModelOverride: "hackerai-max",
+        configuredModelId: "anthropic/claude-opus",
+        responseModel: "anthropic/claude-opus",
+        isAutoContinue: true,
+        details: {
+          model: "agent-model",
+          capReason: "extra_usage_cap",
+          billingStopReason: "monthly_extra_usage_spending_cap_hit",
+          midStream: true,
+          projectedCostDollars: 108.42,
+          overflowDollars: 8.42,
+          monthlyLimitDollars: 200,
+          monthlyRemainingDollarsAtStart: 2,
+          extraUsageEnabled: true,
+          extraUsageHasBalance: true,
+          extraUsageBalanceDollars: 50,
+          extraUsageAutoReloadEnabled: false,
+          extraUsageMonthlyRemainingDollars: 0,
+          extraUsageAvailable: false,
+        },
+      });
+
+      expect(capture).toHaveBeenCalledWith({
+        distinctId: "user_123",
+        event: "agent_mid_stream_budget_aborted",
+        properties: expect.objectContaining({
+          chat_id: "chat_123",
+          endpoint: "/api/agent-long",
+          mode: "agent",
+          subscription_tier: "ultra",
+          cap_reason: "extra_usage_cap",
+          billing_stop_reason: "monthly_extra_usage_spending_cap_hit",
+          mid_stream: true,
+          monthly_spending_cap_remaining_dollars: 0,
+          extra_usage_balance_dollars: 50,
+          is_auto_continue: true,
+        }),
+      });
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("agent_mid_stream_budget_aborted"),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });
 
@@ -978,6 +1040,17 @@ describe("createChatLogger ChatSDKError metadata", () => {
           eligible_ctas: ["add_credits", "upgrade_plan"],
         }),
       );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          chat_id: "chat_limit",
+          endpoint: "/api/chat",
+          mode: "agent",
+          cap_reason: "monthly_exhausted",
+          billing_stop_reason: "monthly_included_exhausted",
+          mid_stream: false,
+        }),
+      );
     } finally {
       eventSpy.mockRestore();
       logSpy.mockRestore();
@@ -1017,6 +1090,14 @@ describe("createChatLogger ChatSDKError metadata", () => {
       expect(eventSpy).not.toHaveBeenCalledWith(
         "monthly_cap_hit",
         expect.anything(),
+      );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          cap_reason: "billing_unavailable",
+          billing_stop_reason: "billing_unavailable",
+          mid_stream: false,
+        }),
       );
     } finally {
       eventSpy.mockRestore();

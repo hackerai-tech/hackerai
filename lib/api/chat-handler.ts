@@ -54,6 +54,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
+  captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
@@ -1125,6 +1126,7 @@ export const createChatHandler = () => {
               currentSystemPrompt,
               tools,
               mode,
+              endpoint,
               userId,
               subscription,
               chatId,
@@ -1154,6 +1156,21 @@ export const createChatHandler = () => {
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              onBudgetAbort: (details) =>
+                captureAgentBudgetAbort({
+                  posthog,
+                  userId,
+                  subscription,
+                  chatId,
+                  endpoint,
+                  mode,
+                  selectedModel,
+                  selectedModelOverride,
+                  configuredModelId,
+                  responseModel: state.responseModel,
+                  isAutoContinue,
+                  details,
+                }),
               getHardTimeoutReason: () =>
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
@@ -1198,6 +1215,7 @@ export const createChatHandler = () => {
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
+                state.budgetAbortDetails = undefined;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 // Discard the failed primary leg's model usage so the user is
@@ -1300,6 +1318,7 @@ export const createChatHandler = () => {
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
+                        state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
                         preFallbackCacheWrite = usageTracker.cacheWriteTokens;
@@ -1396,6 +1415,8 @@ export const createChatHandler = () => {
                                   sandboxInfo,
                                   outcome,
                                   chatLogger,
+                                  finishReason: state.streamFinishReason,
+                                  budgetAbortDetails: state.budgetAbortDetails,
                                 });
                                 chatLogger!.emitSuccess({
                                   finishReason: state.streamFinishReason,
@@ -1623,6 +1644,8 @@ export const createChatHandler = () => {
                       sandboxInfo,
                       outcome,
                       chatLogger,
+                      finishReason: state.streamFinishReason,
+                      budgetAbortDetails: state.budgetAbortDetails,
                     });
                     chatLogger!.emitSuccess({
                       finishReason: state.streamFinishReason,

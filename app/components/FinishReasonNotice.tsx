@@ -11,6 +11,8 @@ import {
 } from "@/lib/chat/agent-run-spend-cap";
 import type { SelectedModel } from "@/types/chat";
 
+const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
+
 interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
@@ -65,6 +67,10 @@ export const FinishReasonNotice = ({
       return <>Paused at the Pro Agent per-run safety cap.</>;
     }
 
+    if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
+      return <>Stopped at a usage guardrail for this run.</>;
+    }
+
     return null;
   };
 
@@ -75,6 +81,10 @@ export const FinishReasonNotice = ({
   const shouldContinueWithStandard =
     finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON &&
     agentRunSpendCapPremiumContinuationAllowed === false;
+  const showContinue =
+    onContinue &&
+    !hasContinued &&
+    finishReason !== BUDGET_EXHAUSTION_FINISH_REASON;
   const continuationModel = shouldContinueWithStandard
     ? AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL
     : undefined;
@@ -86,7 +96,7 @@ export const FinishReasonNotice = ({
     <div className="mt-2 w-full">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span>{content}</span>
-        {onContinue && !hasContinued && (
+        {showContinue && (
           <Button
             type="button"
             size="sm"

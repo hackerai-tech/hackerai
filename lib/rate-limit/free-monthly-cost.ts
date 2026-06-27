@@ -25,6 +25,8 @@ export interface FreeMonthlyCostSnapshot {
   monthlyLimitPoints: number;
   monthlyRemainingAtStart: number;
   monthlyResetTime: Date;
+  extraUsageEnabledAtStart: false;
+  extraUsageHasBalanceAtStart: false;
   extraUsageBalanceAtStart: 0;
   extraUsageAutoReload: false;
   rateLimitSkipped?: boolean;
@@ -72,6 +74,8 @@ export async function checkFreeMonthlyCostLimit(
         monthlyLimitPoints: limitPoints,
         monthlyRemainingAtStart: limitPoints,
         monthlyResetTime: new Date(reset),
+        extraUsageEnabledAtStart: false,
+        extraUsageHasBalanceAtStart: false,
         extraUsageBalanceAtStart: 0,
         extraUsageAutoReload: false,
         rateLimitSkipped: true,
@@ -105,6 +109,8 @@ export async function checkFreeMonthlyCostLimit(
     monthlyLimitPoints: limitPoints,
     monthlyRemainingAtStart: remainingPoints,
     monthlyResetTime: new Date(reset),
+    extraUsageEnabledAtStart: false,
+    extraUsageHasBalanceAtStart: false,
     extraUsageBalanceAtStart: 0,
     extraUsageAutoReload: false,
   };

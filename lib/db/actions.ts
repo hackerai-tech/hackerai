@@ -40,6 +40,8 @@ const MAX_DATABASE_ERROR_DATA_BYTES = 4 * 1024;
 const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
 const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
+const SAVE_MESSAGE_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
   | "token_threshold"
@@ -222,6 +224,39 @@ const hasDatabaseErrorCode = (data: unknown, code: string): boolean =>
 
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
+
+const getRetryableSaveMessageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const dbErrorData = getErrorData(error);
+  const errorText = [
+    error instanceof Error ? error.name : undefined,
+    stringifyError(error),
+    getDatabaseErrorCode(dbErrorData),
+    getDatabaseCauseErrorCode(dbErrorData),
+    getObjectString(dbErrorData, "causeName"),
+    getObjectString(dbErrorData, "causeMessage"),
+    getObjectString(dbErrorData, "message"),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (/WorkerOverloaded/i.test(errorText)) return "worker_overloaded";
+  if (
+    /ServiceUnavailable|temporarily unavailable|ECONNRESET|ETIMEDOUT/i.test(
+      errorText,
+    )
+  ) {
+    return "transient_service_unavailable";
+  }
+  if (/TooManyRequests|rate.?limit|429/i.test(errorText)) {
+    return "convex_rate_limited";
+  }
+  return undefined;
+};
+
+const waitForRetryDelay = (delayMs: number) =>
+  new Promise((resolve) => setTimeout(resolve, delayMs));
 
 const ACCESS_DENIED_ERROR_CODE = "ACCESS_DENIED";
 const CHAT_CANCELED_ERROR_CODE = "CHAT_CANCELED";
@@ -549,7 +584,7 @@ export async function saveMessage({
       | Record<string, unknown>
       | undefined;
 
-    return await getConvexClient().mutation(api.messages.saveMessage, {
+    const mutationArgs = {
       serviceKey,
       id: message.id,
       chatId,
@@ -565,7 +600,47 @@ export async function saveMessage({
       usage: usageForSave,
       updateOnly,
       isHidden,
-    });
+    };
+
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().mutation(
+          api.messages.saveMessage,
+          mutationArgs,
+        );
+      } catch (error) {
+        const retryReason = getRetryableSaveMessageErrorReason(error);
+        const retryDelayMs = SAVE_MESSAGE_RETRY_DELAYS_MS[attemptIndex];
+        if (!retryReason || retryDelayMs === undefined) {
+          throw error;
+        }
+
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "message_save_retry_scheduled",
+            service: "chat-handler",
+            timestamp: new Date().toISOString(),
+            db_operation: "messages.saveMessage",
+            retry_reason: retryReason,
+            attempt: attemptIndex + 1,
+            next_attempt: attemptIndex + 2,
+            retry_delay_ms: retryDelayMs,
+            chat_id: chatId,
+            user_id: userId,
+            message_id: message.id,
+            message_role: message.role,
+            mode,
+            model,
+            finish_reason: finishReason,
+            update_only: updateOnly === true,
+            hidden: isHidden === true,
+            ...persistenceDiagnostics,
+          }),
+        );
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("messages.saveMessage", error, {
       chat_id: chatId,

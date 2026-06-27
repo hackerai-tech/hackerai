@@ -74,7 +74,10 @@ import {
 } from "@/lib/api/openrouter-metadata";
 import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
-import type { BudgetMonitor } from "@/lib/chat/budget-monitor";
+import type {
+  BudgetAbortDetails,
+  BudgetMonitor,
+} from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
 import type {
   ProviderReasoningOverride,
@@ -112,6 +115,7 @@ export type AgentStreamState = {
   stoppedDueToDoomLoop: boolean;
   stoppedDueToBudgetExhaustion: boolean;
   stoppedDueToAgentRunSpendCap: boolean;
+  budgetAbortDetails: BudgetAbortDetails | undefined;
 };
 
 export function initAgentStreamState(
@@ -132,6 +136,7 @@ export function initAgentStreamState(
     stoppedDueToDoomLoop: false,
     stoppedDueToBudgetExhaustion: false,
     stoppedDueToAgentRunSpendCap: false,
+    budgetAbortDetails: undefined,
   };
 }
 
@@ -292,6 +297,7 @@ export type AgentStreamContext = {
   currentSystemPrompt: string;
   tools: ToolSet;
   mode: ChatMode;
+  endpoint: "/api/chat" | "/api/agent-long";
   userId: string;
   subscription: SubscriptionTier;
   chatId: string;
@@ -330,6 +336,7 @@ export type AgentStreamContext = {
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
+  onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -714,11 +721,13 @@ export async function createAgentStream(
       const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
         ctx.usageTracker.computeCostDollars(modelName),
       );
-      if (budgetDecision === "abort-agent-run-spend-cap") {
+      if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
         ctx.abortController.abort();
-      } else if (budgetDecision === "abort") {
+      } else if (budgetDecision?.type === "abort") {
         state.stoppedDueToBudgetExhaustion = true;
+        state.budgetAbortDetails = budgetDecision.details;
+        ctx.onBudgetAbort?.({ ...budgetDecision.details, model: modelName });
         ctx.abortController.abort();
       }
     },

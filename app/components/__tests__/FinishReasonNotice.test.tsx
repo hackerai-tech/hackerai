@@ -277,6 +277,25 @@ describe("FinishReasonNotice", () => {
 
       expect(onContinue).toHaveBeenCalledWith(undefined);
     });
+
+    it("renders a usage guardrail notice without a Continue button for budget exhaustion", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "budget-exhausted",
+          mode: "agent",
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+      );
+
+      expect(
+        screen.getByText(/Stopped at a usage guardrail for this run/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("correct styling", () => {

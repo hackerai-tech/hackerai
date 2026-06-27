@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
+import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
   getAutoContinueChainAssistantIds,
@@ -690,7 +691,10 @@ export const useChatHandlers = ({
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModel;
     sendMessage(
-      { text: "continue", metadata: { isAutoContinue: true } },
+      {
+        text: AUTO_CONTINUE_PROMPT,
+        metadata: { isAutoContinue: true },
+      },
       {
         body: {
           mode: chatModeRef.current,
