@@ -1682,7 +1682,8 @@ export const createChatHandler = () => {
                         isAborted &&
                         !isPreemptiveAbort &&
                         !state.stoppedDueToBudgetExhaustion &&
-                        !state.stoppedDueToAgentRunSpendCap;
+                        !state.stoppedDueToAgentRunSpendCap &&
+                        !state.stoppedDueToElapsedTimeout;
                       const hasAssistantContentToSave =
                         hasVisibleAssistantContent(messages);
 
