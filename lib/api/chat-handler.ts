@@ -100,6 +100,11 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
+import {
+  hasVisibleAssistantContent,
+  shouldSkipAbortedMessageSave,
+  shouldUseUpdateOnlyForAbortedSave,
+} from "@/lib/chat/abort-persistence";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   getSandboxUploadFailureMetadata,
@@ -1687,17 +1692,28 @@ export const createChatHandler = () => {
                     const hasUsageToRecord = Boolean(resolvedUsage);
                     const shouldSkipSaveSignal =
                       cancellationSubscriber.shouldSkipSave();
-
-                    // If user aborted (not pre-emptive), skip message save when:
-                    // 1. skipSave signal received via Redis (edit/regenerate/retry — message will be discarded)
-                    // 2. No files, tools, or usage to record (frontend already saved the message)
-                    if (
+                    const isUserInitiatedAbort =
                       isAborted &&
                       !isPreemptiveAbort &&
-                      (shouldSkipSaveSignal ||
-                        (newFileIds.length === 0 &&
-                          !hasIncompleteToolCalls &&
-                          !hasUsageToRecord))
+                      !state.stoppedDueToBudgetExhaustion &&
+                      !state.stoppedDueToAgentRunSpendCap &&
+                      !state.stoppedDueToElapsedTimeout;
+                    const hasAssistantContentToSave =
+                      hasVisibleAssistantContent(normalizedMessages);
+
+                    // If aborted, skip message save only when:
+                    // 1. skipSave signal received via Redis (edit/regenerate/retry — message will be discarded)
+                    // 2. No assistant content, files, tools, or usage need backend persistence
+                    if (
+                      !isPreemptiveAbort &&
+                      shouldSkipAbortedMessageSave({
+                        isAborted,
+                        shouldSkipSaveSignal,
+                        hasVisibleAssistantContent: hasAssistantContentToSave,
+                        hasNewFiles: newFileIds.length > 0,
+                        hasIncompleteToolCalls,
+                        hasUsageToRecord,
+                      })
                     ) {
                       console.info(
                         JSON.stringify({
@@ -1711,6 +1727,8 @@ export const createChatHandler = () => {
                           finish_reason: state.streamFinishReason,
                           skip_save_signal: shouldSkipSaveSignal,
                           new_file_count: newFileIds.length,
+                          has_visible_assistant_content:
+                            hasAssistantContentToSave,
                           has_incomplete_tool_calls: hasIncompleteToolCalls,
                           has_usage_to_record: hasUsageToRecord,
                         }),
@@ -1738,9 +1756,9 @@ export const createChatHandler = () => {
 
                       // Use resolvedUsage which was already awaited above on abort
                       // Falls back to state.streamUsage for non-abort cases
-                      // On user-initiated abort, use updateOnly as safety net:
+                      // On explicit user stop, use updateOnly as safety net:
                       // only patch existing messages (add files/usage), don't create new ones.
-                      // This prevents orphan messages when Redis skipSave signal was missed.
+                      // Budget/provider/system aborts must insert partial work if no row exists.
                       try {
                         await saveMessage({
                           chatId,
@@ -1756,8 +1774,12 @@ export const createChatHandler = () => {
                           generationTimeMs: Date.now() - streamStartTime,
                           finishReason: state.streamFinishReason,
                           usage: resolvedUsage ?? state.streamUsage,
-                          updateOnly:
-                            isAborted && !isPreemptiveAbort ? true : undefined,
+                          updateOnly: shouldUseUpdateOnlyForAbortedSave({
+                            isAborted,
+                            isUserInitiatedAbort,
+                          })
+                            ? true
+                            : undefined,
                           isHidden:
                             isAutoContinue && processedMessage.role === "user"
                               ? true

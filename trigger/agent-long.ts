@@ -23,6 +23,11 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
 import {
+  hasVisibleAssistantContent,
+  shouldSkipAbortedMessageSave,
+  shouldUseUpdateOnlyForAbortedSave,
+} from "@/lib/chat/abort-persistence";
+import {
   sendRateLimitWarnings,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
@@ -1871,6 +1876,7 @@ export const agentLongTask = task({
                             });
                             sendFileMetadataToStream(accumulatedFiles);
                           }
+
                           await deductAccumulatedUsage();
                           posthog?.shutdown();
                         } finally {
@@ -2017,12 +2023,17 @@ export const agentLongTask = task({
                         }),
                       );
                     }
+                    const hasAssistantContentToSave =
+                      hasVisibleAssistantContent(normalizedFinishedMessages);
                     if (
-                      isAborted &&
-                      !triggerSignal.aborted &&
-                      newFileIds.length === 0 &&
-                      !hasIncompleteToolCalls &&
-                      !resolvedUsage
+                      shouldSkipAbortedMessageSave({
+                        isAborted,
+                        shouldSkipSaveSignal: false,
+                        hasVisibleAssistantContent: hasAssistantContentToSave,
+                        hasNewFiles: newFileIds.length > 0,
+                        hasIncompleteToolCalls,
+                        hasUsageToRecord: Boolean(resolvedUsage),
+                      })
                     ) {
                       console.info(
                         JSON.stringify({
@@ -2035,6 +2046,8 @@ export const agentLongTask = task({
                           mode: "agent",
                           finish_reason: state.streamFinishReason,
                           new_file_count: newFileIds.length,
+                          has_visible_assistant_content:
+                            hasAssistantContentToSave,
                           has_incomplete_tool_calls: hasIncompleteToolCalls,
                           has_usage_to_record: Boolean(resolvedUsage),
                         }),
@@ -2046,6 +2059,12 @@ export const agentLongTask = task({
 
                     const finalGenerationTimeMs = Date.now() - streamStartTime;
                     let savedAssistantMessage = false;
+                    const isUserInitiatedAbort =
+                      isAborted &&
+                      triggerSignal.aborted &&
+                      !state.stoppedDueToBudgetExhaustion &&
+                      !state.stoppedDueToAgentRunSpendCap &&
+                      !state.stoppedDueToElapsedTimeout;
                     for (const message of normalizedFinishedMessages) {
                       const processed = stripAgentLongHeartbeatParts(
                         summarizationTracker.processMessageForSave(message),
@@ -2070,10 +2089,12 @@ export const agentLongTask = task({
                         generationTimeMs: finalGenerationTimeMs,
                         finishReason: state.streamFinishReason,
                         usage: resolvedUsage ?? state.streamUsage,
-                        updateOnly:
-                          isAborted && !state.stoppedDueToElapsedTimeout
-                            ? true
-                            : undefined,
+                        updateOnly: shouldUseUpdateOnlyForAbortedSave({
+                          isAborted,
+                          isUserInitiatedAbort,
+                        })
+                          ? true
+                          : undefined,
                         isHidden:
                           isAutoContinue && processed.role === "user"
                             ? true
