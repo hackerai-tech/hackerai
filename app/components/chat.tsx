@@ -752,6 +752,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const toolCallId = getSidebarToolCallId(sidebarContent);
     if (!toolCallId) return;
 
+    const selectedToolBelongsToCurrentChat = sidebarToolExecutions.some(
+      (toolExecution) => getSidebarToolCallId(toolExecution) === toolCallId,
+    );
+    if (!selectedToolBelongsToCurrentChat) return;
+
     const latestToolCallId = getLatestSidebarToolCallId(sidebarToolExecutions);
     writePersistedComputerSidebarState({
       chatId,

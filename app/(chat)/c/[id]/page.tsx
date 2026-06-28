@@ -7,11 +7,13 @@ import PricingDialog from "../../../components/PricingDialog";
 import { usePricingDialog } from "../../../hooks/usePricingDialog";
 import { useGlobalState } from "../../../contexts/GlobalState";
 import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
-import { use } from "react";
+import { use, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
   const chatId = params.id;
+  const router = useRouter();
   const { subscription } = useGlobalState();
   const { showPricing, handleClosePricing, pricingContext } =
     usePricingDialog(subscription);
@@ -19,6 +21,12 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
 
   const shouldRenderChat =
     isAuthenticated || (isLoading && hasAuthenticatedBefore());
+
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      router.replace("/");
+    }
+  }, [isAuthenticated, isLoading, router]);
 
   return (
     <>

@@ -8,10 +8,27 @@ export const useQuery = () => undefined;
 
 export const useAction = () => mockAction;
 
-export const useConvexAuth = () => ({
+type MockConvexAuthState = {
+  isAuthenticated: boolean;
+  isLoading: boolean;
+};
+
+const defaultConvexAuthState: MockConvexAuthState = {
   isAuthenticated: true,
   isLoading: false,
-});
+};
+
+let convexAuthState = defaultConvexAuthState;
+
+export const setMockConvexAuth = (next: Partial<MockConvexAuthState>): void => {
+  convexAuthState = { ...convexAuthState, ...next };
+};
+
+export const resetMockConvexAuth = (): void => {
+  convexAuthState = defaultConvexAuthState;
+};
+
+export const useConvexAuth = () => ({ ...convexAuthState });
 
 // Create stable reference for paginated query results
 const stablePaginatedResult = {
