@@ -733,7 +733,7 @@ describe("createChatLogger provider stream termination", () => {
     }
   });
 
-  it("normalizes synthetic SSE JSON wrapper errors using provider status", () => {
+  it("normalizes and fingerprints synthetic SSE JSON wrapper errors using provider status", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
@@ -745,16 +745,27 @@ describe("createChatLogger provider stream termination", () => {
       const err = {
         name: "Error",
         message: "JSON error injected into SSE stream",
-        code: 429,
+        code: 502,
+        data: {
+          id: "gen-sse-json-wrapper",
+          error: {
+            code: 502,
+            metadata: {
+              provider_name: "Fireworks",
+            },
+          },
+        },
       };
 
       chatLogger.recordProviderError(err, {
         mode: "ask",
-        model: "ask-model",
-        requestedModelSlug: "x-ai/grok-4.3",
+        model: "ask-model-free",
+        requestedModelSlug: "deepseek/deepseek-v4-flash",
       });
       chatLogger.emitUnexpectedError(err);
 
+      const expectedFingerprint =
+        "provider_error|provider_5xx|status_502|provider_fireworks|model_deepseek/deepseek-v4-flash";
       const structuredErrorLog = errorSpy.mock.calls
         .map((call) => call[0])
         .find(
@@ -769,25 +780,37 @@ describe("createChatLogger provider stream termination", () => {
           call[1] !== null,
       );
       const fields = posthogErrorCall?.[1] as
-        | { error?: unknown; providerDiagnosticMessage?: unknown }
+        | {
+            error?: unknown;
+            providerDiagnosticMessage?: unknown;
+            providerErrorFingerprint?: unknown;
+          }
         | undefined;
       const capturedError = fields?.error as Error | undefined;
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
 
       expect(structuredErrorLog).toContain(
-        '"provider_diagnostic_message":"Provider rate limited (429)"',
+        '"provider_diagnostic_message":"Provider server error (502)"',
       );
-      expect(structuredErrorLog).toContain('"provider_status_code":429');
+      expect(structuredErrorLog).toContain('"provider_status_code":502');
+      expect(structuredErrorLog).toContain(
+        `"provider_error_fingerprint":"${expectedFingerprint}"`,
+      );
       expect(capturedError).toBeInstanceOf(Error);
-      expect(capturedError?.message).toBe("Provider rate limited (429)");
-      expect(fields?.providerDiagnosticMessage).toBe(
-        "Provider rate limited (429)",
+      expect(capturedError?.message).toBe(
+        `Provider server error (502) [${expectedFingerprint}]`,
       );
-      expect(wideEvent.error.message).toBe("Provider rate limited (429)");
+      expect(fields?.providerDiagnosticMessage).toBe(
+        "Provider server error (502)",
+      );
+      expect(fields?.providerErrorFingerprint).toBe(expectedFingerprint);
+      expect(wideEvent.error.message).toBe("Provider server error (502)");
       expect(wideEvent.provider_error).toMatchObject({
-        category: "rate_limited",
-        status_code: 429,
-        message: "Provider rate limited (429)",
+        category: "provider_5xx",
+        status_code: 502,
+        message: "Provider server error (502)",
+        provider_name: "Fireworks",
+        provider_error_fingerprint: expectedFingerprint,
       });
     } finally {
       errorSpy.mockRestore();

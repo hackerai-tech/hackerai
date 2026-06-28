@@ -89,8 +89,12 @@ export interface StreamResult {
 function posthogProviderException(
   error: unknown,
   details: Record<string, unknown>,
+  providerErrorFingerprint?: string,
 ): Error {
-  const message = getProviderDiagnosticMessage(details);
+  const message = getPostHogProviderExceptionMessage(
+    details,
+    providerErrorFingerprint,
+  );
   if (!(error instanceof Error)) {
     const enriched = new Error(message);
     const errorName = details.errorName;
@@ -228,6 +232,36 @@ const providerErrorMessage = (category: ProviderErrorCategory): string =>
 
 const SYNTHETIC_SSE_JSON_ERROR_MESSAGE = "JSON error injected into SSE stream";
 
+const sanitizeProviderFingerprintPart = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:/-]+/g, "_")
+    .slice(0, 160);
+
+const buildProviderErrorFingerprint = (details: {
+  category: ProviderErrorCategory;
+  statusCode?: number;
+  requestedModelSlug?: string;
+  modelProviderSlug?: string;
+  providerName?: string;
+}): string => {
+  const providerPart = details.providerName ?? details.modelProviderSlug;
+  return [
+    "provider_error",
+    details.category,
+    details.statusCode ? `status_${details.statusCode}` : undefined,
+    providerPart
+      ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
+      : undefined,
+    details.requestedModelSlug
+      ? `model_${sanitizeProviderFingerprintPart(details.requestedModelSlug)}`
+      : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("|");
+};
+
 const providerCategoryDiagnosticMessage = (
   category: ProviderErrorCategory,
   statusCode?: number,
@@ -290,6 +324,17 @@ const getProviderDiagnosticMessage = (
   }
 
   return "Provider streaming error";
+};
+
+const getPostHogProviderExceptionMessage = (
+  details: Record<string, unknown>,
+  providerErrorFingerprint?: string,
+): string => {
+  const message = getProviderDiagnosticMessage(details);
+  return details.errorMessage === SYNTHETIC_SSE_JSON_ERROR_MESSAGE &&
+    providerErrorFingerprint
+    ? `${message} [${providerErrorFingerprint}]`
+    : message;
 };
 
 const isRetriableProviderCategory = (
@@ -660,6 +705,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const openrouterGenerationId = nonEmptyString(
         details.openrouterGenerationId,
       );
+      const providerErrorFingerprint = buildProviderErrorFingerprint({
+        category,
+        statusCode: providerStatusCode,
+        requestedModelSlug,
+        modelProviderSlug,
+        providerName,
+      });
       const normalizedProviderContext = {
         ...(providerName && {
           provider_name: providerName,
@@ -684,6 +736,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...details,
         ...normalizedProviderContext,
         provider_diagnostic_message: diagnosticMessage,
+        provider_error_fingerprint: providerErrorFingerprint,
         ...(providerStatusCode && { provider_status_code: providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
@@ -708,6 +761,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...details,
         ...normalizedProviderContext,
         providerDiagnosticMessage: diagnosticMessage,
+        providerErrorFingerprint,
         ...(providerStatusCode && { providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
@@ -717,7 +771,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
         phLogger.warn(providerErrorMessage(category), phContext);
       } else {
         phLogger.error(providerErrorMessage(category), {
-          error: posthogProviderException(error, details),
+          error: posthogProviderException(
+            error,
+            details,
+            providerErrorFingerprint,
+          ),
           ...phContext,
         });
       }
@@ -740,6 +798,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         requestedModelSlug,
         modelProviderSlug,
         openrouterGenerationId,
+        providerErrorFingerprint,
         attempts,
       });
     },

@@ -594,7 +594,6 @@ export const createChatHandler = () => {
               assistantMessageId,
               sandboxPreference,
               process.env.CONVEX_SERVICE_ROLE_KEY,
-              userCustomization?.guardrails_config,
               // Caido proxy temporarily disabled for all users.
               // Was: subscription !== "free" && (userCustomization?.caido_enabled ?? false)
               false,
