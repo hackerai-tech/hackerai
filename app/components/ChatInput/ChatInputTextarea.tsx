@@ -85,9 +85,13 @@ export function ChatInputTextarea({
         return;
       }
 
+      const handledAsFile = await handlePasteEvent(e);
+      if (handledAsFile) {
+        return;
+      }
+
       const pastedText = clipboardData.getData("text");
       if (!pastedText) {
-        await handlePasteEvent(e);
         return;
       }
 
@@ -103,12 +107,10 @@ export function ChatInputTextarea({
         });
         return;
       }
-
-      await handlePasteEvent(e);
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
-  }, [handlePasteEvent, subscription]);
+  }, [chatMode, handlePasteEvent, subscription]);
 
   return (
     <div className="overflow-y-auto pl-4 pr-2">

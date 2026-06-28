@@ -36,6 +36,10 @@ export interface UploadedFileState {
   fileId?: string; // Database file ID for backend operations
   url?: string; // Store the resolved URL
   tokens?: number; // Token count for the file
+  generatedTextAttachment?: {
+    id: string;
+    content: string;
+  };
 }
 
 // File part interface for rendering components
@@ -64,6 +68,7 @@ export interface FilePartRendererProps {
 export interface FileUploadPreviewProps {
   uploadedFiles: UploadedFileState[];
   onRemoveFile: (index: number) => void;
+  onUpdateGeneratedTextFile?: (index: number, content: string) => void;
 }
 
 export interface FilePreview {

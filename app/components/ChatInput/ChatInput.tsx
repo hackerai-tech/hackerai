@@ -84,6 +84,7 @@ export const ChatInput = ({
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
 
@@ -196,6 +197,7 @@ export const ChatInput = ({
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
+            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
           />
         )}
 
