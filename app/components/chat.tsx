@@ -59,15 +59,6 @@ import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
-import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
-import {
-  clearPersistedComputerSidebarState,
-  getLatestSidebarToolCallId,
-  getRestoredComputerSidebarContent,
-  getSidebarToolCallId,
-  readPersistedComputerSidebarState,
-  writePersistedComputerSidebarState,
-} from "@/lib/utils/computer-sidebar-state";
 import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
@@ -303,8 +294,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
-    sidebarContent,
-    openSidebar,
     chatSidebarOpen,
     setChatSidebarOpen,
     initializeChat,
@@ -731,55 +720,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;
   messagesRef.current = messages;
-
-  const sidebarToolExecutions = useMemo(
-    () => extractAllSidebarContent(messages),
-    [messages],
-  );
-  const previousSidebarOpenRef = useRef(sidebarOpen);
-
-  useEffect(() => {
-    const wasOpen = previousSidebarOpenRef.current;
-    previousSidebarOpenRef.current = sidebarOpen;
-
-    if (!wasOpen || sidebarOpen) return;
-    clearPersistedComputerSidebarState(chatId);
-  }, [chatId, sidebarOpen]);
-
-  useEffect(() => {
-    if (!sidebarOpen || !sidebarContent) return;
-
-    const toolCallId = getSidebarToolCallId(sidebarContent);
-    if (!toolCallId) return;
-
-    const selectedToolBelongsToCurrentChat = sidebarToolExecutions.some(
-      (toolExecution) => getSidebarToolCallId(toolExecution) === toolCallId,
-    );
-    if (!selectedToolBelongsToCurrentChat) return;
-
-    const latestToolCallId = getLatestSidebarToolCallId(sidebarToolExecutions);
-    writePersistedComputerSidebarState({
-      chatId,
-      toolCallId,
-      followLive: latestToolCallId === toolCallId,
-      updatedAt: Date.now(),
-    });
-  }, [chatId, sidebarContent, sidebarOpen, sidebarToolExecutions]);
-
-  useEffect(() => {
-    if (sidebarOpen || sidebarContent || sidebarToolExecutions.length === 0) {
-      return;
-    }
-
-    const restoredContent = getRestoredComputerSidebarContent({
-      chatId,
-      persisted: readPersistedComputerSidebarState(),
-      toolExecutions: sidebarToolExecutions,
-    });
-    if (restoredContent) {
-      openSidebar(restoredContent);
-    }
-  }, [chatId, openSidebar, sidebarContent, sidebarOpen, sidebarToolExecutions]);
 
   useEffect(() => {
     const shouldApplyOutput =
