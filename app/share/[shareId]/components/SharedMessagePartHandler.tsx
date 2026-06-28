@@ -36,6 +36,7 @@ import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
   computeShellTerminalBlock,
+  getTerminalFailureAction,
   type ShellToolInput,
   type ShellToolOutput,
 } from "@/app/components/tools/shell-tool-utils";
@@ -211,7 +212,7 @@ function renderTerminalTool(
       isShellTool,
       shellInput: part.input as ShellToolInput | undefined,
       shellOutput: part.output as ShellToolOutput | undefined,
-      errorText: undefined,
+      errorText: part.errorText,
       streamingOutput: "",
       isExecuting: false,
       hasResult: part.state === "output-available",
@@ -236,7 +237,13 @@ function renderTerminalTool(
     <ToolBlock
       key={idx}
       icon={<Terminal aria-hidden="true" />}
-      action={blockAction(false)}
+      action={
+        part.state === "output-error"
+          ? isStoppedToolPart(part)
+            ? "Stopped command"
+            : getTerminalFailureAction(part.errorText)
+          : blockAction(false)
+      }
       target={blockTarget}
       isClickable={!!sidebarContent}
       onClick={sidebarContent ? handleOpenInSidebar : undefined}

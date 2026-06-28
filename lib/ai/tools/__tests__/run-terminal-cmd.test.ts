@@ -7,6 +7,7 @@
  *  - structured errors for non-E2B sandboxes and missing sessions
  *  - that the legacy schema ({command, brief, is_background, timeout})
  *    still flows through and produces a shaped result.
+ *  - that command-only input works because `brief` is display metadata.
  *
  * PTY session action tests (send, wait, view, kill) are in
  * interact-terminal-session.test.ts.
@@ -358,7 +359,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {
-    // A bare `{command, brief}` must flow through the legacy path
+    // A bare `{command}` must flow through the legacy path
     // (action defaults to "exec", interactive to false) — no session/pid.
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
@@ -373,7 +374,6 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const tool = createRunTerminalCmd(context);
     const result = (await runTool(tool, {
       command: "true",
-      brief: "default dispatch",
     })) as { result: { session?: string; exitCode: number | null } };
     expect(result.result.session).toBeUndefined();
     expect(result.result.exitCode).toBe(0);
