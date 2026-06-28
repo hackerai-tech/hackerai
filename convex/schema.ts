@@ -222,6 +222,10 @@ export default defineSchema({
     // pass validation. New code writes include_notes and uses this only as a
     // fallback when returning older customization rows.
     include_memory_entries: v.optional(v.boolean()),
+    // Legacy terminal guardrails preference retained on historical rows. The
+    // feature was removed and nothing reads or writes this anymore — kept in
+    // the schema so old rows still pass validation until the field is cleared.
+    guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),

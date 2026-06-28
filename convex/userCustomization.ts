@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./lib/utils";
 
 const shouldIncludeNotes = (customization: {
@@ -7,6 +8,10 @@ const shouldIncludeNotes = (customization: {
   include_memory_entries?: boolean;
 }) =>
   customization.include_notes ?? customization.include_memory_entries ?? true;
+
+const hasLegacyGuardrailsConfig = (customization: unknown) =>
+  (customization as { guardrails_config?: unknown }).guardrails_config !==
+  undefined;
 
 /**
  * Save or update user customization data
@@ -248,5 +253,55 @@ export const getUserCustomizationForBackend = query({
       console.error("Failed to get user customization:", error);
       return null;
     }
+  },
+});
+
+/**
+ * One-off cleanup for the removed terminal guardrails customization field.
+ *
+ * Run from the Convex dashboard with dryRun=true first, then rerun with
+ * dryRun=false using the returned cursor until isDone is true. After all
+ * legacy rows are patched, guardrails_config can be removed from schema.ts.
+ */
+export const cleanupLegacyGuardrailsConfig = mutation({
+  args: {
+    serviceKey: v.string(),
+    paginationOpts: paginationOptsValidator,
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    patched: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const result = await ctx.db
+      .query("user_customization")
+      .order("asc")
+      .paginate(args.paginationOpts);
+
+    let matched = 0;
+    let patched = 0;
+    for (const customization of result.page) {
+      if (!hasLegacyGuardrailsConfig(customization)) continue;
+
+      matched++;
+      if (args.dryRun === true) continue;
+
+      await ctx.db.patch(customization._id, { guardrails_config: undefined });
+      patched++;
+    }
+
+    return {
+      scanned: result.page.length,
+      matched,
+      patched,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
   },
 });
