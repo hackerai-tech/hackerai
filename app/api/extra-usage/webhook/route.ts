@@ -8,6 +8,16 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import {
+  logStripeWebhookMissingSignature,
+  logStripeWebhookSignatureVerificationFailed,
+} from "@/lib/billing/stripe-webhook-logging";
+
+const WEBHOOK_LOG_PREFIX = "[Extra Usage Webhook]";
+const WEBHOOK_LOG_CONTEXT = {
+  webhook: "extra_usage",
+  route: "/api/extra-usage/webhook",
+};
 
 /**
  * POST /api/extra-usage/webhook
@@ -22,7 +32,13 @@ export async function POST(req: NextRequest) {
   const signature = req.headers.get("stripe-signature");
 
   if (!signature) {
-    console.error("[Extra Usage Webhook] Missing stripe-signature header");
+    logStripeWebhookMissingSignature({
+      logPrefix: WEBHOOK_LOG_PREFIX,
+      ...WEBHOOK_LOG_CONTEXT,
+      requestHeaders: req.headers,
+      body,
+      signature,
+    });
     return NextResponse.json(
       { error: "Missing stripe-signature header" },
       { status: 400 },
@@ -45,7 +61,14 @@ export async function POST(req: NextRequest) {
   try {
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err) {
-    console.error("[Extra Usage Webhook] Signature verification failed:", err);
+    logStripeWebhookSignatureVerificationFailed({
+      logPrefix: WEBHOOK_LOG_PREFIX,
+      ...WEBHOOK_LOG_CONTEXT,
+      requestHeaders: req.headers,
+      body,
+      signature,
+      error: err,
+    });
     return NextResponse.json(
       { error: "Webhook signature verification failed" },
       { status: 400 },

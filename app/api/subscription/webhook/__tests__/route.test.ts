@@ -112,12 +112,15 @@ jest.mock("@/lib/referrals/config", () => ({
   }),
 }));
 
-function makeWebhookRequest() {
+function makeWebhookRequest({
+  body = "{}",
+  signature = "sig_test",
+}: { body?: string; signature?: string | null } = {}) {
   return {
-    text: jest.fn().mockResolvedValue("{}"),
+    text: jest.fn().mockResolvedValue(body),
     headers: {
       get: jest.fn((name: string) =>
-        name === "stripe-signature" ? "sig_test" : null,
+        name === "stripe-signature" ? signature : null,
       ),
     },
   } as any;
@@ -140,6 +143,59 @@ describe("POST /api/subscription/webhook", () => {
     jest.restoreAllMocks();
     delete process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
+  });
+
+  it("rejects invalid signatures with a sanitized warning before side effects", async () => {
+    const rawBody =
+      '{"id":"evt_test_reset_001","metadata":{"label":"über","userId":"user_secret"}}';
+    const expectedPayloadBytes = new TextEncoder().encode(rawBody).byteLength;
+    const rawSignature =
+      "t=1782534490,v1=24cdc6311e7ea9669746b0e1cd1e8ac53b51ad96070e7919be7172b1dc1e9f30";
+    const signatureError = Object.assign(
+      new Error("No signatures found matching the expected signature"),
+      {
+        type: "StripeSignatureVerificationError",
+        header: rawSignature,
+        payload: rawBody,
+      },
+    );
+    mockConstructEvent.mockImplementation(() => {
+      throw signatureError;
+    });
+
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      makeWebhookRequest({ body: rawBody, signature: rawSignature }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ error: "Webhook signature verification failed" });
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[Subscription Webhook] Signature verification failed",
+      expect.objectContaining({
+        event: "stripe_webhook_signature_verification_failed",
+        webhook: "subscription",
+        route: "/api/subscription/webhook",
+        payload_bytes: expectedPayloadBytes,
+        signature_header_present: true,
+        signature_timestamp: 1782534490,
+        signature_has_v1: true,
+        error_type: "StripeSignatureVerificationError",
+      }),
+    );
+
+    const logFields = (console.warn as jest.Mock).mock.calls[0][1];
+    const serializedLogFields = JSON.stringify(logFields);
+    expect(serializedLogFields).not.toContain(rawBody);
+    expect(serializedLogFields).not.toContain(rawSignature);
+    expect(serializedLogFields).not.toContain("user_secret");
+    expect(serializedLogFields).not.toContain(
+      "24cdc6311e7ea9669746b0e1cd1e8ac53b51ad96070e7919be7172b1dc1e9f30",
+    );
   });
 
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {
