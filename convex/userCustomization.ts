@@ -259,9 +259,11 @@ export const getUserCustomizationForBackend = query({
 /**
  * One-off cleanup for the removed terminal guardrails customization field.
  *
- * Run from the Convex dashboard with dryRun=true first, then rerun with
- * dryRun=false using the returned cursor until isDone is true. After all
- * legacy rows are patched, guardrails_config can be removed from schema.ts.
+ * Run from the Convex dashboard with dryRun=true to count matching pages.
+ * Do not reuse a dry-run cursor for the real cleanup. Start the patch run
+ * with dryRun=false and cursor=null, then continue with cursors returned by
+ * that patch run until isDone is true. After all legacy rows are patched,
+ * guardrails_config can be removed from schema.ts.
  */
 export const cleanupLegacyGuardrailsConfig = mutation({
   args: {
