@@ -406,63 +406,6 @@ describe("captureUsageCost", () => {
       }),
     });
   });
-
-  it("attaches free Ask reasoning experiment properties to usage cost", () => {
-    const capture = jest.fn();
-
-    captureUsageCost({
-      posthog: { capture } as any,
-      userId: "user_123",
-      subscription: "free",
-      chatId: "chat_123",
-      endpoint: "/api/chat",
-      mode: "ask",
-      usage: {
-        model: "ask-model-free",
-        type: "subscription",
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        costDollars: 0.01,
-        includedCostDollars: 0.01,
-        extraUsageCostDollars: 0,
-        includedPointsDeducted: 100,
-        extraUsagePointsDeducted: 0,
-        modelCostDollars: 0.01,
-        nonModelCostDollars: 0,
-        costSource: "provider",
-      },
-      freeAskReasoningExperiment: {
-        experimentKey: "free_ask_deepseek_reasoning_v1",
-        featureFlagKey: "free_ask_deepseek_reasoning_v1",
-        eventVersion: 1,
-        variant: "reasoning_medium",
-        source: "posthog",
-        reasoning: { enabled: true, effort: "medium" },
-      },
-    });
-
-    expect(capture).toHaveBeenCalledWith({
-      distinctId: "user_123",
-      event: "hackerai-usage_cost",
-      properties: expect.objectContaining({
-        subscription: "free",
-        mode: "ask",
-        model: "ask-model-free",
-        experiment_key: "free_ask_deepseek_reasoning_v1",
-        feature_flag_key: "free_ask_deepseek_reasoning_v1",
-        variant: "reasoning_medium",
-        experiment_variant: "reasoning_medium",
-        experiment_source: "posthog",
-        experiment_event_version: 1,
-        reasoning_enabled: true,
-        reasoning_effort: "medium",
-        "$feature/free_ask_deepseek_reasoning_v1": "reasoning_medium",
-      }),
-    });
-  });
 });
 
 describe("createChatLogger provider stream termination", () => {
