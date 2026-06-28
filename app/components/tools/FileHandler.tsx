@@ -11,7 +11,7 @@ import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
   path: string;
-  brief: string;
+  brief?: string;
   text?: string;
   range?: [number, number];
   edits?: Array<{ find: string; replace: string; all?: boolean }>;

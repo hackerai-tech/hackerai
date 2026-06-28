@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import { toolBriefSchema } from "./tool-brief";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
   const { sandboxManager, backgroundProcessTracker } = context;
@@ -17,11 +18,7 @@ Usage:
 - Use this after generating reports, saving scan results, or creating any files the user needs to access
 - Multiple files can be shared in a single call`,
     inputSchema: z.object({
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
       files: z
         .array(z.string())
         .describe(

@@ -11,6 +11,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
+import { toolBriefSchema } from "./tool-brief";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -1131,11 +1132,7 @@ ${instructionsDescription}`,
     inputSchema: z.object({
       action: actionSchema.describe("The action to perform"),
       path: z.string().describe("The absolute path to the target file"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
       text: z
         .string()
         .optional()
