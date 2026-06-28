@@ -25,7 +25,9 @@ describe("tool brief metadata", () => {
       const source = fs.readFileSync(path.join(toolsDir, file), "utf8");
       expect(source).toContain("toolBriefSchema");
       expect(source).toMatch(/brief:\s*toolBriefSchema/);
-      expect(source).not.toMatch(/brief:\s*z\s*\n\s*\.string\(\)/);
+      expect(source).not.toMatch(
+        /brief:\s*z(?:\s*\.\s*string\(\)|\s*\n\s*\.string\(\))/,
+      );
     }
   });
 });
