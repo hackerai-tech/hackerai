@@ -414,6 +414,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
       ).not.toContain(pastedContent);
+      expect(
+        window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+      ).toContain("generated_123");
     });
 
     it("restores regular S3 draft attachments", async () => {

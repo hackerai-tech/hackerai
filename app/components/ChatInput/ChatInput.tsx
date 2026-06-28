@@ -76,6 +76,8 @@ const draftAttachmentToUploadedFile = (
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
+    uploadedFile.generatedTextAttachmentId =
+      attachment.generatedTextAttachmentId;
   }
 
   return uploadedFile;
@@ -95,9 +97,11 @@ const uploadedFileToDraftAttachment = (
   }
 
   const generatedTextAttachment = uploadedFile.generatedTextAttachment;
+  const generatedTextAttachmentId =
+    generatedTextAttachment?.id || uploadedFile.generatedTextAttachmentId;
   const isGeneratedPastedText =
     uploadedFile.generatedSource === "pasted-text" ||
-    Boolean(generatedTextAttachment);
+    Boolean(generatedTextAttachmentId);
 
   return {
     kind: isGeneratedPastedText ? "pasted-text" : "file",
@@ -114,9 +118,9 @@ const uploadedFileToDraftAttachment = (
           generatedSource: "pasted-text" as const,
         }
       : {}),
-    ...(generatedTextAttachment
+    ...(generatedTextAttachmentId
       ? {
-          generatedTextAttachmentId: generatedTextAttachment.id,
+          generatedTextAttachmentId,
         }
       : {}),
   };
@@ -263,7 +267,7 @@ export const ChatInput = ({
         ...uploadedFile,
         tokens: fileContent.tokenSize,
         generatedTextAttachment: {
-          id: uploadedFile.fileId,
+          id: uploadedFile.generatedTextAttachmentId || uploadedFile.fileId,
           content: fileContent.content,
         },
       };

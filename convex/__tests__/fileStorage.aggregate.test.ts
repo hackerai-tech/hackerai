@@ -221,6 +221,51 @@ describe("fileStorage - Aggregate Integration", () => {
       ]);
     });
 
+    it("should preserve empty text content for files owned by the current user", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const ownedFileId = "owned-empty-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: ownedFileId,
+            user_id: testUserId,
+            name: "pasted_content.txt",
+            media_type: "text/plain",
+            content: "",
+            file_token_size: 0,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [ownedFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: ownedFileId,
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          content: "",
+          tokenSize: 0,
+        },
+      ]);
+    });
+
     it("should not return current-user text content for unowned files", async () => {
       const { getTextFileContentForCurrentUser } =
         await import("../fileStorage");
