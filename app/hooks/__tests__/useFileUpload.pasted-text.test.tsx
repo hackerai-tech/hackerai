@@ -164,9 +164,7 @@ describe("useFileUpload generated pasted text attachments", () => {
     expect(handled).toBe(false);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(addUploadedFile).not.toHaveBeenCalled();
-    expect(toast.error).not.toHaveBeenCalledWith(
-      "Upgrade plan to upload files.",
-    );
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("creates distinct generated filenames for multiple large pastes", async () => {

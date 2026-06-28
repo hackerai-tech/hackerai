@@ -129,5 +129,12 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       0,
       "Unmounted before debounce",
     );
+    expect(onUpdateGeneratedTextFile).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+
+    expect(onUpdateGeneratedTextFile).toHaveBeenCalledTimes(1);
   });
 });
