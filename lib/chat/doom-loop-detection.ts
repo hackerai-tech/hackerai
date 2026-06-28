@@ -164,12 +164,20 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
     };
   }
 
+  const lastStepHasEmptyRunTerminalCmd =
+    steps
+      .at(-1)
+      ?.toolCalls?.some((toolCall) =>
+        isEmptyToolCall(toolCall, "run_terminal_cmd"),
+      ) ?? false;
+
   const emptyRunTerminalCmdCount = getRecentEmptyToolCallCount(
     steps,
     "run_terminal_cmd",
     EMPTY_RUN_TERMINAL_CMD_INPUT_WINDOW,
   );
   if (
+    lastStepHasEmptyRunTerminalCmd &&
     emptyRunTerminalCmdCount >= EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD
   ) {
     return {

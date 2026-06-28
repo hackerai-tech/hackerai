@@ -330,7 +330,9 @@ export function computeShellTerminalBlock(
 
   const shellAction = isShellTool ? shellInput?.action : undefined;
   const isInteractiveAction = isInteractiveShellAction(shellAction);
-  const errorDisplayCommand = errorText ? "Invalid command" : "";
+  const errorDisplayCommand = errorText
+    ? getTerminalFailureAction(errorText)
+    : "";
 
   const displayCommand = isShellTool
     ? getShellDisplayCommand(shellInput) ||

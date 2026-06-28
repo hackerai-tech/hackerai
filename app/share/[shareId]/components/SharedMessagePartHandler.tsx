@@ -198,7 +198,9 @@ function renderTerminalTool(
     return null;
   }
 
-  const isShellTool = part.type === "tool-shell";
+  const isShellTool =
+    part.type === "tool-shell" ||
+    (part.input as { action?: string } | undefined)?.action !== undefined;
   const legacyInput = !isShellTool
     ? (part.input as {
         command?: string;

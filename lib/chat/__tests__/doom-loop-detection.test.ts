@@ -177,6 +177,16 @@ describe("detectDoomLoop", () => {
     });
   });
 
+  it("does not reapply terminal recovery after the latest command is valid", () => {
+    const result = detectDoomLoop([
+      makeStep([{ toolName: "run_terminal_cmd", input: {} }]),
+      makeStep([{ toolName: "run_terminal_cmd", input: undefined }]),
+      makeStep([{ toolName: "run_terminal_cmd", input: { command: "true" } }]),
+    ]);
+
+    expect(result.severity).toBe("none");
+  });
+
   it("counts empty run_terminal_cmd calls in mixed tool-call steps", () => {
     const result = detectDoomLoop([
       makeStep([

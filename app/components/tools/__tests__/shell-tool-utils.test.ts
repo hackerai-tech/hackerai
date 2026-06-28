@@ -41,4 +41,26 @@ describe("terminal shell tool display helpers", () => {
       toolCallId: "call-empty",
     });
   });
+
+  it("keeps non-validation empty terminal failures label-consistent", () => {
+    const errorText = "Sandbox is probably not running anymore";
+    const result = computeShellTerminalBlock({
+      isShellTool: false,
+      shellInput: undefined,
+      shellOutput: undefined,
+      errorText,
+      streamingOutput: "",
+      isExecuting: false,
+      hasResult: false,
+      toolCallId: "call-failed",
+      legacyCommand: undefined,
+    });
+
+    expect(result.blockAction(false)).toBe("Command failed");
+    expect(result.blockTarget).toBe("Command failed");
+    expect(result.sidebarContent).toMatchObject({
+      command: "Command failed",
+      output: errorText,
+    });
+  });
 });
