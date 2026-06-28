@@ -34,6 +34,15 @@ describe("shouldRetryAgentLongWithFallback", () => {
     ).toBe(true);
   });
 
+  it("retries terminal provider errors that emitted only a leaked reasoning tag", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [{ type: "step-start" }, { type: "text", text: "</think>" }],
+        { hasTerminalProviderStreamError: true },
+      ),
+    ).toBe(true);
+  });
+
   it("allows hidden metadata around reasoning-only provider output", () => {
     expect(
       shouldRetryAgentLongWithFallback(

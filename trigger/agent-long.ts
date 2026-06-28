@@ -1661,7 +1661,7 @@ export const agentLongTask = task({
                 try {
                   // Retry with fallback if the primary stream failed before
                   // producing text, tool calls, or tool output worth saving.
-                  const lastAssistantMessage = normalizedFinishedMessages
+                  const lastAssistantMessage = finishedMessages
                     .slice()
                     .reverse()
                     .find((m) => m.role === "assistant");

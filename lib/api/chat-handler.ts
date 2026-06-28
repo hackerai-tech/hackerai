@@ -1175,7 +1175,7 @@ export const createChatHandler = () => {
                   stripStandaloneProviderReasoningTagTextMessages(messages);
                 let retryScheduled = false;
                 try {
-                  const lastAssistantMessage = normalizedMessages
+                  const lastAssistantMessage = messages
                     .slice()
                     .reverse()
                     .find((m) => m.role === "assistant");

@@ -32,12 +32,16 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
   );
 };
 
-const hasReasoningPart = (parts: unknown[]): boolean =>
-  parts.some((part) => getPartType(part) === "reasoning");
+const hasFallbackSafeProviderContent = (parts: unknown[]): boolean =>
+  parts.some(
+    (part) =>
+      getPartType(part) === "reasoning" ||
+      isStandaloneProviderReasoningTagTextPart(part),
+  );
 
-const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
+const isFallbackSafeOnlyProviderOutput = (parts: unknown[]): boolean =>
   parts.length > 0 &&
-  hasReasoningPart(parts) &&
+  hasFallbackSafeProviderContent(parts) &&
   parts.every(isFallbackSafeProviderPart);
 
 export const shouldRetryProviderStreamWithFallback = (
@@ -52,7 +56,7 @@ export const shouldRetryProviderStreamWithFallback = (
   // safer than failing the whole run on a discarded provider socket.
   return (
     options.hasTerminalProviderStreamError &&
-    isReasoningOnlyProviderOutput(parts)
+    isFallbackSafeOnlyProviderOutput(parts)
   );
 };
 
