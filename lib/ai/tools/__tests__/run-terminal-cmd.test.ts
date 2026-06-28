@@ -186,7 +186,6 @@ function makeContext(opts: {
       const sb = s as { jupyterUrl?: unknown; pty?: unknown };
       return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
     },
-    guardrailsConfig: undefined,
     caidoEnabled: false,
   } as unknown as import("@/types").ToolContext;
 
@@ -303,6 +302,35 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(
       (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
     ).toContain("echo hi");
+  });
+
+  test("does not block destructive-looking commands", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest
+          .fn()
+          .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const tool = createRunTerminalCmd(context);
+
+    const result = (await runTool(tool, {
+      command: "rm -rf /",
+      brief: "run command",
+      is_background: false,
+      timeout: 5,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toBeUndefined();
+    expect(result.result.exitCode).toBe(0);
+    expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
+    expect(
+      (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
+    ).toContain("rm -rf /");
   });
 
   test("logs sanitized agent-browser terminal usage to PostHog", async () => {

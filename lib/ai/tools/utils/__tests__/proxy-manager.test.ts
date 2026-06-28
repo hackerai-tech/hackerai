@@ -64,7 +64,6 @@ const createMockContext = (sandbox: ReturnType<typeof createMockSandbox>) => {
     backgroundProcessTracker: {} as any,
     mode: "agent" as const,
     isE2BSandbox: () => true,
-    guardrailsConfig: undefined,
     caidoEnabled: true,
     appendMetadataStream: undefined,
     onToolCost: undefined,

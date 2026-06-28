@@ -19,11 +19,6 @@ import {
   buildSandboxCommandOptions,
   augmentCommandPath,
 } from "./utils/sandbox-command-options";
-import {
-  parseGuardrailConfig,
-  getEffectiveGuardrails,
-  checkCommandGuardrails,
-} from "./utils/guardrails";
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
@@ -58,16 +53,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     sandboxManager,
     writer,
     backgroundProcessTracker,
-    guardrailsConfig,
     caidoEnabled,
     caidoPort,
     ptySessionManager,
     chatId,
   } = context;
-
-  // Parse user guardrail configuration and get effective guardrails
-  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
-  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
   // Caido proxy is set up eagerly only on E2B sandboxes (controlled image where
   // capturing all agent HTTP traffic is the point). On local sandboxes the proxy
@@ -199,20 +189,6 @@ In using these tools, adhere to the following guidelines:
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
-      // Check guardrails before executing the command
-      const guardrailResult = checkCommandGuardrails(
-        command,
-        effectiveGuardrails,
-      );
-      if (!guardrailResult.allowed) {
-        return {
-          result: {
-            output: "",
-            exitCode: 1,
-            error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
-          },
-        };
-      }
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {

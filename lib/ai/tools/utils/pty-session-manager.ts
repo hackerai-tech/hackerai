@@ -51,8 +51,6 @@ export interface PtySession {
   readCursor: number;
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
-  /** Current unsubmitted shell input used to guardrail split `send` calls. */
-  pendingGuardrailInput: string;
 }
 
 export interface CreateSessionOpts {
@@ -130,7 +128,6 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
-        pendingGuardrailInput: "",
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,

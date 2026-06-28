@@ -12,12 +12,7 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { TMUX_SPECIAL_KEYS, translateInput } from "./utils/pty-keys";
-import {
-  parseGuardrailConfig,
-  getEffectiveGuardrails,
-  checkCommandGuardrails,
-} from "./utils/guardrails";
+import { translateInput } from "./utils/pty-keys";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -31,52 +26,9 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 // as "process settled" — typically a redrawn prompt or completed command.
 // `timeout` remains the hard ceiling for processes that never settle.
 const WAIT_QUIET_WINDOW_MS = 500;
-const CLEAR_PENDING_INPUT_KEYS = new Set(["C-c", "C-u"]);
-const BACKSPACE_KEYS = new Set(["BSpace", "Backspace", "C-h"]);
-const SUBMIT_INPUT_KEYS = new Set(["Enter", "Return", "C-j"]);
-
-const getGuardrailInputFragment = (input: string): string => {
-  if (SUBMIT_INPUT_KEYS.has(input)) return "\n";
-  if (input === "Space") return " ";
-  if (input === "Tab" || input === "C-i") return "\t";
-  if (
-    TMUX_SPECIAL_KEYS.has(input) ||
-    (input.startsWith("M-") && input.length === 3) ||
-    (input.startsWith("C-S-") && input.length === 5)
-  ) {
-    return "";
-  }
-  return input;
-};
-
-const getGuardrailInputState = (
-  pendingInput: string,
-  input: string,
-): { checkInput: string; nextPendingInput: string } => {
-  if (CLEAR_PENDING_INPUT_KEYS.has(input)) {
-    return { checkInput: pendingInput, nextPendingInput: "" };
-  }
-  if (BACKSPACE_KEYS.has(input)) {
-    const nextPendingInput = pendingInput.slice(0, -1);
-    return { checkInput: nextPendingInput, nextPendingInput };
-  }
-
-  const checkInput = (pendingInput + getGuardrailInputFragment(input))
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-  const lastNewlineIndex = checkInput.lastIndexOf("\n");
-  const nextPendingInput =
-    lastNewlineIndex === -1
-      ? checkInput
-      : checkInput.slice(lastNewlineIndex + 1);
-
-  return { checkInput, nextPendingInput };
-};
 
 export const createInteractTerminalSession = (context: ToolContext) => {
-  const { writer, chatId, ptySessionManager, guardrailsConfig } = context;
-  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
-  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
+  const { writer, chatId, ptySessionManager } = context;
 
   return tool({
     description: `Interact with persistent shell sessions in the sandbox environment.
@@ -102,7 +54,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 - For modifier combinations: M-key (Alt), C-S-key (Ctrl+Shift)
 - Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
 - For non-key strings in \`input\`, DO NOT perform any escaping; send the raw string directly
-- Raw input is checked against command guardrails, including text accumulated across split sends; never forward untrusted content
 </instructions>
 
 <recommended_usage>
@@ -269,19 +220,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
         // raw text passes through unchanged with trailing newline normalized
         // to CR so "echo hi\n" submits the line as a real Enter.
-        const { checkInput, nextPendingInput } = getGuardrailInputState(
-          session.pendingGuardrailInput,
-          input,
-        );
-        const guardrailResult = checkCommandGuardrails(
-          checkInput,
-          effectiveGuardrails,
-        );
-        if (!guardrailResult.allowed) {
-          return errorResult(
-            `Input blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This input pattern has been blocked for safety.`,
-          );
-        }
         const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
@@ -299,7 +237,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-        session.pendingGuardrailInput = nextPendingInput;
         session.lastActivityAt = Date.now();
         // Capture the immediate response chunk — prompts that echo a reply
         // ("Hello, X!") show up here. Use action=wait for processes that
