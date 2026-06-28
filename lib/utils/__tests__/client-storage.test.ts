@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "@jest/globals";
 import {
+  CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   readSelectedModel,
   removeDraftAttachments,
@@ -162,6 +163,7 @@ describe("client-storage draft attachments", () => {
 
   it("persists generated pasted-text attachments without draft text", () => {
     const timestamp = Date.now();
+    const pastedContent = "Original pasted source material";
     upsertDraftAttachments("chat-1", [
       {
         kind: "pasted-text",
@@ -171,10 +173,10 @@ describe("client-storage draft attachments", () => {
         size: 512,
         generatedSource: "pasted-text",
         generatedTextAttachmentId: "generated_123",
-        generatedTextContent: "Original pasted source material",
         tokens: 120,
         timestamp,
-      },
+        generatedTextContent: pastedContent,
+      } as any,
     ]);
 
     expect(hasDraftAttachmentsById("chat-1")).toBe(true);
@@ -187,11 +189,13 @@ describe("client-storage draft attachments", () => {
         size: 512,
         generatedSource: "pasted-text",
         generatedTextAttachmentId: "generated_123",
-        generatedTextContent: "Original pasted source material",
         tokens: 120,
         timestamp,
       },
     ]);
+    expect(
+      window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+    ).not.toContain(pastedContent);
   });
 
   it("persists regular S3 draft attachments without draft text", () => {

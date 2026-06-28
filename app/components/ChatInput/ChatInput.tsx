@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -27,6 +27,9 @@ import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { UploadedFileState } from "@/types/file";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -73,13 +76,6 @@ const draftAttachmentToUploadedFile = (
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
-
-    if (typeof attachment.generatedTextContent === "string") {
-      uploadedFile.generatedTextAttachment = {
-        id: attachment.generatedTextAttachmentId || attachment.fileId,
-        content: attachment.generatedTextContent,
-      };
-    }
   }
 
   return uploadedFile;
@@ -113,11 +109,14 @@ const uploadedFileToDraftAttachment = (
     timestamp: isBrowserFile(uploadedFile.file)
       ? Date.now()
       : uploadedFile.file.lastModified,
-    ...(generatedTextAttachment
+    ...(isGeneratedPastedText
       ? {
           generatedSource: "pasted-text" as const,
+        }
+      : {}),
+    ...(generatedTextAttachment
+      ? {
           generatedTextAttachmentId: generatedTextAttachment.id,
-          generatedTextContent: generatedTextAttachment.content,
         }
       : {}),
   };
@@ -184,10 +183,96 @@ export const ChatInput = ({
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  const draftTextFileIds = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage !== "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              uploadedFile.fileId
+            ) {
+              return [uploadedFile.fileId as Id<"files">];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
+  const draftTextFileContents = useQuery(
+    api.fileStorage.getTextFileContentForCurrentUser,
+    draftTextFileIds.length > 0 ? { fileIds: draftTextFileIds } : "skip",
+  );
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
   });
+
+  useEffect(() => {
+    if (!draftTextFileContents || draftTextFileContents.length === 0) {
+      return;
+    }
+
+    const contentByFileId = new Map<
+      string,
+      { content: string; tokenSize: number }
+    >(
+      draftTextFileContents.flatMap((fileContent) => {
+        if (!fileContent || typeof fileContent.content !== "string") {
+          return [];
+        }
+
+        return [
+          [
+            fileContent.id as string,
+            {
+              content: fileContent.content,
+              tokenSize: fileContent.tokenSize,
+            },
+          ],
+        ];
+      }),
+    );
+
+    if (contentByFileId.size === 0) {
+      return;
+    }
+
+    let didHydrate = false;
+    const nextUploadedFiles = uploadedFilesRef.current.map((uploadedFile) => {
+      if (
+        uploadedFile.generatedTextAttachment ||
+        uploadedFile.generatedSource !== "pasted-text" ||
+        !uploadedFile.fileId
+      ) {
+        return uploadedFile;
+      }
+
+      const fileContent = contentByFileId.get(uploadedFile.fileId);
+      if (!fileContent) {
+        return uploadedFile;
+      }
+
+      didHydrate = true;
+      return {
+        ...uploadedFile,
+        tokens: fileContent.tokenSize,
+        generatedTextAttachment: {
+          id: uploadedFile.fileId,
+          content: fileContent.content,
+        },
+      };
+    });
+
+    if (didHydrate) {
+      setUploadedFiles(nextUploadedFiles);
+    }
+  }, [draftTextFileContents, setUploadedFiles]);
 
   useEffect(() => {
     const prevDraftId = prevDraftIdRef.current;

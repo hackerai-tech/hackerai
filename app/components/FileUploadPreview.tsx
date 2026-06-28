@@ -460,7 +460,8 @@ export const FileUploadPreview = ({
       >
         <DialogContent
           showCloseButton={false}
-          className="flex h-[calc(100vh-32px)] w-[calc(100vw-32px)] max-w-[1200px] flex-col gap-0 overflow-hidden rounded-2xl border-border/80 bg-input-chat p-0 shadow-2xl md:h-[calc(100vh-80px)] md:w-[calc(100vw-80px)]"
+          overlayClassName="bg-black/55 backdrop-blur-md"
+          className="flex h-[calc(100vh-32px)] w-[calc(100vw-32px)] max-w-[calc(100vw-32px)] flex-col gap-0 overflow-hidden rounded-2xl border-border/80 bg-input-chat p-0 shadow-2xl md:h-[calc(100vh-80px)] md:w-[calc(100vw-80px)] md:max-w-[calc(100vw-80px)] lg:w-[72vw] lg:min-w-[960px] lg:max-w-[1500px]"
         >
           <DialogHeader className="flex h-14 shrink-0 flex-row items-center justify-between gap-4 border-b border-border/80 px-4 py-3 text-left">
             <div className="flex min-w-0 items-center gap-3">

@@ -175,6 +175,80 @@ describe("fileStorage - Aggregate Integration", () => {
 
       expect(result).toEqual([null]);
     });
+
+    it("should return text content for files owned by the current user", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const ownedFileId = "owned-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: ownedFileId,
+            user_id: testUserId,
+            name: "pasted_content.txt",
+            media_type: "text/plain",
+            content: "draft pasted content",
+            file_token_size: 321,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [ownedFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: ownedFileId,
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          content: "draft pasted content",
+          tokenSize: 321,
+        },
+      ]);
+    });
+
+    it("should not return current-user text content for unowned files", async () => {
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            content: "private content",
+            file_token_size: 999,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([null]);
+    });
   });
 
   describe("saveFileToDb", () => {

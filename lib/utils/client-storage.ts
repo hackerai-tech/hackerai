@@ -20,7 +20,6 @@ export type ConversationDraftAttachment = {
   size: number;
   generatedSource?: "pasted-text";
   generatedTextAttachmentId?: string;
-  generatedTextContent?: string;
   tokens?: number;
   timestamp: number;
 };
@@ -224,9 +223,6 @@ const normalizeDraftAttachments = (
     if (kind === "pasted-text") {
       if (typeof value.generatedTextAttachmentId === "string") {
         normalized.generatedTextAttachmentId = value.generatedTextAttachmentId;
-      }
-      if (typeof value.generatedTextContent === "string") {
-        normalized.generatedTextContent = value.generatedTextContent;
       }
     }
 
