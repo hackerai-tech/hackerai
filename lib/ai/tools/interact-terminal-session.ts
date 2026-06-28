@@ -18,6 +18,7 @@ import {
   getEffectiveGuardrails,
   checkCommandGuardrails,
 } from "./utils/guardrails";
+import { toolBriefSchema } from "./tool-brief";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -117,11 +118,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       action: z
         .enum(["view", "wait", "send", "kill"])
         .describe("The action to perform"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
       input: z
         .string()
         .optional()

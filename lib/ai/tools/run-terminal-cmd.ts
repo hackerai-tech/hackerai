@@ -19,6 +19,7 @@ import {
   buildSandboxCommandOptions,
   augmentCommandPath,
 } from "./utils/sandbox-command-options";
+import { toolBriefSchema } from "./tool-brief";
 import {
   parseGuardrailConfig,
   getEffectiveGuardrails,
@@ -105,12 +106,7 @@ In using these tools, adhere to the following guidelines:
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
     inputSchema: z.object({
       command: z.string().describe("The shell command to execute"),
-      brief: z
-        .string()
-        .optional()
-        .describe(
-          "Optional one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
       is_background: z
         .boolean()
         .optional()

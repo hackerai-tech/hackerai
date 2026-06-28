@@ -208,10 +208,9 @@ export function formatSendInput(raw: string): string {
 export function getShellDisplayTarget(
   input: ShellToolInput | undefined,
 ): string {
-  // Interactive actions (view, wait, send, kill) all carry a `brief` written
-  // by the model — show that as the target rather than the action verb, the
-  // raw send keys, or the kill session id. The action label (e.g. "Sent
-  // input [PID: 1234]") already conveys what happened.
+  // Interactive actions may carry a model-authored `brief`; show that as the
+  // target rather than the raw send keys or the kill session id. The action
+  // label (e.g. "Sent input [PID: 1234]") already conveys what happened.
   if (input?.action && isInteractiveShellAction(input.action)) {
     return input.brief || "";
   }

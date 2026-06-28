@@ -12,6 +12,7 @@ import {
   isRetryablePerplexityStatus,
   summarizePerplexityErrorBody,
 } from "./utils/perplexity";
+import { toolBriefSchema } from "./tool-brief";
 
 /**
  * Web search tool using Perplexity Search API
@@ -215,18 +216,14 @@ export const createWebSearch = (context: ToolContext) => {
         .describe(
           "Optional time filter to limit results to a recent time range",
         ),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
     }),
     execute: async (
       {
         queries: rawQueries,
         time,
       }: {
-        brief: string;
+        brief?: string;
         queries: string[];
         time?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
       },

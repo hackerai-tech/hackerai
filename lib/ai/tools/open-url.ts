@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { truncateContent } from "@/lib/token-utils";
+import { toolBriefSchema } from "./tool-brief";
 
 /**
  * Open URL tool using Jina AI for content retrieval
@@ -18,11 +19,7 @@ export const createOpenUrlTool = () => {
 </instructions>`,
     inputSchema: z.object({
       url: z.string().describe("The URL to open and retrieve content from"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
+      brief: toolBriefSchema,
     }),
     execute: async ({ url }: { url: string }, { abortSignal }) => {
       try {
