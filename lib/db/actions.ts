@@ -17,6 +17,7 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
+import { stripStandaloneProviderReasoningTagTextParts } from "@/lib/chat/provider-reasoning-tags";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
@@ -511,10 +512,15 @@ export async function saveMessage({
   let persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
 
   try {
+    const cleanedParts =
+      message.role === "assistant"
+        ? stripStandaloneProviderReasoningTagTextParts(message.parts)
+        : message.parts;
+
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
     fixedParts =
       message.role === "assistant"
-        ? fixIncompleteMessageParts(message.parts, {
+        ? fixIncompleteMessageParts(cleanedParts, {
             logContext: {
               service: "chat-handler",
               source: "save_message",
@@ -526,7 +532,7 @@ export async function saveMessage({
               updateOnly,
             },
           })
-        : message.parts;
+        : cleanedParts;
     const convexSafeParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
       any,
       any
@@ -580,6 +586,14 @@ export async function saveMessage({
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
+    if (
+      message.role === "assistant" &&
+      partsForSave.length === 0 &&
+      mergedFileIds.length === 0
+    ) {
+      return;
+    }
+
     const usageForSave = sanitizeForConvexValue(usage) as
       | Record<string, unknown>
       | undefined;

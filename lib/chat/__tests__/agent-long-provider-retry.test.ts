@@ -21,6 +21,19 @@ describe("shouldRetryAgentLongWithFallback", () => {
     ).toBe(true);
   });
 
+  it("does not treat leaked provider reasoning tags as visible output", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          { type: "reasoning", text: "thinking", state: "done" },
+          { type: "text", text: "</mm:think>" },
+        ],
+        { hasTerminalProviderStreamError: true },
+      ),
+    ).toBe(true);
+  });
+
   it("allows hidden metadata around reasoning-only provider output", () => {
     expect(
       shouldRetryAgentLongWithFallback(

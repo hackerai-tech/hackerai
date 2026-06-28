@@ -1,3 +1,5 @@
+import { isStandaloneProviderReasoningTagTextPart } from "./provider-reasoning-tags";
+
 type MessagePartLike = {
   type?: unknown;
 };
@@ -25,6 +27,7 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
   return (
     type === "step-start" ||
     type === "reasoning" ||
+    isStandaloneProviderReasoningTagTextPart(part) ||
     (type != null && FALLBACK_SAFE_METADATA_PART_TYPES.has(type))
   );
 };

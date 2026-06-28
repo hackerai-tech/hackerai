@@ -123,6 +123,10 @@ import {
 import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import {
+  filterStandaloneProviderReasoningTagTextStream,
+  stripStandaloneProviderReasoningTagTextMessages,
+} from "@/lib/chat/provider-reasoning-tags";
+import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
@@ -1622,506 +1626,502 @@ export const agentLongTask = task({
               }
             }
 
-            writer.merge(
-              withAgentLongStreamHeartbeat(
-                result.toUIMessageStream({
-                  generateMessageId: () => assistantMessageId,
-                  sendReasoning: true,
-                  messageMetadata: ({ part }) => {
-                    if (part.type === "start") {
-                      return {
-                        mode,
-                        createdAt: streamStartTime,
-                        generationStartedAt: streamStartTime,
-                      };
-                    }
+            const uiMessageStream = result.toUIMessageStream({
+              generateMessageId: () => assistantMessageId,
+              sendReasoning: true,
+              messageMetadata: ({ part }) => {
+                if (part.type === "start") {
+                  return {
+                    mode,
+                    createdAt: streamStartTime,
+                    generationStartedAt: streamStartTime,
+                  };
+                }
 
-                    if (part.type === "finish") {
-                      return {
-                        mode,
-                        createdAt: streamStartTime,
-                        generationStartedAt: streamStartTime,
-                        generationTimeMs: Date.now() - streamStartTime,
-                      };
-                    }
-                  },
-                  onFinish: async ({
-                    messages: finishedMessages,
-                    isAborted,
-                  }) => {
-                    let retryScheduled = false;
-                    try {
-                      // Retry with fallback if the primary stream failed before
-                      // producing text, tool calls, or tool output worth saving.
-                      const lastAssistantMessage = finishedMessages
-                        .slice()
-                        .reverse()
-                        .find((m) => m.role === "assistant");
-                      const lastAssistantMessageParts =
-                        stripAgentLongHeartbeatParts(
-                          lastAssistantMessage ?? { parts: [] },
-                        ).parts ?? [];
-                      const shouldRetryWithFallback =
-                        shouldRetryAgentLongWithFallback(
-                          lastAssistantMessageParts,
-                          {
-                            hasTerminalProviderStreamError:
-                              isTerminalProviderStreamError(state),
-                          },
+                if (part.type === "finish") {
+                  return {
+                    mode,
+                    createdAt: streamStartTime,
+                    generationStartedAt: streamStartTime,
+                    generationTimeMs: Date.now() - streamStartTime,
+                  };
+                }
+              },
+              onFinish: async ({ messages: finishedMessages, isAborted }) => {
+                const normalizedFinishedMessages =
+                  stripStandaloneProviderReasoningTagTextMessages(
+                    finishedMessages,
+                  );
+                let retryScheduled = false;
+                try {
+                  // Retry with fallback if the primary stream failed before
+                  // producing text, tool calls, or tool output worth saving.
+                  const lastAssistantMessage = normalizedFinishedMessages
+                    .slice()
+                    .reverse()
+                    .find((m) => m.role === "assistant");
+                  const lastAssistantMessageParts =
+                    stripAgentLongHeartbeatParts(
+                      lastAssistantMessage ?? { parts: [] },
+                    ).parts ?? [];
+                  const shouldRetryWithFallback =
+                    shouldRetryAgentLongWithFallback(
+                      lastAssistantMessageParts,
+                      {
+                        hasTerminalProviderStreamError:
+                          isTerminalProviderStreamError(state),
+                      },
+                    );
+                  const imageRecovery =
+                    state.providerRejectedMultimodalToolResults
+                      ? omitImageViewToolResultsForProviderRetry(
+                          normalizedFinishedMessages,
+                        )
+                      : {
+                          messages: normalizedFinishedMessages,
+                          omittedCount: 0,
+                        };
+                  const shouldRetryWithoutImageToolResults =
+                    imageRecovery.omittedCount > 0 && !isAborted;
+
+                  if (
+                    (shouldRetryWithFallback ||
+                      shouldRetryWithoutImageToolResults) &&
+                    !isRetryWithFallback &&
+                    !isAborted &&
+                    (isAutoModel || shouldRetryWithoutImageToolResults)
+                  ) {
+                    isRetryWithFallback = true;
+                    state.lastStepInputTokens = 0;
+                    state.streamFinishReason = undefined;
+                    state.providerError = undefined;
+                    state.providerRejectedMultimodalToolResults = false;
+                    state.stoppedDueToTokenExhaustion = false;
+                    state.stoppedDueToElapsedTimeout = false;
+                    state.stoppedDueToDoomLoop = false;
+                    state.stoppedDueToBudgetExhaustion = false;
+                    state.stoppedDueToAgentRunSpendCap = false;
+                    state.budgetAbortDetails = undefined;
+                    const fallbackStartTime = Date.now();
+                    preFallbackCacheRead = usageTracker.cacheReadTokens;
+                    preFallbackCacheWrite = usageTracker.cacheWriteTokens;
+                    const retryModel = shouldRetryWithoutImageToolResults
+                      ? selectedModel
+                      : fallbackModel;
+                    if (shouldRetryWithoutImageToolResults) {
+                      const normalizedRetryMessages = imageRecovery.messages
+                        .map((message) =>
+                          message.role === "assistant"
+                            ? stripAgentLongHeartbeatParts(message)
+                            : message,
+                        )
+                        .filter(
+                          (message) =>
+                            message.role !== "assistant" ||
+                            (message.parts?.length ?? 0) > 0,
                         );
-                      const imageRecovery =
-                        state.providerRejectedMultimodalToolResults
-                          ? omitImageViewToolResultsForProviderRetry(
-                              finishedMessages,
-                            )
-                          : { messages: finishedMessages, omittedCount: 0 };
-                      const shouldRetryWithoutImageToolResults =
-                        imageRecovery.omittedCount > 0 && !isAborted;
+                      state.finalMessages =
+                        omitTrailingStepStartAssistantMessage(
+                          normalizedRetryMessages,
+                        );
+                    } else {
+                      usageTracker.resetModelLeg();
+                    }
+                    const retryResult = await createStream(retryModel);
+                    const retryMessageId = generateId();
 
-                      if (
-                        (shouldRetryWithFallback ||
-                          shouldRetryWithoutImageToolResults) &&
-                        !isRetryWithFallback &&
-                        !isAborted &&
-                        (isAutoModel || shouldRetryWithoutImageToolResults)
-                      ) {
-                        isRetryWithFallback = true;
-                        state.lastStepInputTokens = 0;
-                        state.streamFinishReason = undefined;
-                        state.providerError = undefined;
-                        state.providerRejectedMultimodalToolResults = false;
-                        state.stoppedDueToTokenExhaustion = false;
-                        state.stoppedDueToElapsedTimeout = false;
-                        state.stoppedDueToDoomLoop = false;
-                        state.stoppedDueToBudgetExhaustion = false;
-                        state.stoppedDueToAgentRunSpendCap = false;
-                        state.budgetAbortDetails = undefined;
-                        const fallbackStartTime = Date.now();
-                        preFallbackCacheRead = usageTracker.cacheReadTokens;
-                        preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                        const retryModel = shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : fallbackModel;
-                        if (shouldRetryWithoutImageToolResults) {
-                          const normalizedRetryMessages = imageRecovery.messages
-                            .map((message) =>
-                              message.role === "assistant"
-                                ? stripAgentLongHeartbeatParts(message)
-                                : message,
-                            )
-                            .filter(
-                              (message) =>
-                                message.role !== "assistant" ||
-                                (message.parts?.length ?? 0) > 0,
-                            );
-                          state.finalMessages =
-                            omitTrailingStepStartAssistantMessage(
-                              normalizedRetryMessages,
-                            );
-                        } else {
-                          usageTracker.resetModelLeg();
+                    const retryUiMessageStream = retryResult.toUIMessageStream({
+                      generateMessageId: () => retryMessageId,
+                      sendReasoning: true,
+                      messageMetadata: ({ part }) => {
+                        if (part.type === "start") {
+                          return {
+                            mode,
+                            createdAt: fallbackStartTime,
+                            generationStartedAt: fallbackStartTime,
+                          };
                         }
-                        const retryResult = await createStream(retryModel);
-                        const retryMessageId = generateId();
 
-                        writer.merge(
-                          withAgentLongStreamHeartbeat(
-                            retryResult.toUIMessageStream({
-                              generateMessageId: () => retryMessageId,
-                              sendReasoning: true,
-                              messageMetadata: ({ part }) => {
-                                if (part.type === "start") {
-                                  return {
-                                    mode,
-                                    createdAt: fallbackStartTime,
-                                    generationStartedAt: fallbackStartTime,
-                                  };
-                                }
+                        if (part.type === "finish") {
+                          return {
+                            mode,
+                            createdAt: fallbackStartTime,
+                            generationStartedAt: fallbackStartTime,
+                            generationTimeMs: Date.now() - fallbackStartTime,
+                          };
+                        }
+                      },
+                      onFinish: async ({
+                        messages: retryMessages,
+                        isAborted: retryAborted,
+                      }) => {
+                        const normalizedRetryMessages =
+                          stripStandaloneProviderReasoningTagTextMessages(
+                            retryMessages,
+                          );
+                        try {
+                          const fallbackCacheRead =
+                            usageTracker.cacheReadTokens - preFallbackCacheRead;
+                          const fallbackCacheWrite =
+                            usageTracker.cacheWriteTokens -
+                            preFallbackCacheWrite;
+                          const fallbackCacheTotal =
+                            fallbackCacheRead + fallbackCacheWrite;
+                          const sandboxInfo = sandboxManager.getSandboxInfo();
+                          chatLogger?.setSandbox(sandboxInfo);
+                          chatLogger?.setCacheMetrics({
+                            cacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
+                            cacheReadTokens: fallbackCacheRead,
+                            cacheWriteTokens: fallbackCacheWrite,
+                          });
+                          captureToolCalls({
+                            posthog,
+                            chatLogger,
+                            userId,
+                            mode,
+                          });
+                          const outcome = retryAborted
+                            ? "aborted"
+                            : isTerminalProviderStreamError(state)
+                              ? "error"
+                              : "success";
+                          captureAgentCompletionAnalytics({
+                            posthog,
+                            userId,
+                            chatId,
+                            endpoint: "/api/agent-long",
+                            mode,
+                            subscription,
+                            sandboxInfo,
+                            outcome,
+                            chatLogger,
+                            finishReason: state.streamFinishReason,
+                            budgetAbortDetails: state.budgetAbortDetails,
+                          });
+                          if (!isTerminalProviderStreamError(state)) {
+                            chatLogger?.emitSuccess({
+                              finishReason: state.streamFinishReason,
+                              wasAborted: retryAborted,
+                              wasPreemptiveTimeout: false,
+                              hadSummarization:
+                                summarizationTracker.hasSummarized,
+                            });
+                          }
 
-                                if (part.type === "finish") {
-                                  return {
-                                    mode,
-                                    createdAt: fallbackStartTime,
-                                    generationStartedAt: fallbackStartTime,
-                                    generationTimeMs:
-                                      Date.now() - fallbackStartTime,
-                                  };
-                                }
-                              },
-                              onFinish: async ({
-                                messages: retryMessages,
-                                isAborted: retryAborted,
-                              }) => {
-                                try {
-                                  const fallbackCacheRead =
-                                    usageTracker.cacheReadTokens -
-                                    preFallbackCacheRead;
-                                  const fallbackCacheWrite =
-                                    usageTracker.cacheWriteTokens -
-                                    preFallbackCacheWrite;
-                                  const fallbackCacheTotal =
-                                    fallbackCacheRead + fallbackCacheWrite;
-                                  const sandboxInfo =
-                                    sandboxManager.getSandboxInfo();
-                                  chatLogger?.setSandbox(sandboxInfo);
-                                  chatLogger?.setCacheMetrics({
-                                    cacheHitRate:
-                                      fallbackCacheTotal > 0
-                                        ? fallbackCacheRead / fallbackCacheTotal
-                                        : null,
-                                    cacheReadTokens: fallbackCacheRead,
-                                    cacheWriteTokens: fallbackCacheWrite,
-                                  });
-                                  captureToolCalls({
-                                    posthog,
-                                    chatLogger,
-                                    userId,
-                                    mode,
-                                  });
-                                  const outcome = retryAborted
-                                    ? "aborted"
-                                    : isTerminalProviderStreamError(state)
-                                      ? "error"
-                                      : "success";
-                                  captureAgentCompletionAnalytics({
-                                    posthog,
-                                    userId,
-                                    chatId,
-                                    endpoint: "/api/agent-long",
-                                    mode,
-                                    subscription,
-                                    sandboxInfo,
-                                    outcome,
-                                    chatLogger,
-                                    finishReason: state.streamFinishReason,
-                                    budgetAbortDetails:
-                                      state.budgetAbortDetails,
-                                  });
-                                  if (!isTerminalProviderStreamError(state)) {
-                                    chatLogger?.emitSuccess({
-                                      finishReason: state.streamFinishReason,
-                                      wasAborted: retryAborted,
-                                      wasPreemptiveTimeout: false,
-                                      hadSummarization:
-                                        summarizationTracker.hasSummarized,
-                                    });
-                                  }
-
-                                  const generatedTitle = await titlePromise;
-                                  if (!temporary) {
-                                    const mergedTodos =
-                                      getTodoManager().mergeWith(
-                                        baseTodos,
-                                        retryMessageId,
-                                      );
-                                    if (
-                                      generatedTitle ||
-                                      state.streamFinishReason ||
-                                      mergedTodos.length > 0
-                                    ) {
-                                      await updateChat({
-                                        chatId,
-                                        title: generatedTitle,
-                                        finishReason: state.streamFinishReason,
-                                        todos: mergedTodos,
-                                        defaultModelSlug: "agent",
-                                        sandboxType:
-                                          sandboxManager.getEffectivePreference(),
-                                        selectedModel: selectedModelOverride,
-                                      });
-                                    } else {
-                                      await prepareForNewStream({ chatId });
-                                    }
-                                    const accumulatedFiles =
-                                      getFileAccumulator().getAll();
-                                    const newFileIds = accumulatedFiles.map(
-                                      (f) => f.fileId,
-                                    );
-                                    const fallbackGenerationTimeMs =
-                                      Date.now() - fallbackStartTime;
-                                    for (const msg of retryMessages) {
-                                      if (msg.role !== "assistant") continue;
-                                      const processed =
-                                        stripAgentLongHeartbeatParts(
-                                          summarizationTracker.processMessageForSave(
-                                            msg,
-                                          ),
-                                        );
-                                      await saveMessage({
-                                        chatId,
-                                        userId,
-                                        message: processed,
-                                        extraFileIds: newFileIds,
-                                        usage: state.streamUsage,
-                                        model: state.responseModel,
-                                        mode,
-                                        generationStartedAt: fallbackStartTime,
-                                        generationTimeMs:
-                                          fallbackGenerationTimeMs,
-                                        finishReason: state.streamFinishReason,
-                                      });
-                                    }
-                                    writer.write({
-                                      type: "message-metadata",
-                                      messageMetadata: {
-                                        mode,
-                                        createdAt: fallbackStartTime,
-                                        generationStartedAt: fallbackStartTime,
-                                        generationTimeMs:
-                                          fallbackGenerationTimeMs,
-                                      },
-                                    });
-                                    sendFileMetadataToStream(accumulatedFiles);
-                                  }
-                                  await deductAccumulatedUsage();
-                                  posthog?.shutdown();
-                                } finally {
-                                  await releaseFreeRunLockOnce();
-                                }
-                              },
-                            }),
-                            userStopSignal.signal,
-                          ),
-                        );
-                        retryScheduled = true;
-                        return;
-                      }
-
-                      // User-initiated cancel via trigger.dev: clear finish reason
-                      // so the client doesn't show spurious "going off course" messages.
-                      if (
-                        isAborted &&
-                        triggerSignal.aborted &&
-                        !state.stoppedDueToBudgetExhaustion &&
-                        !state.stoppedDueToElapsedTimeout
-                      ) {
-                        state.streamFinishReason = undefined;
-                      }
-
-                      const sandboxInfo = sandboxManager.getSandboxInfo();
-                      chatLogger?.setSandbox(sandboxInfo);
-                      chatLogger?.setCacheMetrics({
-                        cacheHitRate: usageTracker.cacheHitRate,
-                        cacheReadTokens: usageTracker.cacheReadTokens,
-                        cacheWriteTokens: usageTracker.cacheWriteTokens,
-                      });
-                      captureToolCalls({ posthog, chatLogger, userId, mode });
-                      const outcome = isAborted
-                        ? "aborted"
-                        : isTerminalProviderStreamError(state)
-                          ? "error"
-                          : "success";
-                      captureAgentCompletionAnalytics({
-                        posthog,
-                        userId,
-                        chatId,
-                        endpoint: "/api/agent-long",
-                        mode,
-                        subscription,
-                        sandboxInfo,
-                        outcome,
-                        chatLogger,
-                        finishReason: state.streamFinishReason,
-                        budgetAbortDetails: state.budgetAbortDetails,
-                      });
-                      if (!isTerminalProviderStreamError(state)) {
-                        chatLogger?.emitSuccess({
-                          finishReason: state.streamFinishReason,
-                          wasAborted: isAborted,
-                          wasPreemptiveTimeout:
-                            state.stoppedDueToElapsedTimeout,
-                          hadSummarization: summarizationTracker.hasSummarized,
-                        });
-                      }
-
-                      const generatedTitle = await titlePromise;
-
-                      if (!temporary) {
-                        const mergedTodos = getTodoManager().mergeWith(
-                          baseTodos,
-                          assistantMessageId,
-                        );
-                        const shouldPersist = regenerate
-                          ? true
-                          : Boolean(
+                          const generatedTitle = await titlePromise;
+                          if (!temporary) {
+                            const mergedTodos = getTodoManager().mergeWith(
+                              baseTodos,
+                              retryMessageId,
+                            );
+                            if (
                               generatedTitle ||
                               state.streamFinishReason ||
-                              mergedTodos.length > 0,
+                              mergedTodos.length > 0
+                            ) {
+                              await updateChat({
+                                chatId,
+                                title: generatedTitle,
+                                finishReason: state.streamFinishReason,
+                                todos: mergedTodos,
+                                defaultModelSlug: "agent",
+                                sandboxType:
+                                  sandboxManager.getEffectivePreference(),
+                                selectedModel: selectedModelOverride,
+                              });
+                            } else {
+                              await prepareForNewStream({ chatId });
+                            }
+                            const accumulatedFiles =
+                              getFileAccumulator().getAll();
+                            const newFileIds = accumulatedFiles.map(
+                              (f) => f.fileId,
                             );
-
-                        if (shouldPersist) {
-                          await updateChat({
-                            chatId,
-                            title: generatedTitle,
-                            finishReason: state.streamFinishReason,
-                            todos: mergedTodos,
-                            defaultModelSlug: "agent",
-                            sandboxType:
-                              sandboxManager.getEffectivePreference(),
-                            selectedModel: selectedModelOverride,
-                          });
-                        } else {
-                          await prepareForNewStream({ chatId });
-                        }
-
-                        const accumulatedFiles = getFileAccumulator().getAll();
-                        const newFileIds = accumulatedFiles.map(
-                          (f) => f.fileId,
-                        );
-
-                        let resolvedUsage: Record<string, unknown> | undefined =
-                          state.streamUsage;
-                        if (!resolvedUsage && isAborted) {
-                          try {
-                            resolvedUsage = (await result.usage) as Record<
-                              string,
-                              unknown
-                            >;
-                          } catch {
-                            // Usage unavailable on abort
+                            const fallbackGenerationTimeMs =
+                              Date.now() - fallbackStartTime;
+                            for (const msg of normalizedRetryMessages) {
+                              if (msg.role !== "assistant") continue;
+                              const processed = stripAgentLongHeartbeatParts(
+                                summarizationTracker.processMessageForSave(msg),
+                              );
+                              await saveMessage({
+                                chatId,
+                                userId,
+                                message: processed,
+                                extraFileIds: newFileIds,
+                                usage: state.streamUsage,
+                                model: state.responseModel,
+                                mode,
+                                generationStartedAt: fallbackStartTime,
+                                generationTimeMs: fallbackGenerationTimeMs,
+                                finishReason: state.streamFinishReason,
+                              });
+                            }
+                            writer.write({
+                              type: "message-metadata",
+                              messageMetadata: {
+                                mode,
+                                createdAt: fallbackStartTime,
+                                generationStartedAt: fallbackStartTime,
+                                generationTimeMs: fallbackGenerationTimeMs,
+                              },
+                            });
+                            sendFileMetadataToStream(accumulatedFiles);
                           }
-                        }
-
-                        const hasIncompleteToolCalls = finishedMessages.some(
-                          (msg) =>
-                            msg.role === "assistant" &&
-                            msg.parts?.some(
-                              (p: {
-                                type?: string;
-                                state?: string;
-                                toolCallId?: string;
-                              }) =>
-                                p.type?.startsWith("tool-") &&
-                                p.state !== "output-available" &&
-                                p.toolCallId,
-                            ),
-                        );
-                        const incompleteToolSummaries = isAborted
-                          ? summarizeIncompleteToolParts(finishedMessages)
-                          : [];
-                        if (incompleteToolSummaries.length > 0) {
-                          console.info(
-                            JSON.stringify({
-                              level: "info",
-                              event:
-                                "agent_long_abort_incomplete_tool_calls_detected",
-                              service: "agent-long",
-                              timestamp: new Date().toISOString(),
-                              chat_id: chatId,
-                              user_id: userId,
-                              mode: "agent",
-                              finish_reason: state.streamFinishReason,
-                              trigger_signal_aborted: triggerSignal.aborted,
-                              incomplete_tool_count:
-                                incompleteToolSummaries.length,
-                              incomplete_tools: incompleteToolSummaries,
-                            }),
-                          );
-                        }
-                        if (
-                          isAborted &&
-                          !triggerSignal.aborted &&
-                          newFileIds.length === 0 &&
-                          !hasIncompleteToolCalls &&
-                          !resolvedUsage
-                        ) {
-                          console.info(
-                            JSON.stringify({
-                              level: "info",
-                              event: "agent_long_abort_message_save_skipped",
-                              service: "agent-long",
-                              timestamp: new Date().toISOString(),
-                              chat_id: chatId,
-                              user_id: userId,
-                              mode: "agent",
-                              finish_reason: state.streamFinishReason,
-                              new_file_count: newFileIds.length,
-                              has_incomplete_tool_calls: hasIncompleteToolCalls,
-                              has_usage_to_record: Boolean(resolvedUsage),
-                            }),
-                          );
                           await deductAccumulatedUsage();
                           posthog?.shutdown();
-                          return;
+                        } finally {
+                          await releaseFreeRunLockOnce();
                         }
+                      },
+                    });
+                    writer.merge(
+                      withAgentLongStreamHeartbeat(
+                        filterStandaloneProviderReasoningTagTextStream(
+                          retryUiMessageStream,
+                        ),
+                        userStopSignal.signal,
+                      ),
+                    );
+                    retryScheduled = true;
+                    return;
+                  }
 
-                        const finalGenerationTimeMs =
-                          Date.now() - streamStartTime;
-                        let savedAssistantMessage = false;
-                        for (const message of finishedMessages) {
-                          const processed = stripAgentLongHeartbeatParts(
-                            summarizationTracker.processMessageForSave(message),
-                          );
-                          if (
-                            (!processed.parts ||
-                              processed.parts.length === 0) &&
-                            newFileIds.length === 0
-                          ) {
-                            continue;
-                          }
-                          await saveMessage({
-                            chatId,
-                            userId,
-                            message: processed,
-                            extraFileIds: newFileIds,
-                            model: state.responseModel || configuredModelId,
-                            mode,
-                            generationStartedAt:
-                              processed.role === "assistant"
-                                ? streamStartTime
-                                : undefined,
-                            generationTimeMs: finalGenerationTimeMs,
-                            finishReason: state.streamFinishReason,
-                            usage: resolvedUsage ?? state.streamUsage,
-                            updateOnly:
-                              isAborted && !state.stoppedDueToElapsedTimeout
-                                ? true
-                                : undefined,
-                            isHidden:
-                              isAutoContinue && processed.role === "user"
-                                ? true
-                                : undefined,
-                          });
-                          if (processed.role === "assistant") {
-                            savedAssistantMessage = true;
-                          }
-                        }
+                  // User-initiated cancel via trigger.dev: clear finish reason
+                  // so the client doesn't show spurious "going off course" messages.
+                  if (
+                    isAborted &&
+                    triggerSignal.aborted &&
+                    !state.stoppedDueToBudgetExhaustion &&
+                    !state.stoppedDueToElapsedTimeout
+                  ) {
+                    state.streamFinishReason = undefined;
+                  }
 
-                        if (savedAssistantMessage) {
-                          writer.write({
-                            type: "message-metadata",
-                            messageMetadata: {
-                              mode,
-                              createdAt: streamStartTime,
-                              generationStartedAt: streamStartTime,
-                              generationTimeMs: finalGenerationTimeMs,
-                            },
-                          });
-                        }
+                  const sandboxInfo = sandboxManager.getSandboxInfo();
+                  chatLogger?.setSandbox(sandboxInfo);
+                  chatLogger?.setCacheMetrics({
+                    cacheHitRate: usageTracker.cacheHitRate,
+                    cacheReadTokens: usageTracker.cacheReadTokens,
+                    cacheWriteTokens: usageTracker.cacheWriteTokens,
+                  });
+                  captureToolCalls({ posthog, chatLogger, userId, mode });
+                  const outcome = isAborted
+                    ? "aborted"
+                    : isTerminalProviderStreamError(state)
+                      ? "error"
+                      : "success";
+                  captureAgentCompletionAnalytics({
+                    posthog,
+                    userId,
+                    chatId,
+                    endpoint: "/api/agent-long",
+                    mode,
+                    subscription,
+                    sandboxInfo,
+                    outcome,
+                    chatLogger,
+                    finishReason: state.streamFinishReason,
+                    budgetAbortDetails: state.budgetAbortDetails,
+                  });
+                  if (!isTerminalProviderStreamError(state)) {
+                    chatLogger?.emitSuccess({
+                      finishReason: state.streamFinishReason,
+                      wasAborted: isAborted,
+                      wasPreemptiveTimeout: state.stoppedDueToElapsedTimeout,
+                      hadSummarization: summarizationTracker.hasSummarized,
+                    });
+                  }
 
-                        sendFileMetadataToStream(accumulatedFiles);
-                      }
+                  const generatedTitle = await titlePromise;
 
-                      // Don't auto-continue on elapsed timeout. Runs that hit
-                      // their plan cap are large enough that the user should
-                      // explicitly decide whether to continue.
-                      if (
-                        (state.stoppedDueToTokenExhaustion ||
-                          state.streamFinishReason === "tool-calls") &&
-                        !temporary
-                      ) {
-                        writeAutoContinue(writer);
-                      }
+                  if (!temporary) {
+                    const mergedTodos = getTodoManager().mergeWith(
+                      baseTodos,
+                      assistantMessageId,
+                    );
+                    const shouldPersist = regenerate
+                      ? true
+                      : Boolean(
+                          generatedTitle ||
+                          state.streamFinishReason ||
+                          mergedTodos.length > 0,
+                        );
 
-                      await deductAccumulatedUsage();
-                      posthog?.shutdown();
-                    } finally {
-                      if (!retryScheduled) {
-                        await releaseFreeRunLockOnce();
+                    if (shouldPersist) {
+                      await updateChat({
+                        chatId,
+                        title: generatedTitle,
+                        finishReason: state.streamFinishReason,
+                        todos: mergedTodos,
+                        defaultModelSlug: "agent",
+                        sandboxType: sandboxManager.getEffectivePreference(),
+                        selectedModel: selectedModelOverride,
+                      });
+                    } else {
+                      await prepareForNewStream({ chatId });
+                    }
+
+                    const accumulatedFiles = getFileAccumulator().getAll();
+                    const newFileIds = accumulatedFiles.map((f) => f.fileId);
+
+                    let resolvedUsage: Record<string, unknown> | undefined =
+                      state.streamUsage;
+                    if (!resolvedUsage && isAborted) {
+                      try {
+                        resolvedUsage = (await result.usage) as Record<
+                          string,
+                          unknown
+                        >;
+                      } catch {
+                        // Usage unavailable on abort
                       }
                     }
-                  },
-                }),
+
+                    const hasIncompleteToolCalls =
+                      normalizedFinishedMessages.some(
+                        (msg) =>
+                          msg.role === "assistant" &&
+                          msg.parts?.some(
+                            (p: {
+                              type?: string;
+                              state?: string;
+                              toolCallId?: string;
+                            }) =>
+                              p.type?.startsWith("tool-") &&
+                              p.state !== "output-available" &&
+                              p.toolCallId,
+                          ),
+                      );
+                    const incompleteToolSummaries = isAborted
+                      ? summarizeIncompleteToolParts(normalizedFinishedMessages)
+                      : [];
+                    if (incompleteToolSummaries.length > 0) {
+                      console.info(
+                        JSON.stringify({
+                          level: "info",
+                          event:
+                            "agent_long_abort_incomplete_tool_calls_detected",
+                          service: "agent-long",
+                          timestamp: new Date().toISOString(),
+                          chat_id: chatId,
+                          user_id: userId,
+                          mode: "agent",
+                          finish_reason: state.streamFinishReason,
+                          trigger_signal_aborted: triggerSignal.aborted,
+                          incomplete_tool_count: incompleteToolSummaries.length,
+                          incomplete_tools: incompleteToolSummaries,
+                        }),
+                      );
+                    }
+                    if (
+                      isAborted &&
+                      !triggerSignal.aborted &&
+                      newFileIds.length === 0 &&
+                      !hasIncompleteToolCalls &&
+                      !resolvedUsage
+                    ) {
+                      console.info(
+                        JSON.stringify({
+                          level: "info",
+                          event: "agent_long_abort_message_save_skipped",
+                          service: "agent-long",
+                          timestamp: new Date().toISOString(),
+                          chat_id: chatId,
+                          user_id: userId,
+                          mode: "agent",
+                          finish_reason: state.streamFinishReason,
+                          new_file_count: newFileIds.length,
+                          has_incomplete_tool_calls: hasIncompleteToolCalls,
+                          has_usage_to_record: Boolean(resolvedUsage),
+                        }),
+                      );
+                      await deductAccumulatedUsage();
+                      posthog?.shutdown();
+                      return;
+                    }
+
+                    const finalGenerationTimeMs = Date.now() - streamStartTime;
+                    let savedAssistantMessage = false;
+                    for (const message of normalizedFinishedMessages) {
+                      const processed = stripAgentLongHeartbeatParts(
+                        summarizationTracker.processMessageForSave(message),
+                      );
+                      if (
+                        (!processed.parts || processed.parts.length === 0) &&
+                        newFileIds.length === 0
+                      ) {
+                        continue;
+                      }
+                      await saveMessage({
+                        chatId,
+                        userId,
+                        message: processed,
+                        extraFileIds: newFileIds,
+                        model: state.responseModel || configuredModelId,
+                        mode,
+                        generationStartedAt:
+                          processed.role === "assistant"
+                            ? streamStartTime
+                            : undefined,
+                        generationTimeMs: finalGenerationTimeMs,
+                        finishReason: state.streamFinishReason,
+                        usage: resolvedUsage ?? state.streamUsage,
+                        updateOnly:
+                          isAborted && !state.stoppedDueToElapsedTimeout
+                            ? true
+                            : undefined,
+                        isHidden:
+                          isAutoContinue && processed.role === "user"
+                            ? true
+                            : undefined,
+                      });
+                      if (processed.role === "assistant") {
+                        savedAssistantMessage = true;
+                      }
+                    }
+
+                    if (savedAssistantMessage) {
+                      writer.write({
+                        type: "message-metadata",
+                        messageMetadata: {
+                          mode,
+                          createdAt: streamStartTime,
+                          generationStartedAt: streamStartTime,
+                          generationTimeMs: finalGenerationTimeMs,
+                        },
+                      });
+                    }
+
+                    sendFileMetadataToStream(accumulatedFiles);
+                  }
+
+                  // Don't auto-continue on elapsed timeout. Runs that hit
+                  // their plan cap are large enough that the user should
+                  // explicitly decide whether to continue.
+                  if (
+                    (state.stoppedDueToTokenExhaustion ||
+                      state.streamFinishReason === "tool-calls") &&
+                    !temporary
+                  ) {
+                    writeAutoContinue(writer);
+                  }
+
+                  await deductAccumulatedUsage();
+                  posthog?.shutdown();
+                } finally {
+                  if (!retryScheduled) {
+                    await releaseFreeRunLockOnce();
+                  }
+                }
+              },
+            });
+            writer.merge(
+              withAgentLongStreamHeartbeat(
+                filterStandaloneProviderReasoningTagTextStream(uiMessageStream),
                 userStopSignal.signal,
               ),
             );
