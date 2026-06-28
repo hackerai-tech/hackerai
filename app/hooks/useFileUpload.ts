@@ -313,20 +313,21 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           lastModified: number;
           previousFileId?: string;
           previousTokens?: number;
+          previousUploadedFile?: UploadedFileState;
         };
       } = {},
     ) => {
-      const isCurrentUploadTarget = () => {
+      const getCurrentUploadIndex = () => {
         const expected = options.expectedGeneratedTextAttachment;
-        if (!expected) return true;
+        if (!expected) return uploadIndex;
 
-        const currentFile = uploadedFilesRef.current[uploadIndex];
-        if (!currentFile) return false;
-
-        return (
-          currentFile.generatedTextAttachment?.id === expected.id &&
-          currentFile.file.lastModified === expected.lastModified
+        const currentIndex = uploadedFilesRef.current.findIndex(
+          (currentFile) =>
+            currentFile.generatedTextAttachment?.id === expected.id &&
+            currentFile.file.lastModified === expected.lastModified,
         );
+
+        return currentIndex >= 0 ? currentIndex : null;
       };
 
       try {
@@ -373,7 +374,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           mode,
         });
 
-        if (!isCurrentUploadTarget()) {
+        const currentUploadIndex = getCurrentUploadIndex();
+        if (currentUploadIndex === null) {
           deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
           return;
         }
@@ -392,7 +394,13 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           if (newTotal > maxFileTokens) {
             // Exceeds limit - delete file from storage and remove from upload list
             deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-            removeUploadedFile(uploadIndex);
+            const previousUploadedFile =
+              options.expectedGeneratedTextAttachment?.previousUploadedFile;
+            if (previousUploadedFile) {
+              applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+            } else {
+              removeUploadedFile(currentUploadIndex);
+            }
 
             toast.error(
               `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
@@ -402,7 +410,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         }
 
         // Set success state with tokens
-        applyUploadedFileUpdate(uploadIndex, {
+        applyUploadedFileUpdate(currentUploadIndex, {
           tokens,
           uploading: false,
           uploaded: true,
@@ -418,7 +426,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           );
         }
       } catch (error) {
-        if (!isCurrentUploadTarget()) {
+        const currentUploadIndex = getCurrentUploadIndex();
+        if (currentUploadIndex === null) {
           return;
         }
 
@@ -427,7 +436,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           options.fallbackLocalFile
         ) {
           const fallbackFile = options.fallbackLocalFile;
-          applyUploadedFileUpdate(uploadIndex, {
+          applyUploadedFileUpdate(currentUploadIndex, {
             file: {
               name: fallbackFile.name,
               type: fallbackFile.type,
@@ -467,8 +476,16 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return "Upload failed";
         })();
 
+        const previousUploadedFile =
+          options.expectedGeneratedTextAttachment?.previousUploadedFile;
+        if (previousUploadedFile) {
+          applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+          toast.error(errorMessage);
+          return;
+        }
+
         // Update the upload state to error
-        applyUploadedFileUpdate(uploadIndex, {
+        applyUploadedFileUpdate(currentUploadIndex, {
           uploading: false,
           uploaded: false,
           error: errorMessage,
@@ -882,9 +899,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         error: undefined,
         storage: "s3",
         generatedSource: "pasted-text",
-        fileId: undefined,
-        url: undefined,
-        tokens: undefined,
+        fileId: previousFileId,
+        tokens: previousTokens,
         generatedTextAttachment: {
           id: generatedTextAttachment.id,
           content,
@@ -903,6 +919,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           lastModified: nextFile.lastModified,
           previousFileId,
           previousTokens,
+          previousUploadedFile: uploadedFile,
         },
       });
     },
@@ -969,6 +986,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
       (!items || Array.from(items).every((item) => item.kind !== "file"))
     ) {
+      if (subscription === "free") {
+        return false;
+      }
+
       event.preventDefault();
       await handlePastedTextAttachment(pastedText);
       return true;

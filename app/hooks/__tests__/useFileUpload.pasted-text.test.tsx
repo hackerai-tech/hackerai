@@ -151,6 +151,24 @@ describe("useFileUpload generated pasted text attachments", () => {
     expect(addUploadedFile).not.toHaveBeenCalled();
   });
 
+  it("allows free users to paste large text inline when file attachments are unavailable", async () => {
+    globalState.subscription = "free";
+    const event = createTextPasteEvent("A".repeat(4100));
+    const { result } = renderHook(() => useFileUpload("ask"));
+
+    let handled = true;
+    await act(async () => {
+      handled = await result.current.handlePasteEvent(event);
+    });
+
+    expect(handled).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalledWith(
+      "Upgrade plan to upload files.",
+    );
+  });
+
   it("creates distinct generated filenames for multiple large pastes", async () => {
     globalState.uploadedFiles = [
       {
@@ -188,5 +206,40 @@ describe("useFileUpload generated pasted text attachments", () => {
     expect(toast.info).toHaveBeenCalledWith(
       "No readable text was added from the paste.",
     );
+  });
+
+  it("restores the previous generated text file when edited replacement upload fails", async () => {
+    const originalFile = new File(["original"], "pasted_content.txt", {
+      type: "text/plain",
+      lastModified: 1000,
+    });
+    const previousUpload = {
+      file: originalFile,
+      uploading: false,
+      uploaded: true,
+      storage: "s3" as const,
+      fileId: "file_old",
+      url: "https://s3.example/old",
+      tokens: 5,
+      generatedSource: "pasted-text" as const,
+      generatedTextAttachment: {
+        id: "paste_1",
+        content: "original",
+      },
+    };
+    globalState.uploadedFiles = [previousUpload];
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: false, statusText: "upload failed" }) as any;
+    const { result } = renderHook(() => useFileUpload("ask"));
+
+    await act(async () => {
+      result.current.handleUpdateGeneratedTextFile(0, "edited");
+    });
+
+    await waitFor(() => {
+      expect(updateUploadedFile).toHaveBeenLastCalledWith(0, previousUpload);
+    });
+    expect(deleteFile).not.toHaveBeenCalledWith({ fileId: "file_old" });
   });
 });

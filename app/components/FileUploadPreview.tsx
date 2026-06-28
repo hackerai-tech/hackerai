@@ -45,6 +45,9 @@ export const FileUploadPreview = ({
   const [hasPendingTextSave, setHasPendingTextSave] = useState(false);
   const textSaveTimeoutRef = useRef<number | null>(null);
   const draftTextContentRef = useRef("");
+  const editingTextFileIndexRef = useRef<number | null>(null);
+  const hasPendingTextSaveRef = useRef(false);
+  const onUpdateGeneratedTextFileRef = useRef(onUpdateGeneratedTextFile);
 
   // Use ref to store base64 previews to avoid regenerating them
   const previewCache = useRef<Map<string, string>>(new Map());
@@ -61,11 +64,13 @@ export const FileUploadPreview = ({
 
   const saveGeneratedTextFile = useCallback(
     (index: number, content: string) => {
-      if (!onUpdateGeneratedTextFile) return;
-      onUpdateGeneratedTextFile(index, content);
+      const updateGeneratedTextFile = onUpdateGeneratedTextFileRef.current;
+      if (!updateGeneratedTextFile) return;
+      updateGeneratedTextFile(index, content);
+      hasPendingTextSaveRef.current = false;
       setHasPendingTextSave(false);
     },
-    [onUpdateGeneratedTextFile],
+    [],
   );
 
   const clearTextSaveTimeout = useCallback(() => {
@@ -76,15 +81,11 @@ export const FileUploadPreview = ({
   }, []);
 
   const flushPendingTextSave = useCallback(() => {
-    if (editingTextFileIndex === null || !hasPendingTextSave) return;
+    const index = editingTextFileIndexRef.current;
+    if (index === null || !hasPendingTextSaveRef.current) return;
     clearTextSaveTimeout();
-    saveGeneratedTextFile(editingTextFileIndex, draftTextContentRef.current);
-  }, [
-    clearTextSaveTimeout,
-    editingTextFileIndex,
-    hasPendingTextSave,
-    saveGeneratedTextFile,
-  ]);
+    saveGeneratedTextFile(index, draftTextContentRef.current);
+  }, [clearTextSaveTimeout, saveGeneratedTextFile]);
 
   const openTextEditor = useCallback(
     (index: number) => {
@@ -93,8 +94,10 @@ export const FileUploadPreview = ({
 
       clearTextSaveTimeout();
       setEditingTextFileIndex(index);
+      editingTextFileIndexRef.current = index;
       setDraftTextContent(generatedText.content);
       draftTextContentRef.current = generatedText.content;
+      hasPendingTextSaveRef.current = false;
       setHasPendingTextSave(false);
     },
     [clearTextSaveTimeout, onUpdateGeneratedTextFile, uploadedFiles],
@@ -105,6 +108,8 @@ export const FileUploadPreview = ({
       if (open) return;
       flushPendingTextSave();
       setEditingTextFileIndex(null);
+      editingTextFileIndexRef.current = null;
+      hasPendingTextSaveRef.current = false;
       setHasPendingTextSave(false);
     },
     [flushPendingTextSave],
@@ -116,6 +121,7 @@ export const FileUploadPreview = ({
 
       setDraftTextContent(value);
       draftTextContentRef.current = value;
+      hasPendingTextSaveRef.current = true;
       setHasPendingTextSave(true);
       clearTextSaveTimeout();
 
@@ -132,6 +138,8 @@ export const FileUploadPreview = ({
       if (index === editingTextFileIndex) {
         clearTextSaveTimeout();
         setEditingTextFileIndex(null);
+        editingTextFileIndexRef.current = null;
+        hasPendingTextSaveRef.current = false;
         setHasPendingTextSave(false);
       }
       onRemoveFile(index);
@@ -194,7 +202,20 @@ export const FileUploadPreview = ({
   }, [uploadedFiles, generateFileKey]);
 
   useEffect(() => {
+    onUpdateGeneratedTextFileRef.current = onUpdateGeneratedTextFile;
+  }, [onUpdateGeneratedTextFile]);
+
+  useEffect(() => {
     return () => {
+      const index = editingTextFileIndexRef.current;
+      const updateGeneratedTextFile = onUpdateGeneratedTextFileRef.current;
+      if (
+        index !== null &&
+        hasPendingTextSaveRef.current &&
+        updateGeneratedTextFile
+      ) {
+        updateGeneratedTextFile(index, draftTextContentRef.current);
+      }
       clearTextSaveTimeout();
     };
   }, [clearTextSaveTimeout]);

@@ -105,4 +105,29 @@ describe("FileUploadPreview generated pasted text attachments", () => {
       "Closed before debounce",
     );
   });
+
+  it("flushes pending edits on unmount", () => {
+    jest.useFakeTimers();
+    const onUpdateGeneratedTextFile = jest.fn();
+
+    const { unmount } = render(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("Original pasted content")]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={onUpdateGeneratedTextFile}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Open pasted_content.txt"));
+    fireEvent.change(screen.getByLabelText("Pasted text content"), {
+      target: { value: "Unmounted before debounce" },
+    });
+
+    unmount();
+
+    expect(onUpdateGeneratedTextFile).toHaveBeenCalledWith(
+      0,
+      "Unmounted before debounce",
+    );
+  });
 });
