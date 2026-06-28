@@ -9,6 +9,7 @@ import {
   useState,
   useReducer,
   useCallback,
+  useMemo,
   type RefObject,
 } from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";

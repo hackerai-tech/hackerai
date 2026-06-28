@@ -924,24 +924,27 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatResetRef.current = fn;
   }, []);
 
-  const openSidebar = (content: SidebarContent) => {
+  const openSidebar = useCallback((content: SidebarContent) => {
     setSidebarContent(content);
     setSidebarOpen(true);
-  };
+  }, []);
 
-  const updateSidebarContent = (updates: Partial<SidebarContent>) => {
-    setSidebarContent((current) => {
-      if (current) {
-        return { ...current, ...updates } as SidebarContent;
-      }
-      return current;
-    });
-  };
+  const updateSidebarContent = useCallback(
+    (updates: Partial<SidebarContent>) => {
+      setSidebarContent((current) => {
+        if (current) {
+          return { ...current, ...updates } as SidebarContent;
+        }
+        return current;
+      });
+    },
+    [],
+  );
 
-  const closeSidebar = () => {
+  const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
     setSidebarContent(null);
-  };
+  }, []);
 
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
