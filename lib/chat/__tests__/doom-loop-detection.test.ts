@@ -6,6 +6,7 @@ import {
   DOOM_LOOP_WARNING_THRESHOLD,
   DOOM_LOOP_HALT_THRESHOLD,
   EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD,
+  EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD,
 } from "../doom-loop-detection";
 
 function makeStep(toolCalls: Array<{ toolName: string; input: unknown }>) {
@@ -127,6 +128,109 @@ describe("detectDoomLoop", () => {
     expect(result.activeToolExclusions).toEqual(["todo_write"]);
   });
 
+  it("returns a terminal-specific warning after repeated empty run_terminal_cmd calls", () => {
+    const step = makeStep([{ toolName: "run_terminal_cmd", input: {} }]);
+    const steps = Array(EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD).fill(
+      step,
+    );
+
+    const result = detectDoomLoop(steps);
+
+    expect(result).toMatchObject({
+      severity: "warning",
+      reason: "empty_run_terminal_cmd_input",
+      toolNames: ["run_terminal_cmd"],
+      consecutiveCount: EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD,
+      activeToolExclusions: ["run_terminal_cmd"],
+    });
+  });
+
+  it("treats missing run_terminal_cmd input as empty for recovery", () => {
+    const step = makeStep([{ toolName: "run_terminal_cmd", input: undefined }]);
+    const steps = Array(EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD).fill(
+      step,
+    );
+
+    const result = detectDoomLoop(steps);
+
+    expect(result.reason).toBe("empty_run_terminal_cmd_input");
+    expect(result.activeToolExclusions).toEqual(["run_terminal_cmd"]);
+  });
+
+  it("warns after repeated empty run_terminal_cmd calls even with valid commands between them", () => {
+    const result = detectDoomLoop([
+      makeStep([{ toolName: "run_terminal_cmd", input: {} }]),
+      makeStep([
+        {
+          toolName: "run_terminal_cmd",
+          input: { command: "curl -I https://example.com" },
+        },
+      ]),
+      makeStep([{ toolName: "run_terminal_cmd", input: {} }]),
+    ]);
+
+    expect(result).toMatchObject({
+      severity: "warning",
+      reason: "empty_run_terminal_cmd_input",
+      toolNames: ["run_terminal_cmd"],
+      activeToolExclusions: ["run_terminal_cmd"],
+    });
+  });
+
+  it("does not reapply terminal recovery after the latest command is valid", () => {
+    const result = detectDoomLoop([
+      makeStep([{ toolName: "run_terminal_cmd", input: {} }]),
+      makeStep([{ toolName: "run_terminal_cmd", input: undefined }]),
+      makeStep([{ toolName: "run_terminal_cmd", input: { command: "true" } }]),
+    ]);
+
+    expect(result.severity).toBe("none");
+  });
+
+  it("counts empty run_terminal_cmd calls in mixed tool-call steps", () => {
+    const result = detectDoomLoop([
+      makeStep([
+        { toolName: "read_file", input: { path: "/tmp/a" } },
+        { toolName: "run_terminal_cmd", input: {} },
+      ]),
+      makeStep([
+        { toolName: "list_dir", input: { path: "/tmp" } },
+        { toolName: "run_terminal_cmd", input: undefined },
+      ]),
+    ]);
+
+    expect(result).toMatchObject({
+      severity: "warning",
+      reason: "empty_run_terminal_cmd_input",
+      activeToolExclusions: ["run_terminal_cmd"],
+    });
+  });
+
+  it("does not warn for old empty run_terminal_cmd calls outside the recent window", () => {
+    const oldEmpty = makeStep([{ toolName: "run_terminal_cmd", input: {} }]);
+    const valid = makeStep([
+      { toolName: "run_terminal_cmd", input: { command: "true" } },
+    ]);
+    const recentEmpty = makeStep([
+      { toolName: "run_terminal_cmd", input: undefined },
+    ]);
+
+    const result = detectDoomLoop([
+      oldEmpty,
+      valid,
+      valid,
+      valid,
+      valid,
+      valid,
+      valid,
+      valid,
+      valid,
+      recentEmpty,
+    ]);
+
+    expect(result.severity).toBe("none");
+  });
+
   it("does not apply todo recovery to other empty tool calls", () => {
     const step = makeStep([{ toolName: "list_notes", input: {} }]);
     const steps = Array(EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD).fill(step);
@@ -161,6 +265,17 @@ describe("detectDoomLoop", () => {
     expect(result.severity).toBe("halt");
     expect(result.reason).toBe("empty_todo_write_input");
     expect(result.activeToolExclusions).toEqual(["todo_write"]);
+  });
+
+  it("still halts after enough repeated empty run_terminal_cmd calls", () => {
+    const step = makeStep([{ toolName: "run_terminal_cmd", input: {} }]);
+    const steps = Array(DOOM_LOOP_HALT_THRESHOLD).fill(step);
+
+    const result = detectDoomLoop(steps);
+
+    expect(result.severity).toBe("halt");
+    expect(result.reason).toBe("empty_run_terminal_cmd_input");
+    expect(result.activeToolExclusions).toEqual(["run_terminal_cmd"]);
   });
 
   it("returns halt above halt threshold", () => {
@@ -282,5 +397,20 @@ describe("generateDoomLoopNudge", () => {
     expect(nudge).toContain("[TODO UPDATE SKIPPED]");
     expect(nudge).toContain("todo_write is unavailable");
     expect(nudge).toContain("merge and todos");
+  });
+
+  it("gives specific recovery guidance for empty run_terminal_cmd calls", () => {
+    const nudge = generateDoomLoopNudge({
+      severity: "warning",
+      toolNames: ["run_terminal_cmd"],
+      consecutiveCount: 2,
+      reason: "empty_run_terminal_cmd_input",
+      activeToolExclusions: ["run_terminal_cmd"],
+    });
+
+    expect(nudge).toContain("[COMMAND SKIPPED]");
+    expect(nudge).toContain("In the recent steps");
+    expect(nudge).toContain("run_terminal_cmd is unavailable");
+    expect(nudge).toContain("required command field");
   });
 });

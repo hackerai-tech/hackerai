@@ -107,8 +107,9 @@ In using these tools, adhere to the following guidelines:
       command: z.string().describe("The shell command to execute"),
       brief: z
         .string()
+        .optional()
         .describe(
-          "A one-sentence preamble describing the purpose of this operation",
+          "Optional one-sentence preamble describing the purpose of this operation",
         ),
       is_background: z
         .boolean()
