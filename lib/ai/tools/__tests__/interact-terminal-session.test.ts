@@ -160,7 +160,6 @@ function makeContext(opts: {
       const sb = s as { jupyterUrl?: unknown; pty?: unknown };
       return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
     },
-    guardrailsConfig: undefined,
     caidoEnabled: false,
   } as unknown as import("@/types").ToolContext;
 
@@ -259,7 +258,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls.length).toBe(before);
   });
 
-  test("send blocks guardrail-matched destructive input", async () => {
+  test("send forwards destructive-looking input", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
 
@@ -274,34 +273,10 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       input: "rm -rf /\n",
     })) as { result: { error?: string } };
 
-    expect(result.result.error).toMatch(/Input blocked by security guardrail/);
-    expect(handle.sendInputCalls.length).toBe(before);
-  });
-
-  test("send blocks destructive input assembled across split sends", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const handle = makeFakeHandle();
-
-    const { context } = makeContext({ sandbox: e2b });
-    const sessionId = await createSession(context, handle);
-
-    const tool = createInteractTerminalSession(context);
-    const first = (await runTool(tool, {
-      action: "send",
-      session: sessionId,
-      input: "rm -",
-    })) as { result: { error?: string } };
-    expect(first.result.error).toBeUndefined();
-
-    const beforeBlockedChunk = handle.sendInputCalls.length;
-    const result = (await runTool(tool, {
-      action: "send",
-      session: sessionId,
-      input: "rf /\n",
-    })) as { result: { error?: string } };
-
-    expect(result.result.error).toMatch(/Input blocked by security guardrail/);
-    expect(handle.sendInputCalls.length).toBe(beforeBlockedChunk);
+    expect(result.result.error).toBeUndefined();
+    expect(new TextDecoder().decode(handle.sendInputCalls[before])).toBe(
+      "rm -rf /\r",
+    );
   });
 
   test("send translates tmux key names and passes raw text verbatim", async () => {
