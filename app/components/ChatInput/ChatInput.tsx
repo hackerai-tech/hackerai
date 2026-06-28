@@ -73,6 +73,13 @@ const draftAttachmentToUploadedFile = (
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
+
+    if (typeof attachment.generatedTextContent === "string") {
+      uploadedFile.generatedTextAttachment = {
+        id: attachment.generatedTextAttachmentId || attachment.fileId,
+        content: attachment.generatedTextContent,
+      };
+    }
   }
 
   return uploadedFile;
@@ -91,9 +98,13 @@ const uploadedFileToDraftAttachment = (
     return null;
   }
 
+  const generatedTextAttachment = uploadedFile.generatedTextAttachment;
+  const isGeneratedPastedText =
+    uploadedFile.generatedSource === "pasted-text" ||
+    Boolean(generatedTextAttachment);
+
   return {
-    kind:
-      uploadedFile.generatedSource === "pasted-text" ? "pasted-text" : "file",
+    kind: isGeneratedPastedText ? "pasted-text" : "file",
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     mediaType: uploadedFile.file.type || "application/octet-stream",
@@ -102,6 +113,13 @@ const uploadedFileToDraftAttachment = (
     timestamp: isBrowserFile(uploadedFile.file)
       ? Date.now()
       : uploadedFile.file.lastModified,
+    ...(generatedTextAttachment
+      ? {
+          generatedSource: "pasted-text" as const,
+          generatedTextAttachmentId: generatedTextAttachment.id,
+          generatedTextContent: generatedTextAttachment.content,
+        }
+      : {}),
   };
 };
 
