@@ -110,6 +110,20 @@ export function getShellDisplayCommand(
   return input?.command || input?.brief || "";
 }
 
+export function isToolInputValidationError(errorText?: string): boolean {
+  if (!errorText) return false;
+  return (
+    errorText.includes("Invalid input for tool") ||
+    errorText.includes("Type validation failed")
+  );
+}
+
+export function getTerminalFailureAction(errorText?: string): string {
+  return isToolInputValidationError(errorText)
+    ? "Invalid command"
+    : "Command failed";
+}
+
 // ---------------------------------------------------------------------------
 // Display input — format raw send input for display
 // ---------------------------------------------------------------------------
@@ -316,11 +330,14 @@ export function computeShellTerminalBlock(
 
   const shellAction = isShellTool ? shellInput?.action : undefined;
   const isInteractiveAction = isInteractiveShellAction(shellAction);
+  const errorDisplayCommand = errorText
+    ? getTerminalFailureAction(errorText)
+    : "";
 
   const displayCommand = isShellTool
     ? getShellDisplayCommand(shellInput) ||
-      (isInteractiveAction ? shellAction || "" : "")
-    : legacyCommand || "";
+      (isInteractiveAction ? shellAction || "" : errorDisplayCommand)
+    : legacyCommand || errorDisplayCommand;
   const displayTarget = isShellTool
     ? getShellDisplayTarget(shellInput) || displayCommand
     : displayCommand;
@@ -336,15 +353,17 @@ export function computeShellTerminalBlock(
     ((isShellTool && isInteractiveAction) ||
       (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
-    useBriefOnly
-      ? briefText
-      : getShellActionLabel({
-          isShellTool,
-          action: shellAction,
-          isActive,
-          interactive: !isShellTool ? legacyInteractive : undefined,
-          isBackground: !isShellTool ? legacyIsBackground : undefined,
-        });
+    !isActive && errorText
+      ? getTerminalFailureAction(errorText)
+      : useBriefOnly
+        ? briefText
+        : getShellActionLabel({
+            isShellTool,
+            action: shellAction,
+            isActive,
+            interactive: !isShellTool ? legacyInteractive : undefined,
+            isBackground: !isShellTool ? legacyIsBackground : undefined,
+          });
   const blockTarget = useBriefOnly ? undefined : displayTarget;
 
   // sessionSnapshot is xterm-headless-cleaned — prefer it when present; fall

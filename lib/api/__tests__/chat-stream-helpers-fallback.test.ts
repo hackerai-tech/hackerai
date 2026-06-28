@@ -220,7 +220,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("allows a scoped reasoning override for the free Ask experiment", () => {
+  it("allows a scoped reasoning override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",

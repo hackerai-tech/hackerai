@@ -13,9 +13,14 @@
 export const DOOM_LOOP_WARNING_THRESHOLD = 3;
 export const DOOM_LOOP_HALT_THRESHOLD = 5;
 export const EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD = 2;
+export const EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD = 2;
+const EMPTY_RUN_TERMINAL_CMD_INPUT_WINDOW = 8;
 
 export type DoomLoopSeverity = "none" | "warning" | "halt";
-export type DoomLoopReason = "repeated_tool_call" | "empty_todo_write_input";
+export type DoomLoopReason =
+  | "repeated_tool_call"
+  | "empty_todo_write_input"
+  | "empty_run_terminal_cmd_input";
 
 export interface DoomLoopResult {
   severity: DoomLoopSeverity;
@@ -54,18 +59,61 @@ function isEmptyToolInput(input: unknown): boolean {
   return Object.keys(input as Record<string, unknown>).length === 0;
 }
 
-function isEmptyTodoWriteStep(step: MinimalStep | undefined): boolean {
+function isEmptySingleToolStep(
+  step: MinimalStep | undefined,
+  toolName: string,
+): boolean {
   if (!step?.toolCalls || step.toolCalls.length !== 1) return false;
   const [toolCall] = step.toolCalls;
-  return toolCall.toolName === "todo_write" && isEmptyToolInput(toolCall.input);
+  return isEmptyToolCall(toolCall, toolName);
 }
 
-function getTrailingEmptyTodoWriteCount(steps: MinimalStep[]): number {
+function isEmptyToolCall(
+  toolCall: MinimalToolCall | undefined,
+  toolName: string,
+): boolean {
+  return toolCall?.toolName === toolName && isEmptyToolInput(toolCall.input);
+}
+
+function getTrailingEmptySingleToolCount(
+  steps: MinimalStep[],
+  toolName: string,
+): number {
   let count = 0;
 
   for (let i = steps.length - 1; i >= 0; i--) {
-    if (!isEmptyTodoWriteStep(steps[i])) break;
+    if (!isEmptySingleToolStep(steps[i], toolName)) break;
     count++;
+  }
+
+  return count;
+}
+
+function getRecentEmptySingleToolCount(
+  steps: MinimalStep[],
+  toolName: string,
+  windowSize: number,
+): number {
+  let count = 0;
+
+  for (const step of steps.slice(-windowSize)) {
+    if (isEmptySingleToolStep(step, toolName)) count++;
+  }
+
+  return count;
+}
+
+function getRecentEmptyToolCallCount(
+  steps: MinimalStep[],
+  toolName: string,
+  windowSize: number,
+): number {
+  let count = 0;
+
+  for (const step of steps.slice(-windowSize)) {
+    for (const toolCall of step.toolCalls ?? []) {
+      if (isEmptyToolCall(toolCall, toolName)) count++;
+    }
   }
 
   return count;
@@ -101,7 +149,10 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
     consecutiveCount: 0,
   };
 
-  const emptyTodoWriteCount = getTrailingEmptyTodoWriteCount(steps);
+  const emptyTodoWriteCount = getTrailingEmptySingleToolCount(
+    steps,
+    "todo_write",
+  );
   if (emptyTodoWriteCount >= EMPTY_TODO_WRITE_INPUT_WARNING_THRESHOLD) {
     return {
       severity:
@@ -110,6 +161,34 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
       consecutiveCount: emptyTodoWriteCount,
       reason: "empty_todo_write_input",
       activeToolExclusions: ["todo_write"],
+    };
+  }
+
+  const lastStepHasEmptyRunTerminalCmd =
+    steps
+      .at(-1)
+      ?.toolCalls?.some((toolCall) =>
+        isEmptyToolCall(toolCall, "run_terminal_cmd"),
+      ) ?? false;
+
+  const emptyRunTerminalCmdCount = getRecentEmptyToolCallCount(
+    steps,
+    "run_terminal_cmd",
+    EMPTY_RUN_TERMINAL_CMD_INPUT_WINDOW,
+  );
+  if (
+    lastStepHasEmptyRunTerminalCmd &&
+    emptyRunTerminalCmdCount >= EMPTY_RUN_TERMINAL_CMD_INPUT_WARNING_THRESHOLD
+  ) {
+    return {
+      severity:
+        emptyRunTerminalCmdCount >= DOOM_LOOP_HALT_THRESHOLD
+          ? "halt"
+          : "warning",
+      toolNames: ["run_terminal_cmd"],
+      consecutiveCount: emptyRunTerminalCmdCount,
+      reason: "empty_run_terminal_cmd_input",
+      activeToolExclusions: ["run_terminal_cmd"],
     };
   }
 
@@ -162,6 +241,14 @@ export function generateDoomLoopNudge(result: DoomLoopResult): string {
       `[TODO UPDATE SKIPPED] The last ${result.consecutiveCount} todo_write calls had empty arguments, so todo_write is unavailable for this step. ` +
       `Do NOT call todo_write again now. Continue the user's task with the current plan and other tools. ` +
       `Only try todo_write later if you can provide both top-level fields: merge and todos.`
+    );
+  }
+
+  if (result.reason === "empty_run_terminal_cmd_input") {
+    return (
+      `[COMMAND SKIPPED] In the recent steps, ${result.consecutiveCount} run_terminal_cmd calls had empty arguments, so run_terminal_cmd is unavailable for this step. ` +
+      `Do NOT call run_terminal_cmd again now. Continue with other tools, or explain the blocker if a terminal command is required. ` +
+      `Only try run_terminal_cmd later if you can provide the required command field.`
     );
   }
 

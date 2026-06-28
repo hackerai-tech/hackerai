@@ -182,13 +182,13 @@ describe("agent-long-transport — direct UI stream reader", () => {
   });
 });
 
-describe("agent stream runner — empty todo_write recovery", () => {
-  test("temporarily excludes todo_write when the doom-loop detector requests it", () => {
+describe("agent stream runner — empty tool-input recovery", () => {
+  test("temporarily excludes tools when the doom-loop detector requests it", () => {
     expect(agentStreamRunnerSrc).toMatch(/activeToolExclusions/);
     expect(agentStreamRunnerSrc).toMatch(/getActiveToolsWithExclusions/);
     expect(agentStreamRunnerSrc).toMatch(/getActiveToolsForRecovery/);
     expect(agentStreamRunnerSrc).toMatch(
-      /event:\s*"empty_todo_write_loop_recovery"/,
+      /event:\s*"doom_loop_tool_exclusion_recovery"/,
     );
 
     const recoveryIdx = agentStreamRunnerSrc.indexOf(

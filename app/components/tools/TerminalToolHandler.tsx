@@ -7,6 +7,7 @@ import { isSidebarTerminal } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import {
   computeShellTerminalBlock,
+  getTerminalFailureAction,
   getShellDisplayCommand,
   getStreamingTerminalOutput,
   type ShellToolInput,
@@ -170,9 +171,13 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={isStoppedByUser ? "Stopped command" : blockAction(false)}
+          action={
+            isStoppedByUser
+              ? "Stopped command"
+              : getTerminalFailureAction(errorText)
+          }
           target={blockTarget}
-          isClickable
+          isClickable={!!sidebarContent}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />

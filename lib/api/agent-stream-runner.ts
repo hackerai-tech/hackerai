@@ -425,7 +425,7 @@ export async function createAgentStream(
     if (loopCheck.activeToolExclusions?.length) {
       recovery.excludedTools = new Set(loopCheck.activeToolExclusions);
       console.warn("[doom-loop] Applying active tool exclusions", {
-        event: "empty_todo_write_loop_recovery",
+        event: "doom_loop_tool_exclusion_recovery",
         chatId: ctx.chatId,
         modelName,
         requestedModel: requestedSlug,
