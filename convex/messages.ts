@@ -11,6 +11,10 @@ import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
+import {
+  assertUserCanAccessChatHistory,
+  isUserBlockedByActiveFraudDispute,
+} from "./lib/suspensionGuards";
 
 /**
  * Extract text content from message parts for search and display
@@ -456,10 +460,18 @@ async function ensureChatWritableForMessageInsert(
   ctx: MutationCtx,
   chatId: string,
   userId: string,
+  role: "user" | "assistant" | "system",
 ): Promise<void> {
   const chat = await loadOwnedChat(ctx, chatId, userId);
 
   if (chat.canceled_at !== undefined) {
+    if (role === "user") {
+      await ctx.db.patch(chat._id, {
+        canceled_at: undefined,
+      });
+      return;
+    }
+
     throw new ConvexError({
       code: "CHAT_CANCELED",
       message: "This chat is no longer accepting new messages",
@@ -635,7 +647,12 @@ export const saveMessage = mutation({
         }
 
         failureStage = "verify_chat_writable_for_insert";
-        await ensureChatWritableForMessageInsert(ctx, args.chatId, args.userId);
+        await ensureChatWritableForMessageInsert(
+          ctx,
+          args.chatId,
+          args.userId,
+          args.role,
+        );
       }
 
       let newMessageFiles: Doc<"files">[] = [];
@@ -864,6 +881,7 @@ export const getMessagesByChatId = query({
     page: v.array(
       v.object({
         id: v.string(),
+        chat_id: v.string(),
         role: v.union(
           v.literal("user"),
           v.literal("assistant"),
@@ -910,6 +928,7 @@ export const getMessagesByChatId = query({
         continueCursor: "",
       };
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       await ctx.runQuery(internal.messages.verifyChatOwnership, {
@@ -989,6 +1008,7 @@ export const getMessagesByChatId = query({
 
         enhancedMessages.push({
           id: message.id,
+          chat_id: message.chat_id,
           role: message.role,
           parts: message.parts,
           created_at: message._creationTime,
@@ -1064,6 +1084,7 @@ export const saveAssistantMessage = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Deduplicate by message id to avoid duplicates when stop is clicked multiple times
@@ -1145,6 +1166,7 @@ export const deleteLastAssistantMessage = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       // Walk backwards from newest message and collect the entire trailing chain:
@@ -1438,6 +1460,7 @@ export const searchMessages = query({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     const searchQuery = args.searchQuery.trim().replace(/\s+/g, " ");
     const MIN_SEARCH_QUERY_LENGTH = 3;
@@ -1697,6 +1720,7 @@ export const branchChat = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       const message = await ctx.db
@@ -1833,6 +1857,7 @@ export const regenerateWithNewContent = mutation({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
       const message = await ctx.db
@@ -2056,6 +2081,9 @@ export const getSharedMessages = query({
       if (!chat || !chat.share_id || !chat.share_date) {
         return [];
       }
+      if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
+        return [];
+      }
 
       // Read the chat's messages via the existing per-chat index, then apply
       // the frozen-share cutoff locally to avoid a production-wide backfill.
@@ -2141,6 +2169,7 @@ export const getPreviewMessages = query({
     if (!identity) {
       return [];
     }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
 
     try {
       const chat = await ctx.db

@@ -8,25 +8,24 @@ test.describe("Free Tier Simple Chat Tests", () => {
   test.use({ storageState: AUTH_STORAGE_PATHS.free });
 
   test("should handle multiple messages in conversation", async ({ page }) => {
+    test.setTimeout(TIMEOUTS.AGENT_LONG);
+
     const chat = await setupChat(page);
     const sidebar = new SidebarComponent(page);
 
     await sendAndWaitForResponse(
       chat,
       TEST_DATA.MESSAGES.MATH_SIMPLE,
-      TIMEOUTS.MEDIUM,
+      TIMEOUTS.LONG,
     );
+    await chat.expectMessageContains("4", TIMEOUTS.LONG);
 
     await sendAndWaitForResponse(
       chat,
       TEST_DATA.MESSAGES.MATH_NEXT,
-      TIMEOUTS.MEDIUM,
+      TIMEOUTS.LONG,
     );
-
-    await expect(async () => {
-      const messageCount = await chat.getMessageCount();
-      expect(messageCount).toBeGreaterThanOrEqual(4);
-    }).toPass({ timeout: TIMEOUTS.MEDIUM });
+    await chat.expectMessageContains("6", TIMEOUTS.LONG);
 
     // Ensure sidebar is expanded to see chat items
     await sidebar.expandIfCollapsed();

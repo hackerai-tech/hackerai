@@ -36,7 +36,7 @@ describe("ModelSelector tier ↔ provider drift", () => {
       "model-deepseek-v4-pro",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-kimi-k2.7-code",
+      "model-minimax-m3",
     );
   });
 

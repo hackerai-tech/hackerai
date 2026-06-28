@@ -29,6 +29,7 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
@@ -43,6 +44,10 @@ import {
   isPaidMonthlyCapHitReason,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
+import {
+  getFreeAskReasoningExperimentProperties,
+  type FreeAskReasoningExperimentAssignment,
+} from "@/lib/experiments/free-ask-reasoning";
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -90,7 +95,18 @@ function posthogProviderException(
   details: Record<string, unknown>,
 ): Error {
   const message = getProviderDiagnosticMessage(details);
-  if (!(error instanceof Error)) return new Error(message);
+  if (!(error instanceof Error)) {
+    const enriched = new Error(message);
+    const errorName = details.errorName;
+    if (
+      typeof errorName === "string" &&
+      errorName.length > 0 &&
+      errorName !== "UnknownError"
+    ) {
+      enriched.name = errorName;
+    }
+    return enriched;
+  }
   if (message === "Provider streaming error" || message === error.message) {
     return error;
   }
@@ -109,6 +125,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "db_error_name",
   "db_error_message",
   "db_error_code",
+  "db_cause_error_code",
   "db_failure_stage",
   "finish_reason",
   "message_role",
@@ -213,6 +230,31 @@ const providerErrorMessage = (category: ProviderErrorCategory): string =>
         ? "Provider stream timeout"
         : "Provider streaming error";
 
+const SYNTHETIC_SSE_JSON_ERROR_MESSAGE = "JSON error injected into SSE stream";
+
+const providerCategoryDiagnosticMessage = (
+  category: ProviderErrorCategory,
+  statusCode?: number,
+): string => {
+  const suffix = statusCode ? ` (${statusCode})` : "";
+  switch (category) {
+    case "rate_limited":
+      return `Provider rate limited${suffix}`;
+    case "content_blocked":
+      return `Provider content blocked${suffix}`;
+    case "provider_5xx":
+      return `Provider server error${suffix}`;
+    case "provider_4xx":
+      return `Provider request rejected${suffix}`;
+    case "stream_terminated":
+      return "Provider stream terminated";
+    case "timeout":
+      return "Provider stream timeout";
+    case "unknown":
+      return "Provider streaming error";
+  }
+};
+
 const providerWideErrorType = (
   category: ProviderErrorCategory | undefined,
 ): string => {
@@ -226,14 +268,29 @@ const providerWideErrorType = (
 const getProviderDiagnosticMessage = (
   details: Record<string, unknown>,
 ): string => {
-  for (const key of [
-    "providerRawError",
-    "providerErrorMessage",
-    "errorMessage",
-  ] as const) {
+  for (const key of ["providerRawError", "providerErrorMessage"] as const) {
     const value = details[key];
     if (typeof value === "string" && value.length > 0 && value !== "undefined")
       return value;
+  }
+
+  const errorMessage = details.errorMessage;
+  if (
+    typeof errorMessage === "string" &&
+    errorMessage.length > 0 &&
+    errorMessage !== "undefined"
+  ) {
+    if (errorMessage !== SYNTHETIC_SSE_JSON_ERROR_MESSAGE) {
+      return errorMessage;
+    }
+
+    const category = getProviderErrorCategory(details);
+    if (category !== "unknown") {
+      return providerCategoryDiagnosticMessage(
+        category,
+        getProviderStatusCode(details),
+      );
+    }
   }
 
   return "Provider streaming error";
@@ -257,6 +314,130 @@ const nonEmptyString = (value: unknown): string | undefined =>
 const getModelProviderSlug = (modelSlug: string | undefined) =>
   modelSlug?.includes("/") ? modelSlug.split("/", 1)[0] : undefined;
 
+type ExtraUsageTelemetryContext = {
+  enabled?: boolean;
+  hasBalance?: boolean;
+  balanceDollars?: number;
+  monthlyCapDollars?: number;
+  monthlySpentDollars?: number;
+  monthlyRemainingDollars?: number;
+  autoReloadEnabled?: boolean;
+};
+
+const numberMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+};
+
+const booleanMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): boolean | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
+};
+
+const extraUsageTelemetryFromConfig = (
+  extraUsageConfig: ExtraUsageConfig | undefined,
+): ExtraUsageTelemetryContext | undefined =>
+  extraUsageConfig
+    ? {
+        enabled: extraUsageConfig.enabled,
+        hasBalance: extraUsageConfig.hasBalance,
+        balanceDollars: extraUsageConfig.balanceDollars,
+        monthlyCapDollars: extraUsageConfig.monthlyCapDollars,
+        monthlySpentDollars: extraUsageConfig.monthlySpentDollars,
+        monthlyRemainingDollars: extraUsageConfig.monthlyRemainingDollars,
+        autoReloadEnabled: extraUsageConfig.autoReloadEnabled,
+      }
+    : undefined;
+
+const extraUsageTelemetryFromMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): ExtraUsageTelemetryContext | undefined => {
+  const enabled = booleanMetadata(metadata, "extraUsageEnabled");
+  const hasBalance = booleanMetadata(metadata, "extraUsageHasBalance");
+  const autoReloadEnabled = booleanMetadata(
+    metadata,
+    "extraUsageAutoReloadEnabled",
+  );
+  const balanceDollars = numberMetadata(metadata, "extraUsageBalanceDollars");
+  const monthlyCapDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlyCapDollars",
+  );
+  const monthlySpentDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlySpentDollars",
+  );
+  const monthlyRemainingDollars = numberMetadata(
+    metadata,
+    "extraUsageMonthlyRemainingDollars",
+  );
+
+  if (
+    enabled === undefined &&
+    hasBalance === undefined &&
+    autoReloadEnabled === undefined &&
+    balanceDollars === undefined &&
+    monthlyCapDollars === undefined &&
+    monthlySpentDollars === undefined &&
+    monthlyRemainingDollars === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled,
+    hasBalance,
+    balanceDollars,
+    monthlyCapDollars,
+    monthlySpentDollars,
+    monthlyRemainingDollars,
+    autoReloadEnabled,
+  };
+};
+
+const getAgentBillingStopReason = (
+  capReason: LimitCapReason,
+  extraUsage: ExtraUsageTelemetryContext | undefined,
+):
+  | "monthly_included_exhausted"
+  | "extra_usage_balance_empty"
+  | "extra_usage_balance_insufficient"
+  | "monthly_extra_usage_spending_cap_hit"
+  | "auto_reload_failed"
+  | "billing_unavailable"
+  | "team_extra_usage_guardrail"
+  | "unknown" => {
+  if (capReason === "extra_usage_cap") {
+    return "monthly_extra_usage_spending_cap_hit";
+  }
+  if (capReason === "auto_reload_failed") return "auto_reload_failed";
+  if (capReason === "billing_unavailable") return "billing_unavailable";
+  if (
+    capReason === "team_member_cap" ||
+    capReason === "team_member_disabled" ||
+    capReason === "team_pool_disabled"
+  ) {
+    return "team_extra_usage_guardrail";
+  }
+  if (capReason === "monthly_exhausted") {
+    if (extraUsage?.enabled && !extraUsage.autoReloadEnabled) {
+      return (extraUsage.balanceDollars ?? 0) > 0
+        ? "extra_usage_balance_insufficient"
+        : "extra_usage_balance_empty";
+    }
+    return "monthly_included_exhausted";
+  }
+  return "unknown";
+};
+
 /**
  * Creates a chat logger instance for tracking wide events
  */
@@ -270,6 +451,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
   let subscription: string | undefined;
   let mode: ChatMode | undefined;
   let monthlyRemainingPercent: number | undefined;
+  let extraUsageTelemetry: ExtraUsageTelemetryContext | undefined;
   let lastProviderErrorCategory: ProviderErrorCategory | undefined;
   let lastProviderErrorStatusCode: number | undefined;
 
@@ -317,6 +499,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         freeRemaining:
           context.subscription === "free" ? context.remaining : undefined,
       });
+      extraUsageTelemetry = extraUsageTelemetryFromConfig(extraUsageConfig);
     },
 
     /**
@@ -469,6 +652,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
+      const diagnosticMessage = getProviderDiagnosticMessage(details);
       const providerName = nonEmptyString(details.providerName);
       const configuredModel =
         nonEmptyString(providerContext.model) ??
@@ -503,6 +687,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_diagnostic_message: diagnosticMessage,
+        ...(providerStatusCode && { provider_status_code: providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
@@ -525,6 +711,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        providerDiagnosticMessage: diagnosticMessage,
+        ...(providerStatusCode && { providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
       };
@@ -543,7 +731,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         statusCode: providerStatusCode,
         url: details.providerUrl as string | undefined,
         reason: (error as { reason?: string })?.reason,
-        message: getProviderDiagnosticMessage(details),
+        message: diagnosticMessage,
         retriable:
           typeof details.isRetryable === "boolean"
             ? details.isRetryable
@@ -622,6 +810,9 @@ export function createChatLogger(config: ChatLoggerConfig) {
           typeof error.metadata.paidDailyFreeAllowance === "object"
             ? (error.metadata.paidDailyFreeAllowance as Record<string, unknown>)
             : undefined;
+        const rateLimitExtraUsageTelemetry =
+          extraUsageTelemetry ??
+          extraUsageTelemetryFromMetadata(error.metadata);
 
         phLogger.event(
           PAID_FUNNEL_EVENTS.limitHit,
@@ -661,6 +852,45 @@ export function createChatLogger(config: ChatLoggerConfig) {
             },
           }),
         );
+
+        if (mode === "agent" && subscription !== "free") {
+          phLogger.event("agent_billing_stop", {
+            userId,
+            user_id: userId,
+            subscription,
+            subscription_tier: subscription,
+            mode,
+            endpoint: config.endpoint,
+            chat_id: config.chatId,
+            cap_reason: capReason,
+            limit_type: pressure.limitType,
+            billing_stop_reason: getAgentBillingStopReason(
+              capReason,
+              rateLimitExtraUsageTelemetry,
+            ),
+            mid_stream: false,
+            monthly_remaining_percent: monthlyRemainingPercent,
+            reset_timestamp: resetTimestamp,
+            cost_guardrail: pressure.costGuardrail,
+            add_credit_available: pressure.addCreditAvailable,
+            primary_cta: pressure.primaryCta,
+            eligible_ctas: pressure.eligibleCtas,
+            extra_usage_enabled: rateLimitExtraUsageTelemetry?.enabled,
+            extra_usage_has_balance: rateLimitExtraUsageTelemetry?.hasBalance,
+            extra_usage_balance_dollars:
+              rateLimitExtraUsageTelemetry?.balanceDollars,
+            extra_usage_auto_reload_enabled:
+              rateLimitExtraUsageTelemetry?.autoReloadEnabled,
+            extra_usage_monthly_remaining_dollars:
+              rateLimitExtraUsageTelemetry?.monthlyRemainingDollars,
+            monthly_spending_cap_remaining_dollars:
+              rateLimitExtraUsageTelemetry?.monthlyRemainingDollars,
+            $set: {
+              subscription_tier: subscription,
+              last_agent_billing_stop_at: new Date().toISOString(),
+            },
+          });
+        }
       }
 
       // Fire a discrete PostHog event when a paid user is blocked at the
@@ -754,6 +984,89 @@ export function createChatLogger(config: ChatLoggerConfig) {
 
 export type ChatLogger = ReturnType<typeof createChatLogger>;
 
+export function captureAgentBudgetAbort({
+  posthog,
+  userId,
+  subscription,
+  chatId,
+  endpoint,
+  mode,
+  selectedModel,
+  selectedModelOverride,
+  configuredModelId,
+  responseModel,
+  isAutoContinue,
+  details,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  subscription: string;
+  chatId: string;
+  endpoint: "/api/chat" | "/api/agent-long";
+  mode: ChatMode;
+  selectedModel: string;
+  selectedModelOverride?: string;
+  configuredModelId?: string;
+  responseModel?: string;
+  isAutoContinue?: boolean;
+  details: BudgetAbortDetails & { model?: string };
+}) {
+  if (mode !== "agent") return;
+
+  const properties = {
+    user_id: userId,
+    subscription,
+    subscription_tier: subscription,
+    chat_id: chatId,
+    endpoint,
+    mode,
+    model: selectedModel,
+    selected_model: selectedModel,
+    selected_model_override: selectedModelOverride,
+    configured_model: configuredModelId,
+    response_model: responseModel,
+    active_model: details.model,
+    is_auto_continue: isAutoContinue === true,
+    cap_reason: details.capReason,
+    billing_stop_reason: details.billingStopReason,
+    mid_stream: true,
+    projected_cost_dollars: details.projectedCostDollars,
+    overflow_dollars: details.overflowDollars,
+    monthly_limit_dollars: details.monthlyLimitDollars,
+    monthly_remaining_dollars_at_start: details.monthlyRemainingDollarsAtStart,
+    extra_usage_enabled: details.extraUsageEnabled,
+    extra_usage_has_balance: details.extraUsageHasBalance,
+    extra_usage_balance_dollars: details.extraUsageBalanceDollars,
+    extra_usage_auto_reload_enabled: details.extraUsageAutoReloadEnabled,
+    extra_usage_monthly_remaining_dollars:
+      details.extraUsageMonthlyRemainingDollars,
+    monthly_spending_cap_remaining_dollars:
+      details.extraUsageMonthlyRemainingDollars,
+    extra_usage_available: details.extraUsageAvailable,
+    $set: {
+      subscription_tier: subscription,
+      last_agent_billing_stop_at: new Date().toISOString(),
+    },
+  };
+
+  posthog?.capture({
+    distinctId: userId,
+    event: "agent_mid_stream_budget_aborted",
+    properties,
+  });
+
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "agent_mid_stream_budget_aborted",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      ...properties,
+      $set: undefined,
+    }),
+  );
+}
+
 /**
  * Capture aggregated tool usage to PostHog at end of request.
  * One event is emitted per tool to keep analytics useful while
@@ -814,6 +1127,8 @@ type AgentCompletionAnalyticsArgs = {
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
+  finishReason?: string;
+  budgetAbortDetails?: BudgetAbortDetails;
 };
 
 export function captureAgentRun({
@@ -823,6 +1138,8 @@ export function captureAgentRun({
   subscription,
   sandboxInfo,
   outcome,
+  finishReason,
+  budgetAbortDetails,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -830,6 +1147,8 @@ export function captureAgentRun({
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  finishReason?: string;
+  budgetAbortDetails?: BudgetAbortDetails;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -843,6 +1162,12 @@ export function captureAgentRun({
       ...(sandboxInfo?.type && {
         sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
+      }),
+      ...(finishReason && { finish_reason: finishReason }),
+      ...(budgetAbortDetails && {
+        budget_abort_cap_reason: budgetAbortDetails.capReason,
+        budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
+        budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
     },
   });
@@ -911,6 +1236,8 @@ export function captureAgentCompletionAnalytics(
     subscription,
     sandboxInfo,
     outcome,
+    finishReason: args.finishReason,
+    budgetAbortDetails: args.budgetAbortDetails,
   });
   captureFreeAgentValueReached(args);
 }
@@ -930,6 +1257,7 @@ export function captureUsageCost({
   mode,
   usage,
   paidDailyFreeAllowance,
+  freeAskReasoningExperiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -946,6 +1274,7 @@ export function captureUsageCost({
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
+  freeAskReasoningExperiment?: FreeAskReasoningExperimentAssignment | null;
 }) {
   if (!posthog) return;
   posthog.capture({
@@ -974,6 +1303,9 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(freeAskReasoningExperiment && {
+        ...getFreeAskReasoningExperimentProperties(freeAskReasoningExperiment),
+      }),
       ...(paidDailyFreeAllowance?.active && {
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,

@@ -159,6 +159,9 @@ export function createFileMessagePartFromUploadedFile(
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
     storage: "s3",
+    ...(uploadedFile.generatedSource
+      ? { generatedSource: uploadedFile.generatedSource }
+      : {}),
   };
 }
 

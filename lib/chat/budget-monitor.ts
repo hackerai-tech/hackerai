@@ -31,12 +31,43 @@ export interface BudgetSnapshot {
   monthlyLimitPoints: number;
   monthlyRemainingAtStart: number;
   monthlyResetTime: Date;
+  extraUsageEnabledAtStart: boolean;
+  extraUsageHasBalanceAtStart: boolean;
   extraUsageBalanceAtStart: number;
   extraUsageAutoReload: boolean;
   extraUsageMonthlyRemainingAtStart?: number;
   capReasonOnExhaustion?: LimitCapReason;
   extraUsageOverflowAllowed?: boolean;
 }
+
+export type BudgetBillingStopReason =
+  | "monthly_included_exhausted"
+  | "extra_usage_disabled"
+  | "extra_usage_balance_empty"
+  | "extra_usage_balance_insufficient"
+  | "monthly_extra_usage_spending_cap_hit"
+  | "extra_usage_overflow_disabled";
+
+export interface BudgetAbortDetails {
+  capReason: LimitCapReason;
+  billingStopReason: BudgetBillingStopReason;
+  midStream: true;
+  projectedCostDollars: number;
+  overflowDollars: number;
+  monthlyLimitDollars: number;
+  monthlyRemainingDollarsAtStart: number;
+  extraUsageEnabled: boolean;
+  extraUsageHasBalance: boolean;
+  extraUsageBalanceDollars: number;
+  extraUsageAutoReloadEnabled: boolean;
+  extraUsageMonthlyRemainingDollars?: number;
+  extraUsageAvailable: boolean;
+}
+
+export type BudgetCheckDecision =
+  | { type: "continue" }
+  | { type: "abort"; details: BudgetAbortDetails }
+  | { type: "abort-agent-run-spend-cap"; hit: AgentRunSpendCapHit };
 
 /**
  * Captures the per-request budget snapshot used by BudgetMonitor.
@@ -63,6 +94,8 @@ export function captureBudgetSnapshot(args: {
     monthlyLimitPoints,
     monthlyRemainingAtStart: rateLimitInfo.monthly!.remaining,
     monthlyResetTime: monthlyResetTime!,
+    extraUsageEnabledAtStart: extraUsageConfig?.enabled ?? false,
+    extraUsageHasBalanceAtStart: extraUsageConfig?.hasBalance ?? false,
     extraUsageBalanceAtStart: extraUsageConfig?.balanceDollars ?? 0,
     extraUsageAutoReload: extraUsageConfig?.autoReloadEnabled ?? false,
     extraUsageMonthlyRemainingAtStart:
@@ -93,8 +126,8 @@ export function getProAgentRunSpendCap(args: {
  * in chat-handler stays thin.
  *
  * Each call to `checkAfterStep` emits at most one warning (per crossed
- * threshold) and returns "abort" only when the bucket is exhausted with no
- * extra-usage cushion. The caller owns the AbortController.
+ * threshold) and returns an abort decision only when the bucket is exhausted
+ * with no extra-usage cushion. The caller owns the AbortController.
  */
 export class BudgetMonitor {
   private highestThresholdEmitted: number;
@@ -118,9 +151,7 @@ export class BudgetMonitor {
       BUDGET_THRESHOLDS.filter((t) => startUsedPercent >= t).pop() ?? 0;
   }
 
-  checkAfterStep(
-    currentCostDollars: number,
-  ): "continue" | "abort" | "abort-agent-run-spend-cap" {
+  checkAfterStep(currentCostDollars: number): BudgetCheckDecision {
     const { snapshot } = this;
     const usedSinceStartPoints = Math.ceil(
       currentCostDollars * POINTS_PER_DOLLAR,
@@ -157,7 +188,7 @@ export class BudgetMonitor {
         midStream: true,
       });
       this.options.onAgentRunSpendCapHit?.(hit);
-      return "abort-agent-run-spend-cap";
+      return { type: "abort-agent-run-spend-cap", hit };
     }
 
     const projectedUsedPoints =
@@ -167,7 +198,7 @@ export class BudgetMonitor {
     const usedPercent =
       (projectedUsedPoints / snapshot.monthlyLimitPoints) * 100;
 
-    let decision: "continue" | "abort" = "continue";
+    let abortDetails: BudgetAbortDetails | null = null;
 
     for (const threshold of BUDGET_THRESHOLDS) {
       if (usedPercent < threshold) {
@@ -187,6 +218,7 @@ export class BudgetMonitor {
           snapshot.extraUsageBalanceAtStart >= overflowDollars;
         const hasExtraCushion =
           snapshot.extraUsageOverflowAllowed !== false &&
+          snapshot.extraUsageEnabledAtStart &&
           guardrailAllowsOverflow &&
           balanceAllowsOverflow;
 
@@ -211,13 +243,17 @@ export class BudgetMonitor {
               : !guardrailAllowsOverflow
                 ? "extra_usage_cap"
                 : "monthly_exhausted");
+          abortDetails = this.buildAbortDetails({
+            capReason,
+            overflowDollars,
+            projectedUsedPoints,
+          });
           this.emit({
             usedPercent: 100,
             projectedUsedPoints: snapshot.monthlyLimitPoints,
             cutOff: true,
             capReason,
           });
-          decision = "abort";
         }
       } else {
         if (threshold <= this.highestThresholdEmitted) {
@@ -228,7 +264,82 @@ export class BudgetMonitor {
       }
     }
 
-    return decision;
+    return abortDetails
+      ? { type: "abort", details: abortDetails }
+      : { type: "continue" };
+  }
+
+  private buildAbortDetails(args: {
+    capReason: LimitCapReason;
+    overflowDollars: number;
+    projectedUsedPoints: number;
+  }): BudgetAbortDetails {
+    const monthlyLimitDollars =
+      this.snapshot.monthlyLimitPoints / POINTS_PER_DOLLAR;
+    const monthlyRemainingDollarsAtStart =
+      this.snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
+    const extraUsageMonthlyRemainingDollars =
+      this.snapshot.extraUsageMonthlyRemainingAtStart;
+    const extraUsageAvailable =
+      this.snapshot.extraUsageOverflowAllowed !== false &&
+      this.snapshot.extraUsageEnabledAtStart &&
+      (this.snapshot.extraUsageAutoReload ||
+        this.snapshot.extraUsageBalanceAtStart > 0) &&
+      (extraUsageMonthlyRemainingDollars === undefined ||
+        extraUsageMonthlyRemainingDollars > 0);
+
+    return {
+      capReason: args.capReason,
+      billingStopReason: this.getBillingStopReason({
+        capReason: args.capReason,
+        overflowDollars: args.overflowDollars,
+      }),
+      midStream: true,
+      projectedCostDollars:
+        Math.round((args.projectedUsedPoints / POINTS_PER_DOLLAR) * 100) / 100,
+      overflowDollars: Math.round(args.overflowDollars * 100) / 100,
+      monthlyLimitDollars,
+      monthlyRemainingDollarsAtStart:
+        Math.round(monthlyRemainingDollarsAtStart * 100) / 100,
+      extraUsageEnabled: this.snapshot.extraUsageEnabledAtStart,
+      extraUsageHasBalance: this.snapshot.extraUsageHasBalanceAtStart,
+      extraUsageBalanceDollars:
+        Math.round(this.snapshot.extraUsageBalanceAtStart * 100) / 100,
+      extraUsageAutoReloadEnabled: this.snapshot.extraUsageAutoReload,
+      ...(extraUsageMonthlyRemainingDollars !== undefined && {
+        extraUsageMonthlyRemainingDollars:
+          Math.round(extraUsageMonthlyRemainingDollars * 100) / 100,
+      }),
+      extraUsageAvailable,
+    };
+  }
+
+  private getBillingStopReason(args: {
+    capReason: LimitCapReason;
+    overflowDollars: number;
+  }): BudgetBillingStopReason {
+    if (this.snapshot.extraUsageOverflowAllowed === false) {
+      return "extra_usage_overflow_disabled";
+    }
+    if (args.capReason === "extra_usage_cap") {
+      return "monthly_extra_usage_spending_cap_hit";
+    }
+    if (!this.snapshot.extraUsageEnabledAtStart) {
+      return "extra_usage_disabled";
+    }
+    if (
+      !this.snapshot.extraUsageAutoReload &&
+      this.snapshot.extraUsageBalanceAtStart <= 0
+    ) {
+      return "extra_usage_balance_empty";
+    }
+    if (
+      !this.snapshot.extraUsageAutoReload &&
+      this.snapshot.extraUsageBalanceAtStart < args.overflowDollars
+    ) {
+      return "extra_usage_balance_insufficient";
+    }
+    return "monthly_included_exhausted";
   }
 
   private emit(args: {

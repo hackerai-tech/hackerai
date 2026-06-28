@@ -60,7 +60,8 @@ export async function POST(req: NextRequest) {
       isAutoContinue?: boolean;
     } = await req.json();
 
-    const { userId, subscription, organizationId } = await getUserIDAndPro(req);
+    const { userId, subscription, organizationId, freeQuotaSubject } =
+      await getUserIDAndPro(req);
     let selectedModelOverride: SelectedModel | undefined =
       normalizeSelectedModelOverrideForSubscription(
         coerceSelectedModel(rawSelectedModel ?? null),
@@ -211,6 +212,7 @@ export async function POST(req: NextRequest) {
         userId,
         subscription,
         organizationId,
+        freeQuotaSubject,
         messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],

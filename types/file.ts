@@ -7,6 +7,7 @@ export interface FileMessagePart {
   name: string;
   size: number;
   storage?: "s3" | "local-desktop";
+  generatedSource?: "pasted-text";
   localAttachmentId?: string;
   /**
    * Transient source path for desktop-local agent attachments.
@@ -31,6 +32,7 @@ export interface UploadedFileState {
   uploaded: boolean;
   error?: string;
   storage?: "s3" | "local-desktop";
+  generatedSource?: "pasted-text";
   localAttachmentId?: string;
   localPath?: string;
   fileId?: string; // Database file ID for backend operations

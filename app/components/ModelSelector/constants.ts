@@ -16,7 +16,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
-    poweredBy: "DeepSeek V4 Pro · Gemini 3.5 Flash for images and PDFs",
+    poweredBy: "DeepSeek V4 Pro · Grok 4.3 for images and PDFs",
   },
   {
     id: "hackerai-pro",
@@ -37,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "Moonshot Kimi K2.7 Code",
+    poweredBy: "MiniMax M3",
     thinking: true,
   },
   {

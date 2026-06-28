@@ -217,6 +217,10 @@ export const FileUploadPreview = ({
             {filePreviews.map((filePreview, index) => {
               const uploadedFile = uploadedFiles[index];
               const generatedText = uploadedFile?.generatedTextAttachment;
+              const isGeneratedPastedText = Boolean(
+                generatedText ||
+                uploadedFile?.generatedSource === "pasted-text",
+              );
               const canEditGeneratedText = Boolean(
                 generatedText && onUpdateGeneratedTextFile,
               );
@@ -231,7 +235,7 @@ export const FileUploadPreview = ({
                     className={`relative overflow-hidden border rounded-2xl ${
                       filePreview.error
                         ? "border-red-500 border-2 bg-red-50 dark:bg-red-950/20"
-                        : generatedText
+                        : isGeneratedPastedText
                           ? "bg-input-chat border-border/80"
                           : isImageFile(filePreview.file)
                             ? "bg-background"
@@ -251,7 +255,7 @@ export const FileUploadPreview = ({
                         <div className="h-full w-full flex items-center justify-center bg-muted">
                           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-foreground"></div>
                         </div>
-                      ) : generatedText ? (
+                      ) : isGeneratedPastedText ? (
                         <button
                           type="button"
                           className="block w-72 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-2xl"
@@ -286,6 +290,11 @@ export const FileUploadPreview = ({
                               >
                                 {filePreview.error ? (
                                   "Upload failed"
+                                ) : !canEditGeneratedText ? (
+                                  <>
+                                    Text ·{" "}
+                                    {formatFileSize(filePreview.file.size)}
+                                  </>
                                 ) : (
                                   <>
                                     <span className="group-hover:hidden group-focus-within:hidden">

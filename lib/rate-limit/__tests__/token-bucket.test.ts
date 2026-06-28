@@ -409,13 +409,24 @@ describe("token-bucket", () => {
       ).toBe(11310);
     });
 
-    it.each(["ask-model", "model-gemini-3-flash"])(
-      "should use Gemini 3.5 Flash pricing for %s ($1.50/$9.00)",
+    it.each(["agent-model", "model-minimax-m3"])(
+      "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
       (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(19500);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(117000);
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(3900);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(15600);
       },
     );
+
+    it.each([
+      "ask-model",
+      "model-grok-4.3",
+      "model-gemini-3-flash",
+      "fallback-gemini-3.5-flash",
+      "fallback-grok-4.3",
+    ])("should use Grok 4.3 pricing for %s ($1.25/$2.50)", (modelName) => {
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(16250);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(32500);
+    });
 
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;

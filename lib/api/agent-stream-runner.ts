@@ -74,9 +74,15 @@ import {
 } from "@/lib/api/openrouter-metadata";
 import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
-import type { BudgetMonitor } from "@/lib/chat/budget-monitor";
+import type {
+  BudgetAbortDetails,
+  BudgetMonitor,
+} from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
-import type { SummarizationTracker } from "@/lib/api/chat-stream-helpers";
+import type {
+  ProviderReasoningOverride,
+  SummarizationTracker,
+} from "@/lib/api/chat-stream-helpers";
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
@@ -109,6 +115,7 @@ export type AgentStreamState = {
   stoppedDueToDoomLoop: boolean;
   stoppedDueToBudgetExhaustion: boolean;
   stoppedDueToAgentRunSpendCap: boolean;
+  budgetAbortDetails: BudgetAbortDetails | undefined;
 };
 
 export function initAgentStreamState(
@@ -129,6 +136,7 @@ export function initAgentStreamState(
     stoppedDueToDoomLoop: false,
     stoppedDueToBudgetExhaustion: false,
     stoppedDueToAgentRunSpendCap: false,
+    budgetAbortDetails: undefined,
   };
 }
 
@@ -289,6 +297,7 @@ export type AgentStreamContext = {
   currentSystemPrompt: string;
   tools: ToolSet;
   mode: ChatMode;
+  endpoint: "/api/chat" | "/api/agent-long";
   userId: string;
   subscription: SubscriptionTier;
   chatId: string;
@@ -306,6 +315,10 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
+  providerReasoningOverride?: {
+    modelName: string;
+    reasoning: ProviderReasoningOverride;
+  };
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
 
@@ -323,6 +336,7 @@ export type AgentStreamContext = {
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
+  onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -341,27 +355,99 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
-  const getActiveTools = async (): Promise<
-    Array<keyof typeof ctx.tools> | undefined
-  > => {
+  const getActiveToolsWithExclusions = async (
+    excludedToolNames: ReadonlySet<string> = new Set(),
+  ): Promise<Array<keyof typeof ctx.tools> | undefined> => {
+    const hasExclusions = excludedToolNames.size > 0;
+    const withoutExcludedTools = (toolName: string) =>
+      !excludedToolNames.has(toolName);
     let supportsPty: boolean | undefined;
     try {
       supportsPty = await ctx.sandboxManager.supportsInteractivePty?.();
     } catch (error) {
       console.warn("[agent-stream] PTY capability probe failed:", error);
-      return undefined;
+      return hasExclusions
+        ? (Object.keys(ctx.tools).filter(withoutExcludedTools) as Array<
+            keyof typeof ctx.tools
+          >)
+        : undefined;
     }
     if (supportsPty !== false) {
-      return undefined;
+      return hasExclusions
+        ? (Object.keys(ctx.tools).filter(withoutExcludedTools) as Array<
+            keyof typeof ctx.tools
+          >)
+        : undefined;
     }
 
     return Object.keys(ctx.tools).filter(
-      (toolName) => toolName !== "interact_terminal_session",
+      (toolName) =>
+        toolName !== "interact_terminal_session" &&
+        withoutExcludedTools(toolName),
     ) as Array<keyof typeof ctx.tools>;
   };
-  const initialActiveTools = await getActiveTools();
+  const getActiveTools = async (): Promise<
+    Array<keyof typeof ctx.tools> | undefined
+  > => getActiveToolsWithExclusions();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+
+  type DoomLoopRecovery = {
+    nudge?: string;
+    excludedTools?: ReadonlySet<string>;
+  };
+
+  const getDoomLoopRecovery = (
+    steps: unknown[],
+    stepNumber: number,
+  ): DoomLoopRecovery => {
+    const loopCheck = detectDoomLoop(
+      steps as Parameters<typeof detectDoomLoop>[0],
+    );
+
+    if (loopCheck.severity === "none") {
+      return {};
+    }
+
+    console.log(
+      `[doom-loop] severity=${loopCheck.severity} reason=${loopCheck.reason ?? "unknown"} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${stepNumber}`,
+    );
+
+    if (loopCheck.severity !== "warning") {
+      return {};
+    }
+
+    const recovery: DoomLoopRecovery = {
+      nudge: generateDoomLoopNudge(loopCheck),
+    };
+    console.log("[doom-loop] Injecting nudge as last user message");
+
+    if (loopCheck.activeToolExclusions?.length) {
+      recovery.excludedTools = new Set(loopCheck.activeToolExclusions);
+      console.warn("[doom-loop] Applying active tool exclusions", {
+        event: "empty_todo_write_loop_recovery",
+        chatId: ctx.chatId,
+        modelName,
+        requestedModel: requestedSlug,
+        responseModel: state.responseModel,
+        reason: loopCheck.reason,
+        consecutiveCount: loopCheck.consecutiveCount,
+        rawInput: {},
+        excludedTools: loopCheck.activeToolExclusions,
+      });
+    }
+
+    return recovery;
+  };
+
+  const getActiveToolsForRecovery = async (
+    recovery: DoomLoopRecovery,
+  ): Promise<Array<keyof typeof ctx.tools> | undefined> =>
+    recovery.excludedTools && recovery.excludedTools.size > 0
+      ? getActiveToolsWithExclusions(recovery.excludedTools)
+      : getActiveTools();
+
+  const initialActiveTools = await getActiveTools();
   const maxOutputTokens =
     ctx.subscription === "free"
       ? FREE_MAX_OUTPUT_TOKENS
@@ -377,6 +463,9 @@ export async function createAgentStream(
       ctx.mode,
       {
         hasMultimodalToolResults: streamHasImageViewResults,
+        ...(ctx.providerReasoningOverride?.modelName === modelName && {
+          reasoningOverride: ctx.providerReasoningOverride.reasoning,
+        }),
       },
     );
   const prepareProviderMessages = (
@@ -464,6 +553,8 @@ export async function createAgentStream(
           streamHasImageViewResults = true;
         }
 
+        const loopRecovery = getDoomLoopRecovery(steps, steps.length);
+
         if (!ctx.temporary && !ctx.summarizationTracker.hasSummarized) {
           const providerPromptPressure = getProviderPromptPressure(messages);
           const result = await runSummarizationStep({
@@ -499,12 +590,22 @@ export async function createAgentStream(
               state.ctxUsage = result.contextUsage;
             }
             state.transcriptSourceMessages = undefined;
-            const activeTools = await getActiveTools();
+            const activeTools = await getActiveToolsForRecovery(loopRecovery);
             const providerOptions = getStepProviderOptions();
-            const preparedMessages = prepareProviderMessages(
-              await convertToModelMessages(result.summarizedMessages, {
+            let summarizedModelMessages = await convertToModelMessages(
+              result.summarizedMessages,
+              {
                 tools: createPromptSerializationTools(ctx.tools),
-              }),
+              },
+            );
+            if (loopRecovery.nudge) {
+              summarizedModelMessages = [
+                ...summarizedModelMessages,
+                { role: "user", content: loopRecovery.nudge },
+              ];
+            }
+            const preparedMessages = prepareProviderMessages(
+              summarizedModelMessages,
             );
             recordProviderRequestDiagnostics({
               stepIndex: steps.length + 1,
@@ -532,24 +633,14 @@ export async function createAgentStream(
           noteInjectionOpts: ctx.noteInjectionOpts,
         });
 
-        const loopCheck = detectDoomLoop(
-          steps as unknown as Parameters<typeof detectDoomLoop>[0],
-        );
-        if (loopCheck.severity !== "none") {
-          console.log(
-            `[doom-loop] severity=${loopCheck.severity} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${steps.length}`,
-          );
-          if (loopCheck.severity === "warning") {
-            const nudge = generateDoomLoopNudge(loopCheck);
-            console.log("[doom-loop] Injecting nudge as last user message");
-            updatedMessages = [
-              ...updatedMessages,
-              { role: "user", content: nudge },
-            ] as typeof updatedMessages;
-          }
+        if (loopRecovery.nudge) {
+          updatedMessages = [
+            ...updatedMessages,
+            { role: "user", content: loopRecovery.nudge },
+          ] as typeof updatedMessages;
         }
 
-        const activeTools = await getActiveTools();
+        const activeTools = await getActiveToolsForRecovery(loopRecovery);
         const providerOptions = getStepProviderOptions();
         const preparedMessages = prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(
@@ -630,12 +721,18 @@ export async function createAgentStream(
       const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
         ctx.usageTracker.computeCostDollars(modelName),
       );
-      if (budgetDecision === "abort-agent-run-spend-cap") {
+      if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
         ctx.abortController.abort();
-      } else if (budgetDecision === "abort") {
+      } else if (budgetDecision?.type === "abort") {
         state.stoppedDueToBudgetExhaustion = true;
+        state.budgetAbortDetails = budgetDecision.details;
         ctx.abortController.abort();
+        try {
+          ctx.onBudgetAbort?.({ ...budgetDecision.details, model: modelName });
+        } catch (error) {
+          console.error("[agent-stream] onBudgetAbort failed:", error);
+        }
       }
     },
 

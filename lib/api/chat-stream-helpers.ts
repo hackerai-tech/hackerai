@@ -25,7 +25,6 @@ import type {
 import {
   isAnthropicModel,
   isDeepSeekModel,
-  isGeminiModel,
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
@@ -466,9 +465,9 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper Kimi fallback
- * while the run is text-only, then switch to multimodal-capable fallbacks once
- * image tool results enter the context.
+ * this fallback can fire. Claude agent calls use the cheaper MiniMax and Kimi
+ * fallback chain while the run is text-only, then switch to multimodal-capable
+ * fallbacks once image tool results enter the context.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -479,9 +478,11 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model-free": ["fallback-agent-model"],
   "model-deepseek-v4-flash": ["fallback-ask-model"],
   "model-deepseek-v4-pro": ["fallback-ask-model"],
-  "ask-model": ["fallback-grok-4.3"],
-  "agent-model": ["fallback-grok-4.3"],
-  "model-gemini-3-flash": ["fallback-grok-4.3"],
+  "ask-model": ["fallback-ask-model"],
+  "agent-model": ["model-kimi-k2.6", "fallback-grok-4.3"],
+  "model-grok-4.3": ["fallback-ask-model"],
+  "model-gemini-3-flash": ["fallback-ask-model"],
+  "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -509,19 +510,26 @@ export function isAutoModelSelectionForRetry({
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-kimi-k2.7-code", "fallback-grok-4.3"],
-    ask: ["model-gemini-3-flash"],
+    agent: ["model-minimax-m3", "model-kimi-k2.6", "fallback-grok-4.3"],
+    ask: ["model-grok-4.3"],
   };
 
 const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
-  "fallback-gemini-3.5-flash",
   "fallback-grok-4.3",
 ] as const satisfies readonly ModelName[];
 
-const ASK_MEDIUM_REASONING_MODELS = [
-  "ask-model",
-  "model-gemini-3-flash",
+// Standard Ask can route text-only prompts to DeepSeek and media prompts to
+// Grok. Keep those route keys and their persisted Grok alias on one effort
+// level so they do not drift.
+const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
+  "ask-model",
+  "model-grok-4.3",
+  "model-gemini-3-flash",
+] as const satisfies readonly ModelName[];
+
+const ASK_MEDIUM_REASONING_MODELS = [
+  ...ASK_STANDARD_REASONING_MODELS,
   "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -541,6 +549,13 @@ const isAskKimiReasoningModel = (modelName?: string): boolean =>
 
 type FallbackOptions = {
   hasMultimodalToolResults?: boolean;
+  reasoningOverride?: ProviderReasoningOverride;
+};
+
+export type ProviderReasoningOverride = {
+  enabled: boolean;
+  effort?: string;
+  exclude?: boolean;
 };
 
 const getFallbackKeys = (
@@ -565,8 +580,12 @@ export function getRetryFallbackModel(
   if (isDeepSeekModel(modelName)) {
     return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
   }
-  if (isGeminiModel(modelName)) {
-    return "fallback-grok-4.3";
+  if (
+    modelName === "ask-model" ||
+    modelName === "model-grok-4.3" ||
+    modelName === "model-gemini-3-flash"
+  ) {
+    return "fallback-ask-model";
   }
   return "fallback-grok-4.3";
 }
@@ -614,25 +633,24 @@ export function buildProviderOptions(
 ) {
   const modelId = modelName ? resolveSlug(modelName) : undefined;
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const isGemini35Flash =
-    modelId?.startsWith("google/gemini-3.5-flash") ?? false;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning = isReasoningModel
-    ? {
-        enabled: true,
-        ...(isDeepSeekV4 && { effort: "xhigh" }),
-      }
-    : mode === "ask" && isAskKimiReasoningModel(modelName)
+  const reasoning =
+    options.reasoningOverride ??
+    (isReasoningModel
       ? {
           enabled: true,
+          ...(isDeepSeekV4 && { effort: "xhigh" }),
         }
-      : mode === "ask" && isAskMediumReasoningModel(modelName)
+      : mode === "ask" && isAskKimiReasoningModel(modelName)
         ? {
             enabled: true,
-            effort: isGemini35Flash ? "minimal" : "medium",
-            ...(isGemini35Flash && { exclude: true }),
           }
-        : { enabled: false };
+        : mode === "ask" && isAskMediumReasoningModel(modelName)
+          ? {
+              enabled: true,
+              effort: "medium",
+            }
+          : { enabled: false });
 
   return {
     openrouter: {
@@ -980,24 +998,21 @@ export async function buildExtraUsageConfig(args: {
       return { enabled: true, hasBalance: true, autoReloadEnabled: false };
     }
     if (!state.enabled || state.memberDisabled) return undefined;
-    if (state.balanceDollars > 0 || state.autoReloadEnabled) {
-      return {
-        enabled: true,
-        hasBalance: state.balanceDollars > 0,
-        balanceDollars: state.balanceDollars,
-        autoReloadEnabled: state.autoReloadEnabled,
-        ...(state.monthlyCapDollars !== undefined && {
-          monthlyCapDollars: state.monthlyCapDollars,
-        }),
-        ...(state.monthlySpentDollars !== undefined && {
-          monthlySpentDollars: state.monthlySpentDollars,
-        }),
-        ...(state.monthlyRemainingDollars !== undefined && {
-          monthlyRemainingDollars: state.monthlyRemainingDollars,
-        }),
-      };
-    }
-    return undefined;
+    return {
+      enabled: true,
+      hasBalance: state.balanceDollars > 0,
+      balanceDollars: state.balanceDollars,
+      autoReloadEnabled: state.autoReloadEnabled,
+      ...(state.monthlyCapDollars !== undefined && {
+        monthlyCapDollars: state.monthlyCapDollars,
+      }),
+      ...(state.monthlySpentDollars !== undefined && {
+        monthlySpentDollars: state.monthlySpentDollars,
+      }),
+      ...(state.monthlyRemainingDollars !== undefined && {
+        monthlyRemainingDollars: state.monthlyRemainingDollars,
+      }),
+    };
   }
 
   if (!(userCustomization?.extra_usage_enabled ?? false)) return undefined;
@@ -1011,24 +1026,21 @@ export async function buildExtraUsageConfig(args: {
     return { enabled: true, hasBalance: true, autoReloadEnabled: false };
   }
 
-  if (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled) {
-    return {
-      enabled: true,
-      hasBalance: balanceInfo.balanceDollars > 0,
-      balanceDollars: balanceInfo.balanceDollars,
-      autoReloadEnabled: balanceInfo.autoReloadEnabled,
-      ...(balanceInfo.monthlyCapDollars !== undefined && {
-        monthlyCapDollars: balanceInfo.monthlyCapDollars,
-      }),
-      ...(balanceInfo.monthlySpentDollars !== undefined && {
-        monthlySpentDollars: balanceInfo.monthlySpentDollars,
-      }),
-      ...(balanceInfo.monthlyRemainingDollars !== undefined && {
-        monthlyRemainingDollars: balanceInfo.monthlyRemainingDollars,
-      }),
-    };
-  }
-  return undefined;
+  return {
+    enabled: true,
+    hasBalance: balanceInfo.balanceDollars > 0,
+    balanceDollars: balanceInfo.balanceDollars,
+    autoReloadEnabled: balanceInfo.autoReloadEnabled,
+    ...(balanceInfo.monthlyCapDollars !== undefined && {
+      monthlyCapDollars: balanceInfo.monthlyCapDollars,
+    }),
+    ...(balanceInfo.monthlySpentDollars !== undefined && {
+      monthlySpentDollars: balanceInfo.monthlySpentDollars,
+    }),
+    ...(balanceInfo.monthlyRemainingDollars !== undefined && {
+      monthlyRemainingDollars: balanceInfo.monthlyRemainingDollars,
+    }),
+  };
 }
 
 /**

@@ -101,6 +101,26 @@ describe("getProviderPromptPressure", () => {
     expect(getProviderPromptPressure(messages)).toBeNull();
   });
 
+  it("does not trigger serialized pressure for a single PDF data URL", () => {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "tell me about this pdf" },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            url: `data:application/pdf;base64,${"a".repeat(
+              PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES + 1,
+            )}`,
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(getProviderPromptPressure(messages)).toBeNull();
+  });
+
   it("does not trigger for small prompts", () => {
     const messages = [
       {

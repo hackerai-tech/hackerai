@@ -1,6 +1,11 @@
-import { Page, expect, Locator } from "@playwright/test";
+import { Page, expect, Locator, type Response } from "@playwright/test";
 import path from "path";
 import { TIMEOUTS } from "../constants";
+
+type AssistantMessageSnapshot = {
+  count: number;
+  lastText: string | null;
+};
 
 export class ChatComponent {
   constructor(private page: Page) {}
@@ -29,6 +34,10 @@ export class ChatComponent {
     return this.page.locator(
       '[data-testid="user-message"], [data-testid="assistant-message"]',
     );
+  }
+
+  private get assistantMessages(): Locator {
+    return this.page.getByTestId("assistant-message");
   }
 
   private get streamingIndicator(): Locator {
@@ -75,6 +84,23 @@ export class ChatComponent {
     await this.chatInput.fill(message);
     await expect(this.sendButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.sendButton.click();
+  }
+
+  waitForGenerationResponse(
+    timeout: number = TIMEOUTS.LONG,
+  ): Promise<Response | null> {
+    return this.page
+      .waitForResponse(
+        (response) => {
+          const method = response.request().method();
+          if (method !== "POST") return false;
+
+          const pathname = new URL(response.url()).pathname;
+          return pathname === "/api/chat" || pathname === "/api/agent-long";
+        },
+        { timeout },
+      )
+      .catch(() => null);
   }
 
   async typeMessage(message: string): Promise<void> {
@@ -149,9 +175,44 @@ export class ChatComponent {
       await this.stopButton.waitFor({ state: "hidden", timeout });
     }
 
-    await this.messages
+    await this.messages.last().waitFor({ state: "visible", timeout });
+  }
+
+  async waitForAssistantMessage(
+    timeout: number = TIMEOUTS.MEDIUM,
+  ): Promise<void> {
+    await this.assistantMessages.last().waitFor({ state: "visible", timeout });
+  }
+
+  async getAssistantMessageSnapshot(): Promise<AssistantMessageSnapshot> {
+    const count = await this.assistantMessages.count();
+    if (count === 0) {
+      return { count, lastText: null };
+    }
+
+    const lastText = await this.assistantMessages
       .last()
-      .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
+      .innerText()
+      .catch(() => null);
+    return { count, lastText };
+  }
+
+  async waitForAssistantMessageAfter(
+    snapshot: AssistantMessageSnapshot,
+    timeout: number = TIMEOUTS.MEDIUM,
+  ): Promise<void> {
+    await expect(async () => {
+      const count = await this.assistantMessages.count();
+      expect(count).toBeGreaterThan(0);
+
+      const lastAssistant = this.assistantMessages.last();
+      await expect(lastAssistant).toBeVisible({ timeout: 1000 });
+
+      const lastText = await lastAssistant.innerText();
+      if (count <= snapshot.count && lastText === snapshot.lastText) {
+        throw new Error("Waiting for a new assistant message");
+      }
+    }).toPass({ timeout });
   }
 
   async getMessageCount(
@@ -198,16 +259,19 @@ export class ChatComponent {
   async expectStreamingNotVisible(
     timeout: number = TIMEOUTS.AGENT,
   ): Promise<void> {
-    const stopButtonHidden = await this.stopButton
-      .waitFor({ state: "hidden", timeout })
-      .then(() => true)
-      .catch(() => false);
-    const streamingHidden = await this.streamingIndicator
-      .waitFor({ state: "hidden", timeout })
-      .then(() => true)
-      .catch(() => false);
+    await expect(async () => {
+      const stopButtonVisible = await this.stopButton
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
+      const streamingVisible = await this.streamingIndicator
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
 
-    expect(stopButtonHidden || streamingHidden).toBe(true);
+      expect(stopButtonVisible).toBe(false);
+      expect(streamingVisible).toBe(false);
+    }).toPass({ timeout });
+
+    await expect(this.chatInput).toBeEditable({ timeout: TIMEOUTS.SHORT });
   }
 
   async expectUpgradeDialogVisible(): Promise<void> {

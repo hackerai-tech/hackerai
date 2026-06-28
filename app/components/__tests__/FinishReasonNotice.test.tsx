@@ -128,6 +128,10 @@ describe("FinishReasonNotice", () => {
         finishReason: "context-limit",
         expectedText: "Reached the context limit for this conversation",
       },
+      {
+        finishReason: "budget-exhausted",
+        expectedText: "Stopped at a usage guardrail for this run",
+      },
     ])(
       "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
       ({ finishReason, expectedText }) => {
@@ -276,6 +280,25 @@ describe("FinishReasonNotice", () => {
       fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
       expect(onContinue).toHaveBeenCalledWith(undefined);
+    });
+
+    it("renders a usage guardrail notice without a Continue button for budget exhaustion", () => {
+      const onContinue = jest.fn();
+      renderNotice(
+        {
+          finishReason: "budget-exhausted",
+          mode: "agent",
+          onContinue,
+        },
+        { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+      );
+
+      expect(
+        screen.getByText(/Stopped at a usage guardrail for this run/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeInTheDocument();
     });
   });
 

@@ -9,6 +9,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     userSuspensions: {
       getActiveByUser: "getActiveByUser",
+      getActiveFraudDisputeByUser: "getActiveFraudDisputeByUser",
     },
   },
 }));
@@ -87,5 +88,37 @@ describe("suspensions", () => {
       );
       expect((error as ChatSDKError).cause).not.toContain("dp_secret");
     }
+  });
+
+  it("blocks chat-history access only for fraudulent disputes", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+
+    mockQuery.mockResolvedValueOnce(null as never);
+    await expect(
+      assertUserCanAccessChatHistory("user_123"),
+    ).resolves.toBeUndefined();
+
+    mockQuery.mockResolvedValueOnce({
+      user_id: "user_123",
+      status: "active",
+      category: "dispute_fraudulent",
+      source: "stripe",
+      source_id: "dp_fraud",
+    } as never);
+    await expect(
+      assertUserCanAccessChatHistory("user_123"),
+    ).rejects.toMatchObject({
+      type: "forbidden",
+      surface: "chat",
+      cause: expect.stringContaining("fraudulent payment dispute"),
+      metadata: {
+        suspensionCategory: "dispute_fraudulent",
+        suspensionSource: "stripe",
+      },
+    });
+    expect(mockQuery).toHaveBeenLastCalledWith("getActiveFraudDisputeByUser", {
+      serviceKey: "test-service-key",
+      userId: "user_123",
+    });
   });
 });

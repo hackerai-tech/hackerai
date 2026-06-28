@@ -685,11 +685,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   private curlCaps: {
     retryAllErrors: boolean;
     retryConnrefused: boolean;
+    sslNoRevoke: boolean;
   } | null = null;
 
   private async detectCurlCaps(): Promise<{
     retryAllErrors: boolean;
     retryConnrefused: boolean;
+    sslNoRevoke: boolean;
   }> {
     if (this.curlCaps) return this.curlCaps;
     try {
@@ -700,9 +702,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       this.curlCaps = {
         retryAllErrors: help.includes("--retry-all-errors"),
         retryConnrefused: help.includes("--retry-connrefused"),
+        sslNoRevoke: help.includes("--ssl-no-revoke"),
       };
     } catch {
-      this.curlCaps = { retryAllErrors: false, retryConnrefused: false };
+      this.curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
     }
     return this.curlCaps;
   }
@@ -981,6 +988,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         const caps = await this.detectCurlCaps();
         const curlFlags = [
           "-fsSL",
+          this.isWindows() && caps.sslNoRevoke ? "--ssl-no-revoke" : "",
           "--retry 3",
           "--retry-delay 1",
           caps.retryAllErrors ? "--retry-all-errors" : "",
@@ -1050,11 +1058,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       if (result.exitCode !== 0) {
         // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
         // Fall back to the target's own directory context when the destination
-        // is a drive root and `dir` is empty.
+        // is a drive root and `dir` is empty. Avoid listing directory contents:
+        // this can be a user's local machine in desktop dangerous mode.
         const diagDir = escapedDir || (useBash ? "/" : '"."');
         const diagCmd = useBash
-          ? `ls -la ${diagDir} 2>&1; df -h /tmp 2>&1`
-          : `dir ${diagDir} 2>&1`;
+          ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
+          : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
         throw new Error(
           `Failed to download file: ${result.stderr}\n` +
@@ -1092,10 +1101,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
+      const curlUploadFlags =
+        httpClient === "curl"
+          ? [
+              "-fsSL",
+              this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke
+                ? "--ssl-no-revoke"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ")
+          : "";
 
       const command =
         httpClient === "curl"
-          ? `curl -fsSL -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+          ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
           : `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
 
       const result = await this.commands.run(command, {

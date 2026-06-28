@@ -5,6 +5,7 @@ import { describe, expect, it, jest } from "@jest/globals";
 (globalThis as any).Headers = class Headers {};
 
 const {
+  captureAgentBudgetAbort,
   createChatLogger,
   captureAgentCompletionAnalytics,
   captureAgentRun,
@@ -112,6 +113,67 @@ describe("captureAgentRun", () => {
     });
 
     expect(capture).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureAgentBudgetAbort", () => {
+  it("captures mid-stream Agent budget abort reason and extra-usage state", () => {
+    const capture = jest.fn();
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+
+    try {
+      captureAgentBudgetAbort({
+        posthog: { capture } as any,
+        userId: "user_123",
+        subscription: "ultra",
+        chatId: "chat_123",
+        endpoint: "/api/agent-long",
+        mode: "agent",
+        selectedModel: "agent-model",
+        selectedModelOverride: "hackerai-max",
+        configuredModelId: "anthropic/claude-opus",
+        responseModel: "anthropic/claude-opus",
+        isAutoContinue: true,
+        details: {
+          model: "agent-model",
+          capReason: "extra_usage_cap",
+          billingStopReason: "monthly_extra_usage_spending_cap_hit",
+          midStream: true,
+          projectedCostDollars: 108.42,
+          overflowDollars: 8.42,
+          monthlyLimitDollars: 200,
+          monthlyRemainingDollarsAtStart: 2,
+          extraUsageEnabled: true,
+          extraUsageHasBalance: true,
+          extraUsageBalanceDollars: 50,
+          extraUsageAutoReloadEnabled: false,
+          extraUsageMonthlyRemainingDollars: 0,
+          extraUsageAvailable: false,
+        },
+      });
+
+      expect(capture).toHaveBeenCalledWith({
+        distinctId: "user_123",
+        event: "agent_mid_stream_budget_aborted",
+        properties: expect.objectContaining({
+          chat_id: "chat_123",
+          endpoint: "/api/agent-long",
+          mode: "agent",
+          subscription_tier: "ultra",
+          cap_reason: "extra_usage_cap",
+          billing_stop_reason: "monthly_extra_usage_spending_cap_hit",
+          mid_stream: true,
+          monthly_spending_cap_remaining_dollars: 0,
+          extra_usage_balance_dollars: 50,
+          is_auto_continue: true,
+        }),
+      });
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("agent_mid_stream_budget_aborted"),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });
 
@@ -344,6 +406,63 @@ describe("captureUsageCost", () => {
       }),
     });
   });
+
+  it("attaches free Ask reasoning experiment properties to usage cost", () => {
+    const capture = jest.fn();
+
+    captureUsageCost({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "free",
+      chatId: "chat_123",
+      endpoint: "/api/chat",
+      mode: "ask",
+      usage: {
+        model: "ask-model-free",
+        type: "subscription",
+        inputTokens: 1000,
+        outputTokens: 500,
+        totalTokens: 1500,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costDollars: 0.01,
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: 0,
+        costSource: "provider",
+      },
+      freeAskReasoningExperiment: {
+        experimentKey: "free_ask_deepseek_reasoning_v1",
+        featureFlagKey: "free_ask_deepseek_reasoning_v1",
+        eventVersion: 1,
+        variant: "reasoning_medium",
+        source: "posthog",
+        reasoning: { enabled: true, effort: "medium" },
+      },
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-usage_cost",
+      properties: expect.objectContaining({
+        subscription: "free",
+        mode: "ask",
+        model: "ask-model-free",
+        experiment_key: "free_ask_deepseek_reasoning_v1",
+        feature_flag_key: "free_ask_deepseek_reasoning_v1",
+        variant: "reasoning_medium",
+        experiment_variant: "reasoning_medium",
+        experiment_source: "posthog",
+        experiment_event_version: 1,
+        reasoning_enabled: true,
+        reasoning_effort: "medium",
+        "$feature/free_ask_deepseek_reasoning_v1": "reasoning_medium",
+      }),
+    });
+  });
 });
 
 describe("createChatLogger provider stream termination", () => {
@@ -450,7 +569,7 @@ describe("createChatLogger provider stream termination", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
+        requestedModelSlug: "minimax/minimax-m3",
       });
       chatLogger.emitUnexpectedError(err);
 
@@ -501,8 +620,8 @@ describe("createChatLogger provider stream termination", () => {
         active_tool_count: 12,
         active_tools_mode: "all",
         reasoning_enabled: true,
-        fallback_model_count: 2,
-        fallback_model_slugs: ["google/gemini-3.5-flash", "x-ai/grok-4.3"],
+        fallback_model_count: 1,
+        fallback_model_slugs: ["x-ai/grok-4.3"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };
@@ -670,6 +789,68 @@ describe("createChatLogger provider stream termination", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("normalizes synthetic SSE JSON wrapper errors using provider status", () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_sse_json_wrapper",
+        endpoint: "/api/chat",
+      });
+      const err = {
+        name: "Error",
+        message: "JSON error injected into SSE stream",
+        code: 429,
+      };
+
+      chatLogger.recordProviderError(err, {
+        mode: "ask",
+        model: "ask-model",
+        requestedModelSlug: "x-ai/grok-4.3",
+      });
+      chatLogger.emitUnexpectedError(err);
+
+      const structuredErrorLog = errorSpy.mock.calls
+        .map((call) => call[0])
+        .find(
+          (value) =>
+            typeof value === "string" &&
+            value.includes('"provider_diagnostic_message"'),
+        ) as string | undefined;
+      const posthogErrorCall = errorSpy.mock.calls.find(
+        (call) =>
+          call[0] === "Provider streaming error" &&
+          typeof call[1] === "object" &&
+          call[1] !== null,
+      );
+      const fields = posthogErrorCall?.[1] as
+        | { error?: unknown; providerDiagnosticMessage?: unknown }
+        | undefined;
+      const capturedError = fields?.error as Error | undefined;
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+
+      expect(structuredErrorLog).toContain(
+        '"provider_diagnostic_message":"Provider rate limited (429)"',
+      );
+      expect(structuredErrorLog).toContain('"provider_status_code":429');
+      expect(capturedError).toBeInstanceOf(Error);
+      expect(capturedError?.message).toBe("Provider rate limited (429)");
+      expect(fields?.providerDiagnosticMessage).toBe(
+        "Provider rate limited (429)",
+      );
+      expect(wideEvent.error.message).toBe("Provider rate limited (429)");
+      expect(wideEvent.provider_error).toMatchObject({
+        category: "rate_limited",
+        status_code: 429,
+        message: "Provider rate limited (429)",
+      });
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger ChatSDKError metadata", () => {
@@ -689,6 +870,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
           db_error_name: "ConvexError",
           db_error_message: "[Request ID: abc] Server Error",
           db_error_code: "CHAT_NOT_FOUND",
+          db_cause_error_code: "CHAT_NOT_FOUND",
           db_failure_stage: "verify_chat_ownership",
           db_error_data: {
             code: "MESSAGE_SAVE_FAILED",
@@ -729,6 +911,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
         db_error_name: "ConvexError",
         db_error_message: "[Request ID: abc] Server Error",
         db_error_code: "CHAT_NOT_FOUND",
+        db_cause_error_code: "CHAT_NOT_FOUND",
         db_failure_stage: "verify_chat_ownership",
         parts_size_kb: 551,
         part_count: 288,
@@ -857,6 +1040,67 @@ describe("createChatLogger ChatSDKError metadata", () => {
           eligible_ctas: ["add_credits", "upgrade_plan"],
         }),
       );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          chat_id: "chat_limit",
+          endpoint: "/api/chat",
+          mode: "agent",
+          cap_reason: "monthly_exhausted",
+          billing_stop_reason: "monthly_included_exhausted",
+          mid_stream: false,
+        }),
+      );
+    } finally {
+      eventSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("emits agent billing-stop extra-usage metadata without setRateLimit", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_preflight_empty_extra",
+        endpoint: "/api/agent-long",
+      });
+      chatLogger.setRequestDetails({
+        mode: "agent",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "ultra" });
+
+      chatLogger.emitChatError(
+        new ChatSDKError("rate_limit:chat", "Monthly limit hit", {
+          capReason: "monthly_exhausted",
+          resetTimestamp: 1_800_000_000_000,
+          extraUsageEnabled: true,
+          extraUsageHasBalance: false,
+          extraUsageBalanceDollars: 0,
+          extraUsageAutoReloadEnabled: false,
+          extraUsageMonthlyRemainingDollars: 25,
+        }),
+      );
+
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          chat_id: "chat_preflight_empty_extra",
+          endpoint: "/api/agent-long",
+          mode: "agent",
+          cap_reason: "monthly_exhausted",
+          billing_stop_reason: "extra_usage_balance_empty",
+          extra_usage_enabled: true,
+          extra_usage_has_balance: false,
+          extra_usage_balance_dollars: 0,
+          extra_usage_auto_reload_enabled: false,
+          extra_usage_monthly_remaining_dollars: 25,
+          monthly_spending_cap_remaining_dollars: 25,
+        }),
+      );
     } finally {
       eventSpy.mockRestore();
       logSpy.mockRestore();
@@ -896,6 +1140,14 @@ describe("createChatLogger ChatSDKError metadata", () => {
       expect(eventSpy).not.toHaveBeenCalledWith(
         "monthly_cap_hit",
         expect.anything(),
+      );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "agent_billing_stop",
+        expect.objectContaining({
+          cap_reason: "billing_unavailable",
+          billing_stop_reason: "billing_unavailable",
+          mid_stream: false,
+        }),
       );
     } finally {
       eventSpy.mockRestore();
@@ -980,7 +1232,7 @@ describe("createChatLogger provider stream timeout", () => {
       chatLogger.recordProviderError(err, {
         mode: "agent",
         model: "agent-model",
-        requestedModelSlug: "moonshotai/kimi-k2.7-code:exacto",
+        requestedModelSlug: "minimax/minimax-m3",
       });
       chatLogger.emitUnexpectedError(err);
 

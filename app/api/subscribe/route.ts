@@ -2,6 +2,7 @@ import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name";
+import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
@@ -58,6 +59,7 @@ export const POST = async (req: NextRequest) => {
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
     const orgName = buildWorkOSOrganizationName(user);
+    const freeQuotaSubject = createFreeQuotaSubject(user.email);
     const referralConfig = getReferralRewardConfig();
     const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
 
@@ -74,6 +76,7 @@ export const POST = async (req: NextRequest) => {
             referredUserId: userId,
             referralCode,
             starterBonusUnits: 0,
+            referredIdentityHash: freeQuotaSubject,
             userCreatedAtMs: parseCreatedAtMs(user.createdAt),
             maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
             source: "subscribe_route_referral_cookie",
@@ -242,6 +245,15 @@ export const POST = async (req: NextRequest) => {
           },
           { status: 403 },
         );
+      }
+
+      if (!customer.metadata.workOSOrganizationId) {
+        customer = await stripe.customers.update(customer.id, {
+          metadata: {
+            ...customer.metadata,
+            workOSOrganizationId: organization.id,
+          },
+        });
       }
     }
 

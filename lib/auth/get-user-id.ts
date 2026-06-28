@@ -1,10 +1,19 @@
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier } from "@/types";
+import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
 import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
+
+const getSessionUserEmail = (session: unknown): string | undefined => {
+  if (!session || typeof session !== "object") return undefined;
+  const user = (session as { user?: unknown }).user;
+  if (!user || typeof user !== "object") return undefined;
+  const email = (user as { email?: unknown }).email;
+  return typeof email === "string" ? email : undefined;
+};
 
 /**
  * Get the current user ID from the authenticated session
@@ -48,6 +57,7 @@ export const getUserIDAndPro = async (
   userId: string;
   subscription: SubscriptionTier;
   organizationId?: string;
+  freeQuotaSubject?: string;
 }> => {
   try {
     const { authkit } = await import("@workos-inc/authkit-nextjs");
@@ -64,6 +74,7 @@ export const getUserIDAndPro = async (
       userId: session.user.id,
       subscription,
       organizationId: (session as any).organizationId as string | undefined,
+      freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
     };
   } catch (error) {
     if (error instanceof ChatSDKError) {
@@ -89,6 +100,14 @@ export const getUserIDWithFreshLogin = async (
   req: NextRequest,
   windowMs: number = 10 * 60 * 1000,
 ): Promise<string> => {
+  const { userId } = await getUserIDWithFreshLoginContext(req, windowMs);
+  return userId;
+};
+
+export const getUserIDWithFreshLoginContext = async (
+  req: NextRequest,
+  windowMs: number = 10 * 60 * 1000,
+): Promise<{ userId: string; freeQuotaSubject?: string }> => {
   try {
     const { authkit } = await import("@workos-inc/authkit-nextjs");
     const { session } = await authkit(req);
@@ -111,7 +130,10 @@ export const getUserIDWithFreshLogin = async (
       throw new ChatSDKError("unauthorized:auth", "recent_login_required");
     }
 
-    return session.user.id;
+    return {
+      userId: session.user.id,
+      freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
+    };
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;

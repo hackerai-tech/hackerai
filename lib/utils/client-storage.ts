@@ -9,6 +9,18 @@ export type ConversationDraft = {
   id: string;
   content: string;
   timestamp: number;
+  attachments?: Array<ConversationDraftAttachment>;
+};
+
+export type ConversationDraftAttachment = {
+  kind: "file" | "pasted-text";
+  fileId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  generatedSource?: "pasted-text";
+  tokens?: number;
+  timestamp: number;
 };
 
 export type ConversationDraftStore = {
@@ -19,6 +31,7 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
 
@@ -161,6 +174,46 @@ export const getDraftContentById = (id: string): string | null => {
   return entry ? entry.content : null;
 };
 
+const normalizeDraftAttachments = (
+  attachments: unknown,
+): ConversationDraftAttachment[] => {
+  if (!Array.isArray(attachments)) return [];
+  const cutoff = Date.now() - DRAFT_ATTACHMENT_RESTORE_TTL_MS;
+
+  return attachments.filter(
+    (attachment): attachment is ConversationDraftAttachment => {
+      if (!attachment || typeof attachment !== "object") return false;
+      const value = attachment as Partial<ConversationDraftAttachment>;
+      const validKind = value.kind === "file" || value.kind === "pasted-text";
+
+      return (
+        validKind &&
+        (typeof value.generatedSource === "undefined" ||
+          value.generatedSource === "pasted-text") &&
+        typeof value.fileId === "string" &&
+        value.fileId.length > 0 &&
+        typeof value.name === "string" &&
+        value.name.length > 0 &&
+        typeof value.mediaType === "string" &&
+        typeof value.size === "number" &&
+        typeof value.timestamp === "number" &&
+        value.timestamp > cutoff
+      );
+    },
+  );
+};
+
+export const getDraftAttachmentsById = (
+  id: string,
+): ConversationDraftAttachment[] => {
+  const store = readDraftStore();
+  const entry = store.drafts.find((d) => d.id === id);
+  return normalizeDraftAttachments(entry?.attachments);
+};
+
+export const hasDraftAttachmentsById = (id: string): boolean =>
+  getDraftAttachmentsById(id).length > 0;
+
 export const upsertDraft = (
   id: string,
   content: string,
@@ -168,16 +221,64 @@ export const upsertDraft = (
 ): void => {
   const store = readDraftStore();
   const idx = store.drafts.findIndex((d) => d.id === id);
+  const existing = idx >= 0 ? store.drafts[idx] : undefined;
+  const attachments = normalizeDraftAttachments(existing?.attachments);
   const entry: ConversationDraft = {
     id,
     content,
     timestamp: typeof timestamp === "number" ? timestamp : Date.now(),
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
   if (idx >= 0) {
     store.drafts[idx] = entry;
   } else {
     store.drafts.push(entry);
   }
+  writeDraftStore(store);
+};
+
+export const upsertDraftAttachments = (
+  id: string,
+  attachments: ConversationDraftAttachment[],
+  timestamp?: number,
+): void => {
+  const normalizedAttachments = normalizeDraftAttachments(attachments);
+  const store = readDraftStore();
+  const idx = store.drafts.findIndex((d) => d.id === id);
+  const existing = idx >= 0 ? store.drafts[idx] : undefined;
+  const entry: ConversationDraft = {
+    id,
+    content: existing?.content ?? "",
+    timestamp: typeof timestamp === "number" ? timestamp : Date.now(),
+    ...(normalizedAttachments.length > 0
+      ? { attachments: normalizedAttachments }
+      : {}),
+  };
+
+  if (idx >= 0) {
+    store.drafts[idx] = entry;
+  } else if (entry.content.trim() || normalizedAttachments.length > 0) {
+    store.drafts.push(entry);
+  }
+  writeDraftStore(store);
+};
+
+export const removeDraftAttachments = (id: string): void => {
+  const store = readDraftStore();
+  const idx = store.drafts.findIndex((d) => d.id === id);
+  if (idx < 0) return;
+
+  const existing = store.drafts[idx];
+  if (existing.content.trim()) {
+    store.drafts[idx] = {
+      id: existing.id,
+      content: existing.content,
+      timestamp: Date.now(),
+    };
+  } else {
+    store.drafts.splice(idx, 1);
+  }
+
   writeDraftStore(store);
 };
 

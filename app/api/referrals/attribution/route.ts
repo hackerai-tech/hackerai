@@ -42,7 +42,8 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  const { userId, subscription } = await getUserIDAndPro(req);
+  const { userId, subscription, freeQuotaSubject } = await getUserIDAndPro(req);
+  const freeUsageSubject = freeQuotaSubject ?? userId;
   if (subscription !== "free") {
     const response = NextResponse.json({
       attributed: false,
@@ -60,6 +61,7 @@ export async function POST(req: NextRequest) {
       referredUserId: userId,
       referralCode,
       starterBonusUnits: config.referredSignupBonusUnits,
+      referredIdentityHash: freeQuotaSubject,
       userCreatedAtMs: parseCreatedAtMs(user.createdAt),
       maxUserAgeDays: config.attributionMaxUserAgeDays,
       source: "referral_cookie",
@@ -81,9 +83,9 @@ export async function POST(req: NextRequest) {
   ) {
     try {
       const grant = await grantFreeReferralBonusUnits(
-        userId,
+        freeUsageSubject,
         result.starterBonusUnits,
-        `referral_signup:${userId}`,
+        `referral_signup:${freeUsageSubject}`,
       );
 
       if (grant.granted || grant.alreadyGranted) {

@@ -7,6 +7,7 @@ import { Id } from "@/convex/_generated/dataModel";
 
 export interface MessageRecord {
   id: string;
+  chat_id?: string;
   role: "user" | "assistant" | "system";
   parts: UIMessagePart<any, any>[];
   created_at?: number;

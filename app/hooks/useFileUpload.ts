@@ -103,6 +103,7 @@ const isExpectedFileUploadError = (error: unknown): boolean => {
   return (
     code === "FILE_TOKEN_LIMIT_EXCEEDED" ||
     code === "FILE_UPLOAD_RATE_LIMIT" ||
+    code === "STORAGE_LIMIT_EXCEEDED" ||
     code === "PAID_PLAN_REQUIRED"
   );
 };
@@ -306,6 +307,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       uploadIndex: number,
       options: {
         fallbackLocalFile?: LocalDesktopFile & { path: string };
+        generatedSource?: "pasted-text";
         expectedGeneratedTextAttachment?: {
           id: string;
           lastModified: number;
@@ -319,7 +321,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         if (!expected) return true;
 
         const currentFile = uploadedFilesRef.current[uploadIndex];
-        if (!currentFile) return true;
+        if (!currentFile) return false;
 
         return (
           currentFile.generatedTextAttachment?.id === expected.id &&
@@ -491,7 +493,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Helper function to start file uploads
   const startFileUploads = useCallback(
-    (files: File[]) => {
+    (
+      files: File[],
+      options: {
+        generatedSource?: "pasted-text";
+      } = {},
+    ) => {
       const startingIndex = uploadedFiles.length;
 
       files.forEach((file, index) => {
@@ -500,20 +507,26 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           file,
           uploading: true,
           uploaded: false,
+          storage: "s3",
+          ...(options.generatedSource
+            ? { generatedSource: options.generatedSource }
+            : {}),
         });
 
         // Start upload in background with correct index
-        uploadFileToS3(file, startingIndex + index);
+        uploadFileToS3(file, startingIndex + index, {
+          generatedSource: options.generatedSource,
+        });
       });
     },
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
   );
 
   const processGeneratedPastedText = useCallback(
-    async (content: string) => {
+    async (content: string): Promise<boolean> => {
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
-        return;
+        return false;
       }
 
       const existingUploadedCount = uploadedFiles.length;
@@ -523,7 +536,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         toast.error(
           `Maximum ${maxFilesLimit} files allowed. Please remove some files before adding more.`,
         );
-        return;
+        return false;
       }
 
       const fileName = getGeneratedPasteFileName(uploadedFiles);
@@ -535,7 +548,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
       const validFile = result.validFiles[0];
       if (!validFile) {
-        return;
+        return false;
       }
 
       const generatedUploadedFile: UploadedFileState = {
@@ -543,6 +556,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         uploading: true,
         uploaded: false,
         storage: "s3",
+        generatedSource: "pasted-text",
         generatedTextAttachment: {
           id: attachmentId,
           content,
@@ -556,11 +570,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       addUploadedFile(generatedUploadedFile);
 
       uploadFileToS3(validFile, existingUploadedCount, {
+        generatedSource: "pasted-text",
         expectedGeneratedTextAttachment: {
           id: attachmentId,
           lastModified: validFile.lastModified,
         },
       });
+
+      return true;
     },
     [
       addUploadedFile,
@@ -758,11 +775,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Unified file processing function
   const processFiles = useCallback(
-    async (files: File[], source: FileSource) => {
+    async (
+      files: File[],
+      source: FileSource,
+      options: {
+        generatedSource?: "pasted-text";
+      } = {},
+    ): Promise<boolean> => {
       // Check if user has pro plan for file uploads
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
-        return;
+        return false;
       }
 
       const result = await validateAndFilterFiles(files);
@@ -777,8 +800,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
       // Start uploads for valid files
       if (result.validFiles.length > 0 && hasRemainingSlots) {
-        startFileUploads(result.validFiles);
+        startFileUploads(result.validFiles, options);
+        return true;
       }
+
+      return false;
     },
     [
       subscription,
@@ -855,6 +881,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         uploaded: false,
         error: undefined,
         storage: "s3",
+        generatedSource: "pasted-text",
         fileId: undefined,
         url: undefined,
         tokens: undefined,
@@ -870,6 +897,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       applyUploadedFileUpdate(indexToUpdate, updatedUploadedFile);
 
       uploadFileToS3(nextFile, indexToUpdate, {
+        generatedSource: "pasted-text",
         expectedGeneratedTextAttachment: {
           id: generatedTextAttachment.id,
           lastModified: nextFile.lastModified,
@@ -911,9 +939,23 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     fileInputRef.current?.click();
   };
 
+  const handlePastedTextAttachment = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (!text.trim()) return false;
+
+      const started = await processGeneratedPastedText(text);
+      if (started) {
+        toast.info("Pasted text added as an attachment");
+      }
+      return started;
+    },
+    [processGeneratedPastedText],
+  );
+
   const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
     const items = event.clipboardData?.items;
     const pastedText = getClipboardPlainText(event);
+
     if (
       pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
       !pastedText.trim()
@@ -928,7 +970,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       (!items || Array.from(items).every((item) => item.kind !== "file"))
     ) {
       event.preventDefault();
-      await processGeneratedPastedText(pastedText);
+      await handlePastedTextAttachment(pastedText);
       return true;
     }
 
@@ -1036,6 +1078,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     handleUpdateGeneratedTextFile,
     handleAttachClick,
     handlePasteEvent,
+    handlePastedTextAttachment,
     getUploadedFileMessageParts,
     allFilesUploaded,
     anyFilesUploading,

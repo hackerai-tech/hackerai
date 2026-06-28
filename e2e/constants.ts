@@ -27,6 +27,8 @@ export const TEST_DATA = {
     IMAGE: "e2e/resource/image.png",
     TEXT_FILE: "e2e/resource/secret.txt",
     PDF_FILE: "e2e/resource/secret.pdf",
+    MARKDOWN_FILE: "e2e/resource/secret.md",
+    CSV_FILE: "e2e/resource/secret.csv",
   },
 
   // Expected content in test files
@@ -34,6 +36,9 @@ export const TEST_DATA = {
     TEXT: "bazinga",
     PDF: "hippo",
     IMAGE_CONTENT: "duck",
+    MARKDOWN: "orion",
+    CSV: "violet",
+    AGENT_LARGE: "agent-large-marker",
   },
 
   // Common test messages

@@ -58,6 +58,13 @@ type UploadSandboxFilesOptions = {
   retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
 };
 
+type SandboxAttachmentTagKind = "attachment" | "inline-image";
+
+type CollectSandboxFilesOptions = {
+  allowLocalDesktopFiles?: boolean;
+  getAttachmentTagKind?: (part: any) => SandboxAttachmentTagKind;
+};
+
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 
 const logLocalAttachmentDebug = (
@@ -172,6 +179,27 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
+const formatSandboxAttachmentTag = (
+  sanitizedName: string,
+  localPath: string,
+): string =>
+  `<attachment filename="${sanitizedName}" local_path="${localPath}" />`;
+
+const formatInlineImageAttachmentTag = (
+  sanitizedName: string,
+  localPath: string,
+): string =>
+  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`;
+
+const formatSandboxFileTag = (
+  kind: SandboxAttachmentTagKind,
+  sanitizedName: string,
+  localPath: string,
+): string =>
+  kind === "inline-image"
+    ? formatInlineImageAttachmentTag(sanitizedName, localPath)
+    : formatSandboxAttachmentTag(sanitizedName, localPath);
+
 export const sanitizeFilenameForTerminal = (filename: string): string => {
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
   const lastDotIndex = basename.lastIndexOf(".");
@@ -209,7 +237,7 @@ export const collectSandboxFiles = (
   updatedMessages: UIMessage[],
   sandboxFiles: SandboxFile[],
   uploadBasePath: string = getUploadBasePath(undefined),
-  options: { allowLocalDesktopFiles?: boolean } = {},
+  options: CollectSandboxFilesOptions = {},
 ): void => {
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
@@ -239,9 +267,7 @@ export const collectSandboxFiles = (
             localPath,
           });
         }
-        tags.push(
-          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
-        );
+        tags.push(formatSandboxAttachmentTag(sanitizedName, localPath));
         return;
       }
 
@@ -255,7 +281,11 @@ export const collectSandboxFiles = (
           sandboxFiles.push({ kind: "url", url: part.url, localPath });
         }
         tags.push(
-          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+          formatSandboxFileTag(
+            options.getAttachmentTagKind?.(part) ?? "attachment",
+            sanitizedName,
+            localPath,
+          ),
         );
       }
     });
@@ -363,9 +393,7 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
           localPath,
         });
       }
-      tags.push(
-        `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
-      );
+      tags.push(formatSandboxAttachmentTag(sanitizedName, localPath));
     });
 
     if (tags.length > 0) {

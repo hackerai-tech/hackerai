@@ -1,9 +1,11 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import { ChatSDKError } from "@/lib/errors";
 
 const mockGetUserID = jest.fn();
 const mockGetChatById = jest.fn();
 const mockDeleteChatForBackend = jest.fn();
 const mockRunsCancel = jest.fn();
+const mockAssertUserCanAccessChatHistory = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -46,10 +48,25 @@ jest.mock("@/lib/db/actions", () => ({
   deleteChatForBackend: mockDeleteChatForBackend,
 }));
 
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanAccessChatHistory: mockAssertUserCanAccessChatHistory,
+}));
+
 const request = {} as any;
 const paramsFor = (id = "chat-1") => ({
   params: Promise.resolve({ id }),
 });
+
+function installResponseShim() {
+  (globalThis as any).Response = {
+    json: (body: unknown, init?: ResponseInit) => ({
+      status: init?.status ?? 200,
+      json: async () => body,
+      text: async () =>
+        typeof body === "string" ? body : JSON.stringify(body ?? ""),
+    }),
+  };
+}
 
 const chat = (overrides: Record<string, unknown> = {}) => ({
   id: "chat-1",
@@ -62,9 +79,11 @@ describe("DELETE /api/chat/[id]", () => {
   let errorSpy: jest.SpiedFunction<typeof console.error>;
 
   beforeEach(() => {
+    installResponseShim();
     jest.clearAllMocks();
     errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
+    mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
     mockGetChatById.mockResolvedValue(chat() as never);
     mockRunsCancel.mockResolvedValue(undefined as never);
     mockDeleteChatForBackend.mockResolvedValue(undefined as never);
@@ -132,6 +151,25 @@ describe("DELETE /api/chat/[id]", () => {
     const response = await DELETE(request, paramsFor());
 
     expect(response.status).toBe(403);
+    expect(mockRunsCancel).not.toHaveBeenCalled();
+    expect(mockDeleteChatForBackend).not.toHaveBeenCalled();
+  });
+
+  it("does not delete chats while fraud-dispute chat access is suspended", async () => {
+    const { DELETE } = await import("../route");
+    mockAssertUserCanAccessChatHistory.mockRejectedValue(
+      new ChatSDKError("forbidden:chat", "Fraud dispute hold") as never,
+    );
+
+    const response = await DELETE(request, paramsFor());
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body).toMatchObject({
+      code: "forbidden:chat",
+      cause: "Fraud dispute hold",
+    });
+    expect(mockGetChatById).not.toHaveBeenCalled();
     expect(mockRunsCancel).not.toHaveBeenCalled();
     expect(mockDeleteChatForBackend).not.toHaveBeenCalled();
   });

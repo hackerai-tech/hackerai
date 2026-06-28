@@ -6,6 +6,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   getDraftContentById,
+  hasDraftAttachmentsById,
   upsertDraft,
   removeDraft,
 } from "@/lib/utils/client-storage";
@@ -36,7 +37,8 @@ export function ChatInputTextarea({
   autoFocus = true,
 }: ChatInputTextareaProps) {
   const { input, setInput, subscription } = useGlobalState();
-  const { handlePasteEvent } = useFileUpload(chatMode);
+  const { handlePasteEvent, handlePastedTextAttachment } =
+    useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef(input);
   const prevDraftIdRef = useRef(draftId);
@@ -67,6 +69,8 @@ export function ChatInputTextarea({
     const handle = window.setTimeout(() => {
       if (input.trim()) {
         upsertDraft(draftId, input);
+      } else if (hasDraftAttachmentsById(draftId)) {
+        upsertDraft(draftId, "");
       } else {
         removeDraft(draftId);
       }
@@ -101,6 +105,11 @@ export function ChatInputTextarea({
       });
       if (tokenCount > maxTokens) {
         e.preventDefault();
+        if (subscription !== "free") {
+          await handlePastedTextAttachment(pastedText);
+          return;
+        }
+
         const planText = subscription !== "free" ? "" : " (Free plan limit)";
         toast.error("Content is too long to paste", {
           description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
@@ -110,7 +119,7 @@ export function ChatInputTextarea({
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
-  }, [chatMode, handlePasteEvent, subscription]);
+  }, [chatMode, handlePasteEvent, handlePastedTextAttachment, subscription]);
 
   return (
     <div className="overflow-y-auto pl-4 pr-2">

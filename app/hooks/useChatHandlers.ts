@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
+import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
   getAutoContinueChainAssistantIds,
@@ -113,7 +114,7 @@ export const useChatHandlers = ({
     !file.error &&
     (file.storage === "local-desktop"
       ? !!file.localAttachmentId && !!file.localPath
-      : !!file.url && !!file.fileId);
+      : !!file.fileId);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -239,7 +240,7 @@ export const useChatHandlers = ({
     return normalizedMessages;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
 
     setIsAutoResuming(false);
@@ -250,159 +251,139 @@ export const useChatHandlers = ({
 
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {
-      return;
+      return false;
     }
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
-    if (input.trim() || hasValidFiles) {
-      const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
-      if (uploadedFiles.length > maxFilesLimit) {
-        toast.error("Cannot send files in this mode", {
-          description: `Maximum ${maxFilesLimit} files allowed. Please remove some files or switch modes.`,
-        });
-        return;
-      }
-
-      const currentChatMode = chatModeRef.current;
-      const hasLocalDesktopFiles = uploadedFiles.some(
-        (file) => file.storage === "local-desktop",
-      );
-      if (
-        hasLocalDesktopFiles &&
-        (!isAgentMode(currentChatMode) ||
-          sandboxPreferenceRef.current !== "desktop")
-      ) {
-        toast.error("Local attachments require desktop Agent mode", {
-          description:
-            "Switch back to Agent mode with the desktop sandbox or reattach the file for upload.",
-        });
-        return;
-      }
-
-      // If streaming in Agent mode, check queue behavior
-      if (status === "streaming") {
-        const validFiles = uploadedFiles
-          .filter(isSendableUploadedFile)
-          .map(createFileMessagePartFromUploadedFile)
-          .filter((part): part is NonNullable<typeof part> => part !== null);
-
-        if (queueBehavior === "queue") {
-          // Queue the message - will auto-send after current response completes
-          queueMessage(input, validFiles);
-          clearInput();
-          clearUploadedFiles();
-          return;
-        } else if (queueBehavior === "stop-and-send") {
-          // Immediately stop current stream and send right away
-          stop();
-
-          // Cancel the trigger.dev run for agent-long streams so the prior
-          // run stops burning compute instead of finishing in the background.
-          cancelTriggerRun();
-
-          // Cancel the stream in database and save current message state
-          if (!temporaryChatsEnabledRef.current) {
-            cancelStreamMutation({ chatId }).catch((error) => {
-              console.error("Failed to cancel stream:", error);
-            });
-
-            const lastMessage = messages[messages.length - 1];
-            if (lastMessage && lastMessage.role === "assistant") {
-              saveAssistantMessage({
-                id: lastMessage.id,
-                chatId,
-                role: lastMessage.role,
-                parts: getConvexSafeParts(lastMessage.parts),
-              }).catch((error) => {
-                console.error("Failed to save message on stop:", error);
-              });
-            }
-          } else {
-            // Temporary chats: signal cancel via temp stream coordination
-            cancelTempStreamMutation({ chatId }).catch(() => {});
-          }
-          // Continue to send the new message immediately below (don't return)
-        }
-      }
-      // Check token limit before sending based on user plan
-      const tokenCount = countInputTokens(input, uploadedFiles);
-      const maxTokens = getMaxTokensForSubscription(subscription, {
-        mode: currentChatMode,
-      });
-
-      // Additional validation for Ask mode: ensure files don't exceed Ask mode token limits
-      // This prevents uploading files in Agent mode then switching to Ask mode to send them
-      if (currentChatMode === "ask" && uploadedFiles.length > 0) {
-        const fileTokens = uploadedFiles.reduce(
-          (total, file) => total + (file.tokens || 0),
-          0,
-        );
-        const maxFileTokens = getMaxFileTokens(subscription);
-        if (fileTokens > maxFileTokens) {
-          toast.error("Cannot send files in Ask mode", {
-            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
-          });
-          return;
-        }
-      }
-
-      if (tokenCount > maxTokens) {
-        const hasFiles = uploadedFiles.length > 0;
-        const planText = subscription !== "free" ? "" : " (Free plan limit)";
-        toast.error("Message is too long", {
-          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
-        });
-        return;
-      }
-      if (!isExistingChat && !temporaryChatsEnabledRef.current) {
-        window.history.replaceState({}, "", `/c/${chatId}`);
-      }
-
-      try {
-        // Get file objects from uploaded files - URLs are already resolved in global state
-        const validFiles = uploadedFiles
-          .filter(isSendableUploadedFile)
-          .map(createFileMessagePartFromUploadedFile)
-          .filter((part): part is NonNullable<typeof part> => part !== null);
-
-        sendMessage(
-          {
-            text: input.trim() || undefined,
-            files: validFiles.length > 0 ? validFiles : undefined,
-            metadata: { createdAt: Date.now() },
-          },
-          {
-            body: {
-              mode: currentChatMode,
-              todos,
-              temporary: temporaryChatsEnabled,
-              sandboxPreference,
-
-              selectedModel: requestSelectedModel,
-            },
-          },
-        );
-      } catch (error) {
-        console.error("Failed to process files:", error);
-        // Fallback to text-only message if file processing fails
-        sendMessage(
-          { text: input, metadata: { createdAt: Date.now() } },
-          {
-            body: {
-              mode: currentChatMode,
-              todos,
-              temporary: temporaryChatsEnabled,
-              sandboxPreference,
-
-              selectedModel: requestSelectedModel,
-            },
-          },
-        );
-      }
-
-      clearInput();
-      clearUploadedFiles();
+    if (!input.trim() && !hasValidFiles) {
+      return false;
     }
+
+    const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
+    if (uploadedFiles.length > maxFilesLimit) {
+      toast.error("Cannot send files in this mode", {
+        description: `Maximum ${maxFilesLimit} files allowed. Please remove some files or switch modes.`,
+      });
+      return false;
+    }
+
+    const currentChatMode = chatModeRef.current;
+    const hasLocalDesktopFiles = uploadedFiles.some(
+      (file) => file.storage === "local-desktop",
+    );
+    if (
+      hasLocalDesktopFiles &&
+      (!isAgentMode(currentChatMode) ||
+        sandboxPreferenceRef.current !== "desktop")
+    ) {
+      toast.error("Local attachments require desktop Agent mode", {
+        description:
+          "Switch back to Agent mode with the desktop sandbox or reattach the file for upload.",
+      });
+      return false;
+    }
+
+    // If streaming in Agent mode, check queue behavior
+    if (status === "streaming") {
+      const validFiles = uploadedFiles
+        .filter(isSendableUploadedFile)
+        .map(createFileMessagePartFromUploadedFile)
+        .filter((part): part is NonNullable<typeof part> => part !== null);
+
+      if (queueBehavior === "queue") {
+        // Queue the message - will auto-send after current response completes
+        queueMessage(input, validFiles);
+        clearInput();
+        clearUploadedFiles();
+        return true;
+      } else if (queueBehavior === "stop-and-send") {
+        // Cancel the trigger.dev run for agent-long streams so the prior
+        // run stops burning compute instead of finishing in the background.
+        cancelTriggerRun();
+
+        await stopActiveStream();
+        // Continue to send the new message immediately below (don't return)
+      }
+    }
+    // Check token limit before sending based on user plan
+    const tokenCount = countInputTokens(input, uploadedFiles);
+    const maxTokens = getMaxTokensForSubscription(subscription, {
+      mode: currentChatMode,
+    });
+
+    // Additional validation for Ask mode: ensure files don't exceed Ask mode token limits
+    // This prevents uploading files in Agent mode then switching to Ask mode to send them
+    if (currentChatMode === "ask" && uploadedFiles.length > 0) {
+      const fileTokens = uploadedFiles.reduce(
+        (total, file) => total + (file.tokens || 0),
+        0,
+      );
+      const maxFileTokens = getMaxFileTokens(subscription);
+      if (fileTokens > maxFileTokens) {
+        toast.error("Cannot send files in Ask mode", {
+          description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
+        });
+        return false;
+      }
+    }
+
+    if (tokenCount > maxTokens) {
+      const hasFiles = uploadedFiles.length > 0;
+      const planText = subscription !== "free" ? "" : " (Free plan limit)";
+      toast.error("Message is too long", {
+        description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
+      });
+      return false;
+    }
+    if (!isExistingChat && !temporaryChatsEnabledRef.current) {
+      window.history.replaceState({}, "", `/c/${chatId}`);
+    }
+
+    try {
+      // Get file objects from uploaded files - URLs are already resolved in global state
+      const validFiles = uploadedFiles
+        .filter(isSendableUploadedFile)
+        .map(createFileMessagePartFromUploadedFile)
+        .filter((part): part is NonNullable<typeof part> => part !== null);
+
+      sendMessage(
+        {
+          text: input.trim() || undefined,
+          files: validFiles.length > 0 ? validFiles : undefined,
+          metadata: { createdAt: Date.now() },
+        },
+        {
+          body: {
+            mode: currentChatMode,
+            todos,
+            temporary: temporaryChatsEnabled,
+            sandboxPreference,
+
+            selectedModel: requestSelectedModel,
+          },
+        },
+      );
+    } catch (error) {
+      console.error("Failed to process files:", error);
+      // Fallback to text-only message if file processing fails
+      sendMessage(
+        { text: input, metadata: { createdAt: Date.now() } },
+        {
+          body: {
+            mode: currentChatMode,
+            todos,
+            temporary: temporaryChatsEnabled,
+            sandboxPreference,
+
+            selectedModel: requestSelectedModel,
+          },
+        },
+      );
+    }
+
+    clearInput();
+    clearUploadedFiles();
+    return true;
   };
 
   const handleStop = async () => {
@@ -710,7 +691,10 @@ export const useChatHandlers = ({
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModel;
     sendMessage(
-      { text: "continue", metadata: { isAutoContinue: true } },
+      {
+        text: AUTO_CONTINUE_PROMPT,
+        metadata: { isAutoContinue: true },
+      },
       {
         body: {
           mode: chatModeRef.current,

@@ -23,6 +23,16 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import {
+  logStripeWebhookMissingSignature,
+  logStripeWebhookSignatureVerificationFailed,
+} from "@/lib/billing/stripe-webhook-logging";
+
+const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
+const WEBHOOK_LOG_CONTEXT = {
+  webhook: "subscription",
+  route: "/api/subscription/webhook",
+};
 
 // Linear ranking used to label tier transitions as upgrade/downgrade. Team is
 // pinned at the top because moves between team and individual plans are rare
@@ -123,11 +133,21 @@ function tierFromProductName(name: string): SubscriptionTier | null {
   return null;
 }
 
+type SubscriptionResolution =
+  | {
+      kind: "resolved";
+      tier: SubscriptionTier;
+      subscription: Stripe.Subscription;
+    }
+  | {
+      kind: "legacy_pentestgpt";
+      subscription: Stripe.Subscription;
+    };
+
 /** Resolve subscription tier and object from a Stripe subscription ID. */
-async function resolveSubscription(subscriptionId: string): Promise<{
-  tier: SubscriptionTier;
-  subscription: Stripe.Subscription;
-} | null> {
+async function resolveSubscription(
+  subscriptionId: string,
+): Promise<SubscriptionResolution | null> {
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
       expand: ["items.data.price", "items.data.price.product"],
@@ -136,17 +156,24 @@ async function resolveSubscription(subscriptionId: string): Promise<{
     const price = subscription.items?.data[0]?.price;
     const lookupKey = price?.lookup_key ?? null;
 
-    if (lookupKey) {
-      const tier = planLookupKeyToTier(lookupKey);
-      return tier ? { tier, subscription } : null;
-    }
-
     // Fallback: infer tier from product name or metadata when lookup_key is missing
     const product = price?.product;
     const productObj =
       product && typeof product === "object" && !("deleted" in product)
         ? (product as Stripe.Product)
         : null;
+
+    if (productObj?.name?.toLowerCase().includes("pentestgpt")) {
+      console.info(
+        `[Subscription Webhook] Subscription ${subscriptionId} uses legacy PentestGPT product; skipping HackerAI subscription handling`,
+      );
+      return { kind: "legacy_pentestgpt", subscription };
+    }
+
+    if (lookupKey) {
+      const tier = planLookupKeyToTier(lookupKey);
+      return tier ? { kind: "resolved", tier, subscription } : null;
+    }
 
     const tier =
       (productObj?.metadata?.tier as SubscriptionTier | undefined) ??
@@ -156,7 +183,7 @@ async function resolveSubscription(subscriptionId: string): Promise<{
       console.warn(
         `[Subscription Webhook] Subscription ${subscriptionId} missing price lookup_key, resolved tier "${tier}" from product fallback`,
       );
-      return { tier, subscription };
+      return { kind: "resolved", tier, subscription };
     }
 
     console.error(
@@ -490,16 +517,33 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const resetMode = getInvoicePaidBucketResetMode(invoice);
-  const [customerResult, resolved] = await Promise.all([
-    resolveUserIdsFromCustomer(customerId),
-    resolveSubscription(subscriptionId),
-  ]);
-
+  const customerResult = await resolveUserIdsFromCustomer(customerId);
   const { userIds, orgId } = customerResult;
 
-  if (userIds.length === 0 || !resolved) {
+  if (customerResult.reason === "legacy_user_metadata") {
+    console.info(
+      `[Subscription Webhook] invoice.paid: skipping legacy customer invoice ${invoice.id} for customer ${customerId}`,
+    );
+    return;
+  }
+
+  if (userIds.length === 0) {
     console.error(
-      `[Subscription Webhook] Could not resolve users (${userIds.length}) or subscription for invoice ${invoice.id}`,
+      `[Subscription Webhook] Could not resolve users (${customerResult.reason ?? "unknown"}) for invoice ${invoice.id}`,
+    );
+    return;
+  }
+
+  const resolved = await resolveSubscription(subscriptionId);
+  if (!resolved) {
+    console.error(
+      `[Subscription Webhook] Could not resolve subscription ${subscriptionId} for invoice ${invoice.id}`,
+    );
+    return;
+  }
+  if (resolved.kind === "legacy_pentestgpt") {
+    console.info(
+      `[Subscription Webhook] invoice.paid: skipping legacy PentestGPT subscription ${subscriptionId} for invoice ${invoice.id}`,
     );
     return;
   }
@@ -798,6 +842,12 @@ async function handleCheckoutSessionCompleted(
 
   const resolved = await resolveSubscription(subscriptionId);
   if (!resolved) return;
+  if (resolved.kind === "legacy_pentestgpt") {
+    console.info(
+      `[Subscription Webhook] checkout.session.completed: skipping legacy PentestGPT subscription ${subscriptionId}`,
+    );
+    return;
+  }
 
   const price = resolved.subscription.items?.data[0]?.price;
   const existingMetadata = resolved.subscription.metadata ?? {};
@@ -1086,7 +1136,20 @@ async function handleSubscriptionDeleted(
   if (!customerId) return;
 
   const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
-  const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
+  if (!lookupKey) {
+    console.info(
+      `[Subscription Webhook] subscription.deleted: skipping subscription ${subscription.id} without HackerAI price lookup_key for customer ${customerId}`,
+    );
+    return;
+  }
+
+  const tier = planLookupKeyToTier(lookupKey);
+  if (!tier) {
+    console.error(
+      `[Subscription Webhook] subscription.deleted: unknown price lookup_key "${lookupKey}" for subscription ${subscription.id}`,
+    );
+    return;
+  }
 
   const { userIds, orgId, reason } =
     await resolveUserIdsFromCustomer(customerId);
@@ -1150,7 +1213,13 @@ export async function POST(req: NextRequest) {
   const signature = req.headers.get("stripe-signature");
 
   if (!signature) {
-    console.error("[Subscription Webhook] Missing stripe-signature header");
+    logStripeWebhookMissingSignature({
+      logPrefix: WEBHOOK_LOG_PREFIX,
+      ...WEBHOOK_LOG_CONTEXT,
+      requestHeaders: req.headers,
+      body,
+      signature,
+    });
     return NextResponse.json(
       { error: "Missing stripe-signature header" },
       { status: 400 },
@@ -1173,7 +1242,14 @@ export async function POST(req: NextRequest) {
   try {
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err) {
-    console.error("[Subscription Webhook] Signature verification failed:", err);
+    logStripeWebhookSignatureVerificationFailed({
+      logPrefix: WEBHOOK_LOG_PREFIX,
+      ...WEBHOOK_LOG_CONTEXT,
+      requestHeaders: req.headers,
+      body,
+      signature,
+      error: err,
+    });
     return NextResponse.json(
       { error: "Webhook signature verification failed" },
       { status: 400 },

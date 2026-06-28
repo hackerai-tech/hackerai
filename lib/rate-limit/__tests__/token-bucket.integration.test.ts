@@ -22,6 +22,7 @@ describe("token-bucket async functions", () => {
   const mockHsetFn = jest.fn();
   const mockDelFn = jest.fn();
   const mockExpireFn = jest.fn();
+  const mockScanFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
   const originalNodeEnv = process.env.NODE_ENV;
@@ -41,6 +42,7 @@ describe("token-bucket async functions", () => {
     mockHsetFn.mockResolvedValue(1);
     mockDelFn.mockResolvedValue(1);
     mockExpireFn.mockResolvedValue(1);
+    mockScanFn.mockResolvedValue(["0", []]);
     mockDeductFromBalance.mockResolvedValue({
       success: true,
       newBalanceDollars: 10,
@@ -56,6 +58,7 @@ describe("token-bucket async functions", () => {
       hset: mockHsetFn,
       del: mockDelFn,
       expire: mockExpireFn,
+      scan: mockScanFn,
     });
   });
 
@@ -88,6 +91,7 @@ describe("token-bucket async functions", () => {
           hset: mockHsetFn,
           del: mockDelFn,
           expire: mockExpireFn,
+          scan: mockScanFn,
         })),
       }));
 
@@ -107,6 +111,27 @@ describe("token-bucket async functions", () => {
 
     return isolatedModule!;
   };
+
+  describe("deleteUserRateLimitKeys", () => {
+    it("does not delete identity-scoped free quota keys during account deletion", async () => {
+      const { deleteUserRateLimitKeys } = getIsolatedModule();
+      const identitySubject =
+        "free_quota:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+      mockScanFn.mockResolvedValue([
+        "0",
+        [
+          "usage:monthly:user-123:pro",
+          `free_monthly_cost:${identitySubject}:2026-06`,
+          `free_limit:${identitySubject}:free:123`,
+          `free_referral_bonus:${identitySubject}`,
+        ],
+      ]);
+
+      await expect(deleteUserRateLimitKeys("user-123")).resolves.toBe(1);
+
+      expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+    });
+  });
 
   describe("checkTokenBucketLimit", () => {
     it("should throw error for free tier users (safety check)", async () => {
