@@ -1,11 +1,12 @@
 "use client";
 
 import { Chat } from "../../../components/chat";
-import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
+import { useConvexAuth } from "convex/react";
 import Loading from "@/components/ui/loading";
 import PricingDialog from "../../../components/PricingDialog";
 import { usePricingDialog } from "../../../hooks/usePricingDialog";
 import { useGlobalState } from "../../../contexts/GlobalState";
+import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 import { use } from "react";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
@@ -14,28 +15,22 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
   const { subscription } = useGlobalState();
   const { showPricing, handleClosePricing, pricingContext } =
     usePricingDialog(subscription);
+  const { isLoading, isAuthenticated } = useConvexAuth();
+
+  const shouldRenderChat =
+    isAuthenticated || (isLoading && hasAuthenticatedBefore());
 
   return (
     <>
-      <AuthLoading>
-        <div className="h-full bg-background flex flex-col overflow-hidden">
-          <div className="flex-1 flex items-center justify-center">
-            <Loading />
-          </div>
-        </div>
-      </AuthLoading>
-
-      <Authenticated>
+      {shouldRenderChat ? (
         <Chat key={chatId} autoResume={true} />
-      </Authenticated>
-
-      <Unauthenticated>
+      ) : (
         <div className="h-full bg-background flex flex-col overflow-hidden">
           <div className="flex-1 flex items-center justify-center">
             <Loading />
           </div>
         </div>
-      </Unauthenticated>
+      )}
 
       <PricingDialog
         isOpen={showPricing}

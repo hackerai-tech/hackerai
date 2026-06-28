@@ -8,6 +8,11 @@ export const useQuery = () => undefined;
 
 export const useAction = () => mockAction;
 
+export const useConvexAuth = () => ({
+  isAuthenticated: true,
+  isLoading: false,
+});
+
 // Create stable reference for paginated query results
 const stablePaginatedResult = {
   results: [],

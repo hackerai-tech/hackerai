@@ -76,6 +76,8 @@ const formatFileSize = (sizeBytes?: number): string | null => {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const MISSING_CONTENT_RECONNECT_GRACE_MS = 5_000;
+
 const SidebarPreviewImage = ({
   file,
   label,
@@ -389,15 +391,25 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     toolExecutions,
   ]);
 
-  // Handle deleted messages: close sidebar or navigate to latest when content no longer exists
+  // Handle deleted messages: close sidebar or navigate to latest when content no longer exists.
+  // Reconnect/replay can briefly make the active tool absent from `messages`, so avoid
+  // treating the first missing render as a real deletion.
   useEffect(() => {
     if (!sidebarOpen || !sidebarContent) {
       return;
     }
 
+    if (currentIndex !== -1) {
+      return;
+    }
+
+    if (status === "submitted" || status === "streaming") {
+      return;
+    }
+
     // currentIndex === -1 means the current sidebarContent is not found in toolExecutions
     // This happens when the message containing this tool was deleted
-    if (currentIndex === -1) {
+    const timeoutId = window.setTimeout(() => {
       if (toolExecutions.length > 0 && onNavigate) {
         // Navigate to the latest available tool execution
         onNavigate(toolExecutions[toolExecutions.length - 1]);
@@ -405,11 +417,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
         // No tool executions left, close the sidebar
         closeSidebar();
       }
-    }
+    }, MISSING_CONTENT_RECONNECT_GRACE_MS);
+
+    return () => window.clearTimeout(timeoutId);
   }, [
     currentIndex,
     sidebarOpen,
     sidebarContent,
+    status,
     toolExecutions,
     onNavigate,
     closeSidebar,
