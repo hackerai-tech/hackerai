@@ -129,27 +129,32 @@ Usage:
         }
 
         let result = "";
-        if (providedFiles.length > 0) {
-          result += `Successfully provided ${providedFiles.length} file(s) to the user`;
-        }
         if (blockedFiles.length > 0) {
           const blockedDetails = blockedFiles
             .map((f) => `${f.path}: ${f.reason}`)
             .join("; ");
-          result +=
-            (result ? ". " : "") +
-            `${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}`;
+          result =
+            providedFiles.length > 0
+              ? `Partially provided ${providedFiles.length} of ${files.length} file(s) to the user. ${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}. Do not tell the user failed files were sent; retry only the failed file paths if the error is transient, otherwise explain the upload problem.`
+              : `Failed to provide ${blockedFiles.length} file(s) to the user: ${blockedDetails}. Do not tell the user these files were sent; verify the paths or explain the upload problem before retrying.`;
+        } else if (providedFiles.length > 0) {
+          result = `Successfully provided ${providedFiles.length} file(s) to the user`;
         }
 
         return {
           result: result || "No files were retrieved",
           files: providedFiles,
+          failedFiles: blockedFiles,
         };
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         return {
-          result: `Error providing files: ${errorMsg}`,
+          result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],
+          failedFiles: files.map((path) => ({
+            path,
+            reason: errorMsg,
+          })),
         };
       }
     },

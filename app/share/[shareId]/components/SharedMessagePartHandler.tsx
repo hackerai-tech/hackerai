@@ -626,6 +626,7 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
   const filesInput = part.input as { files?: string[]; brief?: string };
   const filesOutput = part.output as {
     files?: Array<{ path: string }>;
+    failedFiles?: Array<{ path: string; reason?: string }>;
     fileUrls?: Array<{ path: string }>;
   };
 
@@ -650,15 +651,21 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
   if (part.state === "output-available") {
     const fileCount =
       filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
+    const failedFileCount = filesOutput?.failedFiles?.length || 0;
+    const totalFileCount = fileCount + failedFileCount;
+    const fallbackAction =
+      failedFileCount > 0
+        ? fileCount > 0
+          ? `Shared ${fileCount} of ${totalFileCount} files`
+          : "Failed to share"
+        : `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`;
 
     return (
       <ToolBlock
         key={idx}
         icon={<FileDown aria-hidden="true" />}
-        action={
-          brief || `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`
-        }
-        target={brief ? undefined : fileNames}
+        action={failedFileCount === 0 && brief ? brief : fallbackAction}
+        target={failedFileCount === 0 && brief ? undefined : fileNames}
       />
     );
   }

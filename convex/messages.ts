@@ -15,6 +15,7 @@ import {
   assertUserCanAccessChatHistory,
   isUserBlockedByActiveFraudDispute,
 } from "./lib/suspensionGuards";
+import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
 
 /**
  * Extract text content from message parts for search and display
@@ -2111,20 +2112,22 @@ export const getSharedMessages = query({
         content: msg.content,
         update_time: msg.update_time,
         // Process parts to replace files/images with placeholders
-        parts: msg.parts.map((part: any) => {
-          // Replace file references with placeholder
-          if (part.type === "file") {
-            // Determine if it's an image based on mediaType
-            const isImage = part.mediaType?.startsWith("image/");
-            return {
-              type: isImage ? "image" : "file",
-              placeholder: true,
-              // SECURITY: Do NOT include url, file_id, name, or mediaType
-            };
-          }
-          // Keep text parts as-is
-          return part;
-        }),
+        parts: stripOpenRouterReasoningMetadataFromParts(msg.parts).map(
+          (part: any) => {
+            // Replace file references with placeholder
+            if (part.type === "file") {
+              // Determine if it's an image based on mediaType
+              const isImage = part.mediaType?.startsWith("image/");
+              return {
+                type: isImage ? "image" : "file",
+                placeholder: true,
+                // SECURITY: Do NOT include url, file_id, name, or mediaType
+              };
+            }
+            // Keep text parts as-is
+            return part;
+          },
+        ),
         // SECURITY: user_id is NOT included in response (anonymity)
       }));
     } catch (error) {
@@ -2234,7 +2237,7 @@ export const getPreviewMessages = query({
           id: m.id,
           role: m.role,
           content: m.content,
-          parts: m.parts,
+          parts: stripOpenRouterReasoningMetadataFromParts(m.parts),
           fileDetails,
         };
       });

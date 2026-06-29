@@ -33,6 +33,7 @@ import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnost
 import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { phLogger } from "@/lib/posthog/server";
+import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -595,6 +596,10 @@ export async function saveMessage({
             },
           })
         : message.parts;
+    fixedParts =
+      message.role === "assistant"
+        ? stripOpenRouterReasoningMetadataFromParts(fixedParts)
+        : fixedParts;
     const convexSafeParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
       any,
       any

@@ -4,6 +4,7 @@ import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage, type ChatMode } from "@/types/chat";
 import { UIMessagePart } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
+import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 
 export interface MessageRecord {
   id: string;
@@ -63,13 +64,15 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
       : {}),
     // Sanitize parts: remove any old URLs that may be stored in database
     // URLs expire, so we always fetch fresh ones via fileId
-    parts: message.parts.map((part: any) => {
-      if (part.type === "file" && part.url) {
-        const { url, ...partWithoutUrl } = part;
-        return partWithoutUrl;
-      }
-      return part;
-    }),
+    parts: stripOpenRouterReasoningMetadataFromParts(message.parts).map(
+      (part: any) => {
+        if (part.type === "file" && part.url) {
+          const { url, ...partWithoutUrl } = part;
+          return partWithoutUrl;
+        }
+        return part;
+      },
+    ),
     sourceMessageId: message.source_message_id,
     metadata:
       message.feedback ||

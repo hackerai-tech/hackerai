@@ -22,6 +22,7 @@ interface TerminalFilesPart {
   output?: {
     result: string;
     files?: Array<{ path: string }>;
+    failedFiles?: Array<{ path: string; reason?: string }>;
     // Legacy support for old messages
     fileUrls?: Array<{ path: string; downloadUrl?: string }>;
   };
@@ -93,7 +94,9 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
   // Mirror the shell/file pattern: when the model supplies a `brief` and the
   // call didn't error, the brief stands alone as the block label.
   const briefText = input?.brief?.trim() || "";
-  const useBriefOnly = !!briefText && state !== "output-error";
+  const failedFileCount = output?.failedFiles?.length || 0;
+  const useBriefOnly =
+    !!briefText && state !== "output-error" && failedFileCount === 0;
   const briefLabel = (fallback: string) =>
     useBriefOnly ? briefText : fallback;
   const briefTarget = (fallback: string | undefined) =>
@@ -126,15 +129,20 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
 
     case "output-available": {
       const fileCount = output?.files?.length || output?.fileUrls?.length || 0;
+      const totalFileCount = fileCount + failedFileCount;
       const fileNames = getFileNames(requestedPaths);
+      const fallbackAction =
+        failedFileCount > 0
+          ? fileCount > 0
+            ? `Shared ${fileCount} of ${totalFileCount} files`
+            : "Failed to share"
+          : `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`;
 
       return (
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action={briefLabel(
-            `Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`,
-          )}
+          action={briefLabel(fallbackAction)}
           target={briefTarget(fileNames)}
           isClickable={isClickable}
           onClick={handleOpenInSidebar}

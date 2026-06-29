@@ -20,6 +20,7 @@ import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
+import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a user based on mode and subscription.
  * Agent mode: 100 steps (all tiers).
@@ -661,8 +662,12 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   allowLocalDesktopFiles?: boolean;
 }) {
+  const messagesWithoutOpenRouterReasoning =
+    stripOpenRouterReasoningMetadataFromMessages(messages);
+
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
-  const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
+  const messagesWithoutUIOnlyParts =
+    messagesWithoutOpenRouterReasoning.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
