@@ -46,6 +46,20 @@ type Row = { _id: string; [key: string]: any };
 type Tables = Record<string, Row[]>;
 
 const SERVICE_KEY = "service_key";
+const INDEX_FIELDS: Record<string, Record<string, string[]>> = {
+  extra_usage: {
+    by_user_id: ["user_id"],
+  },
+  extra_usage_purchases: {
+    by_stripe_checkout_session_id: ["stripe_checkout_session_id"],
+  },
+  processed_checkout_sessions: {
+    by_session_key: ["session_key"],
+  },
+  processed_webhooks: {
+    by_event_id: ["event_id"],
+  },
+};
 
 function createQueryResult(rows: Row[]) {
   return {
@@ -67,15 +81,20 @@ function createQueryBuilder(tables: Tables, table: string) {
     );
 
   return {
-    withIndex: jest.fn((_indexName: string, build: (q: any) => any) => {
+    withIndex: jest.fn((indexName: string, build: (q: any) => any) => {
+      const expectedFields = INDEX_FIELDS[table]?.[indexName];
+      expect(expectedFields).toBeDefined();
+
       const filters: Array<{ field: string; value: any }> = [];
       const q = {
         eq: (field: string, value: any) => {
+          expect(field).toBe(expectedFields![filters.length]);
           filters.push({ field, value });
           return q;
         },
       };
       build(q);
+      expect(filters.map(({ field }) => field)).toEqual(expectedFields);
       return createQueryResult(filterRows(filters));
     }),
   };

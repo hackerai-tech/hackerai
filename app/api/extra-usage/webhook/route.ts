@@ -40,7 +40,8 @@ function errorMessage(error: unknown): string {
  * Configure this webhook in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/extra-usage/webhook
  * - Events to listen: checkout.session.completed,
- *   checkout.session.async_payment_succeeded
+ *   checkout.session.async_payment_succeeded,
+ *   checkout.session.async_payment_failed
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -93,7 +94,8 @@ export async function POST(req: NextRequest) {
   // Handle the event
   switch (event.type) {
     case "checkout.session.completed":
-    case "checkout.session.async_payment_succeeded": {
+    case "checkout.session.async_payment_succeeded":
+    case "checkout.session.async_payment_failed": {
       const session = event.data.object as Stripe.Checkout.Session;
       // Only process extra usage purchases
       if (session.metadata?.type !== "extra_usage_purchase") {
@@ -119,10 +121,7 @@ export async function POST(req: NextRequest) {
           paymentStatus: session.payment_status,
           reason: "invalid_session_metadata",
         });
-        return NextResponse.json(
-          { error: "Invalid session metadata" },
-          { status: 400 },
-        );
+        return NextResponse.json({ received: true });
       }
 
       logExtraUsagePurchase("info", "extra_usage_purchase_session_seen", {
@@ -136,6 +135,57 @@ export async function POST(req: NextRequest) {
         paymentStatus: session.payment_status,
         result: "session_seen",
       });
+
+      const convex = getConvexClient();
+      if (event.type === "checkout.session.async_payment_failed") {
+        try {
+          await convex.mutation(api.extraUsage.recordPurchaseFailed, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            userId,
+            amountDollars,
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId,
+            stripeInvoiceId,
+            route: "webhook",
+            lastError: "stripe_async_payment_failed",
+          });
+        } catch (recordError) {
+          logExtraUsagePurchase(
+            "error",
+            "extra_usage_purchase_failure_record_failed",
+            {
+              route: WEBHOOK_LOG_CONTEXT.route,
+              requestHeaders: req.headers,
+              userId,
+              amountDollars,
+              stripeCheckoutSessionId: session.id,
+              stripePaymentIntentId,
+              stripeInvoiceId,
+              paymentStatus: session.payment_status,
+              result: "failure_record_failed",
+              error: recordError,
+            },
+          );
+          return NextResponse.json(
+            { error: "Failed to record payment failure" },
+            { status: 500 },
+          );
+        }
+
+        logExtraUsagePurchase("warn", "extra_usage_purchase_payment_failed", {
+          route: WEBHOOK_LOG_CONTEXT.route,
+          requestHeaders: req.headers,
+          userId,
+          amountDollars,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          paymentStatus: session.payment_status,
+          result: "failed",
+          reason: "stripe_async_payment_failed",
+        });
+        return NextResponse.json({ received: true });
+      }
 
       if (session.payment_status !== "paid") {
         logExtraUsagePurchase("info", "extra_usage_purchase_payment_pending", {
@@ -155,7 +205,6 @@ export async function POST(req: NextRequest) {
       // Add credits to user's balance. Idempotency key is scoped to the Checkout
       // Session so this path and the post-checkout confirm redirect (which uses
       // the same key) can race without double-crediting.
-      const convex = getConvexClient();
       try {
         await convex.mutation(api.extraUsage.recordPurchasePaidSeen, {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

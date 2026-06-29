@@ -70,4 +70,21 @@ describe("extra usage purchase logging", () => {
       }),
     );
   });
+
+  it("redacts bearer tokens and JSON-style secrets", () => {
+    logExtraUsagePurchase("error", "extra_usage_purchase_credit_failed", {
+      route: "/api/extra-usage/webhook",
+      requestHeaders: new Headers(),
+      error: new Error(
+        'Authorization: Bearer sk_live_123 {"serviceKey":"abc"}',
+      ),
+    });
+
+    const serializedFields = JSON.stringify(
+      (console.error as jest.Mock).mock.calls[0][1],
+    );
+    expect(serializedFields).toContain("Authorization: Bearer [redacted]");
+    expect(serializedFields).not.toContain("sk_live_123");
+    expect(serializedFields).not.toContain('"serviceKey":"abc"');
+  });
 });

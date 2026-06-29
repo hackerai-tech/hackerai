@@ -422,11 +422,20 @@ export const createPurchaseSession = action({
         cancel_url: args.baseUrl,
       });
 
-      await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
-        userId: identity.subject,
-        amountDollars: args.amountDollars,
-        stripeCheckoutSessionId: session.id,
-      });
+      try {
+        await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
+          userId: identity.subject,
+          amountDollars: args.amountDollars,
+          stripeCheckoutSessionId: session.id,
+        });
+      } catch (error) {
+        convexLogger.warn("purchase_session_record_failed", {
+          user_id: identity.subject,
+          amount_dollars: args.amountDollars,
+          session_id: session.id,
+          error: serializeErrorForLog(error),
+        });
+      }
 
       convexLogger.info("purchase_session_created", {
         user_id: identity.subject,

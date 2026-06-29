@@ -15,8 +15,13 @@ type ExtraUsagePurchaseLogArgs = {
 };
 
 const MAX_ERROR_MESSAGE_LENGTH = 300;
-const SENSITIVE_ERROR_PATTERN =
-  /\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const JSON_SECRET_PATTERN =
+  /(["'])(serviceKey|service_key|apiKey|api_key|authorization|cookie|password|secret|token)\1\s*:\s*(["'])(?:(?!\3).)*\3/gi;
+const ASSIGNMENT_SECRET_PATTERN =
+  /\b(serviceKey|service_key|apiKey|api_key|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const AUTHORIZATION_BEARER_PATTERN =
+  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s,}]+/gi;
+const BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 
 function requestId(headers: Headers): string | undefined {
   return (
@@ -29,7 +34,12 @@ function requestId(headers: Headers): string | undefined {
 
 function sanitizeErrorMessage(message: string): string | undefined {
   const sanitized = message
-    .replace(SENSITIVE_ERROR_PATTERN, (match) => {
+    .replace(AUTHORIZATION_BEARER_PATTERN, "Authorization: Bearer [redacted]")
+    .replace(JSON_SECRET_PATTERN, (_match, quote, key) => {
+      return `${quote}${key}${quote}: "[redacted]"`;
+    })
+    .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
+    .replace(ASSIGNMENT_SECRET_PATTERN, (match) => {
       const separatorIndex = Math.max(match.indexOf(":"), match.indexOf("="));
       if (separatorIndex === -1) return "[redacted]";
       return `${match.slice(0, separatorIndex + 1)} [redacted]`;

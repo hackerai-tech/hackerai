@@ -40,12 +40,25 @@ type ExtraUsagePurchaseResult =
   | "failed";
 
 const MAX_PURCHASE_ERROR_LENGTH = 500;
-const PURCHASE_ERROR_SECRET_PATTERN =
-  /\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const PURCHASE_JSON_SECRET_PATTERN =
+  /(["'])(serviceKey|service_key|apiKey|api_key|authorization|cookie|password|secret|token)\1\s*:\s*(["'])(?:(?!\3).)*\3/gi;
+const PURCHASE_ASSIGNMENT_SECRET_PATTERN =
+  /\b(serviceKey|service_key|apiKey|api_key|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const PURCHASE_AUTHORIZATION_BEARER_PATTERN =
+  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s,}]+/gi;
+const PURCHASE_BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 
 const sanitizePurchaseError = (error: string): string =>
   error
-    .replace(PURCHASE_ERROR_SECRET_PATTERN, (match) => {
+    .replace(
+      PURCHASE_AUTHORIZATION_BEARER_PATTERN,
+      "Authorization: Bearer [redacted]",
+    )
+    .replace(PURCHASE_JSON_SECRET_PATTERN, (_match, quote, key) => {
+      return `${quote}${key}${quote}: "[redacted]"`;
+    })
+    .replace(PURCHASE_BEARER_TOKEN_PATTERN, "Bearer [redacted]")
+    .replace(PURCHASE_ASSIGNMENT_SECRET_PATTERN, (match) => {
       const separatorIndex = Math.max(match.indexOf(":"), match.indexOf("="));
       if (separatorIndex === -1) return "[redacted]";
       return `${match.slice(0, separatorIndex + 1)} [redacted]`;
@@ -75,7 +88,7 @@ async function upsertExtraUsagePurchase(
     .withIndex("by_stripe_checkout_session_id", (q) =>
       q.eq("stripe_checkout_session_id", args.stripeCheckoutSessionId),
     )
-    .first();
+    .unique();
 
   const keepCredited =
     existing?.status === "credited" && args.status !== "credited";
