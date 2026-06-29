@@ -20,6 +20,7 @@ import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outpu
 import {
   removeStandaloneProviderReasoningTagOnlyAssistantMessages,
   stripStandaloneProviderReasoningTagTextParts,
+  stripStandaloneProviderReasoningTagTextMessages,
 } from "@/lib/chat/provider-reasoning-tags";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -867,7 +868,7 @@ export async function getMessagesByChatId({
           );
           const { page, isDone, continueCursor: nextCursor } = pageResult;
           const normalizedPage =
-            removeStandaloneProviderReasoningTagOnlyAssistantMessages(page);
+            stripStandaloneProviderReasoningTagTextMessages(page);
 
           fetchedDesc = fetchedDesc.concat(normalizedPage);
           pagesFetched++;
@@ -1020,7 +1021,10 @@ export async function getMessagesByChatId({
             ];
 
             return {
-              truncatedMessages: truncatedWithSummary,
+              truncatedMessages:
+                removeStandaloneProviderReasoningTagOnlyAssistantMessages(
+                  truncatedWithSummary,
+                ),
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
@@ -1029,7 +1033,10 @@ export async function getMessagesByChatId({
 
           // No summary injection (ask mode or no summary), return as normal
           return {
-            truncatedMessages: truncatedFromLoop,
+            truncatedMessages:
+              removeStandaloneProviderReasoningTagOnlyAssistantMessages(
+                truncatedFromLoop,
+              ),
             chat,
             isNewChat,
             fileTokens: fileTokensFromLoop,
@@ -1082,6 +1089,8 @@ export async function getMessagesByChatId({
     // For normal chat, merge existing messages with the new user message
     allMessages = [...existingMessages, ...normalizedNewMessages];
   }
+  allMessages =
+    removeStandaloneProviderReasoningTagOnlyAssistantMessages(allMessages);
 
   const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,

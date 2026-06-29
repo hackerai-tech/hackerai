@@ -162,11 +162,11 @@ export const Messages = ({
 
   // Compute the branch boundary: last message that originated from another chat
   const branchBoundaryIndex = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].sourceMessageId) return i;
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      if (visibleMessages[i].sourceMessageId) return i;
     }
     return -1;
-  }, [messages]);
+  }, [visibleMessages]);
 
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
