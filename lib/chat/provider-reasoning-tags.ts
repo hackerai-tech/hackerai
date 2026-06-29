@@ -83,6 +83,35 @@ export const stripStandaloneProviderReasoningTagTextMessages = <
   return changed ? stripped : messages;
 };
 
+export const removeStandaloneProviderReasoningTagOnlyAssistantMessages = <
+  T extends MessageWithParts,
+>(
+  messages: T[],
+): T[] => {
+  let changed = false;
+  const stripped: T[] = [];
+
+  for (const message of messages) {
+    const next = stripStandaloneProviderReasoningTagTextMessage(message);
+    if (next !== message) changed = true;
+
+    if (
+      message.role === "assistant" &&
+      Array.isArray(message.parts) &&
+      message.parts.length > 0 &&
+      Array.isArray(next.parts) &&
+      next.parts.length === 0
+    ) {
+      changed = true;
+      continue;
+    }
+
+    stripped.push(next);
+  }
+
+  return changed ? stripped : messages;
+};
+
 export function filterStandaloneProviderReasoningTagTextStream<
   T extends ChunkLike,
 >(stream: ReadableStream<T>): ReadableStream<T> {

@@ -80,6 +80,40 @@ describe("SharedMessages", () => {
       expect(screen.getByText("I can help you with that")).toBeInTheDocument();
     });
 
+    it("should hide historical standalone provider reasoning close tags", () => {
+      const messages = [
+        {
+          id: "1",
+          role: "assistant" as const,
+          parts: [{ type: "text", text: "</mm:think>" }],
+          update_time: mockShareDate,
+        },
+        {
+          id: "2",
+          role: "assistant" as const,
+          parts: [
+            { type: "text", text: "</think>" },
+            { type: "text", text: "Visible answer" },
+          ],
+          update_time: mockShareDate,
+        },
+        {
+          id: "3",
+          role: "user" as const,
+          parts: [{ type: "text", text: "</mm:think>" }],
+          update_time: mockShareDate,
+        },
+      ];
+
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+
+      expect(screen.getByText("Visible answer")).toBeInTheDocument();
+      expect(screen.getAllByText("</mm:think>")).toHaveLength(1);
+      expect(screen.queryByText("</think>")).not.toBeInTheDocument();
+    });
+
     it("should render multiple messages", () => {
       const messages = [
         {

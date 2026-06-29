@@ -1,6 +1,8 @@
 "use client";
 
 import { ImageIcon, FileIcon } from "lucide-react";
+import { useMemo } from "react";
+import { removeStandaloneProviderReasoningTagOnlyAssistantMessages } from "@/lib/chat/provider-reasoning-tags";
 import { SharedMessagePartHandler } from "./components/SharedMessagePartHandler";
 
 export interface SharedMessagePart {
@@ -28,7 +30,12 @@ interface SharedMessagesProps {
 }
 
 export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
-  if (messages.length === 0) {
+  const visibleMessages = useMemo(
+    () => removeStandaloneProviderReasoningTagOnlyAssistantMessages(messages),
+    [messages],
+  );
+
+  if (visibleMessages.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <p className="text-muted-foreground">
@@ -49,7 +56,7 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
       </div>
 
       {/* Messages */}
-      {messages.map((message) => {
+      {visibleMessages.map((message) => {
         const isUser = message.role === "user";
 
         // Separate file/image placeholders from other parts

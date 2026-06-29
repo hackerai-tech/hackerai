@@ -26,6 +26,7 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import { removeStandaloneProviderReasoningTagOnlyAssistantMessages } from "@/lib/chat/provider-reasoning-tags";
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -102,7 +103,10 @@ export const Messages = ({
 
   // Filter out auto-continue messages for rendering
   const visibleMessages = useMemo(
-    () => messages.filter((msg) => !msg.metadata?.isAutoContinue),
+    () =>
+      removeStandaloneProviderReasoningTagOnlyAssistantMessages(
+        messages,
+      ).filter((msg) => !msg.metadata?.isAutoContinue),
     [messages],
   );
 

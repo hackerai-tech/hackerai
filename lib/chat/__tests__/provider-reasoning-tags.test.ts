@@ -1,5 +1,6 @@
 import {
   filterStandaloneProviderReasoningTagTextStream,
+  removeStandaloneProviderReasoningTagOnlyAssistantMessages,
   stripStandaloneProviderReasoningTagTextMessage,
 } from "../provider-reasoning-tags";
 
@@ -85,5 +86,41 @@ describe("provider reasoning tag cleanup", () => {
       role: "user",
       parts: [{ type: "text", text: "</mm:think>" }],
     });
+  });
+
+  it("removes assistant messages that only contained leaked provider reasoning tags", () => {
+    expect(
+      removeStandaloneProviderReasoningTagOnlyAssistantMessages([
+        {
+          id: "user",
+          role: "user",
+          parts: [{ type: "text", text: "</mm:think>" }],
+        },
+        {
+          id: "leaked",
+          role: "assistant",
+          parts: [{ type: "text", text: "\n</mm:think>" }],
+        },
+        {
+          id: "assistant",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "</think>" },
+            { type: "text", text: "visible answer" },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "user",
+        role: "user",
+        parts: [{ type: "text", text: "</mm:think>" }],
+      },
+      {
+        id: "assistant",
+        role: "assistant",
+        parts: [{ type: "text", text: "visible answer" }],
+      },
+    ]);
   });
 });

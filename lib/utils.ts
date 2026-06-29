@@ -4,6 +4,7 @@ import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage, type ChatMode } from "@/types/chat";
 import { UIMessagePart } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
+import { removeStandaloneProviderReasoningTagOnlyAssistantMessages } from "./chat/provider-reasoning-tags";
 
 export interface MessageRecord {
   id: string;
@@ -55,7 +56,7 @@ export async function fetchWithErrorHandlers(
 }
 
 export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
-  return messages.map((message) => ({
+  const uiMessages = messages.map((message) => ({
     id: message.id,
     role: message.role,
     ...(typeof message.created_at === "number"
@@ -91,4 +92,6 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
         : undefined,
     fileDetails: message.fileDetails,
   }));
+
+  return removeStandaloneProviderReasoningTagOnlyAssistantMessages(uiMessages);
 }

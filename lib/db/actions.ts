@@ -17,7 +17,10 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
-import { stripStandaloneProviderReasoningTagTextParts } from "@/lib/chat/provider-reasoning-tags";
+import {
+  removeStandaloneProviderReasoningTagOnlyAssistantMessages,
+  stripStandaloneProviderReasoningTagTextParts,
+} from "@/lib/chat/provider-reasoning-tags";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
@@ -801,6 +804,9 @@ export async function getMessagesByChatId({
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
 }) {
+  const normalizedNewMessages =
+    removeStandaloneProviderReasoningTagOnlyAssistantMessages(newMessages);
+
   // For temporary chats, skip database operations
   let chat = undefined;
   let isNewChat = true;
@@ -814,15 +820,15 @@ export async function getMessagesByChatId({
     const shouldUseClientMessagesForRegenerate =
       !!regenerate &&
       !!useClientMessagesForRegenerate &&
-      Array.isArray(newMessages) &&
-      newMessages.length > 0 &&
-      hasRestageableLocalDesktopAttachments(newMessages);
+      Array.isArray(normalizedNewMessages) &&
+      normalizedNewMessages.length > 0 &&
+      hasRestageableLocalDesktopAttachments(normalizedNewMessages);
 
     if (!isNewChat && shouldUseClientMessagesForRegenerate) {
       // Persisted local desktop attachments are saved without source paths.
       // When the current client still has those paths, use that trimmed
       // history for this regenerate so the files can be staged again.
-      existingMessages = newMessages;
+      existingMessages = normalizedNewMessages;
     }
 
     // Only fetch existing messages if chat exists
@@ -860,15 +866,17 @@ export async function getMessagesByChatId({
             },
           );
           const { page, isDone, continueCursor: nextCursor } = pageResult;
+          const normalizedPage =
+            removeStandaloneProviderReasoningTagOnlyAssistantMessages(page);
 
-          fetchedDesc = fetchedDesc.concat(page);
+          fetchedDesc = fetchedDesc.concat(normalizedPage);
           pagesFetched++;
 
           const existingChrono = [...fetchedDesc].reverse();
           const candidate =
             regenerate && !isTemporary
               ? existingChrono
-              : [...existingChrono, ...newMessages];
+              : [...existingChrono, ...normalizedNewMessages];
 
           // Incrementally fetch file tokens only for new file IDs not yet cached
           if (!skipFileTokens) {
@@ -934,7 +942,7 @@ export async function getMessagesByChatId({
             const summaryUpToId = latestSummary.summary_up_to_message_id;
             const availableChrono = [...fetchedDesc]
               .reverse()
-              .concat(newMessages);
+              .concat(normalizedNewMessages);
 
             // Create summary message, prepending resume preamble for agent modes
             const summaryPrefix =
@@ -1034,20 +1042,20 @@ export async function getMessagesByChatId({
           mode,
           is_temporary: !!isTemporary,
           regenerate: !!regenerate,
-          new_messages_count: newMessages.length,
+          new_messages_count: normalizedNewMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
           db_error_data: getErrorData(error),
         });
 
-        if (newMessages.length === 0) {
+        if (normalizedNewMessages.length === 0) {
           throw databaseError("messages.getMessagesPageForBackend", error, {
             chat_id: chatId,
             user_id: userId,
             mode,
             is_temporary: !!isTemporary,
             regenerate: !!regenerate,
-            new_messages_count: newMessages.length,
+            new_messages_count: normalizedNewMessages.length,
           });
         }
       }
@@ -1072,7 +1080,7 @@ export async function getMessagesByChatId({
     }
   } else {
     // For normal chat, merge existing messages with the new user message
-    allMessages = [...existingMessages, ...newMessages];
+    allMessages = [...existingMessages, ...normalizedNewMessages];
   }
 
   const truncateResult = await truncateMessagesWithFileTokens(
@@ -1105,7 +1113,7 @@ export async function getMessagesByChatId({
         subscription,
         mode,
         existing_messages_count: existingMessages.length,
-        new_messages_count: newMessages.length,
+        new_messages_count: normalizedNewMessages.length,
         all_messages_count: allMessages.length,
         total_tokens_before: totalTokensBefore,
         max_tokens: maxTokens,

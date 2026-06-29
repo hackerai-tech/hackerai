@@ -86,6 +86,50 @@ describe("utils", () => {
       });
     });
 
+    it("should hide historical standalone provider reasoning close tags", () => {
+      const messages: MessageRecord[] = [
+        {
+          id: "msg1",
+          role: "assistant",
+          parts: [{ type: "text", text: "\n</mm:think>" }],
+        },
+        {
+          id: "msg2",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "</think>" },
+            { type: "text", text: "Visible answer" },
+          ],
+        },
+        {
+          id: "msg3",
+          role: "user",
+          parts: [{ type: "text", text: "</mm:think>" }],
+        },
+      ];
+
+      const result = convertToUIMessages(messages);
+
+      expect(result).toEqual([
+        {
+          id: "msg2",
+          role: "assistant",
+          parts: [{ type: "text", text: "Visible answer" }],
+          sourceMessageId: undefined,
+          metadata: undefined,
+          fileDetails: undefined,
+        },
+        {
+          id: "msg3",
+          role: "user",
+          parts: [{ type: "text", text: "</mm:think>" }],
+          sourceMessageId: undefined,
+          metadata: undefined,
+          fileDetails: undefined,
+        },
+      ]);
+    });
+
     it("should handle messages with file details", () => {
       const messages: MessageRecord[] = [
         {
