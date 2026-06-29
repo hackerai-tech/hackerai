@@ -30,6 +30,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "referral_attributions",
     "referral_rewards",
     "revenue_events",
+    "extra_usage_purchases",
     "paid_start_events",
     "unit_economics_daily",
     "user_suspensions",
@@ -449,6 +450,7 @@ async function cleanupUserDataForUser(
     userSuspensionsBatch,
     revenueByUserBatch,
     revenueByEntityBatch,
+    extraUsagePurchasesBatch,
     paidStartsByUserBatch,
     paidStartsByEntityBatch,
     unitEconomicsByUserBatch,
@@ -517,6 +519,12 @@ async function cleanupUserDataForUser(
       "by_entity_occurred",
       (q) => q.eq("entity_type", "user").eq("entity_id", userId),
     ),
+    collectByIndexBatch<Doc<"extra_usage_purchases">>(
+      ctx,
+      "extra_usage_purchases",
+      "by_user_created_at",
+      (q) => q.eq("user_id", userId),
+    ),
     collectByIndexBatch<Doc<"paid_start_events">>(
       ctx,
       "paid_start_events",
@@ -555,6 +563,7 @@ async function cleanupUserDataForUser(
     userSuspensionsBatch,
     revenueByUserBatch,
     revenueByEntityBatch,
+    extraUsagePurchasesBatch,
     paidStartsByUserBatch,
     paidStartsByEntityBatch,
     unitEconomicsByUserBatch,
@@ -573,6 +582,7 @@ async function cleanupUserDataForUser(
   const userSuspensions = userSuspensionsBatch.docs;
   const revenueByUser = revenueByUserBatch.docs;
   const revenueByEntity = revenueByEntityBatch.docs;
+  const extraUsagePurchases = extraUsagePurchasesBatch.docs;
   const paidStartsByUser = paidStartsByUserBatch.docs;
   const paidStartsByEntity = paidStartsByEntityBatch.docs;
   const unitEconomicsByUser = unitEconomicsByUserBatch.docs;
@@ -671,6 +681,14 @@ async function cleanupUserDataForUser(
     "revenue_events",
     [...revenueByUser, ...revenueByEntity],
     anonymizeEntityLedger,
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_purchases",
+    extraUsagePurchases,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
     mode,
   );
   await anonymizeDocs(

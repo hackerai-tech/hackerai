@@ -96,6 +96,7 @@ function makeCtx(userId = "user_member") {
     auth: {
       getUserIdentity: jest.fn(async () => ({ subject: userId })),
     },
+    runMutation: jest.fn(async () => null),
   };
 }
 
@@ -195,6 +196,57 @@ describe("extraUsageActions billing authorization", () => {
         }),
       }),
     );
+    expect(result).toEqual({
+      url: "https://checkout.stripe.test/session",
+      checkoutSessionId: "cs_test",
+    });
+  });
+
+  it("records the purchase row after creating a Checkout session", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+
+    const ctx = makeCtx("user_admin");
+    const result = await callCreatePurchaseSession(ctx);
+    const { internal } = await import("../_generated/api");
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      internal.extraUsage.recordPurchaseCreated,
+      expect.objectContaining({
+        userId: "user_admin",
+        amountDollars: 15,
+        stripeCheckoutSessionId: "cs_test",
+      }),
+    );
+    expect(result).toEqual({
+      url: "https://checkout.stripe.test/session",
+      checkoutSessionId: "cs_test",
+    });
+  });
+
+  it("still returns the Checkout session when purchase recording fails", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+
+    const ctx = makeCtx("user_admin");
+    ctx.runMutation.mockRejectedValueOnce(new Error("Convex unavailable"));
+
+    const result = await callCreatePurchaseSession(ctx);
+
     expect(result).toEqual({
       url: "https://checkout.stripe.test/session",
       checkoutSessionId: "cs_test",
