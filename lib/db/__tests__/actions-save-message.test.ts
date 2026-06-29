@@ -6,6 +6,7 @@ const loadSaveMessageWithMocks = async () => {
 
   const mockMutation = jest.fn().mockResolvedValue({ id: "message-1" });
   const mockQuery = jest.fn();
+  const mockPhEvent = jest.fn();
   const mockCompactMessageForStorage = jest.fn((message: any) => {
     const sizeBytes = JSON.stringify(message.parts).length;
     return {
@@ -26,21 +27,136 @@ const loadSaveMessageWithMocks = async () => {
       action = jest.fn();
     },
   }));
+  jest.doMock("@/lib/posthog/server", () => ({
+    phLogger: {
+      event: mockPhEvent,
+      error: jest.fn(),
+      warn: jest.fn(),
+      info: jest.fn(),
+      flush: jest.fn(),
+    },
+  }));
   jest.doMock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     compactMessageForStorage: mockCompactMessageForStorage,
   }));
 
-  const { deleteChatForBackend, getMessagesByChatId, saveMessage } =
+  const { deleteChatForBackend, getMessagesByChatId, saveChat, saveMessage } =
     await import("../actions");
   return {
     deleteChatForBackend,
     getMessagesByChatId,
     mockCompactMessageForStorage,
     mockMutation,
+    mockPhEvent,
     mockQuery,
+    saveChat,
     saveMessage,
   };
 };
+
+describe("saveChat", () => {
+  it("retries generic Convex server errors before saving a new chat", async () => {
+    const { saveChat, mockMutation } = await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error");
+    mockMutation
+      .mockRejectedValueOnce(convexError as never)
+      .mockRejectedValueOnce(convexError as never)
+      .mockResolvedValueOnce("chat-doc-1" as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        saveChat({
+          id: "chat-1",
+          userId: "user-1",
+          title: "hello",
+        }),
+      ).resolves.toBe("chat-doc-1");
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_save_retry_scheduled");
+
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "convex_server_error",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        user_id: "user-1",
+        title_length: 5,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("emits queryable PostHog metadata when chat creation still fails", async () => {
+    const { saveChat, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error") as Error & {
+      data?: unknown;
+    };
+    convexError.name = "ConvexError";
+    convexError.data = {
+      code: "CHAT_SAVE_FAILED",
+      message: "Failed to save chat",
+      failureStage: "insert_chat",
+      causeName: "WorkerOverloaded",
+      causeMessage: "Worker overloaded",
+    };
+    mockMutation.mockRejectedValue(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await saveChat({
+        id: "chat-1",
+        userId: "user-1",
+        title: "x".repeat(100),
+      }).catch((error) => error);
+
+      expect(thrown).toMatchObject({
+        type: "bad_request",
+        surface: "database",
+        statusCode: 400,
+        metadata: expect.objectContaining({
+          db_operation: "chats.saveChat",
+          db_error_name: "ConvexError",
+          db_error_message: "[Request ID: abc] Server Error",
+          db_request_id: "abc",
+          db_error_code: "CHAT_SAVE_FAILED",
+          db_failure_stage: "insert_chat",
+          chat_id: "chat-1",
+          user_id: "user-1",
+          title_length: 100,
+        }),
+      });
+
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_operation: "chats.saveChat",
+          db_request_id: "abc",
+          db_error_code: "CHAT_SAVE_FAILED",
+          db_failure_stage: "insert_chat",
+          chat_id: "chat-1",
+          user_id: "user-1",
+          userId: "user-1",
+          title_length: 100,
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+});
 
 describe("saveMessage", () => {
   it("sanitizes assistant parts before storage compaction", async () => {

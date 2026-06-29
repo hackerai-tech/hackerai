@@ -1,7 +1,7 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Value } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
@@ -35,6 +35,18 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
   "cost",
   "estimated_compacted_input_tokens",
 ] as const;
+
+const getErrorName = (error: unknown): string =>
+  error instanceof Error ? error.name : typeof error;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const getConvexErrorData = (error: unknown): Value | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : (data as Value);
+};
 
 function normalizeTelemetryCleanupBatchSize(batchSize?: number): number {
   if (!Number.isFinite(batchSize) || !batchSize) {
@@ -454,8 +466,29 @@ export const saveChat = mutation({
   handler: async (ctx, args) => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
+    let failureStage = "start";
 
     try {
+      failureStage = "find_existing_chat";
+      const existingChat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+        .first();
+
+      if (existingChat) {
+        if (existingChat.user_id !== args.userId) {
+          throw new ConvexError({
+            code: "CHAT_UNAUTHORIZED",
+            message: "Chat id belongs to another user",
+            operation: "chats.saveChat",
+            chatId: args.id,
+          });
+        }
+
+        return existingChat._id;
+      }
+
+      failureStage = "insert_chat";
       const chatId = await ctx.db.insert("chats", {
         id: args.id,
         title: args.title,
@@ -465,8 +498,34 @@ export const saveChat = mutation({
 
       return chatId;
     } catch (error) {
-      console.error("Failed to save chat:", error);
-      throw new Error("Failed to save chat");
+      const causeData = getConvexErrorData(error);
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "convex_chat_save_failed",
+          service: "convex",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.saveChat",
+          failure_stage: failureStage,
+          chat_id: args.id,
+          user_id: args.userId,
+          title_length: args.title.length,
+          error_name: getErrorName(error),
+          error_message: getErrorMessage(error),
+          convex_error_data: causeData,
+        }),
+      );
+      throw new ConvexError({
+        code: "CHAT_SAVE_FAILED",
+        message: "Failed to save chat",
+        failureStage,
+        causeName: getErrorName(error),
+        causeMessage: getErrorMessage(error),
+        causeData,
+        operation: "chats.saveChat",
+        chatId: args.id,
+        titleLength: args.title.length,
+      });
     }
   },
 });
