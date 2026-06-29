@@ -48,6 +48,15 @@ const getConvexErrorData = (error: unknown): Value | undefined => {
   return data === undefined ? undefined : (data as Value);
 };
 
+const getConvexErrorCode = (data: Value | undefined): string | undefined => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+
+  const code = (data as Record<string, unknown>).code;
+  return typeof code === "string" ? code : undefined;
+};
+
 function normalizeTelemetryCleanupBatchSize(batchSize?: number): number {
   if (!Number.isFinite(batchSize) || !batchSize) {
     return CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE;
@@ -473,7 +482,7 @@ export const saveChat = mutation({
       const existingChat = await ctx.db
         .query("chats")
         .withIndex("by_chat_id", (q) => q.eq("id", args.id))
-        .first();
+        .unique();
 
       if (existingChat) {
         if (existingChat.user_id !== args.userId) {
@@ -499,6 +508,10 @@ export const saveChat = mutation({
       return chatId;
     } catch (error) {
       const causeData = getConvexErrorData(error);
+      if (getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED") {
+        throw error;
+      }
+
       console.error(
         JSON.stringify({
           level: "error",
