@@ -36,7 +36,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 text-only agent chain to MiniMax, Kimi, then Grok slugs", () => {
+  it("resolves Opus 4.6 text-only agent chain to MiniMax, Kimi 2.7 Code, then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -76,7 +76,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 text-only agent chain to MiniMax, Kimi, then Grok slugs", () => {
+  it("resolves Sonnet 4.6 text-only agent chain to MiniMax, Kimi 2.7 Code, then Grok slugs", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -129,7 +129,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
   });
 
-  it("falls back from auto agent MiniMax to Kimi then Grok", () => {
+  it("falls back from auto agent MiniMax to Kimi 2.7 Code then Grok", () => {
     const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG, GROK_SLUG],
@@ -137,7 +137,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from explicit MiniMax to Kimi then Grok", () => {
+  it("falls back from explicit MiniMax to Kimi 2.7 Code then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -150,7 +150,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from explicit Kimi to Grok", () => {
+  it("falls back from explicit Kimi 2.7 Code to Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -168,7 +168,7 @@ describe("buildProviderOptions fallback chain", () => {
     ["agent-model-free", "agent"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
-    "falls back from free DeepSeek route %s through the paid Agent chain",
+    "falls back from free DeepSeek route %s through the paid Agent chain with Kimi 2.7 Code",
     (modelName, mode) => {
       const opts = buildProviderOptions(false, "user-1", modelName, mode);
       expect(opts.openrouter).toMatchObject({
@@ -250,15 +250,29 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
-    "enables reasoning for Kimi ask mode route %s",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter.reasoning).toEqual({
-        enabled: true,
-      });
-    },
-  );
+  it("enables reasoning for the current Kimi 2.7 Code ask route", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-kimi-k2.7-code",
+      "ask",
+    );
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+    });
+  });
+
+  it("keeps reasoning enabled for the legacy Kimi 2.6 alias", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-kimi-k2.6",
+      "ask",
+    );
+    expect(opts.openrouter.reasoning).toEqual({
+      enabled: true,
+    });
+  });
 
   it.each([
     "model-deepseek-v4-pro",
