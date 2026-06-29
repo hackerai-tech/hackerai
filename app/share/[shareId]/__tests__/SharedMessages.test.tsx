@@ -161,6 +161,41 @@ describe("SharedMessages", () => {
       expect(screen.getByText("Executed")).toBeInTheDocument();
       expect(screen.getByText("ls -la")).toBeInTheDocument();
     });
+
+    it("should target only successfully shared files when a terminal file upload partially fails", () => {
+      const messages = [
+        {
+          id: "1",
+          role: "assistant" as const,
+          parts: [
+            {
+              type: "tool-get_terminal_files",
+              state: "output-available",
+              input: {
+                brief: "Deliver both packages",
+                files: ["/home/user/server.zip", "/home/user/client.zip"],
+              },
+              output: {
+                result: "Partially provided 1 of 2 file(s)",
+                files: [{ path: "/home/user/server.zip" }],
+                failedFiles: [
+                  { path: "/home/user/client.zip", reason: "upload failed" },
+                ],
+              },
+            },
+          ],
+          update_time: mockShareDate,
+        },
+      ];
+
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+
+      expect(screen.getByText("Shared 1 of 2 files")).toBeInTheDocument();
+      expect(screen.getByText("server.zip")).toBeInTheDocument();
+      expect(screen.queryByText("client.zip")).not.toBeInTheDocument();
+    });
   });
 
   describe("Tool Execution - File Operations", () => {

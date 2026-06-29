@@ -9,6 +9,7 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
+import { partHasOpenRouterReasoningDetails } from "@/lib/chat/provider-metadata-sanitizer";
 
 type ReasoningHandlerProps = {
   message: UIMessage;
@@ -24,13 +25,32 @@ const collectReasoningText = (
   const collected: string[] = [];
   for (let i = startIndex; i < parts.length; i++) {
     const part = parts[i];
-    if (part?.type === "reasoning") {
+    if (
+      part?.type === "reasoning" &&
+      !partHasOpenRouterReasoningDetails(part)
+    ) {
       collected.push(part.text ?? "");
     } else {
       break;
     }
   }
   return collected.join("");
+};
+
+const collectReasoningComparisonKey = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): string => {
+  const run: Array<{ hidden: boolean; text?: string }> = [];
+  for (let i = startIndex; i < parts.length; i++) {
+    const part = parts[i];
+    if (part?.type !== "reasoning") break;
+    run.push({
+      hidden: partHasOpenRouterReasoningDetails(part),
+      text: part.text,
+    });
+  }
+  return JSON.stringify(run);
 };
 
 // Hoist regex outside component to avoid recreation
@@ -51,7 +71,15 @@ function areReasoningPropsEqual(
   const nextPart = next.message.parts[next.partIndex];
   if (prevPart?.type !== nextPart?.type) return false;
   if (prevPart?.type === "reasoning" && nextPart?.type === "reasoning") {
-    return prevPart.text === nextPart.text;
+    const prevPreviousPart = prev.message.parts[prev.partIndex - 1];
+    const nextPreviousPart = next.message.parts[next.partIndex - 1];
+    return (
+      collectReasoningComparisonKey(prev.message.parts, prev.partIndex) ===
+        collectReasoningComparisonKey(next.message.parts, next.partIndex) &&
+      prevPreviousPart?.type === nextPreviousPart?.type &&
+      partHasOpenRouterReasoningDetails(prevPreviousPart) ===
+        partHasOpenRouterReasoningDetails(nextPreviousPart)
+    );
   }
   return true;
 }
@@ -74,16 +102,27 @@ export const ReasoningHandler = memo(function ReasoningHandler({
     if (currentPart?.type !== "reasoning") return "";
     // Skip if previous part is also reasoning (avoid duplicate renders)
     const previousPart = parts[partIndex - 1];
-    if (previousPart?.type === "reasoning") return "";
+    if (
+      previousPart?.type === "reasoning" &&
+      !partHasOpenRouterReasoningDetails(previousPart)
+    ) {
+      return "";
+    }
     return collectReasoningText(parts, partIndex);
   }, [parts, partIndex, currentPart?.type]);
 
   // Early return for non-reasoning parts
   if (currentPart?.type !== "reasoning") return null;
+  if (partHasOpenRouterReasoningDetails(currentPart)) return null;
 
   // Skip if previous part is also reasoning (avoid duplicate renders)
   const previousPart = parts[partIndex - 1];
-  if (previousPart?.type === "reasoning") return null;
+  if (
+    previousPart?.type === "reasoning" &&
+    !partHasOpenRouterReasoningDetails(previousPart)
+  ) {
+    return null;
+  }
 
   // Don't show reasoning if empty or only contains [REDACTED] (encrypted reasoning from providers like Gemini)
   if (!combined || REDACTED_PATTERN.test(combined.trim())) return null;

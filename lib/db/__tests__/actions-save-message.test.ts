@@ -196,6 +196,74 @@ describe("saveMessage", () => {
     expect(() => JSON.stringify(compactedMessage.parts)).not.toThrow();
   });
 
+  it("removes OpenRouter reasoning metadata before storage compaction", async () => {
+    const { saveMessage, mockCompactMessageForStorage } =
+      await loadSaveMessageWithMocks();
+
+    await expect(
+      saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "assistant",
+          parts: [
+            {
+              type: "reasoning",
+              state: "done",
+              text: "private chain of thought",
+              providerMetadata: {
+                openrouter: {
+                  reasoning_details: [
+                    {
+                      type: "reasoning.text",
+                      text: "private chain of thought",
+                    },
+                  ],
+                },
+              },
+            },
+            {
+              type: "tool-run_terminal_cmd",
+              state: "output-available",
+              toolCallId: "call-1",
+              input: { command: "echo hi" },
+              output: { result: { exitCode: 0, output: "hi" } },
+              callProviderMetadata: {
+                openrouter: {
+                  reasoning_details: [
+                    { type: "reasoning.text", text: "private tool thought" },
+                  ],
+                },
+              },
+              providerMetadata: {
+                google: { thought_signature: "gemini-signature" },
+              },
+            },
+          ],
+        },
+      }),
+    ).resolves.toBeDefined();
+
+    const compactedMessage = mockCompactMessageForStorage.mock
+      .calls[0]?.[0] as {
+      parts: Array<Record<string, unknown>>;
+    };
+
+    expect(compactedMessage.parts).toHaveLength(1);
+    expect(compactedMessage.parts[0].type).toBe("tool-run_terminal_cmd");
+    expect(compactedMessage.parts[0].providerMetadata).toEqual({
+      google: { thought_signature: "gemini-signature" },
+    });
+    expect(compactedMessage.parts[0].callProviderMetadata).toBeUndefined();
+    expect(JSON.stringify(compactedMessage.parts)).not.toContain(
+      "reasoning_details",
+    );
+    expect(JSON.stringify(compactedMessage.parts)).not.toContain(
+      "private chain of thought",
+    );
+  });
+
   it("sanitizes usage metadata before saving", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const invalidUsageKey = "$provider\nraw";
