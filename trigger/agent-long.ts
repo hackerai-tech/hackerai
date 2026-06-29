@@ -1435,6 +1435,7 @@ export const agentLongTask = task({
               "ask-model-free",
               "agent-model",
               "agent-model-free",
+              "agent-model-free-minimax",
             ].includes(selectedModel);
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =

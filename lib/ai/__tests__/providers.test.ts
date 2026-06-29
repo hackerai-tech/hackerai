@@ -15,6 +15,13 @@ describe("provider registry", () => {
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
     ).toBe("minimax/minimax-m3");
     expect(
+      (
+        myProvider.languageModel("agent-model-free-minimax") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("minimax/minimax-m3");
+    expect(
       (myProvider.languageModel("model-minimax-m3") as { modelId: string })
         .modelId,
     ).toBe("minimax/minimax-m3");
@@ -260,6 +267,9 @@ describe("sanitizeOpenRouterRequestForGeminiFunctionResponses", () => {
 describe("supportsMultimodalToolResults", () => {
   it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
+    expect(supportsMultimodalToolResults("agent-model-free-minimax")).toBe(
+      true,
+    );
     expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
@@ -278,7 +288,7 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
   });
 
-  it("still rejects text-only DeepSeek routes", () => {
+  it("still rejects text-only DeepSeek routes outside the free MiniMax canary", () => {
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
       false,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "@jest/globals";
+import { afterEach, describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
 import {
   limitImageParts,
@@ -155,6 +155,8 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
+  const freeAgentRolloutEnv = "FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT";
+
   // Default model selection by mode
   describe("default models (no override)", () => {
     it("should return agent-model for agent mode", () => {
@@ -273,13 +275,46 @@ describe("selectModel", () => {
 
   // Free user guard
   describe("free user guard", () => {
+    const originalRollout = process.env[freeAgentRolloutEnv];
+
+    afterEach(() => {
+      if (originalRollout === undefined) {
+        delete process.env[freeAgentRolloutEnv];
+      } else {
+        process.env[freeAgentRolloutEnv] = originalRollout;
+      }
+    });
+
     it("should ignore tier override for free users in agent mode", () => {
+      delete process.env[freeAgentRolloutEnv];
       expect(selectModel("agent", "free", "hackerai-pro")).toBe(
         "agent-model-free",
       );
     });
 
+    it("should keep free Agent on DeepSeek route when MiniMax canary rollout is disabled", () => {
+      process.env[freeAgentRolloutEnv] = "0";
+      expect(
+        selectModel("agent", "free", "auto", false, false, "free-user-1"),
+      ).toBe("agent-model-free");
+    });
+
+    it("should route free Agent to MiniMax canary when rollout is enabled", () => {
+      process.env[freeAgentRolloutEnv] = "100";
+      expect(
+        selectModel(
+          "agent",
+          "free",
+          "hackerai-pro",
+          false,
+          false,
+          "free-user-1",
+        ),
+      ).toBe("agent-model-free-minimax");
+    });
+
     it("should ignore tier override for free users in ask mode", () => {
+      process.env[freeAgentRolloutEnv] = "100";
       expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
     });
 

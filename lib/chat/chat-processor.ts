@@ -12,6 +12,7 @@ import {
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
+import { isFreeAgentMinimaxM3Enabled } from "@/lib/auth/feature-flags";
 import {
   AUTH_DISCLAIMER,
   type SupportedLang,
@@ -40,8 +41,9 @@ export const getMaxStepsForUser = (
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
- *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek
- *   V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
+ *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek V4 Flash.
+ *   Free Agent canary users route to MiniMax M3. Paid ASK Pro always uses
+ *   Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(
@@ -50,6 +52,7 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
+  userId?: string,
 ): ModelName {
   const isAgent = isAgentMode(mode);
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
@@ -60,10 +63,13 @@ export function selectModel(
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
   const paidAskMediaModel: ModelName =
     hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
+  const freeAgentModel: ModelName = isFreeAgentMinimaxM3Enabled(userId)
+    ? "agent-model-free-minimax"
+    : "agent-model-free";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? "agent-model-free"
+      ? freeAgentModel
       : "agent-model"
     : isFreeAsk
       ? "ask-model-free"
@@ -733,6 +739,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
+    userId,
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

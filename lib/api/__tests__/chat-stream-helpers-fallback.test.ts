@@ -170,6 +170,19 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("falls back from free Agent MiniMax canary to Kimi then Grok", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "agent-model-free-minimax",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
   it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
     const opts = buildProviderOptions(
       false,

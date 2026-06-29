@@ -476,6 +476,7 @@ export class SummarizationTracker {
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": ["fallback-ask-model"],
   "agent-model-free": ["fallback-agent-model"],
+  "agent-model-free-minimax": ["model-kimi-k2.6", "fallback-grok-4.3"],
   "model-deepseek-v4-flash": ["fallback-ask-model"],
   "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-ask-model"],
@@ -492,6 +493,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model-free",
   "agent-model",
   "agent-model-free",
+  "agent-model-free-minimax",
 ]);
 
 export function isAutoModelSelectionForRetry({
