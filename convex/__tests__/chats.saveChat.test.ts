@@ -76,9 +76,13 @@ const makeCtx = ({
 }) => {
   const unique = jest.fn<any>().mockResolvedValue(existingChat ?? null);
   const first = jest.fn<any>().mockResolvedValue(existingChat ?? null);
+  const indexEq = jest.fn();
   const withIndex = jest.fn((_indexName: string, build: (q: any) => any) => {
     const q = {
-      eq: jest.fn(() => q),
+      eq: jest.fn((field: string, value: unknown) => {
+        indexEq(field, value);
+        return q;
+      }),
     };
     build(q);
     return { first, unique };
@@ -94,6 +98,7 @@ const makeCtx = ({
       },
     } as any,
     first,
+    indexEq,
     insert,
     query,
     unique,
@@ -104,12 +109,14 @@ const makeCtx = ({
 describe("saveChat", () => {
   it("uses unique chat id lookup before inserting", async () => {
     const { saveChat } = await import("../chats");
-    const { ctx, first, insert, unique } = makeCtx({});
+    const { ctx, first, indexEq, insert, unique, withIndex } = makeCtx({});
 
     await expect(saveChat.handler(ctx, saveChatArgs)).resolves.toBe(
       "chat-doc-1",
     );
 
+    expect(withIndex).toHaveBeenCalledWith("by_chat_id", expect.any(Function));
+    expect(indexEq).toHaveBeenCalledWith("id", "chat-1");
     expect(unique).toHaveBeenCalledTimes(1);
     expect(first).not.toHaveBeenCalled();
     expect(insert).toHaveBeenCalledWith("chats", {
@@ -120,9 +127,34 @@ describe("saveChat", () => {
     });
   });
 
+  it("wraps unexpected insert failures with chat save metadata", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, insert } = makeCtx({});
+    insert.mockRejectedValueOnce(new Error("write failed"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(saveChat.handler(ctx, saveChatArgs)).rejects.toMatchObject({
+        name: "ConvexError",
+        data: expect.objectContaining({
+          code: "CHAT_SAVE_FAILED",
+          message: "Failed to save chat",
+          failureStage: "insert_chat",
+          causeName: "Error",
+          causeMessage: "write failed",
+          operation: "chats.saveChat",
+          chatId: "chat-1",
+          titleLength: 5,
+        }),
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("rethrows existing-chat ownership denials without wrapping them", async () => {
     const { saveChat } = await import("../chats");
-    const { ctx, insert } = makeCtx({
+    const { ctx, indexEq, insert, withIndex } = makeCtx({
       existingChat: {
         _id: "chat-doc-1",
         id: "chat-1",
@@ -145,6 +177,11 @@ describe("saveChat", () => {
           chatId: "chat-1",
         },
       });
+      expect(withIndex).toHaveBeenCalledWith(
+        "by_chat_id",
+        expect.any(Function),
+      );
+      expect(indexEq).toHaveBeenCalledWith("id", "chat-1");
       expect(insert).not.toHaveBeenCalled();
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
