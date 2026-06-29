@@ -37,7 +37,7 @@ Rollback: set `FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT=0` and redeploy. No data mi
 
 ## Monitoring Queries
 
-Replace `{{rollout_start}}` with the deployment timestamp.
+Replace `{{rollout_start}}` with the deployment timestamp and `{{rollout_start_date}}` with the deployment date in `YYYY-MM-DD` format.
 
 Paid/free model cost mix:
 
