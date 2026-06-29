@@ -282,6 +282,49 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteUser).not.toHaveBeenCalled();
   });
 
+  it("repeats Convex cleanup batches before deleting external identity resources", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ hasMore: true })
+      .mockResolvedValueOnce({ hasMore: false });
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      1,
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      3,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
+      mockDeleteUser.mock.invocationCallOrder[0],
+    );
+    expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+  });
+
   it("does not delete org billing when a shared-org admin deletes their account", async () => {
     const callerMembership = {
       id: "membership_admin",

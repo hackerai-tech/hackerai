@@ -664,7 +664,7 @@ describe("userDeletion", () => {
     ).rejects.toThrow("processes one userId per mutation");
   });
 
-  it("fails before cleanup when an indexed query exceeds the bounded read limit", async () => {
+  it("reports remaining work and completes on a later batch when an indexed query exceeds the batch size", async () => {
     const { deleteAllUserData } = await import("../userDeletion");
     const tables = seedTables();
     tables.notes = Array.from({ length: 501 }, (_, index) => ({
@@ -674,10 +674,20 @@ describe("userDeletion", () => {
     }));
     const { ctx } = createMockCtx(tables);
 
-    await expect(deleteAllUserData.handler(ctx as any, {})).rejects.toThrow(
-      "matched more than 500 rows in notes.by_user_and_updated",
-    );
-    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
+    const firstBatch = await deleteAllUserData.handler(ctx as any, {});
+
+    expect(firstBatch.hasMore).toBe(true);
+    expect(
+      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
+    ).toHaveLength(1);
+    expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+
+    const secondBatch = await deleteAllUserData.handler(ctx as any, {});
+
+    expect(secondBatch.hasMore).toBe(false);
+    expect(
+      tables.notes.filter((candidate) => candidate.user_id === "user_123"),
+    ).toHaveLength(0);
   });
 
   it("fails user deletion if S3 cleanup scheduling fails", async () => {
