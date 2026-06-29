@@ -599,7 +599,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("agent-long DB rehydrate failures are not swallowed when no payload messages exist", () => {
     const fetchFailedIdx = dbActionsSrc.indexOf("chat_history_fetch_failed");
     const zeroNewMessagesIdx = dbActionsSrc.indexOf(
-      "newMessages.length === 0",
+      "normalizedNewMessages.length === 0",
       fetchFailedIdx,
     );
     const rethrowIdx = dbActionsSrc.indexOf(
