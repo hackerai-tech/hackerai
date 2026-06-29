@@ -422,6 +422,12 @@ export const createPurchaseSession = action({
         cancel_url: args.baseUrl,
       });
 
+      await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
+        userId: identity.subject,
+        amountDollars: args.amountDollars,
+        stripeCheckoutSessionId: session.id,
+      });
+
       convexLogger.info("purchase_session_created", {
         user_id: identity.subject,
         amount_dollars: args.amountDollars,

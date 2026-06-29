@@ -256,6 +256,48 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  // Durable support ledger for personal extra-usage Checkout purchases. This
+  // complements processed_checkout_sessions: the processed table is only a
+  // dedupe guard, while this row explains the observed purchase lifecycle.
+  extra_usage_purchases: defineTable({
+    user_id: v.string(),
+    amount_dollars: v.number(),
+    stripe_checkout_session_id: v.string(),
+    stripe_payment_intent_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    status: v.union(
+      v.literal("created"),
+      v.literal("paid_seen"),
+      v.literal("credited"),
+      v.literal("failed"),
+    ),
+    last_route: v.optional(
+      v.union(
+        v.literal("checkout_action"),
+        v.literal("confirm"),
+        v.literal("webhook"),
+        v.literal("repair"),
+      ),
+    ),
+    last_result: v.optional(
+      v.union(
+        v.literal("created"),
+        v.literal("paid_seen"),
+        v.literal("credited"),
+        v.literal("already_processed"),
+        v.literal("failed"),
+      ),
+    ),
+    last_error: v.optional(v.string()),
+    credited_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_created_at", ["user_id", "created_at"])
+    .index("by_stripe_checkout_session_id", ["stripe_checkout_session_id"])
+    .index("by_stripe_payment_intent_id", ["stripe_payment_intent_id"])
+    .index("by_stripe_invoice_id", ["stripe_invoice_id"]),
+
   // Team-shared extra usage pool. Admin funds it; any member of the org draws
   // from it for overflow once the team subscription bucket is exhausted.
   // Same units as extra_usage (points; auto-reload amount in dollars).

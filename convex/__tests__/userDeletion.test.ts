@@ -427,6 +427,26 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         source: "subscription",
       },
     ],
+    extra_usage_purchases: [
+      {
+        _id: "purchase-user",
+        user_id: userId,
+        amount_dollars: 50,
+        stripe_checkout_session_id: "cs_user",
+        status: "credited",
+        created_at: 1,
+        updated_at: 1,
+      },
+      {
+        _id: "purchase-other",
+        user_id: otherUserId,
+        amount_dollars: 50,
+        stripe_checkout_session_id: "cs_other",
+        status: "credited",
+        created_at: 1,
+        updated_at: 1,
+      },
+    ],
     paid_start_events: [
       {
         _id: "paid-user-entity",
@@ -558,6 +578,16 @@ describe("userDeletion", () => {
     expect(
       row(tables, "revenue_events", "revenue-org-with-user")?.user_id,
     ).toBeUndefined();
+    expect(row(tables, "extra_usage_purchases", "purchase-user")).toMatchObject(
+      {
+        user_id: DELETED_USER_ID,
+      },
+    );
+    expect(
+      row(tables, "extra_usage_purchases", "purchase-other"),
+    ).toMatchObject({
+      user_id: "user_other",
+    });
     expect(row(tables, "paid_start_events", "paid-user-entity")).toMatchObject({
       entity_id: DELETED_USER_ID,
     });

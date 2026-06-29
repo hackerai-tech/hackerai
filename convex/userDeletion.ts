@@ -30,6 +30,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "referral_attributions",
     "referral_rewards",
     "revenue_events",
+    "extra_usage_purchases",
     "paid_start_events",
     "unit_economics_daily",
     "user_suspensions",
@@ -353,6 +354,7 @@ async function cleanupUserDataForUser(
     userSuspensions,
     revenueByUser,
     revenueByEntity,
+    extraUsagePurchases,
     paidStartsByUser,
     paidStartsByEntity,
     unitEconomicsByUser,
@@ -420,6 +422,12 @@ async function cleanupUserDataForUser(
       "revenue_events",
       "by_entity_occurred",
       (q) => q.eq("entity_type", "user").eq("entity_id", userId),
+    ),
+    collectByIndex<Doc<"extra_usage_purchases">>(
+      ctx,
+      "extra_usage_purchases",
+      "by_user_created_at",
+      (q) => q.eq("user_id", userId),
     ),
     collectByIndex<Doc<"paid_start_events">>(
       ctx,
@@ -540,6 +548,14 @@ async function cleanupUserDataForUser(
     "revenue_events",
     [...revenueByUser, ...revenueByEntity],
     anonymizeEntityLedger,
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_purchases",
+    extraUsagePurchases,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
     mode,
   );
   await anonymizeDocs(

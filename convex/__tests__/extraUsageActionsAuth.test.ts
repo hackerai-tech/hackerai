@@ -96,6 +96,7 @@ function makeCtx(userId = "user_member") {
     auth: {
       getUserIdentity: jest.fn(async () => ({ subject: userId })),
     },
+    runMutation: jest.fn(async () => null),
   };
 }
 
@@ -193,6 +194,34 @@ describe("extraUsageActions billing authorization", () => {
         metadata: expect.objectContaining({
           userId: "user_admin",
         }),
+      }),
+    );
+    expect(result).toEqual({
+      url: "https://checkout.stripe.test/session",
+      checkoutSessionId: "cs_test",
+    });
+  });
+
+  it("records the purchase row after creating a Checkout session", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+
+    const ctx = makeCtx("user_admin");
+    const result = await callCreatePurchaseSession(ctx);
+
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        userId: "user_admin",
+        amountDollars: 15,
+        stripeCheckoutSessionId: "cs_test",
       }),
     );
     expect(result).toEqual({
