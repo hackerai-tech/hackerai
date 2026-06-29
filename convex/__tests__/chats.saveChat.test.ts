@@ -152,6 +152,38 @@ describe("saveChat", () => {
     }
   });
 
+  it("preserves structured Convex cause metadata on insert failures", async () => {
+    const { ConvexError } = await import("convex/values");
+    const { saveChat } = await import("../chats");
+    const { ctx, insert } = makeCtx({});
+    insert.mockRejectedValueOnce(
+      new ConvexError({
+        code: "DB_WRITE_FAILED",
+        requestId: "req-123",
+      }),
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(saveChat.handler(ctx, saveChatArgs)).rejects.toMatchObject({
+        name: "ConvexError",
+        data: expect.objectContaining({
+          code: "CHAT_SAVE_FAILED",
+          failureStage: "insert_chat",
+          causeData: {
+            code: "DB_WRITE_FAILED",
+            requestId: "req-123",
+          },
+          operation: "chats.saveChat",
+          chatId: "chat-1",
+          titleLength: 5,
+        }),
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("rethrows existing-chat ownership denials without wrapping them", async () => {
     const { saveChat } = await import("../chats");
     const { ctx, indexEq, insert, withIndex } = makeCtx({
