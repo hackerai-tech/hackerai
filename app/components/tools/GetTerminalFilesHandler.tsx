@@ -128,9 +128,14 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
       );
 
     case "output-available": {
-      const fileCount = output?.files?.length || output?.fileUrls?.length || 0;
+      const successfulPaths = [
+        ...(output?.files?.map((file) => file.path) || []),
+        ...(output?.fileUrls?.map((file) => file.path) || []),
+      ];
+      const fileCount = successfulPaths.length;
       const totalFileCount = fileCount + failedFileCount;
-      const fileNames = getFileNames(requestedPaths);
+      const displayPaths = fileCount > 0 ? successfulPaths : requestedPaths;
+      const fileNames = getFileNames(displayPaths);
       const fallbackAction =
         failedFileCount > 0
           ? fileCount > 0

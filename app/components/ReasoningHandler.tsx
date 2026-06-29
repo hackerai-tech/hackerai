@@ -37,6 +37,22 @@ const collectReasoningText = (
   return collected.join("");
 };
 
+const collectReasoningComparisonKey = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): string => {
+  const run: Array<{ hidden: boolean; text?: string }> = [];
+  for (let i = startIndex; i < parts.length; i++) {
+    const part = parts[i];
+    if (part?.type !== "reasoning") break;
+    run.push({
+      hidden: partHasOpenRouterReasoningDetails(part),
+      text: part.text,
+    });
+  }
+  return JSON.stringify(run);
+};
+
 // Hoist regex outside component to avoid recreation
 const REDACTED_PATTERN = /^(\[REDACTED\])+$/;
 
@@ -58,9 +74,8 @@ function areReasoningPropsEqual(
     const prevPreviousPart = prev.message.parts[prev.partIndex - 1];
     const nextPreviousPart = next.message.parts[next.partIndex - 1];
     return (
-      prevPart.text === nextPart.text &&
-      partHasOpenRouterReasoningDetails(prevPart) ===
-        partHasOpenRouterReasoningDetails(nextPart) &&
+      collectReasoningComparisonKey(prev.message.parts, prev.partIndex) ===
+        collectReasoningComparisonKey(next.message.parts, next.partIndex) &&
       prevPreviousPart?.type === nextPreviousPart?.type &&
       partHasOpenRouterReasoningDetails(prevPreviousPart) ===
         partHasOpenRouterReasoningDetails(nextPreviousPart)

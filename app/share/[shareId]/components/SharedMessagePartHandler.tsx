@@ -649,10 +649,16 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
   }
 
   if (part.state === "output-available") {
-    const fileCount =
-      filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
+    const successfulPaths = [
+      ...(filesOutput?.files?.map((file) => file.path) || []),
+      ...(filesOutput?.fileUrls?.map((file) => file.path) || []),
+    ];
+    const fileCount = successfulPaths.length;
     const failedFileCount = filesOutput?.failedFiles?.length || 0;
     const totalFileCount = fileCount + failedFileCount;
+    const displayPaths =
+      fileCount > 0 ? successfulPaths : filesInput?.files || [];
+    const displayFileNames = getFileNames(displayPaths);
     const fallbackAction =
       failedFileCount > 0
         ? fileCount > 0
@@ -665,7 +671,7 @@ function renderGetTerminalFilesTool(part: MessagePart, idx: number) {
         key={idx}
         icon={<FileDown aria-hidden="true" />}
         action={failedFileCount === 0 && brief ? brief : fallbackAction}
-        target={failedFileCount === 0 && brief ? undefined : fileNames}
+        target={failedFileCount === 0 && brief ? undefined : displayFileNames}
       />
     );
   }
