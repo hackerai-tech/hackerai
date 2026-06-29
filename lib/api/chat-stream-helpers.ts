@@ -473,16 +473,22 @@ export class SummarizationTracker {
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
+const FREE_DEEPSEEK_FALLBACK_CHAIN = [
+  "fallback-minimax-m3",
+  "fallback-grok-4.3",
+] as const satisfies readonly ModelName[];
+
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": ["fallback-ask-model"],
-  "agent-model-free": ["fallback-agent-model"],
-  "model-deepseek-v4-flash": ["fallback-ask-model"],
+  "ask-model-free": FREE_DEEPSEEK_FALLBACK_CHAIN,
+  "agent-model-free": FREE_DEEPSEEK_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash": FREE_DEEPSEEK_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-ask-model"],
   "agent-model": ["model-kimi-k2.6", "fallback-grok-4.3"],
   "model-grok-4.3": ["fallback-ask-model"],
   "model-gemini-3-flash": ["fallback-ask-model"],
   "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
+  "fallback-minimax-m3": ["fallback-grok-4.3"],
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -577,6 +583,13 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
 ): ModelName {
+  if (
+    modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
+    modelName === "model-deepseek-v4-flash"
+  ) {
+    return "fallback-minimax-m3";
+  }
   if (isDeepSeekModel(modelName)) {
     return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
   }

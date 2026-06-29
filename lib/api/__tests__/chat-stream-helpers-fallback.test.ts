@@ -8,6 +8,7 @@
 
 import {
   buildProviderOptions,
+  getRetryFallbackModel,
   isAutoModelSelectionForRetry,
 } from "@/lib/api/chat-stream-helpers";
 
@@ -162,13 +163,20 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from free DeepSeek agent model to Gemini", () => {
-    const opts = buildProviderOptions(false, "user-1", "agent-model-free");
-    expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_PREVIEW_SLUG],
-      user: "user-1",
-    });
-  });
+  it.each([
+    ["ask-model-free", "ask"],
+    ["agent-model-free", "agent"],
+    ["model-deepseek-v4-flash", "ask"],
+  ] as const)(
+    "falls back from free DeepSeek route %s to MiniMax then Grok",
+    (modelName, mode) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, mode);
+      expect(opts.openrouter).toMatchObject({
+        models: [MINIMAX_SLUG, GROK_SLUG],
+        user: "user-1",
+      });
+    },
+  );
 
   it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
     const opts = buildProviderOptions(
@@ -235,7 +243,7 @@ describe("buildProviderOptions fallback chain", () => {
       enabled: true,
       effort: "medium",
     });
-    expect(opts.openrouter.models).toEqual([GEMINI_PREVIEW_SLUG]);
+    expect(opts.openrouter.models).toEqual([MINIMAX_SLUG, GROK_SLUG]);
   });
 
   it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
@@ -340,5 +348,26 @@ describe("isAutoModelSelectionForRetry", () => {
         selectedModelOverride: "hackerai-standard",
       }),
     ).toBe(true);
+  });
+});
+
+describe("getRetryFallbackModel", () => {
+  it.each([
+    ["ask-model-free", "ask"],
+    ["agent-model-free", "agent"],
+    ["model-deepseek-v4-flash", "ask"],
+  ] as const)(
+    "uses MiniMax M3 for app-side retry after free DeepSeek route %s fails",
+    (modelName, mode) => {
+      expect(getRetryFallbackModel(modelName, mode)).toBe(
+        "fallback-minimax-m3",
+      );
+    },
+  );
+
+  it("keeps paid DeepSeek Pro ask retry on the existing ask fallback", () => {
+    expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
+      "fallback-ask-model",
+    );
   });
 });
