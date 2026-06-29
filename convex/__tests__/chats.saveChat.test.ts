@@ -179,6 +179,17 @@ describe("saveChat", () => {
           titleLength: 5,
         }),
       });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const [logLine] = errorSpy.mock.calls[0] ?? [];
+      expect(JSON.parse(String(logLine))).toMatchObject({
+        event: "convex_chat_save_failed",
+        db_operation: "chats.saveChat",
+        failure_stage: "insert_chat",
+        convex_error_data: {
+          code: "DB_WRITE_FAILED",
+          requestId: "req-123",
+        },
+      });
     } finally {
       errorSpy.mockRestore();
     }
