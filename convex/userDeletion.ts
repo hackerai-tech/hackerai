@@ -131,13 +131,18 @@ async function collectByIndexBatch<T extends AnyDoc>(
   table: string,
   indexName: string,
   build: (q: any) => any,
+  limit = MAX_CLEANUP_DOCS_PER_INDEX,
 ): Promise<IndexedBatch<T>> {
+  if (limit <= 0) {
+    return { docs: [], hasMore: true };
+  }
+
   const rows = await (ctx.db.query(table as any) as any)
     .withIndex(indexName, build)
-    .take(MAX_CLEANUP_DOCS_PER_INDEX + 1);
+    .take(limit + 1);
 
-  const hasMore = rows.length > MAX_CLEANUP_DOCS_PER_INDEX;
-  const docs = hasMore ? rows.slice(0, MAX_CLEANUP_DOCS_PER_INDEX) : rows;
+  const hasMore = rows.length > limit;
+  const docs = hasMore ? rows.slice(0, limit) : rows;
 
   return { docs, hasMore };
 }
@@ -194,35 +199,53 @@ async function collectChatSummariesForChats(
   chats: Doc<"chats">[],
   stats: CleanupStats,
 ) {
-  const summariesByChat = await Promise.all(
-    chats.map(async (chat) => {
-      const batch = await collectByIndexBatch<Doc<"chat_summaries">>(
-        ctx,
-        "chat_summaries",
-        "by_chat_id",
-        (q) => q.eq("chat_id", chat.id),
-      );
-      if (batch.hasMore) stats.hasMore = true;
-      return { chatId: chat.id, ...batch };
-    }),
-  );
+  const summaries: Doc<"chat_summaries">[] = [];
+  const incompleteChatIds = new Set<string>();
+  let remainingSummaryReads = MAX_CLEANUP_DOCS_PER_INDEX;
 
-  const latestSummaries = await Promise.all(
-    chats.map((chat) =>
-      chat.latest_summary_id ? ctx.db.get(chat.latest_summary_id) : null,
-    ),
-  );
+  for (const chat of chats) {
+    if (remainingSummaryReads <= 0) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+
+    const batch = await collectByIndexBatch<Doc<"chat_summaries">>(
+      ctx,
+      "chat_summaries",
+      "by_chat_id",
+      (q) => q.eq("chat_id", chat.id),
+      remainingSummaryReads,
+    );
+    summaries.push(...batch.docs);
+    remainingSummaryReads -= batch.docs.length;
+
+    if (batch.hasMore) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+
+    if (!chat.latest_summary_id) {
+      continue;
+    }
+
+    if (remainingSummaryReads <= 0) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+
+    const latestSummary = await ctx.db.get(chat.latest_summary_id);
+    remainingSummaryReads -= 1;
+    if (latestSummary) {
+      summaries.push(latestSummary);
+    }
+  }
 
   return {
-    summaries: uniqueDocs([
-      ...summariesByChat.flatMap((batch) => batch.docs),
-      ...latestSummaries,
-    ]),
-    incompleteChatIds: new Set(
-      summariesByChat
-        .filter((batch) => batch.hasMore)
-        .map((batch) => batch.chatId),
-    ),
+    summaries: uniqueDocs(summaries),
+    incompleteChatIds,
   };
 }
 
@@ -687,6 +710,7 @@ async function cleanupOrphanChatSummaries(
   stats.orphanChatSummariesScanned = page.page.length;
   stats.orphanChatSummariesIsDone = page.isDone;
   stats.orphanChatSummariesContinueCursor = page.continueCursor ?? undefined;
+  stats.hasMore = !page.isDone;
 
   const orphanSummaries: Doc<"chat_summaries">[] = [];
   for (const summary of page.page as Doc<"chat_summaries">[]) {

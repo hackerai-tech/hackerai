@@ -628,12 +628,23 @@ describe("userDeletion", () => {
     });
     const { ctx } = createMockCtx(tables);
 
+    const pagedDryRun = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      deleteOrphanChatSummaries: true,
+      orphanNumItems: 1,
+    });
+
+    expect(pagedDryRun.hasMore).toBe(true);
+    expect(pagedDryRun.orphanChatSummariesIsDone).toBe(false);
+    expect(pagedDryRun.orphanChatSummariesContinueCursor).toBe("1");
+
     const dryRun = await cleanupDeletedUserResidue.handler(ctx as any, {
       serviceKey: "service_key",
       deleteOrphanChatSummaries: true,
       orphanNumItems: 20,
     });
 
+    expect(dryRun.hasMore).toBe(false);
     expect(dryRun.orphanChatSummariesDeleted).toBe(2);
     expect(row(tables, "chat_summaries", "summary-orphan")).toBeTruthy();
     expect(row(tables, "chat_summaries", "summary-latest")).toBeTruthy();
@@ -645,6 +656,7 @@ describe("userDeletion", () => {
       orphanNumItems: 20,
     });
 
+    expect(execute.hasMore).toBe(false);
     expect(execute.orphanChatSummariesDeleted).toBe(2);
     expect(row(tables, "chat_summaries", "summary-orphan")).toBeUndefined();
     expect(row(tables, "chat_summaries", "summary-latest")).toBeUndefined();

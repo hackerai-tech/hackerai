@@ -19,12 +19,17 @@ type MembershipDeletionPlan = {
 
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
 
-function convexCleanupHasMore(result: unknown): boolean {
-  return (
-    !!result &&
+function parseConvexCleanupResult(result: unknown): { hasMore: boolean } {
+  if (
+    result &&
     typeof result === "object" &&
-    "hasMore" in result &&
-    (result as { hasMore?: unknown }).hasMore === true
+    typeof (result as { hasMore?: unknown }).hasMore === "boolean"
+  ) {
+    return { hasMore: (result as { hasMore: boolean }).hasMore };
+  }
+
+  throw new Error(
+    "Account cleanup returned an unexpected response. Please contact support so we can finish deleting this account.",
   );
 }
 
@@ -120,7 +125,7 @@ async function deleteConvexUserData(userId: string, serviceKey: string) {
       },
     );
 
-    if (!convexCleanupHasMore(result)) {
+    if (!parseConvexCleanupResult(result).hasMore) {
       return;
     }
   }
