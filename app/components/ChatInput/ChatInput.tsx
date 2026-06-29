@@ -59,7 +59,11 @@ const draftAttachmentToUploadedFile = (
   attachment: ConversationDraftAttachment,
 ): UploadedFileState => {
   const isLocalDesktop = attachment.storage === "local-desktop";
-  const generatedTextAttachmentId = attachment.generatedTextAttachmentId;
+  const generatedTextAttachmentId =
+    attachment.generatedTextAttachmentId ||
+    (!isLocalDesktop && attachment.kind === "pasted-text"
+      ? attachment.fileId
+      : undefined);
   const uploadedFile: UploadedFileState = {
     file: {
       name: attachment.name,
@@ -303,7 +307,8 @@ export const ChatInput = ({
       if (
         uploadedFile.generatedTextAttachment ||
         uploadedFile.generatedSource !== "pasted-text" ||
-        !uploadedFile.fileId
+        !uploadedFile.fileId ||
+        !uploadedFile.generatedTextAttachmentId
       ) {
         return uploadedFile;
       }
@@ -318,7 +323,7 @@ export const ChatInput = ({
         ...uploadedFile,
         tokens: fileContent.tokenSize,
         generatedTextAttachment: {
-          id: uploadedFile.generatedTextAttachmentId || uploadedFile.fileId,
+          id: uploadedFile.generatedTextAttachmentId,
           content: fileContent.content,
         },
       };
