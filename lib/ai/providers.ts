@@ -264,7 +264,6 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-minimax-m3": or(MINIMAX_M3_SLUG),
-    "fallback-minimax-m3": or(MINIMAX_M3_SLUG),
     "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
     // Compatibility alias for stale internal references persisted before the
     // Kimi 2.7 Code rollout. New Agent Standard selections use model-minimax-m3.
@@ -294,7 +293,6 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
   "model-minimax-m3": "May 2026",
-  "fallback-minimax-m3": "May 2026",
   "model-kimi-k2.7-code": "June 2025",
   "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "January 2025",
@@ -317,7 +315,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-minimax-m3": "MiniMax M3",
-  "fallback-minimax-m3": "Auto, an intelligent model router built by HackerAI",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -363,7 +360,6 @@ export function isMiniMaxModel(modelName: string): boolean {
   return (
     normalized === "agent-model" ||
     normalized === "model-minimax-m3" ||
-    normalized === "fallback-minimax-m3" ||
     normalized.includes("minimax/minimax-m3")
   );
 }

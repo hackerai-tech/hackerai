@@ -168,11 +168,11 @@ describe("buildProviderOptions fallback chain", () => {
     ["agent-model-free", "agent"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
-    "falls back from free DeepSeek route %s to MiniMax then Grok",
+    "falls back from free DeepSeek route %s through the paid Agent chain",
     (modelName, mode) => {
       const opts = buildProviderOptions(false, "user-1", modelName, mode);
       expect(opts.openrouter).toMatchObject({
-        models: [MINIMAX_SLUG, GROK_SLUG],
+        models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
         user: "user-1",
       });
     },
@@ -243,7 +243,11 @@ describe("buildProviderOptions fallback chain", () => {
       enabled: true,
       effort: "medium",
     });
-    expect(opts.openrouter.models).toEqual([MINIMAX_SLUG, GROK_SLUG]);
+    expect(opts.openrouter.models).toEqual([
+      MINIMAX_SLUG,
+      KIMI_SLUG,
+      GROK_SLUG,
+    ]);
   });
 
   it.each(["model-kimi-k2.7-code", "model-kimi-k2.6"])(
@@ -357,11 +361,9 @@ describe("getRetryFallbackModel", () => {
     ["agent-model-free", "agent"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
-    "uses MiniMax M3 for app-side retry after free DeepSeek route %s fails",
+    "uses the paid Agent fallback chain for app-side retry after free DeepSeek route %s fails",
     (modelName, mode) => {
-      expect(getRetryFallbackModel(modelName, mode)).toBe(
-        "fallback-minimax-m3",
-      );
+      expect(getRetryFallbackModel(modelName, mode)).toBe("model-minimax-m3");
     },
   );
 

@@ -474,7 +474,8 @@ export class SummarizationTracker {
  * with the registry.
  */
 const FREE_DEEPSEEK_FALLBACK_CHAIN = [
-  "fallback-minimax-m3",
+  "model-minimax-m3",
+  "model-kimi-k2.6",
   "fallback-grok-4.3",
 ] as const satisfies readonly ModelName[];
 
@@ -488,7 +489,6 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-grok-4.3": ["fallback-ask-model"],
   "model-gemini-3-flash": ["fallback-ask-model"],
   "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
-  "fallback-minimax-m3": ["fallback-grok-4.3"],
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -588,7 +588,7 @@ export function getRetryFallbackModel(
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash"
   ) {
-    return "fallback-minimax-m3";
+    return "model-minimax-m3";
   }
   if (isDeepSeekModel(modelName)) {
     return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
