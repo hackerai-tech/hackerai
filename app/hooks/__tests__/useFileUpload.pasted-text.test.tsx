@@ -36,6 +36,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
   pickLocalFiles: jest.fn(),
   getLocalFileMetadata: jest.fn(),
   readLocalFile: jest.fn(),
+  writeGeneratedTextAttachment: jest.fn(),
+  removeGeneratedTextAttachment: jest.fn(),
 }));
 
 jest.mock("sonner", () => ({

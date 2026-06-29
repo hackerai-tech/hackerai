@@ -14,7 +14,8 @@ export type ConversationDraft = {
 
 export type ConversationDraftAttachment = {
   kind: "file" | "pasted-text";
-  fileId: string;
+  storage?: "s3" | "local-desktop";
+  fileId?: string;
   name: string;
   mediaType: string;
   size: number;
@@ -186,13 +187,20 @@ const normalizeDraftAttachments = (
     const value = attachment as Partial<ConversationDraftAttachment>;
     const kind = value.kind;
     const validKind = kind === "file" || kind === "pasted-text";
+    const storage = value.storage === "local-desktop" ? "local-desktop" : "s3";
+    const hasFileId =
+      typeof value.fileId === "string" && value.fileId.length > 0;
+    const hasGeneratedTextAttachmentId =
+      typeof value.generatedTextAttachmentId === "string" &&
+      value.generatedTextAttachmentId.length > 0;
 
     if (
       !validKind ||
       (typeof value.generatedSource !== "undefined" &&
         value.generatedSource !== "pasted-text") ||
-      typeof value.fileId !== "string" ||
-      value.fileId.length === 0 ||
+      (storage === "s3" && !hasFileId) ||
+      (storage === "local-desktop" &&
+        (kind !== "pasted-text" || !hasGeneratedTextAttachmentId)) ||
       typeof value.name !== "string" ||
       value.name.length === 0 ||
       typeof value.mediaType !== "string" ||
@@ -205,12 +213,19 @@ const normalizeDraftAttachments = (
 
     const normalized: ConversationDraftAttachment = {
       kind,
-      fileId: value.fileId,
       name: value.name,
       mediaType: value.mediaType,
       size: value.size,
       timestamp: value.timestamp,
     };
+
+    if (storage === "local-desktop") {
+      normalized.storage = "local-desktop";
+    }
+
+    if (hasFileId) {
+      normalized.fileId = value.fileId;
+    }
 
     if (typeof value.tokens === "number") {
       normalized.tokens = value.tokens;

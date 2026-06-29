@@ -8,6 +8,7 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
+import { readGeneratedTextAttachment } from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -57,6 +58,8 @@ const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
 const draftAttachmentToUploadedFile = (
   attachment: ConversationDraftAttachment,
 ): UploadedFileState => {
+  const isLocalDesktop = attachment.storage === "local-desktop";
+  const generatedTextAttachmentId = attachment.generatedTextAttachmentId;
   const uploadedFile: UploadedFileState = {
     file: {
       name: attachment.name,
@@ -66,18 +69,23 @@ const draftAttachmentToUploadedFile = (
     },
     uploading: false,
     uploaded: true,
-    storage: "s3",
-    fileId: attachment.fileId,
+    storage: isLocalDesktop ? "local-desktop" : "s3",
     tokens: attachment.tokens,
   };
+
+  if (attachment.fileId) {
+    uploadedFile.fileId = attachment.fileId;
+  }
 
   if (
     attachment.kind === "pasted-text" ||
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
-    uploadedFile.generatedTextAttachmentId =
-      attachment.generatedTextAttachmentId;
+    uploadedFile.generatedTextAttachmentId = generatedTextAttachmentId;
+    if (isLocalDesktop && generatedTextAttachmentId) {
+      uploadedFile.localAttachmentId = generatedTextAttachmentId;
+    }
   }
 
   return uploadedFile;
@@ -86,13 +94,7 @@ const draftAttachmentToUploadedFile = (
 const uploadedFileToDraftAttachment = (
   uploadedFile: UploadedFileState,
 ): ConversationDraftAttachment | null => {
-  if (
-    !uploadedFile.uploaded ||
-    uploadedFile.uploading ||
-    uploadedFile.error ||
-    !uploadedFile.fileId ||
-    uploadedFile.storage === "local-desktop"
-  ) {
+  if (!uploadedFile.uploaded || uploadedFile.uploading || uploadedFile.error) {
     return null;
   }
 
@@ -102,6 +104,28 @@ const uploadedFileToDraftAttachment = (
   const isGeneratedPastedText =
     uploadedFile.generatedSource === "pasted-text" ||
     Boolean(generatedTextAttachmentId);
+
+  if (uploadedFile.storage === "local-desktop") {
+    if (!isGeneratedPastedText || !generatedTextAttachmentId) {
+      return null;
+    }
+
+    return {
+      kind: "pasted-text",
+      storage: "local-desktop",
+      name: uploadedFile.file.name,
+      mediaType: uploadedFile.file.type || "text/plain",
+      size: uploadedFile.file.size,
+      tokens: uploadedFile.tokens,
+      timestamp: uploadedFile.file.lastModified,
+      generatedSource: "pasted-text",
+      generatedTextAttachmentId,
+    };
+  }
+
+  if (!uploadedFile.fileId) {
+    return null;
+  }
 
   return {
     kind: isGeneratedPastedText ? "pasted-text" : "file",
@@ -212,6 +236,33 @@ export const ChatInput = ({
     api.fileStorage.getTextFileContentForCurrentUser,
     draftTextFileIds.length > 0 ? { fileIds: draftTextFileIds } : "skip",
   );
+  const localDraftTextFiles = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile, index) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage === "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              uploadedFile.generatedTextAttachmentId
+            ) {
+              return [
+                {
+                  index,
+                  attachmentId: uploadedFile.generatedTextAttachmentId,
+                  fileName: uploadedFile.file.name,
+                },
+              ];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
@@ -277,6 +328,88 @@ export const ChatInput = ({
       setUploadedFiles(nextUploadedFiles);
     }
   }, [draftTextFileContents, setUploadedFiles]);
+
+  useEffect(() => {
+    if (localDraftTextFiles.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateLocalGeneratedTextFiles = async () => {
+      const hydratedFiles = await Promise.all(
+        localDraftTextFiles.map(async (file) => ({
+          ...file,
+          content: await readGeneratedTextAttachment(
+            file.attachmentId,
+            file.fileName,
+          ),
+        })),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      let didHydrate = false;
+      const hydratedByIndex = new Map<
+        number,
+        (typeof hydratedFiles)[number] & {
+          content: NonNullable<(typeof hydratedFiles)[number]["content"]>;
+        }
+      >();
+      hydratedFiles.forEach((file) => {
+        if (file.content) {
+          hydratedByIndex.set(file.index, { ...file, content: file.content });
+        }
+      });
+
+      const nextUploadedFiles = uploadedFilesRef.current.map(
+        (uploadedFile, index) => {
+          const hydratedFile = hydratedByIndex.get(index);
+          if (!hydratedFile) {
+            return uploadedFile;
+          }
+
+          if (
+            uploadedFile.generatedTextAttachment ||
+            uploadedFile.generatedTextAttachmentId !==
+              hydratedFile.attachmentId ||
+            uploadedFile.storage !== "local-desktop"
+          ) {
+            return uploadedFile;
+          }
+
+          didHydrate = true;
+          return {
+            ...uploadedFile,
+            file: {
+              name: hydratedFile.content.name,
+              type: hydratedFile.content.mediaType || "text/plain",
+              size: hydratedFile.content.size,
+              lastModified: hydratedFile.content.lastModified || Date.now(),
+            },
+            localAttachmentId: hydratedFile.attachmentId,
+            localPath: hydratedFile.content.path,
+            generatedTextAttachment: {
+              id: hydratedFile.attachmentId,
+              content: hydratedFile.content.content,
+            },
+          };
+        },
+      );
+
+      if (didHydrate) {
+        setUploadedFiles(nextUploadedFiles);
+      }
+    };
+
+    void hydrateLocalGeneratedTextFiles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [localDraftTextFiles, setUploadedFiles]);
 
   useEffect(() => {
     const prevDraftId = prevDraftIdRef.current;

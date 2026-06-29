@@ -226,6 +226,48 @@ describe("client-storage draft attachments", () => {
     ]);
   });
 
+  it("persists local generated pasted-text draft metadata without content or source path", () => {
+    const timestamp = Date.now();
+    const pastedContent = "Sensitive pasted source material";
+    const localPath = "/Users/alice/pasted_content.txt";
+
+    upsertDraftAttachments("chat-1", [
+      {
+        kind: "pasted-text",
+        storage: "local-desktop",
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: 512,
+        generatedSource: "pasted-text",
+        generatedTextAttachmentId: "generated_123",
+        tokens: 0,
+        timestamp,
+        generatedTextContent: pastedContent,
+        localPath,
+      } as any,
+    ]);
+
+    expect(hasDraftAttachmentsById("chat-1")).toBe(true);
+    expect(getDraftAttachmentsById("chat-1")).toEqual([
+      {
+        kind: "pasted-text",
+        storage: "local-desktop",
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: 512,
+        generatedSource: "pasted-text",
+        generatedTextAttachmentId: "generated_123",
+        tokens: 0,
+        timestamp,
+      },
+    ]);
+    const storedDraft = window.localStorage.getItem(
+      CONVERSATION_DRAFTS_STORAGE_KEY,
+    );
+    expect(storedDraft).not.toContain(pastedContent);
+    expect(storedDraft).not.toContain(localPath);
+  });
+
   it("preserves draft attachments when text autosave updates content", () => {
     upsertDraftAttachments("chat-1", [
       {
