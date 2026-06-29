@@ -113,7 +113,11 @@ describe("POST /api/delete-account", () => {
       freeQuotaSubject: "free_quota:v1:identity_hash",
     });
     mockDeleteUserRateLimitKeys.mockResolvedValue(undefined);
-    mockConvexMutation.mockResolvedValue(null);
+    mockConvexMutation.mockImplementation(async (functionReference) =>
+      functionReference === "userDeletion.deleteAllUserDataByService"
+        ? { hasMore: false }
+        : null,
+    );
     mockDeleteOrganizationMembership.mockResolvedValue(undefined as never);
     mockDeleteUser.mockResolvedValue(undefined as never);
     mockDeleteOrganization.mockResolvedValue(undefined as never);
@@ -274,6 +278,68 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("Convex cleanup failed");
+    expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockDeleteCustomer).not.toHaveBeenCalled();
+    expect(mockDeleteOrganization).not.toHaveBeenCalled();
+    expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("repeats Convex cleanup batches before deleting external identity resources", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ hasMore: true })
+      .mockResolvedValueOnce({ hasMore: false });
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      1,
+      "accountIdentities.markDeleted",
+      {
+        serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      3,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
+      mockDeleteUser.mock.invocationCallOrder[0],
+    );
+    expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+  });
+
+  it("does not delete external identity resources when Convex cleanup returns an unexpected shape", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toContain("unexpected response");
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockListSubscriptions).not.toHaveBeenCalled();
     expect(mockDeleteCustomer).not.toHaveBeenCalled();
