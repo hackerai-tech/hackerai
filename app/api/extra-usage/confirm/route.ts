@@ -197,21 +197,36 @@ export async function GET(req: NextRequest) {
       },
     );
 
-    phLogger.event(
-      PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
-      paidFunnelProperties({
+    try {
+      phLogger.event(
+        PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+        paidFunnelProperties({
+          userId,
+          checkout_attempt_id: session.metadata.checkoutAttemptId,
+          checkout_type: "extra_usage_purchase",
+          amount_dollars: amountDollars,
+          stripe_customer_id: stripeCustomerId,
+          stripe_checkout_session_id: session.id,
+          stripe_payment_intent_id: stripePaymentIntentId,
+          payment_status: session.payment_status,
+          $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+        }),
+      );
+      after(() => phLogger.flush());
+    } catch (analyticsError) {
+      logExtraUsagePurchase("warn", "extra_usage_purchase_analytics_failed", {
+        route: ROUTE,
+        requestHeaders: req.headers,
         userId,
-        checkout_attempt_id: session.metadata.checkoutAttemptId,
-        checkout_type: "extra_usage_purchase",
-        amount_dollars: amountDollars,
-        stripe_customer_id: stripeCustomerId,
-        stripe_checkout_session_id: session.id,
-        stripe_payment_intent_id: stripePaymentIntentId,
-        payment_status: session.payment_status,
-        $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
-      }),
-    );
-    after(() => phLogger.flush());
+        amountDollars,
+        stripeCheckoutSessionId: session.id,
+        stripePaymentIntentId,
+        stripeInvoiceId,
+        paymentStatus: session.payment_status,
+        result: result.alreadyProcessed ? "already_processed" : "credited",
+        error: analyticsError,
+      });
+    }
 
     return NextResponse.redirect(redirectUrl, { status: 303 });
   } catch (err) {

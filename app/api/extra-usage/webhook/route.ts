@@ -247,21 +247,42 @@ export async function POST(req: NextRequest) {
             result: result.alreadyProcessed ? "already_processed" : "credited",
           },
         );
-        phLogger.event(
-          PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
-          paidFunnelProperties({
-            userId,
-            checkout_attempt_id: session.metadata.checkoutAttemptId,
-            checkout_type: "extra_usage_purchase",
-            amount_dollars: amountDollars,
-            stripe_customer_id: stripeCustomerId,
-            stripe_checkout_session_id: session.id,
-            stripe_payment_intent_id: stripePaymentIntentId,
-            payment_status: session.payment_status,
-            $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
-          }),
-        );
-        after(() => phLogger.flush());
+        try {
+          phLogger.event(
+            PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+            paidFunnelProperties({
+              userId,
+              checkout_attempt_id: session.metadata.checkoutAttemptId,
+              checkout_type: "extra_usage_purchase",
+              amount_dollars: amountDollars,
+              stripe_customer_id: stripeCustomerId,
+              stripe_checkout_session_id: session.id,
+              stripe_payment_intent_id: stripePaymentIntentId,
+              payment_status: session.payment_status,
+              $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+            }),
+          );
+          after(() => phLogger.flush());
+        } catch (analyticsError) {
+          logExtraUsagePurchase(
+            "warn",
+            "extra_usage_purchase_analytics_failed",
+            {
+              route: WEBHOOK_LOG_CONTEXT.route,
+              requestHeaders: req.headers,
+              userId,
+              amountDollars,
+              stripeCheckoutSessionId: session.id,
+              stripePaymentIntentId,
+              stripeInvoiceId,
+              paymentStatus: session.payment_status,
+              result: result.alreadyProcessed
+                ? "already_processed"
+                : "credited",
+              error: analyticsError,
+            },
+          );
+        }
       } catch (error) {
         try {
           await convex.mutation(api.extraUsage.recordPurchaseFailed, {
