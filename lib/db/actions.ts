@@ -32,6 +32,7 @@ import type { ChatMode } from "@/types/chat";
 import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
 import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { phLogger } from "@/lib/posthog/server";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -41,6 +42,8 @@ const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
 const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
 const SAVE_MESSAGE_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
@@ -188,6 +191,11 @@ const truncateDiagnosticString = (value: string): string =>
     ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
     : value;
 
+const getConvexRequestIdFromMessage = (message: string): string | undefined => {
+  const match = message.match(/\[Request ID:\s*([^\]\s]+)\]/i);
+  return match?.[1];
+};
+
 const getObjectString = (value: unknown, key: string): string | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -225,7 +233,7 @@ const hasDatabaseErrorCode = (data: unknown, code: string): boolean =>
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
 
-const getRetryableSaveMessageErrorReason = (
+const getRetryableDatabaseErrorReason = (
   error: unknown,
 ): string | undefined => {
   const dbErrorData = getErrorData(error);
@@ -252,6 +260,23 @@ const getRetryableSaveMessageErrorReason = (
   if (/TooManyRequests|rate.?limit|429/i.test(errorText)) {
     return "convex_rate_limited";
   }
+  return undefined;
+};
+
+const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
+
+const getRetryableSaveChatErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  // Older deployed Convex functions can flatten transient failures to this
+  // generic shape before richer error data reaches the Next.js worker.
+  if (/\[Request ID:\s*[^\]]+\]\s+Server Error/i.test(stringifyError(error))) {
+    return "convex_server_error";
+  }
+
   return undefined;
 };
 
@@ -353,10 +378,11 @@ const databaseError = (
         : isMessageTooLarge
           ? "Your message is too large to save. Please shorten it or attach the content as a file instead."
           : `Database operation failed: ${operation}: ${dbErrorMessage}`;
-  const diagnosticMetadata = {
+  const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
+    db_request_id: getConvexRequestIdFromMessage(dbErrorMessage),
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
@@ -376,6 +402,15 @@ const databaseError = (
     console.warn(logLine);
   } else {
     console.error(logLine);
+    phLogger.event(event, {
+      ...diagnosticMetadata,
+      service: "chat-handler",
+      level: logLevel,
+      userId:
+        typeof diagnosticMetadata.user_id === "string"
+          ? diagnosticMetadata.user_id
+          : undefined,
+    });
   }
 
   return new ChatSDKError(errorCode, errorMessage, diagnosticMetadata);
@@ -456,13 +491,46 @@ export async function saveChat({
   userId: string;
   title: string;
 }) {
+  const mutationArgs = {
+    serviceKey,
+    id,
+    userId,
+    title,
+  };
+
   try {
-    return await getConvexClient().mutation(api.chats.saveChat, {
-      serviceKey,
-      id,
-      userId,
-      title,
-    });
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().mutation(
+          api.chats.saveChat,
+          mutationArgs,
+        );
+      } catch (error) {
+        const retryReason = getRetryableSaveChatErrorReason(error);
+        const retryDelayMs = SAVE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+        if (!retryReason || retryDelayMs === undefined) {
+          throw error;
+        }
+
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "chat_save_retry_scheduled",
+            service: "chat-handler",
+            timestamp: new Date().toISOString(),
+            db_operation: "chats.saveChat",
+            retry_reason: retryReason,
+            attempt: attemptIndex + 1,
+            next_attempt: attemptIndex + 2,
+            retry_delay_ms: retryDelayMs,
+            chat_id: id,
+            user_id: userId,
+            title_length: title.length,
+          }),
+        );
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("chats.saveChat", error, {
       chat_id: id,
