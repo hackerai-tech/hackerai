@@ -17,6 +17,22 @@ type MembershipDeletionPlan = {
   blockReason?: string;
 };
 
+const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
+
+function parseConvexCleanupResult(result: unknown): { hasMore: boolean } {
+  if (
+    result &&
+    typeof result === "object" &&
+    typeof (result as { hasMore?: unknown }).hasMore === "boolean"
+  ) {
+    return { hasMore: (result as { hasMore: boolean }).hasMore };
+  }
+
+  throw new Error(
+    "Account cleanup returned an unexpected response. Please contact support so we can finish deleting this account.",
+  );
+}
+
 async function removeMembership(membership: OrganizationMembership) {
   try {
     await workos.userManagement.deleteOrganizationMembership(membership.id);
@@ -98,12 +114,24 @@ async function markAccountIdentityDeleted(
 }
 
 async function deleteConvexUserData(userId: string, serviceKey: string) {
-  await getConvexClient().mutation(
-    api.userDeletion.deleteAllUserDataByService,
-    {
-      serviceKey,
-      userId,
-    },
+  const convex = getConvexClient();
+
+  for (let batch = 0; batch < MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES; batch++) {
+    const result = await convex.mutation(
+      api.userDeletion.deleteAllUserDataByService,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+
+    if (!parseConvexCleanupResult(result).hasMore) {
+      return;
+    }
+  }
+
+  throw new Error(
+    "Account cleanup is taking longer than expected. Please contact support so we can finish deleting this account.",
   );
 }
 
@@ -232,8 +260,15 @@ export const POST = async (req: NextRequest) => {
     const message =
       error && typeof error === "object" && "message" in (error as any)
         ? (error as any).message
-        : "Failed to cancel subscriptions and remove organizations";
-    console.error("Failed to cancel subscriptions and remove orgs:", error);
+        : "Failed to delete account";
+    console.error(
+      "Failed to delete account:",
+      {
+        event: "account_deletion_failed",
+        error_message: message,
+      },
+      error,
+    );
     return NextResponse.json({ error: message }, { status: 500 });
   }
 };
