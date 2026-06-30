@@ -3,7 +3,7 @@
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useEffect } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
-import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
+import { shouldDropExpectedFrontendException } from "@/lib/posthog/expected-frontend-exceptions";
 import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
@@ -47,7 +47,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             },
             disable_session_recording: true,
             before_send: (event) => {
-              if (!event || shouldDropExpectedConvexException(event)) {
+              if (!event || shouldDropExpectedFrontendException(event)) {
                 return null;
               }
 
