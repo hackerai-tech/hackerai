@@ -194,5 +194,26 @@ describe("shouldDropExpectedFrontendException", () => {
         },
       }),
     ).toBe(true);
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_types: ["Canceled"],
+          $exception_values: ["Canceled"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "turbopack:///[project]/app/components/chat.tsx",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
   });
 });

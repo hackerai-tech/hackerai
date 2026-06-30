@@ -70,6 +70,25 @@ describe("getUserChats", () => {
     jest.clearAllMocks();
   });
 
+  it("returns an empty page when the user is unauthenticated", async () => {
+    const ctx = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue(null),
+      },
+      db: {
+        query: jest.fn(),
+      },
+    };
+
+    await expect(
+      getUserChats.handler(ctx as any, {
+        paginationOpts: { numItems: 20, cursor: null },
+      }),
+    ).resolves.toEqual(emptyPage);
+    expect(assertUserCanAccessChatHistory).not.toHaveBeenCalled();
+    expect(ctx.db.query).not.toHaveBeenCalled();
+  });
+
   it("returns an empty page when chat history is suspended", async () => {
     jest.mocked(assertUserCanAccessChatHistory).mockRejectedValueOnce(
       new ConvexError({

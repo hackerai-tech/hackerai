@@ -43,27 +43,41 @@ const hasExactString = (strings: string[], expected: string): boolean =>
 const hasResizeObserverMessage = (strings: string[]): boolean =>
   strings.some((value) => RESIZE_OBSERVER_MESSAGES.has(value));
 
-const isExpectedManualChatStopAbort = (strings: string[]): boolean =>
-  hasExactString(strings, "AbortError: Fetch is aborted") &&
-  includesAny(strings, ["app/hooks/useChatHandlers.ts"]);
+type ExpectedFrontendPattern = {
+  message: string;
+  sourceFragments: string[];
+};
 
-const isExpectedAuthRefreshFailure = (strings: string[]): boolean =>
-  hasExactString(strings, "Failed to refresh access token") &&
-  includesAny(strings, [
-    "@workos-inc/authkit-nextjs",
-    "convex/dist/esm/browser/sync/authentication_manager.js",
-    "lib/auth/shared-token.ts",
-    "lib/auth/use-auth-from-authkit.ts",
-    "lib/auth/cross-tab-mutex.ts",
-  ]);
+const EXPECTED_FRONTEND_PATTERNS: ExpectedFrontendPattern[] = [
+  {
+    message: "AbortError: Fetch is aborted",
+    sourceFragments: ["app/hooks/useChatHandlers.ts"],
+  },
+  {
+    message: "Failed to refresh access token",
+    sourceFragments: [
+      "@workos-inc/authkit-nextjs",
+      "convex/dist/esm/browser/sync/authentication_manager.js",
+      "lib/auth/shared-token.ts",
+      "lib/auth/use-auth-from-authkit.ts",
+      "lib/auth/cross-tab-mutex.ts",
+    ],
+  },
+  {
+    message: "PostHog request timed out after 3000ms",
+    sourceFragments: ["posthog-js/src/request.ts"],
+  },
+  {
+    message: "Canceled",
+    sourceFragments: ["monaco-editor@"],
+  },
+];
 
-const isPostHogTransportTimeout = (strings: string[]): boolean =>
-  hasExactString(strings, "PostHog request timed out after 3000ms") &&
-  includesAny(strings, ["posthog-js/src/request.ts"]);
-
-const isMonacoCancellation = (strings: string[]): boolean =>
-  hasExactString(strings, "Canceled") &&
-  includesAny(strings, ["monaco-editor@"]);
+const matchesExpectedFrontendPattern = (strings: string[]): boolean =>
+  EXPECTED_FRONTEND_PATTERNS.some(
+    ({ message, sourceFragments }) =>
+      hasExactString(strings, message) && includesAny(strings, sourceFragments),
+  );
 
 export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   if (event.event !== "$exception") {
@@ -77,10 +91,6 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   const strings = collectStrings(event.properties);
 
   return (
-    hasResizeObserverMessage(strings) ||
-    isExpectedManualChatStopAbort(strings) ||
-    isExpectedAuthRefreshFailure(strings) ||
-    isPostHogTransportTimeout(strings) ||
-    isMonacoCancellation(strings)
+    hasResizeObserverMessage(strings) || matchesExpectedFrontendPattern(strings)
   );
 }
