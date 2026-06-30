@@ -1202,8 +1202,6 @@ export const agentLongTask = task({
               assistantMessageId,
               sandboxPreference,
               process.env.CONVEX_SERVICE_ROLE_KEY,
-              false,
-              undefined,
               undefined,
               (costDollars: number) => {
                 usageTracker.providerCost += costDollars;
@@ -1215,7 +1213,6 @@ export const agentLongTask = task({
                 uploadSandboxBootPath ??= info.path;
                 chatLogger?.setSandboxBoot(info);
               },
-              undefined,
               selectedModel,
             );
 

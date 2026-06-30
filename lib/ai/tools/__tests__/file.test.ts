@@ -59,7 +59,6 @@ function makeContext(
     modelName: "openai/gpt-5",
     subscription: "pro",
     isE2BSandbox: (() => true) as never,
-    caidoEnabled: false,
     ...overrides,
   };
 }

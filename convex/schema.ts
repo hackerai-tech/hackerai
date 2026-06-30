@@ -222,6 +222,8 @@ export default defineSchema({
     // pass validation. New code writes include_notes and uses this only as a
     // fallback when returning older customization rows.
     include_memory_entries: v.optional(v.boolean()),
+    // Legacy HTTP interception preference fields retained on historical rows
+    // so old documents still pass validation.
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),

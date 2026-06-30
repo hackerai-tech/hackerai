@@ -11,8 +11,6 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-// Caido proxy temporarily disabled for all users — see lib/api/chat-handler.ts kill switch.
-// import { createProxyTools } from "./proxy-tool";
 import {
   createCreateNote,
   createListNotes,
@@ -31,7 +29,6 @@ import type {
   AppendMetadataStreamFn,
   SubscriptionTier,
   SandboxBootInfo,
-  CaidoReadyInfo,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -55,13 +52,10 @@ export const createTools = (
   assistantMessageId?: string,
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
-  caidoEnabled: boolean = false,
-  caidoPort?: number,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   subscription?: SubscriptionTier,
   onSandboxBoot?: (info: SandboxBootInfo) => void,
-  onCaidoReady?: (info: CaidoReadyInfo) => void,
   modelName?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
@@ -126,11 +120,8 @@ export const createTools = (
     getCurrentModelName: () => currentModelName,
     subscription,
     isE2BSandbox,
-    caidoEnabled,
-    caidoPort,
     appendMetadataStream,
     onToolCost,
-    onCaidoReady,
   };
 
   const buildTools = (): ToolSet => {
@@ -153,8 +144,6 @@ export const createTools = (
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
       }),
-      // Caido proxy temporarily disabled for all users.
-      // ...(caidoEnabled && createProxyTools(context)),
       ...(process.env.JINA_API_KEY && {
         open_url: createOpenUrlTool(),
       }),
