@@ -9,7 +9,10 @@ import {
   isValidReferralCode,
 } from "@/lib/referrals/config";
 
+const AUTHKIT_BYPASS_PATHS = new Set(["/api/health/trigger-agent-mode"]);
+
 const UNAUTHENTICATED_PATHS = new Set([
+  ...AUTHKIT_BYPASS_PATHS,
   "/",
   "/login",
   "/signup",
@@ -57,6 +60,10 @@ function isUnauthenticatedPath(pathname: string): boolean {
   return false;
 }
 
+function shouldBypassAuthkit(pathname: string): boolean {
+  return AUTHKIT_BYPASS_PATHS.has(pathname);
+}
+
 function isBrowserRequest(request: NextRequest): boolean {
   const accept = request.headers.get("accept") ?? "";
   return accept.includes("text/html");
@@ -96,6 +103,10 @@ function withReferralCookie(
 
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+
+  if (shouldBypassAuthkit(pathname)) {
+    return NextResponse.next();
+  }
 
   // Desktop app: redirect unauthenticated users to desktop-specific error page
   if (isDesktopApp(request)) {
