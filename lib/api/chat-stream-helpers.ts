@@ -22,11 +22,7 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import {
-  isAnthropicModel,
-  isDeepSeekModel,
-  myProvider,
-} from "@/lib/ai/providers";
+import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -487,11 +483,11 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": MINIMAX_M3_FALLBACK_CHAIN,
   "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-pro": ["fallback-ask-model"],
-  "ask-model": ["fallback-ask-model"],
+  "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
+  "ask-model": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-grok-4.3": ["fallback-ask-model"],
-  "model-gemini-3-flash": ["fallback-ask-model"],
+  "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
@@ -524,9 +520,7 @@ const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
     ask: ["model-grok-4.3"],
   };
 
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
-  "fallback-grok-4.3",
-] as const satisfies readonly ModelName[];
+const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
 
 // Standard Ask can route text-only prompts to DeepSeek and media prompts to
 // Grok. Keep those route keys and their persisted Grok alias on one effort
@@ -585,23 +579,17 @@ const getFallbackKeys = (
 
 export function getRetryFallbackModel(
   modelName: ModelName,
-  mode: ChatMode,
+  _mode: ChatMode,
 ): ModelName {
   if (
     modelName === "ask-model-free" ||
-    modelName === "model-deepseek-v4-flash"
-  ) {
-    return "model-minimax-m3";
-  }
-  if (isDeepSeekModel(modelName)) {
-    return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
-  }
-  if (
+    modelName === "model-deepseek-v4-flash" ||
+    modelName === "model-deepseek-v4-pro" ||
     modelName === "ask-model" ||
     modelName === "model-grok-4.3" ||
     modelName === "model-gemini-3-flash"
   ) {
-    return "fallback-ask-model";
+    return "model-minimax-m3";
   }
   return "fallback-grok-4.3";
 }
