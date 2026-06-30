@@ -916,6 +916,51 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
+  it("retries malformed provider JSON nested in retry wrapper errors", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("JSON parsing failed: Unexpected end of JSON input"),
+      {
+        statusCode: 200,
+        responseBody: "   \n\n",
+      },
+    );
+    const retryWrapperError = Object.assign(
+      new Error("AI retry attempts exhausted"),
+      {
+        errors: [malformedJsonError],
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(retryWrapperError)
+      .mockResolvedValueOnce({
+        text: "Nested fallback summary",
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-nested-retry",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Nested fallback summary");
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(mockProviderLanguageModel).toHaveBeenCalledWith(
+      "fallback-ask-model",
+    );
+  });
+
   it("logs structured compaction failure when malformed JSON retry also fails", async () => {
     const malformedJsonError = Object.assign(
       new Error("Invalid JSON response"),

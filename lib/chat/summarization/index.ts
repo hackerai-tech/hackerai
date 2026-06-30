@@ -174,6 +174,12 @@ const isMalformedProviderJsonError = (
     return true;
   }
 
+  if (Array.isArray(record?.errors)) {
+    return record.errors.some((nestedError) =>
+      isMalformedProviderJsonError(nestedError, depth + 1),
+    );
+  }
+
   return record?.cause !== undefined
     ? isMalformedProviderJsonError(record.cause, depth + 1)
     : false;
