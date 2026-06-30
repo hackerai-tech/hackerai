@@ -26,6 +26,9 @@ import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
+const mockProviderLanguageModel = jest.fn(
+  (modelName: string) => ({ modelId: modelName }) as unknown as LanguageModel,
+);
 
 jest.doMock("server-only", () => ({}));
 jest.doMock("ai", () => ({
@@ -37,7 +40,7 @@ jest.doMock("@/lib/db/actions", () => ({
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   myProvider: {
-    languageModel: () => ({}) as LanguageModel,
+    languageModel: mockProviderLanguageModel,
   },
 }));
 
@@ -169,6 +172,8 @@ describe("checkAndSummarizeIfNeeded", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "info").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "error").mockImplementation(() => {});
     mockSaveChatSummary.mockResolvedValue(undefined);
     mockWriter = createMockWriter();
   });
@@ -804,6 +809,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(false);
     expect(result.summaryText).toBeNull();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
 
     const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
     const completedWrite = writeCalls.find(
@@ -812,6 +818,153 @@ describe("checkAndSummarizeIfNeeded", () => {
         call[0]?.data?.status === "completed",
     );
     expect(completedWrite).toBeDefined();
+  });
+
+  it("retries malformed provider JSON with the fallback summarization model", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("Invalid JSON response"),
+      {
+        statusCode: 200,
+        responseBody: "\n         \n\n",
+        responseHeaders: {
+          "x-generation-id": "gen-primary",
+        },
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(malformedJsonError)
+      .mockResolvedValueOnce({
+        text: "Fallback summary",
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-retry",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      {
+        runCommand: {
+          description: "run a command",
+          inputSchema: {} as any,
+          execute: jest.fn(),
+        },
+      } as unknown as ToolSet,
+      {
+        openrouter: {
+          user: "user_123",
+          reasoning: { enabled: false },
+          models: ["minimax/minimax-m3"],
+        },
+      },
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Fallback summary");
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(mockProviderLanguageModel).toHaveBeenCalledWith(
+      "fallback-ask-model",
+    );
+
+    const retryCall = mockGenerateText.mock.calls[1][0];
+    expect(retryCall.model).toMatchObject({ modelId: "fallback-ask-model" });
+    expect(retryCall.tools).toBeUndefined();
+    expect(retryCall.providerOptions).toEqual({
+      openrouter: {
+        user: "user_123",
+        reasoning: { enabled: false },
+      },
+    });
+
+    const retryLogCall = (console.warn as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('"event":"chat_context_compaction_retrying"'),
+    );
+    expect(retryLogCall).toBeTruthy();
+
+    const retryLog = JSON.parse(String(retryLogCall?.[0]));
+    expect(retryLog).toMatchObject({
+      level: "warn",
+      event: "chat_context_compaction_retrying",
+      service: "chat-handler",
+      chat_id: "chat-retry",
+      mode: "ask",
+      subscription: "free",
+      summarization_attempt: "primary",
+      retry_model_name: "fallback-ask-model",
+      retry_without_tools: true,
+      provider_status_code: 200,
+      openrouter_generation_id: "gen-primary",
+      response_body_empty: true,
+    });
+
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-retry",
+        metadata: expect.objectContaining({
+          model: "fallback-ask-model",
+        }),
+      }),
+    );
+  });
+
+  it("logs structured compaction failure when malformed JSON retry also fails", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("Invalid JSON response"),
+      {
+        statusCode: 200,
+        responseBody: "\n\n",
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(malformedJsonError)
+      .mockRejectedValueOnce(new Error("Fallback provider unavailable"));
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-retry-failed",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+    );
+
+    expect(result.needsSummarization).toBe(false);
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+
+    const failedLogCall = (console.error as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('"event":"chat_context_compaction_failed"'),
+    );
+    expect(failedLogCall).toBeTruthy();
+
+    const failedLog = JSON.parse(String(failedLogCall?.[0]));
+    expect(failedLog).toMatchObject({
+      level: "error",
+      event: "chat_context_compaction_failed",
+      service: "chat-handler",
+      chat_id: "chat-retry-failed",
+      mode: "ask",
+      subscription: "free",
+      summarization_attempt: "fallback",
+      model_id: "fallback-ask-model",
+      fallback_result: "no_summarization",
+      error_message: "Fallback provider unavailable",
+    });
   });
 
   it("should write summarization completed even when database save fails", async () => {
