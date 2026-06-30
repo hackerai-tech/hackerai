@@ -6,6 +6,7 @@ import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
+import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 
 const getSessionUserEmail = (session: unknown): string | undefined => {
   if (!session || typeof session !== "object") return undefined;
@@ -36,6 +37,9 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;
+    }
+    if (isEndedSessionRefreshError(error)) {
+      throw new ChatSDKError("unauthorized:auth");
     }
 
     console.error("Failed to get user session:", error);
@@ -79,6 +83,9 @@ export const getUserIDAndPro = async (
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;
+    }
+    if (isEndedSessionRefreshError(error)) {
+      throw new ChatSDKError("unauthorized:auth");
     }
 
     console.error("Failed to get user session:", error);
@@ -137,6 +144,9 @@ export const getUserIDWithFreshLoginContext = async (
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;
+    }
+    if (isEndedSessionRefreshError(error)) {
+      throw new ChatSDKError("unauthorized:auth", "recent_login_required");
     }
 
     console.error("Failed to verify fresh login:", error);

@@ -1,11 +1,22 @@
 import { createClient } from "redis";
 
+type RedisSubscriberOptions = {
+  onError?: (error: unknown) => void;
+};
+
 /**
  * Create a dedicated subscriber client for a specific channel.
  * Each subscription needs its own client in Redis pub/sub.
  */
-export async function createRedisSubscriber() {
+export async function createRedisSubscriber(
+  options: RedisSubscriberOptions = {},
+) {
   const redisUrl = process.env.REDIS_URL;
+  const onError =
+    options.onError ??
+    ((error: unknown) => {
+      console.warn("Redis subscriber error:", error);
+    });
 
   if (!redisUrl) {
     return null;
@@ -14,12 +25,12 @@ export async function createRedisSubscriber() {
   try {
     const subscriber = createClient({ url: redisUrl });
     subscriber.on("error", (err) => {
-      console.error("Redis subscriber error:", err);
+      onError(err);
     });
     await subscriber.connect();
     return subscriber;
   } catch (error) {
-    console.warn("Failed to connect Redis subscriber:", error);
+    onError(error);
     return null;
   }
 }

@@ -107,6 +107,27 @@ describe("authkit callback logging", () => {
     ).toBe(true);
   });
 
+  it("matches invalid code verifier callback errors", () => {
+    const error = Object.assign(
+      new Error(
+        "Error: invalid_grant\nError Description: Invalid code verifier.",
+      ),
+      {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid code verifier.",
+        rawData: {
+          error: "invalid_grant",
+          error_description: "Invalid code verifier.",
+        },
+      },
+    );
+
+    expect(
+      isRecoverableAuthkitCallbackErrorLog(["[AuthKit callback error]", error]),
+    ).toBe(true);
+  });
+
   it("does not match other invalid_grant errors", () => {
     const error = Object.assign(new Error("Error: invalid_grant"), {
       error: "invalid_grant",
@@ -132,6 +153,12 @@ describe("authkit callback logging", () => {
         "[AuthKit callback error]",
         new Error(
           "Error: invalid_grant\nError Description: The code 'abc123' has already been exchanged.",
+        ),
+      );
+      console.error(
+        "[AuthKit callback error]",
+        new Error(
+          "Error: invalid_grant\nError Description: Invalid code verifier.",
         ),
       );
       console.error(
