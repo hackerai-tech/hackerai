@@ -41,8 +41,8 @@ export const getMaxStepsForUser = (
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
- *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek
- *   V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
+ *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek V4 Flash.
+ *   Free Agent routes to MiniMax M3. Paid ASK Pro always uses Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(

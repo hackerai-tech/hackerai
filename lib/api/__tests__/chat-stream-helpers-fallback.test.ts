@@ -165,7 +165,6 @@ describe("buildProviderOptions fallback chain", () => {
 
   it.each([
     ["ask-model-free", "ask"],
-    ["agent-model-free", "agent"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
     "falls back from free DeepSeek route %s through the paid Agent chain with Kimi 2.7 Code",
@@ -177,6 +176,19 @@ describe("buildProviderOptions fallback chain", () => {
       });
     },
   );
+
+  it("falls back from free Agent MiniMax to Kimi then Grok", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "agent-model-free",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
 
   it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
     const opts = buildProviderOptions(
@@ -372,7 +384,6 @@ describe("isAutoModelSelectionForRetry", () => {
 describe("getRetryFallbackModel", () => {
   it.each([
     ["ask-model-free", "ask"],
-    ["agent-model-free", "agent"],
     ["model-deepseek-v4-flash", "ask"],
   ] as const)(
     "uses the paid Agent fallback chain for app-side retry after free DeepSeek route %s fails",
@@ -380,6 +391,12 @@ describe("getRetryFallbackModel", () => {
       expect(getRetryFallbackModel(modelName, mode)).toBe("model-minimax-m3");
     },
   );
+
+  it("keeps free Agent MiniMax app-side retry on the terminal Grok fallback", () => {
+    expect(getRetryFallbackModel("agent-model-free", "agent")).toBe(
+      "fallback-grok-4.3",
+    );
+  });
 
   it("keeps paid DeepSeek Pro ask retry on the existing ask fallback", () => {
     expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
