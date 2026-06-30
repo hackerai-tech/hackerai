@@ -13,7 +13,6 @@ import {
   type WideEventBuilder,
 } from "@/lib/logger";
 import type {
-  CaidoReadyInfo,
   ChatMode,
   ExtraUsageConfig,
   SandboxInfo,
@@ -564,13 +563,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
      */
     setSandboxBoot(info: SandboxBootInfo) {
       builder.setSandboxBoot(info);
-    },
-
-    /**
-     * Record Caido proxy setup timing (first call wins within a request).
-     */
-    setCaidoReady(info: CaidoReadyInfo) {
-      builder.setCaidoReady(info);
     },
 
     /**

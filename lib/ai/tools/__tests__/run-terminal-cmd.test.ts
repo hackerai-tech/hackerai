@@ -27,16 +27,6 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class {},
 }));
 
-// Same for the caido-proxy and proxy-manager imports that would drag in
-// Convex/network deps during this unit test.
-jest.mock("../utils/caido-proxy", () => ({
-  getCaidoConfig: () => ({}),
-  buildCaidoProxyEnvVars: () => undefined,
-}));
-jest.mock("../utils/proxy-manager", () => ({
-  ensureCaido: async () => undefined,
-}));
-
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     event: jest.fn(),
@@ -186,7 +176,6 @@ function makeContext(opts: {
       const sb = s as { jupyterUrl?: unknown; pty?: unknown };
       return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
     },
-    caidoEnabled: false,
   } as unknown as import("@/types").ToolContext;
 
   return { context, writerWrites, sandboxManager, ptySessionManager };

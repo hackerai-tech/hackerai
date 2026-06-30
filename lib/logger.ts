@@ -166,34 +166,6 @@ export interface ChatWideEvent {
     create_attempts: number;
   };
 
-  // Caido proxy setup timing — captures the first non-locked_wait ensureCaido call
-  // within a request. Subsequent calls in the same request await the same lock and
-  // are not recorded (they measure wait time, not setup cost).
-  caido?: {
-    path:
-      | "fast"
-      | "needs_start"
-      | "external"
-      | "locked_wait"
-      | "locked_wait_error"
-      | "cached_ready"
-      | "windows_unsupported"
-      | "setup_error";
-    duration_ms: number;
-    initial_script_ms?: number;
-    background_start_ms?: number;
-    health_poll_ms?: number;
-    reauth_script_ms?: number;
-    /** Bounded error kind — raw messages stay in debug-only console.warn. */
-    error_kind?:
-      | "install_failed"
-      | "start_timeout"
-      | "auth_failed"
-      | "external_unreachable"
-      | "setup_failed"
-      | "unknown";
-  };
-
   // Tool execution
   tool_call_count?: number;
 
@@ -467,17 +439,6 @@ export class WideEventBuilder {
   setSandboxBoot(boot: NonNullable<ChatWideEvent["sandbox_boot"]>): this {
     if (!this.event.sandbox_boot) {
       this.event.sandbox_boot = boot;
-    }
-    return this;
-  }
-
-  /**
-   * Record Caido proxy setup timing. First call wins — subsequent `ensureCaido`
-   * calls in the same request hit the lock and measure wait time, not setup cost.
-   */
-  setCaidoReady(caido: NonNullable<ChatWideEvent["caido"]>): this {
-    if (!this.event.caido) {
-      this.event.caido = caido;
     }
     return this;
   }

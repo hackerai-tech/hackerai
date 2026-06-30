@@ -599,10 +599,6 @@ export const createChatHandler = () => {
               assistantMessageId,
               sandboxPreference,
               process.env.CONVEX_SERVICE_ROLE_KEY,
-              // Caido proxy temporarily disabled for all users.
-              // Was: subscription !== "free" && (userCustomization?.caido_enabled ?? false)
-              false,
-              undefined, // caido_port (disabled)
               undefined, // appendMetadataStream
               (costDollars: number) => {
                 usageTracker.providerCost += costDollars;
@@ -614,7 +610,6 @@ export const createChatHandler = () => {
                 uploadSandboxBootPath ??= info.path;
                 chatLogger?.setSandboxBoot(info);
               },
-              (info) => chatLogger?.setCaidoReady(info),
               selectedModel,
             );
 

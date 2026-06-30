@@ -634,7 +634,7 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Proxy tools (Caido)
+    // Proxy tools
     const proxyToolTypes = [
       "tool-list_requests",
       "tool-view_request",

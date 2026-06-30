@@ -53,38 +53,6 @@ export interface SandboxBootInfo {
   create_attempts: number;
 }
 
-export type CaidoErrorKind =
-  | "install_failed"
-  | "start_timeout"
-  | "auth_failed"
-  | "external_unreachable"
-  | "setup_failed"
-  | "unknown";
-
-export interface CaidoReadyInfo {
-  path:
-    | "fast"
-    | "needs_start"
-    | "external"
-    | "locked_wait"
-    | "locked_wait_error"
-    | "cached_ready"
-    | "windows_unsupported"
-    | "setup_error";
-  duration_ms: number;
-  initial_script_ms?: number;
-  background_start_ms?: number;
-  health_poll_ms?: number;
-  reauth_script_ms?: number;
-  /**
-   * Bounded error classification for telemetry. Raw error messages are never
-   * written to the wide event — they may contain local hostnames, ports, or
-   * stderr content from caido-cli. Full messages are available in console.warn
-   * for debugging only.
-   */
-  error_kind?: CaidoErrorKind;
-}
-
 export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
@@ -117,14 +85,8 @@ export interface ToolContext {
   getCurrentModelName?: () => string | undefined;
   subscription?: SubscriptionTier;
   isE2BSandbox: IsE2BSandboxFn;
-  /** Whether the Caido proxy is enabled (default true). When false, proxy tools are hidden and HTTP_PROXY env vars are not injected. */
-  caidoEnabled: boolean;
-  /** Custom Caido port for local sandbox users with an existing instance (default: 48080). */
-  caidoPort?: number;
   /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and metadata delivery can happen in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;
-  /** Called when Caido proxy setup completes (or fails). First call in a request captures the real cost; later calls measure lock-wait time. */
-  onCaidoReady?: (info: CaidoReadyInfo) => void;
 }

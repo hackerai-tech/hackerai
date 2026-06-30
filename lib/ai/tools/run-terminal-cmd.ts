@@ -20,8 +20,6 @@ import {
   augmentCommandPath,
 } from "./utils/sandbox-command-options";
 import { toolBriefSchema } from "./tool-brief";
-import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
-import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
 import {
   DEFAULT_PTY_COLS,
@@ -54,19 +52,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     sandboxManager,
     writer,
     backgroundProcessTracker,
-    caidoEnabled,
-    caidoPort,
     ptySessionManager,
     chatId,
   } = context;
-
-  // Caido proxy is set up eagerly only on E2B sandboxes (controlled image where
-  // capturing all agent HTTP traffic is the point). On local sandboxes the proxy
-  // is lazy: it spins up only when the agent reaches for a proxy tool, so plain
-  // terminal commands don't pay the install/start cost or route through Caido.
-  // Permanently disabled on first setup failure to avoid retrying every command.
-  const caidoConfig = getCaidoConfig(caidoPort);
-  let caidoSetupDisabled = false;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -237,24 +225,6 @@ In using these tools, adhere to the following guidelines:
             isBackground: false,
           });
 
-          // Set up Caido proxy env vars before spawning the PTY so the session
-          // launches with proxy env pointing at a running Caido. Mirrors the
-          // non-interactive `executeCommand` flow: only eager on E2B; on
-          // failure, permanently disable for the rest of this tool instance.
-          let caidoEnvVars: Record<string, string> | undefined;
-          if (caidoEnabled && isE2B && !caidoSetupDisabled) {
-            try {
-              await ensureCaido(context);
-              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
-            } catch (e) {
-              console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
-                e instanceof Error ? e.message : e,
-              );
-              caidoSetupDisabled = true;
-            }
-          }
-
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
@@ -269,13 +239,11 @@ In using these tools, adhere to the following guidelines:
                   command,
                   cols,
                   rows,
-                  envs: caidoEnvVars,
                 });
               }
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
-                envs: caidoEnvVars,
               });
             },
           });
@@ -446,28 +414,6 @@ In using these tools, adhere to the following guidelines:
             isBackground: is_background,
           });
 
-          // Ensure Caido proxy is running + authenticated before commands route through it.
-          // Only eager on E2B; local sandboxes defer setup to proxy tool invocations.
-          // This is a no-op after the first successful call (cached per session).
-          // If setup fails, permanently disable proxy env vars for all future commands.
-          let caidoEnvVars: Record<string, string> | undefined;
-          if (
-            caidoEnabled &&
-            isE2BSandbox(sandboxInstance) &&
-            !caidoSetupDisabled
-          ) {
-            try {
-              await ensureCaido(context);
-              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
-            } catch (e) {
-              console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
-                e instanceof Error ? e.message : e,
-              );
-              caidoSetupDisabled = true;
-            }
-          }
-
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
@@ -625,7 +571,6 @@ In using these tools, adhere to the following guidelines:
                     onStdout: handler!.stdout,
                     onStderr: handler!.stderr,
                   },
-              caidoEnvVars,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? { ...commonOptions, signal: abortSignal }

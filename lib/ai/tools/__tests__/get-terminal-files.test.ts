@@ -45,7 +45,6 @@ function makeContext(overrides: Partial<ToolContext> = {}): ToolContext {
     modelName: "model-minimax-m3",
     subscription: "pro",
     isE2BSandbox: (() => true) as never,
-    caidoEnabled: false,
     ...overrides,
   } as ToolContext;
 }
