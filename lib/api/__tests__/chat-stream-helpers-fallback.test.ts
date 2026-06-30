@@ -178,7 +178,12 @@ describe("buildProviderOptions fallback chain", () => {
   );
 
   it("falls back from free Agent MiniMax to Kimi then Grok", () => {
-    const opts = buildProviderOptions(false, "user-1", "agent-model-free");
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "agent-model-free",
+      "agent",
+    );
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
