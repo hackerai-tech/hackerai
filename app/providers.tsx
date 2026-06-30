@@ -40,6 +40,11 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
               "https://us.i.posthog.com",
             capture_pageview: false, // Disable automatic pageview capture, as we capture manually
             autocapture: false, // Disable automatic event capture, as we capture manually
+            capture_exceptions: {
+              capture_unhandled_errors: true,
+              capture_unhandled_rejections: true,
+              capture_console_errors: false,
+            },
             disable_session_recording: true,
             before_send: (event) => {
               if (!event || shouldDropExpectedConvexException(event)) {
