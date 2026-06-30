@@ -7,6 +7,7 @@ import {
   isOauthCodeAlreadyExchangedError,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
+import { isInvalidCodeVerifierError } from "@/lib/auth/expected-auth-errors";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -27,11 +28,15 @@ type RecoveryBucket =
   | "verifier_missing"
   | "cookie_missing"
   | "code_already_exchanged"
+  | "invalid_code_verifier"
   | "unknown";
 
 const classifyCallbackError = (error: unknown): RecoveryBucket => {
   if (isOauthCodeAlreadyExchangedError(error)) {
     return "code_already_exchanged";
+  }
+  if (isInvalidCodeVerifierError(error)) {
+    return "invalid_code_verifier";
   }
   if (isMissingRequiredAuthParameterError(error)) {
     return "missing_auth_parameter";

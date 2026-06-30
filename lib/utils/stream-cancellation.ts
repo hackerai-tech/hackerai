@@ -119,6 +119,7 @@ export const createCancellationSubscriber = async ({
   pollIntervalMs = 1000,
 }: PollOptions): Promise<CancellationSubscriberResult> => {
   let subscriber: Awaited<ReturnType<typeof createRedisSubscriber>> = null;
+  let fallbackPoller: CancellationSubscriberResult | null = null;
   let stopped = false;
   let onStopCalled = false;
   const channel = getCancelChannel(chatId);
@@ -141,8 +142,31 @@ export const createCancellationSubscriber = async ({
     }
   };
 
+  const startPollingFallback = (error: unknown) => {
+    if (stopped || fallbackPoller || abortController.signal.aborted) {
+      return;
+    }
+
+    phLogger.warn("redis_pubsub_unavailable", {
+      event: "redis.pubsub_unavailable",
+      chatId,
+      isTemporary,
+      error,
+    });
+    cleanupSubscriber();
+    fallbackPoller = createCancellationPoller({
+      chatId,
+      isTemporary,
+      abortController,
+      onStop: callOnStopOnce,
+      pollIntervalMs,
+    });
+  };
+
   try {
-    subscriber = await createRedisSubscriber();
+    subscriber = await createRedisSubscriber({
+      onError: startPollingFallback,
+    });
 
     if (subscriber) {
       // Track skipSave flag from cancellation message
@@ -173,6 +197,17 @@ export const createCancellationSubscriber = async ({
         }
       });
 
+      if (fallbackPoller) {
+        return {
+          stop: async () => {
+            stopped = true;
+            await fallbackPoller?.stop();
+          },
+          isUsingPubSub: false,
+          shouldSkipSave: () => fallbackPoller?.shouldSkipSave() ?? false,
+        };
+      }
+
       abortController.signal.addEventListener("abort", handleAbort, {
         once: true,
       });
@@ -182,14 +217,27 @@ export const createCancellationSubscriber = async ({
           stopped = true;
           abortController.signal.removeEventListener("abort", handleAbort);
           cleanupSubscriber();
+          await fallbackPoller?.stop();
         },
         isUsingPubSub: true,
-        shouldSkipSave: () => skipSave,
+        shouldSkipSave: () =>
+          skipSave || (fallbackPoller?.shouldSkipSave() ?? false),
       };
     }
   } catch (error) {
-    console.error("[Redis Pub/Sub] Subscription failed:", error);
+    startPollingFallback(error);
     cleanupSubscriber();
+  }
+
+  if (fallbackPoller) {
+    return {
+      stop: async () => {
+        stopped = true;
+        await fallbackPoller?.stop();
+      },
+      isUsingPubSub: false,
+      shouldSkipSave: () => fallbackPoller?.shouldSkipSave() ?? false,
+    };
   }
 
   // Fallback to polling when Redis is unavailable

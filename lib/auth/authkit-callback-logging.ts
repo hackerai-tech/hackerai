@@ -1,3 +1,8 @@
+import {
+  collectAuthErrorText,
+  isInvalidCodeVerifierError,
+} from "./expected-auth-errors";
+
 const AUTHKIT_CALLBACK_ERROR_PREFIX = "[AuthKit callback error]";
 const AUTH_COOKIE_MISSING_MESSAGE = "Auth cookie missing";
 const MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE =
@@ -26,42 +31,8 @@ export const isAuthCookieMissingError = (value: unknown): boolean => {
   return false;
 };
 
-const getStringValue = (
-  value: Record<string, unknown>,
-  key: string,
-): string | null => {
-  const fieldValue = value[key];
-  return typeof fieldValue === "string" ? fieldValue : null;
-};
-
-const collectErrorText = (value: unknown): string => {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-
-  const record = value as Record<string, unknown>;
-  const rawData =
-    record.rawData && typeof record.rawData === "object"
-      ? (record.rawData as Record<string, unknown>)
-      : {};
-
-  return [
-    getStringValue(record, "message"),
-    getStringValue(record, "error"),
-    getStringValue(record, "errorDescription"),
-    getStringValue(rawData, "error"),
-    getStringValue(rawData, "error_description"),
-  ]
-    .filter((text): text is string => Boolean(text))
-    .join("\n");
-};
-
 export const isOauthCodeAlreadyExchangedError = (value: unknown): boolean => {
-  const errorText = collectErrorText(value).toLowerCase();
+  const errorText = collectAuthErrorText(value).toLowerCase();
   return (
     errorText.includes(INVALID_GRANT_ERROR) &&
     errorText.includes(CODE_ALREADY_EXCHANGED_MESSAGE)
@@ -71,13 +42,13 @@ export const isOauthCodeAlreadyExchangedError = (value: unknown): boolean => {
 export const isMissingRequiredAuthParameterError = (
   value: unknown,
 ): boolean => {
-  return collectErrorText(value)
+  return collectAuthErrorText(value)
     .toLowerCase()
     .includes(MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE.toLowerCase());
 };
 
 export const isOAuthStateMismatchError = (value: unknown): boolean => {
-  return collectErrorText(value)
+  return collectAuthErrorText(value)
     .toLowerCase()
     .includes(OAUTH_STATE_MISMATCH_MESSAGE.toLowerCase());
 };
@@ -98,7 +69,7 @@ export const isAuthVerifierMissingError = (value: unknown): boolean => {
     }
   }
 
-  const errorText = collectErrorText(value);
+  const errorText = collectAuthErrorText(value);
   return VERIFIER_SCHEMA_KEYS.some(
     (key) =>
       errorText.includes(`Expected ${key}`) &&
@@ -110,6 +81,7 @@ export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
   return (
     isAuthCookieMissingError(value) ||
     isOauthCodeAlreadyExchangedError(value) ||
+    isInvalidCodeVerifierError(value) ||
     isMissingRequiredAuthParameterError(value) ||
     isOAuthStateMismatchError(value) ||
     isAuthVerifierMissingError(value)

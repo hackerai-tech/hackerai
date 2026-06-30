@@ -1,6 +1,7 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
+import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -117,12 +118,38 @@ export default async function proxy(request: NextRequest) {
     redirectUri: getRedirectUri(),
     eagerAuth: true,
     onSessionRefreshError: ({ error }) => {
+      if (isEndedSessionRefreshError(error)) {
+        return;
+      }
+
       if (isRateLimitError(error)) {
         refreshHitRateLimit = true;
         console.warn(
-          "[Auth Proxy] WorkOS rate limit hit during session refresh",
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "auth.session_refresh_rate_limited",
+            service: "hackerai-web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            pathname,
+          }),
         );
+        return;
       }
+
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "auth.session_refresh_failed",
+          service: "hackerai-web",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          pathname,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
     },
   });
 
