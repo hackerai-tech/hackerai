@@ -22,7 +22,6 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
-const GEMINI_PREVIEW_SLUG = "google/gemini-3-flash-preview";
 const GROK_SLUG = "x-ai/grok-4.3";
 const MINIMAX_SLUG = "minimax/minimax-m3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
@@ -49,7 +48,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Opus 4.6 multimodal agent chain to Grok", () => {
+  it("resolves Opus 4.6 multimodal agent chain to Kimi 2.7 Code then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -58,7 +57,7 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -89,7 +88,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("resolves Sonnet 4.6 multimodal agent chain to Grok", () => {
+  it("resolves Sonnet 4.6 multimodal agent chain to Kimi 2.7 Code then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -98,12 +97,12 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("keeps Anthropic multimodal agent fallback off text-only MiniMax and Kimi once image tool results exist", () => {
+  it("keeps Anthropic multimodal agent fallback off MiniMax once image tool results exist", () => {
     const opus = buildProviderOptions(
       false,
       "user-1",
@@ -121,12 +120,10 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
 
-    expect(opus.openrouter.models).toEqual([GROK_SLUG]);
-    expect(sonnet.openrouter.models).toEqual([GROK_SLUG]);
+    expect(opus.openrouter.models).toEqual([KIMI_SLUG, GROK_SLUG]);
+    expect(sonnet.openrouter.models).toEqual([KIMI_SLUG, GROK_SLUG]);
     expect(opus.openrouter.models).not.toContain(MINIMAX_SLUG);
     expect(sonnet.openrouter.models).not.toContain(MINIMAX_SLUG);
-    expect(opus.openrouter.models).not.toContain(KIMI_SLUG);
-    expect(sonnet.openrouter.models).not.toContain(KIMI_SLUG);
   });
 
   it("falls back from auto agent MiniMax to Kimi 2.7 Code then Grok", () => {
@@ -190,7 +187,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("falls back from explicit DeepSeek Pro ask model to Gemini", () => {
+  it("falls back from explicit DeepSeek Pro ask model through MiniMax, Kimi, then Grok", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -198,23 +195,26 @@ describe("buildProviderOptions fallback chain", () => {
       "ask",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_PREVIEW_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
 
-  it("falls back from the Grok media route to Gemini preview", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-grok-4.3");
-    expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_PREVIEW_SLUG],
-      user: "user-1",
-    });
-  });
+  it.each(["ask-model", "model-grok-4.3"] as const)(
+    "falls back from paid Ask media route %s through MiniMax, Kimi, then Grok",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter).toMatchObject({
+        models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
+        user: "user-1",
+      });
+    },
+  );
 
-  it("keeps the stale Gemini media route alias on the Grok fallback chain", () => {
+  it("keeps the stale Gemini media route alias on the active Ask fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
-      models: [GEMINI_PREVIEW_SLUG],
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -333,7 +333,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(multimodal.openrouter).toMatchObject({
       reasoning: { enabled: true },
-      models: [GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
     });
   });
 });
@@ -398,9 +398,15 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("keeps paid DeepSeek Pro ask retry on the existing ask fallback", () => {
-    expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
-      "fallback-ask-model",
-    );
-  });
+  it.each([
+    ["model-deepseek-v4-pro", "ask"],
+    ["ask-model", "ask"],
+    ["model-grok-4.3", "ask"],
+    ["model-gemini-3-flash", "ask"],
+  ] as const)(
+    "uses the paid Agent fallback chain for app-side retry after paid Ask route %s fails",
+    (modelName, mode) => {
+      expect(getRetryFallbackModel(modelName, mode)).toBe("model-minimax-m3");
+    },
+  );
 });
