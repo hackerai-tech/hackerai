@@ -12,6 +12,11 @@ export async function createRedisSubscriber(
   options: RedisSubscriberOptions = {},
 ) {
   const redisUrl = process.env.REDIS_URL;
+  const onError =
+    options.onError ??
+    ((error: unknown) => {
+      console.warn("Redis subscriber error:", error);
+    });
 
   if (!redisUrl) {
     return null;
@@ -20,12 +25,12 @@ export async function createRedisSubscriber(
   try {
     const subscriber = createClient({ url: redisUrl });
     subscriber.on("error", (err) => {
-      options.onError?.(err);
+      onError(err);
     });
     await subscriber.connect();
     return subscriber;
   } catch (error) {
-    options.onError?.(error);
+    onError(error);
     return null;
   }
 }
