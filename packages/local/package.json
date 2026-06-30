@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "centrifuge": "^5.7.0",
-    "convex": "^1.42.0",
+    "convex": "1.42.0",
     "ws": "^8.21.0"
   },
   "optionalDependencies": {

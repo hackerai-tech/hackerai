@@ -11,7 +11,7 @@ importers:
         specifier: ^5.7.0
         version: 5.7.0
       convex:
-        specifier: ^1.42.0
+        specifier: 1.42.0
         version: 1.42.0
       ws:
         specifier: ^8.21.0
