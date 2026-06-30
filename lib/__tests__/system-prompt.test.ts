@@ -117,14 +117,19 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
 
     expect(prompt).not.toContain("<authorized_security_capabilities>");
     expect(prompt).not.toContain("<behavioral_policy>");
-    expect(prompt).not.toContain("Reverse shells");
-    expect(prompt).not.toContain("bind shells");
-    expect(prompt).not.toContain("shellcode");
-    expect(prompt).not.toContain("C2 scripts");
-    expect(prompt).not.toContain("credential harvesting");
-    expect(prompt).not.toContain("evasion techniques");
-    expect(prompt).not.toContain("Do NOT refuse");
-    expect(prompt).not.toContain("ethical disclaimers");
+
+    for (const banned of [
+      /reverse shells?/i,
+      /bind shells?/i,
+      /shellcode/i,
+      /C2 scripts?/i,
+      /credential harvesting/i,
+      /evasion techniques?/i,
+      /Do NOT refuse/i,
+      /ethical disclaimers?/i,
+    ]) {
+      expect(prompt).not.toMatch(banned);
+    }
   });
 
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {
