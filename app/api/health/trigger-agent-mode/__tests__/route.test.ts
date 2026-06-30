@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -86,11 +93,18 @@ const fetchResponse = ({
 });
 
 describe("GET /api/health/trigger-agent-mode", () => {
+  let warnSpy: jest.SpiedFunction<typeof console.warn>;
+
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     global.fetch = mockFetch as unknown as typeof fetch;
     mockFetch.mockResolvedValue(fetchResponse() as never);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   it("returns 200 when the Agent-relevant Trigger resources are operational", async () => {
@@ -230,7 +244,15 @@ describe("GET /api/health/trigger-agent-mode", () => {
     expect(body).toMatchObject({
       ok: false,
       error: "trigger_status_fetch_failed",
-      message: "network failure",
+      message: "Failed to fetch Trigger status feed.",
     });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '"event":"trigger_agent_health_status_fetch_failed"',
+      ),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"error_message":"network failure"'),
+    );
   });
 });

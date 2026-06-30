@@ -132,13 +132,28 @@ export async function GET() {
 
     return json(body, { status: body.ok ? 200 : 503 });
   } catch (error) {
+    const checkedAt = new Date().toISOString();
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "trigger_agent_health_status_fetch_failed",
+        service: "hackerai",
+        timestamp: checkedAt,
+        source: TRIGGER_STATUS_URL,
+        error_name: error instanceof Error ? error.name : "UnknownError",
+        error_message: error instanceof Error ? error.message : "Unknown error",
+        environment: process.env.VERCEL_ENV,
+        vercel_region: process.env.VERCEL_REGION,
+      }),
+    );
+
     return json(
       {
         ok: false,
         source: TRIGGER_STATUS_URL,
-        checkedAt: new Date().toISOString(),
+        checkedAt,
         error: "trigger_status_fetch_failed",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: "Failed to fetch Trigger status feed.",
       },
       { status: 503 },
     );
