@@ -473,17 +473,26 @@ export class SummarizationTracker {
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
+const MINIMAX_M3_FALLBACK_CHAIN = [
+  "model-kimi-k2.7-code",
+  "fallback-grok-4.3",
+] as const satisfies readonly ModelName[];
+
+const AGENT_TEXT_FALLBACK_CHAIN = [
+  "model-minimax-m3",
+  ...MINIMAX_M3_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": ["fallback-ask-model"],
-  "agent-model-free": ["fallback-agent-model"],
-  "agent-model-free-minimax": ["model-kimi-k2.6", "fallback-grok-4.3"],
-  "model-deepseek-v4-flash": ["fallback-ask-model"],
+  "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "agent-model-free": MINIMAX_M3_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": ["fallback-ask-model"],
   "ask-model": ["fallback-ask-model"],
-  "agent-model": ["model-kimi-k2.6", "fallback-grok-4.3"],
+  "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-grok-4.3": ["fallback-ask-model"],
   "model-gemini-3-flash": ["fallback-ask-model"],
-  "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
+  "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -493,7 +502,6 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model-free",
   "agent-model",
   "agent-model-free",
-  "agent-model-free-minimax",
 ]);
 
 export function isAutoModelSelectionForRetry({
@@ -512,7 +520,7 @@ export function isAutoModelSelectionForRetry({
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-minimax-m3", "model-kimi-k2.6", "fallback-grok-4.3"],
+    agent: AGENT_TEXT_FALLBACK_CHAIN,
     ask: ["model-grok-4.3"],
   };
 
@@ -579,6 +587,12 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
 ): ModelName {
+  if (
+    modelName === "ask-model-free" ||
+    modelName === "model-deepseek-v4-flash"
+  ) {
+    return "model-minimax-m3";
+  }
   if (isDeepSeekModel(modelName)) {
     return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
   }

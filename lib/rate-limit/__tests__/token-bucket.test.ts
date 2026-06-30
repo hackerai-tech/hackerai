@@ -409,7 +409,7 @@ describe("token-bucket", () => {
       ).toBe(11310);
     });
 
-    it.each(["agent-model", "agent-model-free-minimax", "model-minimax-m3"])(
+    it.each(["agent-model", "agent-model-free", "model-minimax-m3"])(
       "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
       (modelName) => {
         expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(3900);

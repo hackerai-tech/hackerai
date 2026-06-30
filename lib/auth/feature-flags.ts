@@ -41,11 +41,11 @@ export function isFeatureEnabled(
 // Feature flag keys
 export const FEATURE_FLAGS = {
   CROSS_TAB_TOKEN_SHARING: "cross-tab-token-sharing",
-  FREE_AGENT_MINIMAX_M3: "free-agent-minimax-m3",
 } as const;
 
 // Feature flag rollout percentages (configurable via environment variables)
-function parseRolloutPercentage(envValue: string | undefined): number {
+function getCrossTabRolloutPercentage(): number {
+  const envValue = process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING;
   if (envValue === undefined || envValue === "") return 0;
 
   const parsed = parseInt(envValue, 10);
@@ -54,24 +54,9 @@ function parseRolloutPercentage(envValue: string | undefined): number {
   return parsed;
 }
 
-function getCrossTabRolloutPercentage(): number {
-  return parseRolloutPercentage(
-    process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING,
-  );
-}
-
-function getFreeAgentMinimaxM3RolloutPercentage(): number {
-  return parseRolloutPercentage(
-    process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT,
-  );
-}
-
 export const FEATURE_ROLLOUTS = {
   get [FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING]() {
     return getCrossTabRolloutPercentage();
-  },
-  get [FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3]() {
-    return getFreeAgentMinimaxM3RolloutPercentage();
   },
 };
 
@@ -94,19 +79,4 @@ export function isCrossTabTokenSharingEnabled(
   );
 
   return enabled;
-}
-
-/**
- * Check if free Agent should use the MiniMax M3 canary route for this user.
- */
-export function isFreeAgentMinimaxM3Enabled(
-  userId: string | undefined,
-): boolean {
-  if (!userId) return false;
-
-  return isFeatureEnabled(
-    userId,
-    FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3,
-    FEATURE_ROLLOUTS[FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3],
-  );
 }

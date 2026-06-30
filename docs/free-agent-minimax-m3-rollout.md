@@ -1,4 +1,4 @@
-# Free Agent MiniMax M3 Canary
+# Free Agent MiniMax M3 Rollout
 
 ## Evaluation
 
@@ -13,7 +13,7 @@ Pre-change thresholds:
 - Paid Agent success rate within 2 percentage points of the pre-rollout baseline.
 - Kimi/Grok fallback-like usage below 10% of paid MiniMax/Kimi/Grok Agent usage.
 - No meaningful support-ticket or cancellation-reason increase for cost/reliability.
-- Full free rollout only if projected free Agent provider cost is near neutral. If projected free cost rises materially, use a percentage canary.
+- Full free rollout is acceptable if the incremental cost is small enough to buy a real read on whether better free Agent quality improves activation and subscription conversion.
 
 Observed at evaluation time:
 
@@ -24,16 +24,17 @@ Observed at evaluation time:
 - Support tickets in the paid soak window: 0.
 - Cancellation reasons in the paid soak window: 6 `too_expensive`, 4 `hit_usage_limits`, 31 total.
 - Free Agent projection over the same post-rollout window: current free route $111.55, projected MiniMax $294.44, or 2.64x current cost.
+- Updated 14-day projection on 2026-06-30: current free Agent route $516.62, projected MiniMax $1,344.94, or about +$828 per 14 days.
 
-Decision: run a canary instead of flipping all free Agent traffic. Paid MiniMax M3 is healthy enough to expose to free users, but projected free-route cost is materially higher than the current free route.
+Decision: move free Agent fully to MiniMax M3. The route is not cheaper than the prior free Agent model, but the incremental cost is modest enough to test whether higher-quality free Agent runs improve a weak activation-to-subscription path.
 
 ## Rollout
 
-Set `FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT` to the desired integer percentage from `0` to `100`.
+`agent-model-free` routes directly to `minimax/minimax-m3`.
 
-Suggested first step: `5` for 24 hours, then `10` if Agent outcomes and free cost remain healthy.
+No environment rollout flag is required.
 
-Rollback: set `FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT=0` and redeploy. No data migration is required; non-canary free Agent traffic remains on `agent-model-free`.
+Rollback: revert the route by mapping `agent-model-free` back to `deepseek/deepseek-v4-flash` and restoring the previous free Agent pricing/fallback expectations. No data migration is required.
 
 ## Monitoring Queries
 

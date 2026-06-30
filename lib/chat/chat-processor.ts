@@ -12,7 +12,6 @@ import {
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
-import { isFreeAgentMinimaxM3Enabled } from "@/lib/auth/feature-flags";
 import {
   AUTH_DISCLAIMER,
   type SupportedLang,
@@ -21,6 +20,7 @@ import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
+import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a user based on mode and subscription.
  * Agent mode: 100 steps (all tiers).
@@ -42,8 +42,7 @@ export const getMaxStepsForUser = (
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
  *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek V4 Flash.
- *   Free Agent canary users route to MiniMax M3. Paid ASK Pro always uses
- *   Sonnet 4.6.
+ *   Free Agent routes to MiniMax M3. Paid ASK Pro always uses Sonnet 4.6.
  * @returns Model name to use
  */
 export function selectModel(
@@ -52,7 +51,6 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
-  userId?: string,
 ): ModelName {
   const isAgent = isAgentMode(mode);
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
@@ -63,13 +61,10 @@ export function selectModel(
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
   const paidAskMediaModel: ModelName =
     hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
-  const freeAgentModel: ModelName = isFreeAgentMinimaxM3Enabled(userId)
-    ? "agent-model-free-minimax"
-    : "agent-model-free";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? freeAgentModel
+      ? "agent-model-free"
       : "agent-model"
     : isFreeAsk
       ? "ask-model-free"
@@ -667,8 +662,12 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   allowLocalDesktopFiles?: boolean;
 }) {
+  const messagesWithoutOpenRouterReasoning =
+    stripOpenRouterReasoningMetadataFromMessages(messages);
+
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
-  const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
+  const messagesWithoutUIOnlyParts =
+    messagesWithoutOpenRouterReasoning.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
@@ -739,7 +738,6 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    userId,
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

@@ -1,4 +1,9 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
@@ -20,6 +25,111 @@ const dollarsToPoints = (dollars: number): number =>
 
 /** Convert points to dollars (for API response) */
 const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
+
+type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
+type ExtraUsagePurchaseRoute =
+  | "checkout_action"
+  | "confirm"
+  | "webhook"
+  | "repair";
+type ExtraUsagePurchaseResult =
+  | "created"
+  | "paid_seen"
+  | "credited"
+  | "already_processed"
+  | "failed";
+
+const MAX_PURCHASE_ERROR_LENGTH = 500;
+const PURCHASE_JSON_SECRET_PATTERN =
+  /(["'])(serviceKey|service_key|apiKey|api_key|authorization|cookie|password|secret|token)\1\s*:\s*(["'])(?:(?!\3).)*\3/gi;
+const PURCHASE_ASSIGNMENT_SECRET_PATTERN =
+  /\b(serviceKey|service_key|apiKey|api_key|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
+const PURCHASE_AUTHORIZATION_BEARER_PATTERN =
+  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s,}]+/gi;
+const PURCHASE_BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+
+const sanitizePurchaseError = (error: string): string =>
+  error
+    .replace(
+      PURCHASE_AUTHORIZATION_BEARER_PATTERN,
+      "Authorization: Bearer [redacted]",
+    )
+    .replace(PURCHASE_JSON_SECRET_PATTERN, (_match, quote, key) => {
+      return `${quote}${key}${quote}: "[redacted]"`;
+    })
+    .replace(PURCHASE_BEARER_TOKEN_PATTERN, "Bearer [redacted]")
+    .replace(PURCHASE_ASSIGNMENT_SECRET_PATTERN, (match) => {
+      const separatorIndex = Math.max(match.indexOf(":"), match.indexOf("="));
+      if (separatorIndex === -1) return "[redacted]";
+      return `${match.slice(0, separatorIndex + 1)} [redacted]`;
+    })
+    .split("\n", 1)[0]
+    .trim()
+    .slice(0, MAX_PURCHASE_ERROR_LENGTH);
+
+async function upsertExtraUsagePurchase(
+  ctx: MutationCtx,
+  args: {
+    userId: string;
+    amountDollars: number;
+    stripeCheckoutSessionId: string;
+    stripePaymentIntentId?: string;
+    stripeInvoiceId?: string;
+    status: ExtraUsagePurchaseStatus;
+    route: ExtraUsagePurchaseRoute;
+    result: ExtraUsagePurchaseResult;
+    lastError?: string | null;
+    creditedAt?: number;
+  },
+) {
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("extra_usage_purchases")
+    .withIndex("by_stripe_checkout_session_id", (q) =>
+      q.eq("stripe_checkout_session_id", args.stripeCheckoutSessionId),
+    )
+    .unique();
+
+  const keepCredited =
+    existing?.status === "credited" && args.status !== "credited";
+  const next: Record<string, unknown> = {
+    user_id: args.userId,
+    amount_dollars: args.amountDollars,
+    stripe_checkout_session_id: args.stripeCheckoutSessionId,
+    stripe_payment_intent_id:
+      args.stripePaymentIntentId ?? existing?.stripe_payment_intent_id,
+    stripe_invoice_id: args.stripeInvoiceId ?? existing?.stripe_invoice_id,
+    status: keepCredited ? "credited" : args.status,
+    last_route: keepCredited ? existing?.last_route : args.route,
+    last_result: keepCredited ? existing?.last_result : args.result,
+    updated_at: now,
+  };
+
+  if (!keepCredited) {
+    if (args.lastError !== undefined) {
+      next.last_error =
+        args.lastError === null
+          ? undefined
+          : sanitizePurchaseError(args.lastError);
+    } else if (args.status !== "failed") {
+      next.last_error = undefined;
+    }
+  }
+
+  if (args.status === "credited") {
+    next.credited_at = existing?.credited_at ?? args.creditedAt ?? now;
+  }
+
+  if (existing) {
+    await ctx.db.patch(existing._id, next);
+    return existing._id;
+  }
+
+  return await ctx.db.insert("extra_usage_purchases", {
+    ...next,
+    created_at: now,
+  } as any);
+}
 
 // =============================================================================
 // Webhook Idempotency
@@ -217,6 +327,106 @@ export const finalizeWebhookProcessing = mutation({
 // =============================================================================
 
 /**
+ * Record the Stripe Checkout session as soon as it is created. Internal because
+ * authenticated Convex actions are the only callers at creation time.
+ */
+export const recordPurchaseCreated = internalMutation({
+  args: {
+    userId: v.string(),
+    amountDollars: v.number(),
+    stripeCheckoutSessionId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await upsertExtraUsagePurchase(ctx, {
+      userId: args.userId,
+      amountDollars: args.amountDollars,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      status: "created",
+      route: "checkout_action",
+      result: "created",
+      lastError: null,
+    });
+    return null;
+  },
+});
+
+/**
+ * Mark that a trusted Stripe route observed payment_status=paid before the
+ * actual balance-credit mutation runs.
+ */
+export const recordPurchasePaidSeen = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    amountDollars: v.number(),
+    stripeCheckoutSessionId: v.string(),
+    stripePaymentIntentId: v.optional(v.string()),
+    stripeInvoiceId: v.optional(v.string()),
+    route: v.union(
+      v.literal("confirm"),
+      v.literal("webhook"),
+      v.literal("repair"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    await upsertExtraUsagePurchase(ctx, {
+      userId: args.userId,
+      amountDollars: args.amountDollars,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      stripeInvoiceId: args.stripeInvoiceId,
+      status: "paid_seen",
+      route: args.route,
+      result: "paid_seen",
+      lastError: null,
+    });
+    return null;
+  },
+});
+
+/**
+ * Persist credit failures separately from addCredits so thrown transaction
+ * failures do not erase the support trail.
+ */
+export const recordPurchaseFailed = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    amountDollars: v.number(),
+    stripeCheckoutSessionId: v.string(),
+    stripePaymentIntentId: v.optional(v.string()),
+    stripeInvoiceId: v.optional(v.string()),
+    route: v.union(
+      v.literal("confirm"),
+      v.literal("webhook"),
+      v.literal("repair"),
+    ),
+    lastError: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    await upsertExtraUsagePurchase(ctx, {
+      userId: args.userId,
+      amountDollars: args.amountDollars,
+      stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+      stripePaymentIntentId: args.stripePaymentIntentId,
+      stripeInvoiceId: args.stripeInvoiceId,
+      status: "failed",
+      route: args.route,
+      result: "failed",
+      lastError: args.lastError,
+    });
+    return null;
+  },
+});
+
+/**
  * Add credits to user balance (after successful Stripe payment).
  * Idempotent via optional idempotencyKey (Stripe event ID).
  */
@@ -236,6 +446,10 @@ export const addCredits = mutation({
     stripeCustomerId: v.optional(v.string()),
     stripeCheckoutSessionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
+    stripeInvoiceId: v.optional(v.string()),
+    purchaseRoute: v.optional(
+      v.union(v.literal("confirm"), v.literal("webhook"), v.literal("repair")),
+    ),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -243,6 +457,26 @@ export const addCredits = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    const markPurchaseCredited = async (
+      result: "credited" | "already_processed",
+      creditedAt?: number,
+    ) => {
+      if (!args.stripeCheckoutSessionId) return;
+
+      await upsertExtraUsagePurchase(ctx, {
+        userId: args.userId,
+        amountDollars: args.amountDollars,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        stripePaymentIntentId: args.stripePaymentIntentId,
+        stripeInvoiceId: args.stripeInvoiceId,
+        status: "credited",
+        route: args.purchaseRoute ?? "repair",
+        result,
+        lastError: null,
+        creditedAt,
+      });
+    };
 
     // Idempotency: skip if already processed (prevents double-credit on webhook retries
     // and across both the post-checkout confirm path and the async webhook path)
@@ -253,6 +487,10 @@ export const addCredits = mutation({
         .withIndex("by_session_key", (q) => q.eq("session_key", sessionKey))
         .unique();
       if (durableExisting) {
+        await markPurchaseCredited(
+          "already_processed",
+          durableExisting.processed_at,
+        );
         return { newBalance: 0, alreadyProcessed: true };
       }
     }
@@ -267,6 +505,7 @@ export const addCredits = mutation({
         .first();
 
       if (existing) {
+        await markPurchaseCredited("already_processed", existing.processed_at);
         return { newBalance: 0, alreadyProcessed: true };
       }
     }
@@ -332,10 +571,13 @@ export const addCredits = mutation({
       currency: "usd",
       attributionStrategy: "direct",
       stripeCustomerId: args.stripeCustomerId,
+      stripeInvoiceId: args.stripeInvoiceId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       description: args.revenueSource ?? "extra_usage_purchase",
     });
+
+    await markPurchaseCredited("credited");
 
     convexLogger.info("credits_added", {
       user_id: args.userId,
@@ -344,6 +586,10 @@ export const addCredits = mutation({
       new_balance_points: newBalancePoints,
       new_balance_dollars: pointsToDollars(newBalancePoints),
       idempotency_key: args.idempotencyKey,
+      stripe_checkout_session_id: args.stripeCheckoutSessionId,
+      stripe_payment_intent_id: args.stripePaymentIntentId,
+      stripe_invoice_id: args.stripeInvoiceId,
+      purchase_route: args.purchaseRoute,
     });
 
     return {

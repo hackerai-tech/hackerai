@@ -2,7 +2,6 @@ import { describe, it, expect } from "@jest/globals";
 import {
   isFeatureEnabled,
   isCrossTabTokenSharingEnabled,
-  isFreeAgentMinimaxM3Enabled,
   FEATURE_FLAGS,
   FEATURE_ROLLOUTS,
 } from "../feature-flags";
@@ -145,10 +144,6 @@ describe("feature-flags", () => {
       );
     });
 
-    it("should have FREE_AGENT_MINIMAX_M3 feature flag defined", () => {
-      expect(FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3).toBe("free-agent-minimax-m3");
-    });
-
     it("should default to 0% rollout when env var is not set", () => {
       const originalEnv = process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING;
       delete process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING;
@@ -156,38 +151,6 @@ describe("feature-flags", () => {
       expect(FEATURE_ROLLOUTS[FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING]).toBe(0);
 
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = originalEnv;
-    });
-
-    it("should default free Agent MiniMax rollout to 0% when env var is not set", () => {
-      const originalEnv = process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT;
-      delete process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT;
-
-      try {
-        expect(FEATURE_ROLLOUTS[FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3]).toBe(0);
-        expect(isFreeAgentMinimaxM3Enabled("free-user-1")).toBe(false);
-      } finally {
-        if (originalEnv === undefined) {
-          delete process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT;
-        } else {
-          process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT = originalEnv;
-        }
-      }
-    });
-
-    it("should enable free Agent MiniMax rollout when env var is 100", () => {
-      const originalEnv = process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT;
-      process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT = "100";
-
-      try {
-        expect(FEATURE_ROLLOUTS[FEATURE_FLAGS.FREE_AGENT_MINIMAX_M3]).toBe(100);
-        expect(isFreeAgentMinimaxM3Enabled("free-user-1")).toBe(true);
-      } finally {
-        if (originalEnv === undefined) {
-          delete process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT;
-        } else {
-          process.env.FREE_AGENT_MINIMAX_M3_ROLLOUT_PERCENT = originalEnv;
-        }
-      }
     });
 
     it("should use env var value when set", () => {

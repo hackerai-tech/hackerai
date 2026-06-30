@@ -39,11 +39,10 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   // These keys route to minimax/minimax-m3 via lib/ai/providers.ts.
   // Rates from OpenRouter: $0.30 in / $1.20 out per 1M tokens.
   "agent-model": { input: 0.3, output: 1.2 },
-  "agent-model-free-minimax": { input: 0.3, output: 1.2 },
+  "agent-model-free": { input: 0.3, output: 1.2 },
   "model-minimax-m3": { input: 0.3, output: 1.2 },
   // Kimi keys are retained as compatibility aliases for stale persisted routes.
   // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
-  "agent-model-free": { input: 0.95, output: 4.0 },
   "model-kimi-k2.7-code": { input: 0.95, output: 4.0 },
   "model-kimi-k2.6": { input: 0.95, output: 4.0 },
 };

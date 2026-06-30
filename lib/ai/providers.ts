@@ -254,8 +254,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "ask-model": or(GROK_4_3_SLUG),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or(MINIMAX_M3_SLUG),
-    "agent-model-free": or("deepseek/deepseek-v4-flash"),
-    "agent-model-free-minimax": or(MINIMAX_M3_SLUG),
+    "agent-model-free": or(MINIMAX_M3_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.3": or(GROK_4_3_SLUG),
     // Compatibility alias for stale internal references persisted before the
@@ -286,8 +285,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "ask-model": "April 2026",
   "ask-model-free": "May 2025",
   "agent-model": "May 2026",
-  "agent-model-free": "May 2025",
-  "agent-model-free-minimax": "May 2026",
+  "agent-model-free": "May 2026",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.3": "April 2026",
   "model-gemini-3-flash": "April 2026",
@@ -310,8 +308,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
-  "agent-model-free-minimax":
-    "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.3": "xAI Grok 4.3",
   "model-gemini-3-flash": "xAI Grok 4.3",
@@ -343,7 +339,6 @@ export function isAnthropicModel(modelName: string): boolean {
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
-    modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro"
   );
@@ -363,7 +358,7 @@ export function isMiniMaxModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
     normalized === "agent-model" ||
-    normalized === "agent-model-free-minimax" ||
+    normalized === "agent-model-free" ||
     normalized === "model-minimax-m3" ||
     normalized.includes("minimax/minimax-m3")
   );
