@@ -22,6 +22,7 @@ const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogFlush = jest.fn();
+const mockGetReferralRewardConfig = jest.fn();
 
 jest.mock("next/server", () => ({
   after: jest.fn((callback: () => void) => callback()),
@@ -106,10 +107,7 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 jest.mock("@/lib/referrals/config", () => ({
-  getReferralRewardConfig: () => ({
-    enabled: false,
-    referrerRewardDollars: 0,
-  }),
+  getReferralRewardConfig: mockGetReferralRewardConfig,
 }));
 
 function makeWebhookRequest({
@@ -137,6 +135,10 @@ describe("POST /api/subscription/webhook", () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
 
     mockConvexMutation.mockResolvedValue({ alreadyProcessed: false } as never);
+    mockGetReferralRewardConfig.mockReturnValue({
+      enabled: false,
+      referrerRewardDollars: 0,
+    });
   });
 
   afterEach(() => {
@@ -335,7 +337,109 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("skips deleted subscriptions that do not have a HackerAI price lookup key", async () => {
+  it("deactivates referral paid eligibility for deleted HackerAI subscriptions resolved from product fallback", async () => {
+    mockGetReferralRewardConfig.mockReturnValue({
+      enabled: true,
+      referrerRewardDollars: 10,
+    });
+    mockConstructEvent.mockReturnValue({
+      id: "evt_subscription_deleted_hackerai_fallback",
+      type: "customer.subscription.deleted",
+      data: {
+        object: {
+          id: "sub_hackerai_deleted",
+          customer: "cus_hackerai",
+          items: {
+            data: [
+              {
+                price: {
+                  id: "price_hackerai_no_lookup",
+                  lookup_key: null,
+                },
+              },
+            ],
+          },
+          metadata: {},
+          cancellation_details: {
+            reason: "cancellation_requested",
+          },
+        },
+      },
+    });
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_hackerai_deleted",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_hackerai_no_lookup",
+              lookup_key: null,
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_hackerai_pro_plus",
+                name: "HackerAI Pro Plus",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_hackerai",
+      metadata: {
+        workOSOrganizationId: "org_hackerai",
+      },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_paid" }]),
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ received: true });
+    expect(mockRetrieveSubscription).toHaveBeenCalledWith(
+      "sub_hackerai_deleted",
+      {
+        expand: ["items.data.price", "items.data.price.product"],
+      },
+    );
+    expect(mockRetrieveCustomer).toHaveBeenCalledWith("cus_hackerai");
+    expect(mockListMemberships).toHaveBeenCalledWith({
+      organizationId: "org_hackerai",
+      statuses: ["active"],
+    });
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "referrals.setReferralCodesPaidEligibility",
+      {
+        serviceKey: "service_key",
+        userIds: ["user_paid"],
+        active: false,
+        subscriptionTier: "free",
+      },
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_cancelled",
+      expect.objectContaining({
+        userId: "user_paid",
+        tier: "pro-plus",
+        org_id: "org_hackerai",
+        $set: { subscription_tier: "free" },
+      }),
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      '[Subscription Webhook] Subscription sub_hackerai_deleted missing price lookup_key, resolved tier "pro-plus" from product fallback',
+    );
+  });
+
+  it("skips deleted legacy PentestGPT subscriptions that do not have a HackerAI price lookup key", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_subscription_deleted_legacy",
       type: "customer.subscription.deleted",
@@ -360,6 +464,27 @@ describe("POST /api/subscription/webhook", () => {
         },
       },
     });
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_legacy_deleted",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            price: {
+              id: "price_legacy",
+              lookup_key: null,
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_legacy",
+                name: "PentestGPT Pro Subscription",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
 
     const { POST } = await import("../route");
 
@@ -368,6 +493,12 @@ describe("POST /api/subscription/webhook", () => {
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ received: true });
+    expect(mockRetrieveSubscription).toHaveBeenCalledWith(
+      "sub_legacy_deleted",
+      {
+        expand: ["items.data.price", "items.data.price.product"],
+      },
+    );
     expect(mockRetrieveCustomer).not.toHaveBeenCalled();
     expect(mockListMemberships).not.toHaveBeenCalled();
     expect(mockPostHogEvent).not.toHaveBeenCalledWith(
@@ -375,7 +506,11 @@ describe("POST /api/subscription/webhook", () => {
       expect.anything(),
     );
     expect(console.info).toHaveBeenCalledWith(
-      "[Subscription Webhook] subscription.deleted: skipping subscription sub_legacy_deleted without HackerAI price lookup_key for customer cus_migrated",
+      "[Subscription Webhook] subscription.deleted: skipping legacy PentestGPT subscription sub_legacy_deleted for customer cus_migrated",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "referrals.setReferralCodesPaidEligibility",
+      expect.anything(),
     );
   });
 });
