@@ -190,6 +190,65 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("interactsh-client: use for blind callback");
   });
 
+  it("adds paid ask-mode current-mode guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in ASK MODE with limited tools.");
+    expect(prompt).toContain(
+      "inform them to switch to AGENT MODE for full access including file operations, terminal commands, and code execution.",
+    );
+  });
+
+  it("adds free ask-mode local sandbox guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "free",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in ASK MODE with limited tools.");
+    expect(prompt).toContain(
+      "AGENT MODE requires a connected local sandbox on the free plan, or Pro for cloud Agent access.",
+    );
+    expect(prompt).not.toContain(
+      "inform them to switch to AGENT MODE for full access",
+    );
+  });
+
+  it("adds agent-mode current-mode guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in AGENT MODE.");
+    expect(prompt).toContain(
+      "Use the available tools to read files, edit code, run terminal commands, and execute code when useful.",
+    );
+    expect(prompt).toContain("Do not tell the user to switch to Agent mode.");
+    expect(prompt).not.toContain("You are in ASK MODE");
+  });
+
   it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {
     const localHostContext = `You are executing commands on Linux 6.8 (x64) in DANGEROUS MODE.
 Commands run directly on the host OS "labbox" without Docker isolation.`;
