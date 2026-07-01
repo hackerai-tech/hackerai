@@ -10,6 +10,7 @@ import {
   buildProviderOptions,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
@@ -409,4 +410,35 @@ describe("getRetryFallbackModel", () => {
       expect(getRetryFallbackModel(modelName, mode)).toBe("model-minimax-m3");
     },
   );
+});
+
+describe("resolveServedModelForCostAccounting", () => {
+  it("maps a Kimi provider slug served from free Agent fallback back to the local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: KIMI_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-kimi-k2.7-code");
+  });
+
+  it("maps a terminal Grok provider slug served from free Agent fallback back to the fallback cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: GROK_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("fallback-grok-4.3");
+  });
+
+  it("falls back to the active model key when provider metadata is absent", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        mode: "agent",
+      }),
+    ).toBe("agent-model-free");
+  });
 });

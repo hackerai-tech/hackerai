@@ -565,6 +565,7 @@ export const deductUsage = async (
     RateLimitInfo,
     "pointsDeducted" | "extraUsagePointsDeducted"
   >,
+  actualModelName?: string,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -625,15 +626,16 @@ export const deductUsage = async (
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
       actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
     } else {
+      const modelForActualCost = actualModelName ?? modelName;
       const actualInputCost = calculateTokenCost(
         actualInputTokens,
         "input",
-        modelName,
+        modelForActualCost,
       );
       const outputCost = calculateTokenCost(
         actualOutputTokens,
         "output",
-        modelName,
+        modelForActualCost,
       );
       const nonModelCostPoints =
         nonModelCostDollars > 0

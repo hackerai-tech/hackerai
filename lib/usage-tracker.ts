@@ -115,7 +115,10 @@ export class UsageTracker {
     );
   }
 
-  computeModelCostDollars(selectedModel: string): number {
+  computeModelCostDollars(
+    selectedModel: string,
+    accountingModel?: string,
+  ): number {
     // Use authoritative per-step provider cost only when the model itself
     // reported one via raw.cost (tracked in modelProviderCost). providerCost
     // also includes sandbox/tool spend and summarization cost, so subtract
@@ -123,20 +126,24 @@ export class UsageTracker {
     if (this.modelProviderCost > 0) {
       return this.providerCost - this.nonModelCost;
     }
+    const modelForEstimate = accountingModel ?? selectedModel;
     return (
-      (calculateRawTokenCost(this.inputTokens, "input", selectedModel) +
-        calculateRawTokenCost(this.outputTokens, "output", selectedModel)) /
+      (calculateRawTokenCost(this.inputTokens, "input", modelForEstimate) +
+        calculateRawTokenCost(this.outputTokens, "output", modelForEstimate)) /
       POINTS_PER_DOLLAR
     );
   }
 
-  computeCostDollars(selectedModel: string): number {
+  computeCostDollars(selectedModel: string, accountingModel?: string): number {
     // Mirror deductUsage's gate: providerCost is only authoritative for the
     // total when modelProviderCost > 0. After resetModelLeg() (fallback retry)
     // providerCost can be positive from nonModelCost alone, which would
     // underreport the fallback's model tokens if we used it directly.
     if (this.modelProviderCost > 0) return this.providerCost;
-    return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
+    return (
+      this.computeModelCostDollars(selectedModel, accountingModel) +
+      this.nonModelCost
+    );
   }
 
   getBillingBreakdown(
@@ -236,6 +243,7 @@ export class UsageTracker {
     selectedModelOverride,
     responseModel,
     configuredModelId,
+    accountingModel,
     rateLimitInfo,
     billingBreakdown,
   }: {
@@ -243,6 +251,7 @@ export class UsageTracker {
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
+    accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
   }): UsageCostRecord {
@@ -252,7 +261,10 @@ export class UsageTracker {
       configuredModelId,
       selectedModel,
     });
-    const modelCostDollars = this.computeModelCostDollars(selectedModel);
+    const modelCostDollars = this.computeModelCostDollars(
+      selectedModel,
+      accountingModel,
+    );
     const costDollars = modelCostDollars + this.nonModelCost;
     const costBreakdown = this.resolveCostBreakdown(
       costDollars,
@@ -287,6 +299,7 @@ export class UsageTracker {
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
+    accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
   }) {

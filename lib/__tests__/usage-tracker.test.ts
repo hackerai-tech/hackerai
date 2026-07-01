@@ -418,6 +418,55 @@ describe("UsageTracker", () => {
       expect(usage.costSource).toBe("raw_token_estimate");
     });
 
+    it("uses served fallback model pricing when raw provider cost is absent", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.model).toBe("auto");
+      expect(usage.modelCostDollars).toBe(4.95);
+      expect(usage.costDollars).toBe(4.95);
+      expect(usage.costSource).toBe("raw_token_estimate");
+    });
+
+    it("keeps raw provider cost ahead of served fallback token estimates", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        raw: { cost: 0.42 },
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.model).toBe("auto");
+      expect(usage.modelCostDollars).toBe(0.42);
+      expect(usage.costDollars).toBe(0.42);
+      expect(usage.costSource).toBe("provider");
+    });
+
     it("labels post-run overflow as mixed when final deduction uses extra usage", () => {
       tracker.accumulateStep({
         inputTokens: 1_000_000,
