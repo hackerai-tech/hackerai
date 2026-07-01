@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
-import { X, ChevronDown, Sparkle } from "lucide-react";
+import { CalendarClock, X, ChevronDown, Loader2, Sparkle } from "lucide-react";
 import {
   proFeatures,
   proPlusFeatures,
@@ -23,12 +23,32 @@ import {
 import DeleteAccountDialog from "./DeleteAccountDialog";
 import CancelSubscriptionDialog from "./CancelSubscriptionDialog";
 import redirectToBillingPortalAction from "@/lib/actions/billing-portal";
+import getSubscriptionCancellationStatusAction, {
+  type SubscriptionCancellationStatus,
+} from "@/lib/actions/subscription-status";
+import type { SubscriptionTier } from "@/types";
+
+type AccountCancellationStatus = SubscriptionCancellationStatus & {
+  subscription: SubscriptionTier;
+};
+
+function formatCancellationDate(currentPeriodEnd?: number) {
+  if (!currentPeriodEnd) return null;
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(currentPeriodEnd));
+}
 
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
+  const [cancellationStatus, setCancellationStatus] =
+    useState<AccountCancellationStatus | null>(null);
   const { isMigrating } = usePentestgptMigration();
 
   // Fetch admin status for team subscriptions
@@ -55,6 +75,42 @@ const AccountTab = () => {
       : subscription === "pro-plus"
         ? proPlusFeatures
         : proFeatures;
+  const hasCurrentCancellationStatus =
+    canManageBilling && cancellationStatus?.subscription === subscription;
+  const currentCancellationStatus = hasCurrentCancellationStatus
+    ? cancellationStatus
+    : null;
+  const cancellationEndDate = formatCancellationDate(
+    currentCancellationStatus?.currentPeriodEnd,
+  );
+  const cancellationScheduled =
+    currentCancellationStatus?.cancelAtPeriodEnd === true;
+  const isCheckingCancellationStatus =
+    canManageBilling && !hasCurrentCancellationStatus;
+
+  useEffect(() => {
+    if (!canManageBilling || hasCurrentCancellationStatus) return;
+
+    let ignore = false;
+
+    getSubscriptionCancellationStatusAction()
+      .then((status) => {
+        if (!ignore) setCancellationStatus({ ...status, subscription });
+      })
+      .catch(() => {
+        if (!ignore) {
+          setCancellationStatus({
+            subscription,
+            hasActiveSubscription: false,
+            cancelAtPeriodEnd: false,
+          });
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [canManageBilling, hasCurrentCancellationStatus, subscription]);
 
   const redirectToBillingPortal = async () => {
     try {
@@ -125,13 +181,25 @@ const AccountTab = () => {
                       <DropdownMenuSeparator />
                     </>
                   )}
-                  <DropdownMenuItem
-                    variant="destructive"
-                    onClick={handleCancelSubscription}
-                  >
-                    <X className="h-4 w-4" />
-                    <span>Cancel subscription</span>
-                  </DropdownMenuItem>
+                  {cancellationScheduled ? (
+                    <DropdownMenuItem disabled>
+                      <CalendarClock className="h-4 w-4" />
+                      <span>Cancellation scheduled</span>
+                    </DropdownMenuItem>
+                  ) : isCheckingCancellationStatus ? (
+                    <DropdownMenuItem disabled>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Checking subscription</span>
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={handleCancelSubscription}
+                    >
+                      <X className="h-4 w-4" />
+                      <span>Cancel subscription</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null
@@ -153,6 +221,17 @@ const AccountTab = () => {
             </Button>
           )}
         </div>
+
+        {cancellationScheduled && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Cancellation scheduled.
+            </span>{" "}
+            {cancellationEndDate
+              ? `Your plan stays active until ${cancellationEndDate}.`
+              : "Your plan stays active until the end of the current billing period."}
+          </div>
+        )}
 
         <div className="mt-2 rounded-lg bg-transparent px-0">
           <span className="text-sm font-semibold inline-block pb-4">
