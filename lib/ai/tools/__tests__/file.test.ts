@@ -29,9 +29,6 @@ const mockPhEvent = phLogger.event as jest.MockedFunction<
   typeof phLogger.event
 >;
 
-const VALID_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
-
 function makeContext(
   sandbox: unknown,
   overrides: Partial<ToolContext> = {},
@@ -359,45 +356,15 @@ describe("file tool image view", () => {
     mockPhEvent.mockReset();
   });
 
-  test("allows Kimi to view sandbox images as multimodal tool output", async () => {
-    mockUploadSandboxFileToConvex.mockResolvedValue({
-      fileId: "file-1" as never,
-      name: "screenshot.png",
-      mediaType: "image/png",
-    });
+  // DeepSeek's chat completions API does not return multimodal tool
+  // results (supportsMultimodalToolResults is always false), so the
+  // sandbox image "view" action is unavailable for every model today.
 
-    const commandRun = jest
-      .fn<Promise<FakeCommandResult>, [string, any?]>()
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      })
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-            data: VALID_PNG_BASE64,
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      });
+  test("rejects the view action at execute time with an upgrade message", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-deepseek-v4-flash" }),
     );
 
     const result = await runTool(tool, {
@@ -405,115 +372,19 @@ describe("file tool image view", () => {
       path: "/tmp/screenshot.png",
       brief: "Inspect the screenshot",
     });
-    expect(result).toMatchObject({
-      action: "view",
-      mediaType: "image/png",
-      kind: "image",
-    });
-
-    await expect(runToModelOutput(tool, result)).resolves.toEqual({
-      type: "content",
-      value: [
-        {
-          type: "text",
-          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
-        },
-        {
-          type: "image-data",
-          data: VALID_PNG_BASE64,
-          mediaType: "image/png",
-        },
-      ],
-    });
-
-    expect(mockPhEvent).toHaveBeenCalledTimes(1);
-    expect(mockPhEvent).toHaveBeenCalledWith(
-      "file_view_image_used",
-      expect.objectContaining({
-        user_id: "user-1",
-        chat_id: "chat-1",
-        stage: "model_output",
-        outcome: "success",
-        success: true,
-        media_type: "image/png",
-        size_bytes: 68,
-        preview_upload_succeeded: true,
-        file_extension: "png",
-        path_prefix_class: "tmp",
-        path_is_absolute: true,
-        path_has_extension: true,
-        path_depth: 2,
-        path_length: "/tmp/screenshot.png".length,
-        path_fingerprint: expect.any(String),
-      }),
-    );
-    expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
-  });
-
-  test("logs initial inspection failures with safe path diagnostics", async () => {
-    const commandRun = jest.fn(async () => ({
-      stdout: JSON.stringify({
-        error: "File not found or is not a regular file: /tmp/missing",
-      }),
-      stderr: "",
-      exitCode: 2,
-    }));
-    const sandbox = makeSandbox(commandRun);
-    const tool = createFile(makeContext(sandbox));
-
-    const result = await runTool(tool, {
-      action: "view",
-      path: "/tmp/missing",
-      brief: "Inspect a missing image",
-    });
 
     expect(result).toEqual({
-      error: "File not found or is not a regular file: /tmp/missing",
+      error:
+        "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.",
     });
-    expect(mockPhEvent).toHaveBeenCalledWith(
-      "file_view_image_used",
-      expect.objectContaining({
-        stage: "initial_inspection",
-        outcome: "inspection_failed",
-        success: false,
-        failure_reason: "file_not_found",
-        failure_detail: "file_not_found",
-        error_name: "Error",
-        error_message_hash: expect.any(String),
-        file_extension: undefined,
-        path_prefix_class: "tmp",
-        path_is_absolute: true,
-        path_has_extension: false,
-        path_depth: 2,
-        path_length: "/tmp/missing".length,
-        path_fingerprint: expect.any(String),
-      }),
-    );
-    expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
+    expect(commandRun).not.toHaveBeenCalled();
   });
 
-  test("keeps successful image handoff when success telemetry throws", async () => {
-    mockPhEvent.mockImplementationOnce(() => {
-      throw new Error("PostHog unavailable");
-    });
-
-    const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-      return {
-        stdout: JSON.stringify({
-          path: "/tmp/screenshot.png",
-          mediaType: "image/png",
-          sizeBytes: 68,
-          kind: "image",
-          data: VALID_PNG_BASE64,
-        }),
-        stderr: "",
-        exitCode: 0,
-      };
-    });
+  test("rejects a pre-built view output at model-output time with an upgrade message", async () => {
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-deepseek-v4-flash" }),
     );
 
     await expect(
@@ -527,72 +398,9 @@ describe("file tool image view", () => {
         kind: "image",
       }),
     ).resolves.toEqual({
-      type: "content",
-      value: [
-        {
-          type: "text",
-          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
-        },
-        {
-          type: "image-data",
-          data: VALID_PNG_BASE64,
-          mediaType: "image/png",
-        },
-      ],
-    });
-  });
-
-  test("returns a text error instead of invalid image-data for corrupt sandbox images", async () => {
-    const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-      return {
-        stdout: JSON.stringify({
-          path: "/tmp/broken.png",
-          mediaType: "image/png",
-          sizeBytes: 8,
-          kind: "image",
-          data: "iVBORw0KGgo=",
-        }),
-        stderr: "",
-        exitCode: 0,
-      };
-    });
-    const sandbox = makeSandbox(commandRun);
-    const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
-    );
-
-    await expect(
-      runToModelOutput(tool, {
-        action: "view",
-        content: "Viewing image file: broken.png (image/png, 8 bytes).",
-        path: "/tmp/broken.png",
-        filename: "broken.png",
-        mediaType: "image/png",
-        sizeBytes: 8,
-        kind: "image",
-      }),
-    ).resolves.toEqual({
       type: "text",
       value:
-        "Error: View inspection found invalid image data (missing_png_ihdr).",
+        "Error: The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.",
     });
-
-    expect(mockPhEvent).toHaveBeenCalledWith(
-      "file_view_image_used",
-      expect.objectContaining({
-        stage: "model_output",
-        outcome: "inspection_failed",
-        success: false,
-        failure_reason: "inspection_error",
-        failure_detail: "invalid_image_data",
-        error_name: "Error",
-        error_message_hash: expect.any(String),
-        media_type: "image/png",
-        size_bytes: 8,
-        file_extension: "png",
-        path_prefix_class: "tmp",
-      }),
-    );
   });
 });

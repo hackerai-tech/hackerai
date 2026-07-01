@@ -5,7 +5,6 @@ import {
   selectModel,
   getMaxStepsForUser,
   fixIncompleteMessageParts,
-  addAuthMessage,
 } from "../chat-processor";
 
 function makeFilePart(id: string, mediaType = "image/png") {
@@ -345,20 +344,6 @@ describe("getMaxStepsForUser", () => {
     expect(getMaxStepsForUser("ask", "pro")).toBe(100);
     expect(getMaxStepsForUser("ask", "ultra")).toBe(100);
     expect(getMaxStepsForUser("ask", "team")).toBe(100);
-  });
-});
-
-describe("addAuthMessage", () => {
-  it("uses the moderation-detected language for the authorization text", () => {
-    const messages = [
-      makeMessage("m1", "user", [{ type: "text", text: "Escanea mi API" }]),
-    ];
-
-    addAuthMessage(messages, "es");
-
-    expect((messages[0].parts[0] as any).text).toContain(
-      "Tengo permiso y estoy autorizado",
-    );
   });
 });
 

@@ -1,292 +1,53 @@
 import {
   getModelDisplayName,
+  isDeepSeekModel,
   myProvider,
-  sanitizeOpenRouterRequestForGeminiFunctionResponses,
-  sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("keeps paid Ask media, Agent Standard, and stale Kimi compatibility keys pointed at their active slugs", () => {
-    expect(
-      (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.3");
-    expect(
-      (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
-    ).toBe("minimax/minimax-m3");
-    expect(
-      (myProvider.languageModel("agent-model-free") as { modelId: string })
-        .modelId,
-    ).toBe("minimax/minimax-m3");
-    expect(
-      (myProvider.languageModel("model-minimax-m3") as { modelId: string })
-        .modelId,
-    ).toBe("minimax/minimax-m3");
-    expect(
-      (myProvider.languageModel("model-grok-4.3") as { modelId: string })
-        .modelId,
-    ).toBe("x-ai/grok-4.3");
-    expect(
-      (
-        myProvider.languageModel("model-gemini-3-flash") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("x-ai/grok-4.3");
-    expect(
-      (
-        myProvider.languageModel("model-kimi-k2.6") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("moonshotai/kimi-k2.7-code:exacto");
-    expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
-    expect(getModelDisplayName("model-grok-4.3")).toBe("xAI Grok 4.3");
-    expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.3");
+  it("routes every registry key to the configured DeepSeek model", () => {
+    const keys = [
+      "ask-model",
+      "ask-model-free",
+      "agent-model",
+      "agent-model-free",
+      "model-sonnet-4.6",
+      "model-grok-4.3",
+      "model-gemini-3-flash",
+      "model-deepseek-v4-flash",
+      "model-deepseek-v4-pro",
+      "model-opus-4.6",
+      "model-minimax-m3",
+      "model-kimi-k2.7-code",
+      "model-kimi-k2.6",
+      "fallback-agent-model",
+      "fallback-ask-model",
+      "fallback-gemini-3.5-flash",
+      "fallback-grok-4.3",
+      "title-generator-model",
+    ];
+
+    for (const key of keys) {
+      expect(
+        (myProvider.languageModel(key) as { modelId: string }).modelId,
+      ).toBe("deepseek-v4-flash");
+      expect(getModelDisplayName(key)).toBe("DeepSeek");
+    }
   });
 });
 
-describe("sanitizeOpenRouterRequestForXai", () => {
-  it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
-    const body = {
-      model: "google/gemini-3-flash-preview",
-      models: ["x-ai/grok-4.3"],
-      messages: [
-        {
-          role: "assistant",
-          content: "Here is the answer.",
-          reasoning_details: [
-            { type: "text", text: "plain reasoning detail" },
-            {
-              type: "encrypted",
-              encrypted_content: "provider-private-gemini-blob",
-            },
-          ],
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForXai(body);
-
-    expect(result.changed).toBe(true);
-    expect(result.body).toEqual({
-      ...body,
-      messages: [
-        {
-          role: "assistant",
-          content: "Here is the answer.",
-          reasoning_details: [{ type: "text", text: "plain reasoning detail" }],
-        },
-      ],
-    });
-    expect(JSON.stringify(result.body)).not.toContain("encrypted_content");
-    expect(JSON.stringify(body)).toContain("encrypted_content");
-  });
-
-  it("removes reasoning_details when every detail is encrypted", () => {
-    const body = {
-      model: "x-ai/grok-4.3",
-      messages: [
-        {
-          role: "assistant",
-          content: "Visible text stays.",
-          reasoning_details: [
-            { type: "encrypted", encrypted_content: "x-provider-blob" },
-          ],
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForXai(body);
-
-    expect(result.changed).toBe(true);
-    expect(result.body).toEqual({
-      model: "x-ai/grok-4.3",
-      messages: [
-        {
-          role: "assistant",
-          content: "Visible text stays.",
-        },
-      ],
-    });
-  });
-
-  it("leaves non-xAI routes unchanged", () => {
-    const body = {
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "assistant",
-          content: "Here is the answer.",
-          reasoning_details: [
-            { type: "encrypted", encrypted_content: "gemini-blob" },
-          ],
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForXai(body);
-
-    expect(result.changed).toBe(false);
-    expect(result.body).toBe(body);
-  });
-
-  it("preserves encrypted_content outside provider reasoning metadata", () => {
-    const body = {
-      model: "x-ai/grok-4.3",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Please inspect this payload.",
-            },
-            {
-              type: "input_json",
-              encrypted_content: "user-owned-data",
-            },
-          ],
-        },
-        {
-          role: "assistant",
-          content: "Visible text stays.",
-          tool_calls: [
-            {
-              id: "call_1",
-              function: {
-                name: "decrypt",
-                arguments: JSON.stringify({
-                  encrypted_content: "tool-owned-data",
-                }),
-              },
-            },
-          ],
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForXai(body);
-
-    expect(result.changed).toBe(false);
-    expect(result.body).toBe(body);
-    expect(JSON.stringify(result.body)).toContain("user-owned-data");
-    expect(JSON.stringify(result.body)).toContain("tool-owned-data");
-  });
-});
-
-describe("sanitizeOpenRouterRequestForGeminiFunctionResponses", () => {
-  it("wraps JSON tool responses with OpenAPI $ref keys when a fallback can route to Gemini", () => {
-    const openApiResponse = JSON.stringify({
-      openapi: "3.0.0",
-      paths: {
-        "/auth": {
-          post: {
-            requestBody: {
-              content: {
-                "application/json": {
-                  schema: { $ref: "#/components/schemas/AuthRequest" },
-                },
-              },
-            },
-            responses: {
-              "200": {
-                content: {
-                  "application/json": {
-                    schema: {
-                      $ref: "#/components/schemas/CoreAuthenticationResult",
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-    const body = {
-      model: "deepseek/deepseek-v4-flash",
-      models: ["google/gemini-3-flash-preview"],
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "open_url",
-          content: openApiResponse,
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForGeminiFunctionResponses(body);
-
-    expect(result.changed).toBe(true);
-    expect((result.body as any).messages[0].content).toBe(
-      JSON.stringify({ result: openApiResponse }),
-    );
-    expect(JSON.parse((result.body as any).messages[0].content)).toEqual({
-      result: openApiResponse,
-    });
-  });
-
-  it("leaves non-Gemini routes and non-ref JSON tool responses unchanged", () => {
-    const nonGeminiBody = {
-      model: "deepseek/deepseek-v4-flash",
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "open_url",
-          content: JSON.stringify({ $ref: "#/components/schemas/AuthRequest" }),
-        },
-      ],
-    };
-    const geminiBodyWithoutRef = {
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "web_search",
-          content: JSON.stringify({ result: "ok" }),
-        },
-      ],
-    };
-
-    expect(
-      sanitizeOpenRouterRequestForGeminiFunctionResponses(nonGeminiBody),
-    ).toEqual({ body: nonGeminiBody, changed: false });
-    expect(
-      sanitizeOpenRouterRequestForGeminiFunctionResponses(geminiBodyWithoutRef),
-    ).toEqual({ body: geminiBodyWithoutRef, changed: false });
+describe("isDeepSeekModel", () => {
+  it("is always true since DeepSeek is the only provider", () => {
+    expect(isDeepSeekModel("ask-model")).toBe(true);
+    expect(isDeepSeekModel("anything")).toBe(true);
   });
 });
 
 describe("supportsMultimodalToolResults", () => {
-  it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
-    expect(supportsMultimodalToolResults("agent-model")).toBe(true);
-    expect(supportsMultimodalToolResults("agent-model-free")).toBe(true);
-    expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
-    expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
-    expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
-    expect(
-      supportsMultimodalToolResults("moonshotai/kimi-k2.7-code:exacto"),
-    ).toBe(true);
-  });
-
-  it("allows multimodal fallback keys and slugs used after image tool results", () => {
-    expect(supportsMultimodalToolResults("model-grok-4.3")).toBe(true);
-    expect(supportsMultimodalToolResults("fallback-gemini-3.5-flash")).toBe(
-      true,
-    );
-    expect(supportsMultimodalToolResults("google/gemini-3.5-flash")).toBe(true);
-    expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
-    expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
-  });
-
-  it("still rejects text-only DeepSeek model keys", () => {
-    expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
-      false,
-    );
-    expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
+  it("is always false — DeepSeek's chat completions API does not return multimodal tool results", () => {
+    expect(supportsMultimodalToolResults("ask-model")).toBe(false);
+    expect(supportsMultimodalToolResults("agent-model")).toBe(false);
+    expect(supportsMultimodalToolResults(undefined)).toBe(false);
   });
 });

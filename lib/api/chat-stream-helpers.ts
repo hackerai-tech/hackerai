@@ -10,7 +10,6 @@ import type {
   UIMessageStreamWriter,
   ToolSet,
   ModelMessage,
-  SystemModelMessage,
 } from "ai";
 import { NoSuchModelError } from "ai";
 import type {
@@ -22,7 +21,7 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import { myProvider } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -453,46 +452,6 @@ export class SummarizationTracker {
   }
 }
 
-/**
- * OpenRouter `models` fallback chain, expressed in local registry keys.
- *
- * When the primary 5xx's, rate-limits, or otherwise errors before any tokens
- * stream, OpenRouter rolls forward through this list and bills at the served
- * model's rate (response.modelId reflects what actually ran).
- *
- * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper MiniMax and Kimi
- * fallback chain while the run is text-only, then switch to multimodal-capable
- * fallbacks once image tool results enter the context.
- *
- * Keys and values are registry names (see lib/ai/providers.ts) — the actual
- * OpenRouter slugs are resolved at request-build time so this stays in sync
- * with the registry.
- */
-const MINIMAX_M3_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
-  "fallback-grok-4.3",
-] as const satisfies readonly ModelName[];
-
-const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-minimax-m3",
-  ...MINIMAX_M3_FALLBACK_CHAIN,
-] as const satisfies readonly ModelName[];
-
-const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "agent-model-free": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": AGENT_TEXT_FALLBACK_CHAIN,
-  "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-kimi-k2.7-code": ["fallback-grok-4.3"],
-  "model-kimi-k2.6": ["fallback-grok-4.3"],
-};
-
 const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
@@ -514,84 +473,15 @@ export function isAutoModelSelectionForRetry({
   );
 }
 
-const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
-  {
-    agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.3"],
-  };
-
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
-
-// Standard Ask can route text-only prompts to DeepSeek and media prompts to
-// Grok. Keep those route keys and their persisted Grok alias on one effort
-// level so they do not drift.
-const ASK_STANDARD_REASONING_MODELS = [
-  "model-deepseek-v4-pro",
-  "ask-model",
-  "model-grok-4.3",
-  "model-gemini-3-flash",
-] as const satisfies readonly ModelName[];
-
-const ASK_MEDIUM_REASONING_MODELS = [
-  ...ASK_STANDARD_REASONING_MODELS,
-  "model-sonnet-4.6",
-  "model-opus-4.6",
-] as const satisfies readonly ModelName[];
-
-const isAskMediumReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
-
-const ASK_KIMI_REASONING_MODELS = [
-  "model-kimi-k2.7-code",
-  "model-kimi-k2.6",
-] as const satisfies readonly ModelName[];
-
-const isAskKimiReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
-
-type FallbackOptions = {
-  hasMultimodalToolResults?: boolean;
-  reasoningOverride?: ProviderReasoningOverride;
-};
-
-export type ProviderReasoningOverride = {
-  enabled: boolean;
-  effort?: string;
-  exclude?: boolean;
-};
-
-const getFallbackKeys = (
-  modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
-): readonly ModelName[] | undefined => {
-  if (!modelName) return undefined;
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
-    if (mode === "agent" && options.hasMultimodalToolResults) {
-      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
-    }
-    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
-  }
-  return MODEL_FALLBACK_CHAIN[modelName as ModelName];
-};
-
+/**
+ * With a single DeepSeek provider there is no other model to fall back to —
+ * a "fallback" retry re-attempts the same model.
+ */
 export function getRetryFallbackModel(
   modelName: ModelName,
-  _mode: ChatMode,
+  _mode?: ChatMode,
 ): ModelName {
-  if (
-    modelName === "ask-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
-    modelName === "model-deepseek-v4-pro" ||
-    modelName === "ask-model" ||
-    modelName === "model-grok-4.3" ||
-    modelName === "model-gemini-3-flash"
-  ) {
-    return "model-minimax-m3";
-  }
-  return "fallback-grok-4.3";
+  return modelName;
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -600,138 +490,36 @@ const resolveSlug = (modelName: string): string | undefined => {
     return typeof lm?.modelId === "string" ? lm.modelId : undefined;
   } catch (err) {
     if (err instanceof NoSuchModelError) {
-      // Stale fallback entry — treat as "no slug" so it can't bring down the
-      // primary request. Anything else is an unexpected failure and surfaces.
       return undefined;
     }
     throw err;
   }
 };
 
-/**
- * Resolve a model's fallback chain to OpenRouter slugs.
- * Returns an empty array if the model has no chain or all entries are stale.
- */
-export function getFallbackSlugs(
-  modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
-): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode, options);
-  return (
-    fallbackKeys
-      ?.map((key) => resolveSlug(key))
-      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
-  );
-}
-
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
-  mode,
-  options = {},
 }: {
   modelName: string;
   responseModel?: string;
-  mode?: ChatMode;
-  options?: FallbackOptions;
 }): string {
   if (!responseModel) return modelName;
-
-  const candidateKeys = [
-    modelName as ModelName,
-    ...(getFallbackKeys(modelName, mode, options) ?? []),
-  ];
-  const matchedKey = candidateKeys.find(
-    (key) => resolveSlug(key) === responseModel,
-  );
-
-  return matchedKey ?? responseModel;
+  return resolveSlug(modelName) === responseModel ? modelName : responseModel;
 }
 
 /**
- * Build provider options for streamText
+ * Build provider options for streamText. DeepSeek's OpenAI-compatible chat
+ * completions API takes no per-request reasoning/fallback knobs, so there is
+ * nothing to configure here today — kept as a function (rather than removed)
+ * so callers have one place to add DeepSeek-specific options later.
  */
 export function buildProviderOptions(
-  isReasoningModel: boolean,
-  userId?: string,
-  modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
-) {
-  const modelId = modelName ? resolveSlug(modelName) : undefined;
-  const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning =
-    options.reasoningOverride ??
-    (isReasoningModel
-      ? {
-          enabled: true,
-          ...(isDeepSeekV4 && { effort: "xhigh" }),
-        }
-      : mode === "ask" && isAskKimiReasoningModel(modelName)
-        ? {
-            enabled: true,
-          }
-        : mode === "ask" && isAskMediumReasoningModel(modelName)
-          ? {
-              enabled: true,
-              effort: "medium",
-            }
-          : { enabled: false });
-
-  return {
-    openrouter: {
-      reasoning,
-      ...(userId && { user: userId }),
-      ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
-    },
-  } as const;
-}
-
-const ANTHROPIC_CACHE_BREAKPOINT = {
-  openrouter: { cacheControl: { type: "ephemeral" as const } },
-};
-
-/**
- * Build a system prompt with an Anthropic cache breakpoint.
- * Returns a structured system message for Anthropic models, plain string otherwise.
- */
-export function buildSystemPrompt(
-  systemPrompt: string,
-  modelName: string,
-): string | SystemModelMessage {
-  if (!isAnthropicModel(modelName)) return systemPrompt;
-  return {
-    role: "system",
-    content: systemPrompt,
-    providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
-  } satisfies SystemModelMessage;
-}
-
-/**
- * Add an Anthropic cache breakpoint to the last user message.
- * This tells Anthropic to cache everything up to and including that message,
- * maximizing cache hits on subsequent agentic steps.
- */
-export function addCacheBreakpointToLastUserMessage<
-  T extends Array<Record<string, unknown>>,
->(messages: T, modelName: string): T {
-  if (!isAnthropicModel(modelName)) return messages;
-  const result = [...messages] as T;
-  for (let i = result.length - 1; i >= 0; i--) {
-    if (result[i].role === "user") {
-      result[i] = {
-        ...result[i],
-        providerOptions: {
-          ...((result[i].providerOptions as Record<string, unknown>) || {}),
-          ...ANTHROPIC_CACHE_BREAKPOINT,
-        },
-      };
-      break;
-    }
-  }
-  return result;
+  _isReasoningModel: boolean,
+  _userId?: string,
+  _modelName?: string,
+  _mode?: ChatMode,
+): Record<string, never> {
+  return {};
 }
 
 /**

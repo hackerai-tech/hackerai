@@ -24,12 +24,8 @@ import {
 } from "ai";
 import {
   buildProviderOptions,
-  buildSystemPrompt,
-  addCacheBreakpointToLastUserMessage,
   applyPrepareStepReminders,
   runSummarizationStep,
-  getFallbackSlugs,
-  isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
 import {
   elapsedTimeExceeds,
@@ -47,7 +43,6 @@ import {
 } from "@/lib/chat/doom-loop-detection";
 import {
   filterEmptyAssistantMessages,
-  repairAnthropicModelMessagesWithTelemetry,
   pruneToolOutputs,
   pruneModelMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
@@ -56,7 +51,6 @@ import {
   toolResultsContainImageViewResult,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { isAnthropicModel } from "@/lib/ai/providers";
 import {
   FREE_MAX_OUTPUT_TOKENS,
   PAID_MAX_OUTPUT_TOKENS,
@@ -67,11 +61,6 @@ import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/consta
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
-import {
-  extractOpenRouterMetadata,
-  fetchOpenRouterGenerationMetadata,
-  mergeOpenRouterMetadata,
-} from "@/lib/api/openrouter-metadata";
 import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type {
@@ -79,10 +68,7 @@ import type {
   BudgetMonitor,
 } from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
-import type {
-  ProviderReasoningOverride,
-  SummarizationTracker,
-} from "@/lib/api/chat-stream-helpers";
+import type { SummarizationTracker } from "@/lib/api/chat-stream-helpers";
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
@@ -184,48 +170,12 @@ const contentHasToolCall = (content: unknown): boolean =>
   Array.isArray(content) &&
   content.some((part) => isRecord(part) && part.type === "tool-call");
 
-const summarizeProviderOptions = (
-  providerOptions: unknown,
-): Pick<
-  ProviderRequestDiagnostics,
-  | "reasoning_enabled"
-  | "reasoning_effort"
-  | "fallback_model_count"
-  | "fallback_model_slugs"
-  | "has_user_attribution"
-> => {
-  const openrouter =
-    isRecord(providerOptions) && isRecord(providerOptions.openrouter)
-      ? providerOptions.openrouter
-      : undefined;
-  const reasoning = isRecord(openrouter?.reasoning)
-    ? openrouter.reasoning
-    : undefined;
-  const fallbackModelSlugs = Array.isArray(openrouter?.models)
-    ? openrouter.models.filter(
-        (model): model is string => typeof model === "string",
-      )
-    : [];
-
-  return {
-    reasoning_enabled:
-      typeof reasoning?.enabled === "boolean" ? reasoning.enabled : undefined,
-    reasoning_effort:
-      typeof reasoning?.effort === "string" ? reasoning.effort : undefined,
-    fallback_model_count: fallbackModelSlugs.length,
-    fallback_model_slugs:
-      fallbackModelSlugs.length > 0 ? fallbackModelSlugs : undefined,
-    has_user_attribution: typeof openrouter?.user === "string",
-  };
-};
-
 const buildProviderRequestDiagnostics = (args: {
   modelName: string;
   requestedSlug?: string;
   stepIndex: number;
   source: ProviderRequestDiagnostics["source"];
   messages: ModelMessage[];
-  providerOptions: unknown;
   activeTools: readonly unknown[] | undefined;
   availableToolCount: number;
   contextUsage: { usedTokens: number; maxTokens: number };
@@ -245,8 +195,7 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -283,7 +232,6 @@ const buildProviderRequestDiagnostics = (args: {
     tool_count: args.availableToolCount,
     active_tool_count: args.activeTools?.length ?? args.availableToolCount,
     active_tools_mode: args.activeTools ? "subset" : "all",
-    ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
   };
 };
@@ -315,10 +263,6 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
-  providerReasoningOverride?: {
-    modelName: string;
-    reasoning: ProviderReasoningOverride;
-  };
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
 
@@ -456,41 +400,14 @@ export async function createAgentStream(
     state.finalMessages,
   );
   const getStepProviderOptions = () =>
-    buildProviderOptions(
-      ctx.isReasoningModel,
-      ctx.userId,
-      modelName,
-      ctx.mode,
-      {
-        hasMultimodalToolResults: streamHasImageViewResults,
-        ...(ctx.providerReasoningOverride?.modelName === modelName && {
-          reasoningOverride: ctx.providerReasoningOverride.reasoning,
-        }),
-      },
-    );
-  const prepareProviderMessages = (
-    messages: ModelMessage[],
-  ): ModelMessage[] => {
-    const nonEmptyMessages = filterEmptyAssistantMessages(messages);
-    if (!isAnthropicModel(modelName)) return nonEmptyMessages;
-
-    const repair = repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
-    if (repair.action !== "none") {
-      ctx.chatLogger?.recordAnthropicPromptRepair({
-        action: repair.action,
-        reason: repair.reason,
-        trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
-        model: modelName,
-      });
-    }
-    return repair.messages as ModelMessage[];
-  };
+    buildProviderOptions(ctx.isReasoningModel, ctx.userId, modelName, ctx.mode);
+  const prepareProviderMessages = (messages: ModelMessage[]): ModelMessage[] =>
+    filterEmptyAssistantMessages(messages);
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
     stepIndex: number;
     source: ProviderRequestDiagnostics["source"];
     messages: ModelMessage[];
-    providerOptions: unknown;
     activeTools: Array<keyof typeof ctx.tools> | undefined;
   }) => {
     latestProviderRequestDiagnostics = buildProviderRequestDiagnostics({
@@ -499,7 +416,6 @@ export async function createAgentStream(
       stepIndex: args.stepIndex,
       source: args.source,
       messages: args.messages,
-      providerOptions: args.providerOptions,
       activeTools: args.activeTools,
       availableToolCount: Object.keys(ctx.tools).length,
       contextUsage: state.ctxUsage,
@@ -523,14 +439,13 @@ export async function createAgentStream(
     stepIndex: 0,
     source: "initial",
     messages: initialModelMessages,
-    providerOptions: initialProviderOptions,
     activeTools: initialActiveTools,
   });
 
   return streamText({
     model: requestedLanguageModel,
     maxOutputTokens,
-    system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
+    system: ctx.currentSystemPrompt,
     messages: initialModelMessages,
     tools: ctx.tools,
     activeTools: initialActiveTools,
@@ -611,7 +526,6 @@ export async function createAgentStream(
               stepIndex: steps.length + 1,
               source: "summarized_prepare_step",
               messages: preparedMessages,
-              providerOptions,
               activeTools,
             });
             return {
@@ -643,16 +557,12 @@ export async function createAgentStream(
         const activeTools = await getActiveToolsForRecovery(loopRecovery);
         const providerOptions = getStepProviderOptions();
         const preparedMessages = prepareProviderMessages(
-          addCacheBreakpointToLastUserMessage(
-            updatedMessages,
-            modelName,
-          ) as ModelMessage[],
+          updatedMessages as ModelMessage[],
         ) as typeof messages;
         recordProviderRequestDiagnostics({
           stepIndex: steps.length + 1,
           source: "prepare_step",
           messages: preparedMessages as ModelMessage[],
-          providerOptions,
           activeTools,
         });
         return {
@@ -757,53 +667,7 @@ export async function createAgentStream(
       state.streamUsage = usage as Record<string, unknown>;
       state.responseModel = response?.modelId;
 
-      const finishMetadata = finishResult as {
-        providerMetadata?: unknown;
-        steps?: Array<{ providerMetadata?: unknown }>;
-      };
-      const stepProviderMetadata = Array.isArray(finishMetadata.steps)
-        ? finishMetadata.steps.at(-1)?.providerMetadata
-        : undefined;
-      const finishOpenRouterMetadata = extractOpenRouterMetadata({
-        response,
-        providerMetadata: finishMetadata.providerMetadata,
-      });
-      const stepOpenRouterMetadata = extractOpenRouterMetadata({
-        providerMetadata: stepProviderMetadata,
-      });
-      let openRouterMetadata = mergeOpenRouterMetadata(
-        finishOpenRouterMetadata,
-        stepOpenRouterMetadata,
-      );
-      if (
-        ctx.chatLogger &&
-        !openRouterMetadata.provider_name &&
-        openRouterMetadata.openrouter_generation_id
-      ) {
-        openRouterMetadata = mergeOpenRouterMetadata(
-          openRouterMetadata,
-          await fetchOpenRouterGenerationMetadata(
-            openRouterMetadata.openrouter_generation_id,
-          ),
-        );
-      }
-
-      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
-        hasMultimodalToolResults: streamHasImageViewResults,
-      });
-      if (state.responseModel && fallbackSlugs.includes(state.responseModel)) {
-        ctx.chatLogger?.recordModelFallback({
-          requested: requestedSlug,
-          served: state.responseModel,
-          chain: fallbackSlugs,
-          model: modelName,
-        });
-      }
-      ctx.chatLogger?.setStreamResponse(
-        state.responseModel,
-        state.streamUsage,
-        openRouterMetadata,
-      );
+      ctx.chatLogger?.setStreamResponse(state.responseModel, state.streamUsage);
 
       await ptySessionManager
         .closeAll(ctx.chatId)
@@ -831,22 +695,15 @@ export async function createAgentStream(
           hadSummarization: ctx.summarizationTracker.hasSummarized,
         });
       }
-      if (!isXaiSafetyError(error)) {
-        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
-          hasMultimodalToolResults: streamHasImageViewResults,
-        });
-        ctx.chatLogger?.recordProviderError(error, {
-          mode: ctx.mode,
-          model: modelName,
-          requestedModelSlug: requestedSlug,
-          fallbackModelSlugs:
-            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
-          userId: ctx.userId,
-          subscription: ctx.subscription,
-          isTemporary: ctx.temporary,
-          providerRequest: latestProviderRequestDiagnostics,
-        });
-      }
+      ctx.chatLogger?.recordProviderError(error, {
+        mode: ctx.mode,
+        model: modelName,
+        requestedModelSlug: requestedSlug,
+        userId: ctx.userId,
+        subscription: ctx.subscription,
+        isTemporary: ctx.temporary,
+        providerRequest: latestProviderRequestDiagnostics,
+      });
       if (!ctx.usageTracker.hasUsage) {
         await ctx.usageRefundTracker.refund();
       }

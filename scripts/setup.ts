@@ -22,53 +22,21 @@ function question(query: string): Promise<string> {
   );
 }
 
-async function getOpenRouterApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting OpenRouter API Key")}`);
+async function getDeepSeekApiKey(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting DeepSeek API Key")}`);
   console.log(
-    "You can find your OpenRouter API Key at: https://openrouter.ai/keys",
+    "You can find your DeepSeek API Key at: https://platform.deepseek.com/",
   );
-  const key = await question("Enter your OpenRouter API Key: ");
+  const key = await question("Enter your DeepSeek API Key: ");
 
   if (key.startsWith("sk-")) {
     return key;
   }
 
-  console.log(chalk.red("Please enter a valid OpenRouter API Key"));
-  console.log('OpenRouter keys should start with "sk-"');
+  console.log(chalk.red("Please enter a valid DeepSeek API Key"));
+  console.log('DeepSeek keys should start with "sk-"');
 
-  return await getOpenRouterApiKey();
-}
-
-async function getOpenAiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting OpenAI API Key")}`);
-  console.log(
-    "You can find your OpenAI API Key at: https://platform.openai.com/api-keys",
-  );
-  const key = await question("Enter your OpenAI API Key: ");
-
-  if (key.startsWith("sk-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid OpenAI API Key format"));
-  console.log('OpenAI keys should start with "sk-"');
-
-  return await getOpenAiApiKey();
-}
-
-async function getXaiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting XAI API Key for Agent mode")}`);
-  console.log("You can find your XAI API Key at: https://xai.com/api-keys");
-  const key = await question("Enter your XAI API Key: ");
-
-  if (key.startsWith("xai-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid XAI API Key format"));
-  console.log('XAI keys should start with "xai-"');
-
-  return await getXaiApiKey();
+  return await getDeepSeekApiKey();
 }
 
 async function getE2bApiKey(): Promise<string> {
@@ -218,16 +186,16 @@ AWS_S3_BUCKET_NAME=
 # S3_URL_EXPIRATION_BUFFER_SECONDS=300
 
 # =============================================================================
-# AI PROVIDERS (Required)
+# AI PROVIDER - DeepSeek (Required)
 # =============================================================================
-# OpenRouter - Get key at: https://openrouter.ai/
-OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
+# Get key at: https://platform.deepseek.com/
+DEEPSEEK_API_KEY=${envVars.DEEPSEEK_API_KEY}
 
-# OpenAI - Get key at: https://platform.openai.com/
-OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
+# OpenAI-compatible API base URL. Defaults to https://api.deepseek.com if unset.
+DEEPSEEK_BASE_URL=https://api.deepseek.com
 
-# XAI (Grok) - Get key at: https://x.ai/
-XAI_API_KEY=${envVars.XAI_API_KEY}
+# Model used for all chat/agent requests. Defaults to deepseek-v4-flash if unset.
+DEEPSEEK_MODEL=deepseek-v4-flash
 
 # =============================================================================
 # CODE EXECUTION - E2B (Required for Agent Mode)
@@ -420,9 +388,7 @@ async function main() {
   );
 
   // Get required API keys
-  const OPENROUTER_API_KEY = await getOpenRouterApiKey();
-  const OPENAI_API_KEY = await getOpenAiApiKey();
-  const XAI_API_KEY = await getXaiApiKey();
+  const DEEPSEEK_API_KEY = await getDeepSeekApiKey();
   const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
@@ -443,9 +409,7 @@ async function main() {
 
   // Write the complete environment file
   await writeEnvFile({
-    OPENROUTER_API_KEY,
-    OPENAI_API_KEY,
-    XAI_API_KEY,
+    DEEPSEEK_API_KEY,
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,

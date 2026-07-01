@@ -465,11 +465,10 @@ describe("createChatLogger provider stream termination", () => {
           event: "provider_content_blocked",
           providerErrorCategory: "content_blocked",
           provider_name: "Anthropic Vertex",
-          provider_name_source: "openrouter_error_metadata",
+          provider_name_source: "provider_error_metadata",
           configured_model: "ask-model-free",
           requested_model_slug: "deepseek/deepseek-v4-flash",
           model_provider_slug: "deepseek",
-          openrouter_generation_id: "gen-content-blocked",
         }),
       );
       expect(wideEvent.error).toMatchObject({
@@ -481,11 +480,10 @@ describe("createChatLogger provider stream termination", () => {
         status_code: 403,
         retriable: false,
         provider_name: "Anthropic Vertex",
-        provider_name_source: "openrouter_error_metadata",
+        provider_name_source: "provider_error_metadata",
         configured_model: "ask-model-free",
         requested_model_slug: "deepseek/deepseek-v4-flash",
         model_provider_slug: "deepseek",
-        openrouter_generation_id: "gen-content-blocked",
       });
     } finally {
       warnSpy.mockRestore();
@@ -719,8 +717,7 @@ describe("createChatLogger provider stream termination", () => {
       );
       const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
       const capturedError = fields?.error as
-        | (Error & { cause?: unknown })
-        | undefined;
+        (Error & { cause?: unknown }) | undefined;
 
       expect(capturedError).toBeInstanceOf(Error);
       expect(capturedError?.name).toBe("AI_APICallError");
@@ -1122,8 +1119,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
   });
 });
 
-describe("createChatLogger OpenRouter metadata", () => {
-  it("adds provider attribution fields to the wide event model block", () => {
+describe("createChatLogger stream response", () => {
+  it("records the configured and actual model on the wide event model block", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
     try {
@@ -1146,16 +1143,10 @@ describe("createChatLogger OpenRouter metadata", () => {
         },
         "model-opus-4.6",
       );
-      chatLogger.setStreamResponse(
-        "anthropic/claude-opus-4.6",
-        { inputTokens: 100, outputTokens: 1 },
-        {
-          provider_name: "Anthropic Vertex",
-          openrouter_generation_id: "gen-123",
-          openrouter_request_id: "req-123",
-          openrouter_strategy: "direct",
-        },
-      );
+      chatLogger.setStreamResponse("deepseek-v4-flash", {
+        inputTokens: 100,
+        outputTokens: 1,
+      });
       chatLogger.emitSuccess({
         finishReason: "stop",
         wasAborted: false,
@@ -1166,13 +1157,8 @@ describe("createChatLogger OpenRouter metadata", () => {
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
       expect(wideEvent.model).toMatchObject({
         configured: "model-opus-4.6",
-        actual: "anthropic/claude-opus-4.6",
-        provider_name: "Anthropic Vertex",
-        openrouter_generation_id: "gen-123",
-        openrouter_request_id: "req-123",
-        openrouter_strategy: "direct",
+        actual: "deepseek-v4-flash",
       });
-      expect(wideEvent.model).not.toHaveProperty("provider_gateway");
     } finally {
       logSpy.mockRestore();
     }

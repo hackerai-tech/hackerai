@@ -51,14 +51,9 @@ interface Subprocessor {
 
 const subprocessors: Subprocessor[] = [
   {
-    name: "OpenRouter",
-    purpose: "Routes chat requests to third-party AI model providers",
+    name: "DeepSeek",
+    purpose: "AI model provider for chat and agent requests",
     dataCategories: "Prompts, conversation context, file content, tool output",
-  },
-  {
-    name: "OpenAI",
-    purpose: "Content moderation",
-    dataCategories: "Message content",
   },
   {
     name: "Perplexity",
@@ -210,15 +205,14 @@ export default function TrustPage() {
 
           <Section icon={Bot} title="AI model providers">
             <p>
-              Chat requests are routed through OpenRouter to the provider behind
-              the model you select, such as Anthropic, Google, DeepSeek,
-              Moonshot AI, or xAI. Your prompt, relevant conversation context,
-              and tool results are sent to that provider to generate a response.
+              Chat requests are sent directly to DeepSeek. Your prompt, relevant
+              conversation context, and tool results are sent to DeepSeek to
+              generate a response.
             </p>
             <p>
               When the agent searches the web or opens a URL, search queries are
               processed by Perplexity and page content is retrieved through Jina
-              AI. Message content is screened by OpenAI for content moderation.
+              AI.
             </p>
             <p>
               Each provider processes data under its own terms. Whether data is

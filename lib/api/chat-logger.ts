@@ -29,7 +29,6 @@ import {
 } from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
-import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -578,67 +577,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
     setStreamResponse(
       responseModel: string | undefined,
       usage: Record<string, unknown> | undefined,
-      openRouterMetadata?: OpenRouterModelMetadata,
     ) {
       if (responseModel) {
         builder.setActualModel(responseModel);
       }
-      if (openRouterMetadata) {
-        builder.setOpenRouterMetadata(openRouterMetadata);
-      }
       builder.setUsage(usage);
-    },
-
-    /**
-     * Record Anthropic prompt repair before provider call.
-     */
-    recordAnthropicPromptRepair(repair: {
-      action: "appended_continue" | "trimmed";
-      reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
-      trailingAssistantContentTypes?: string[];
-      model: string;
-    }) {
-      builder.recordAnthropicPromptRepair(repair);
-      phLogger.event("anthropic_prompt_repaired", {
-        userId,
-        chat_id: config.chatId,
-        endpoint: config.endpoint,
-        mode,
-        subscription,
-        model: repair.model,
-        action: repair.action,
-        reason: repair.reason,
-        trailing_assistant_content_types: repair.trailingAssistantContentTypes,
-      });
-    },
-
-    /**
-     * Record that OpenRouter served a configured fallback model.
-     */
-    recordModelFallback(fallback: {
-      requested: string | undefined;
-      served: string;
-      chain: string[];
-      model: string;
-    }) {
-      builder.recordModelFallback({
-        served: fallback.served,
-        chain: fallback.chain,
-      });
-      phLogger.event("model_fallback_served", {
-        userId,
-        chat_id: config.chatId,
-        endpoint: config.endpoint,
-        mode,
-        subscription,
-        configured_model: fallback.model,
-        requested_model: fallback.requested,
-        served_model: fallback.served,
-        fallback_chain: fallback.chain,
-      });
     },
 
     /**
@@ -673,7 +616,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
         mode?: string;
         model?: string;
         requestedModelSlug?: string;
-        fallbackModelSlugs?: string[];
         userId?: string;
         subscription?: string;
         isTemporary?: boolean;
@@ -694,9 +636,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerContext.requestedModelSlug) ??
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
-      const openrouterGenerationId = nonEmptyString(
-        details.openrouterGenerationId,
-      );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
         statusCode: providerStatusCode,
@@ -707,14 +646,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const normalizedProviderContext = {
         ...(providerName && {
           provider_name: providerName,
-          provider_name_source: "openrouter_error_metadata",
+          provider_name_source: "provider_error_metadata",
         }),
         ...(configuredModel && { configured_model: configuredModel }),
         ...(requestedModelSlug && { requested_model_slug: requestedModelSlug }),
         ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
-        ...(openrouterGenerationId && {
-          openrouter_generation_id: openrouterGenerationId,
-        }),
       };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
@@ -784,12 +720,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
             : isRetriableProviderCategory(category),
         providerName,
         providerNameSource: providerName
-          ? "openrouter_error_metadata"
+          ? "provider_error_metadata"
           : undefined,
         configuredModel,
         requestedModelSlug,
         modelProviderSlug,
-        openrouterGenerationId,
         providerErrorFingerprint,
         attempts,
       });
@@ -833,8 +768,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
           (error.metadata?.capReason as LimitCapReason | undefined) ??
           "unknown";
         const resetTimestamp = error.metadata?.resetTimestamp as
-          | number
-          | undefined;
+          number | undefined;
         const subscriptionTier = isSubscriptionTier(subscription)
           ? subscription
           : undefined;

@@ -42,10 +42,7 @@ export interface PruneResult {
   toolOutputCount: number;
   /** Why pruning was skipped (null if pruning occurred) */
   skipReason:
-    | "no-tool-outputs"
-    | "within-budget"
-    | "below-minimum-savings"
-    | null;
+    "no-tool-outputs" | "within-budget" | "below-minimum-savings" | null;
 }
 
 export interface StorageCompactionResult<T extends UIMessage = UIMessage> {
@@ -674,10 +671,7 @@ export interface ModelPruneResult {
   totalToolOutputTokens: number;
   toolOutputCount: number;
   skipReason:
-    | "no-tool-outputs"
-    | "within-budget"
-    | "below-minimum-savings"
-    | null;
+    "no-tool-outputs" | "within-budget" | "below-minimum-savings" | null;
 }
 
 /**
@@ -870,130 +864,4 @@ export function filterEmptyAssistantMessages<T extends Record<string, unknown>>(
       return true; // tool-call, file, etc. are substantive
     });
   });
-}
-
-const ANTHROPIC_CONTINUE_MESSAGE = {
-  role: "user",
-  content:
-    "Continue from the previous assistant message. Do not repeat completed work.",
-} as const;
-
-export type PromptMessage = Record<string, unknown> & {
-  role?: unknown;
-  content?: unknown;
-};
-
-export type AnthropicPromptRepairAction =
-  | "none"
-  | "appended_continue"
-  | "trimmed";
-
-export type AnthropicPromptRepairReason =
-  | "not_trailing_assistant"
-  | "useful_assistant_tail"
-  | "no_useful_content"
-  | "dangling_tool_call";
-
-export type AppliedAnthropicPromptRepairReason = Exclude<
-  AnthropicPromptRepairReason,
-  "not_trailing_assistant"
->;
-
-export interface AppliedAnthropicPromptRepair {
-  messages: PromptMessage[];
-  action: Exclude<AnthropicPromptRepairAction, "none">;
-  reason: AppliedAnthropicPromptRepairReason;
-  trailingAssistantContentTypes?: string[];
-}
-
-export interface NoAnthropicPromptRepair {
-  messages: PromptMessage[];
-  action: "none";
-  reason: "not_trailing_assistant";
-}
-
-export type AnthropicPromptRepairTelemetry =
-  | AppliedAnthropicPromptRepair
-  | NoAnthropicPromptRepair;
-
-const getContentTypes = (content: unknown): string[] | undefined => {
-  if (typeof content === "string") return ["text"];
-  if (!Array.isArray(content)) return undefined;
-  return content
-    .map((part: any) => part?.type)
-    .filter((type: unknown): type is string => typeof type === "string");
-};
-
-const hasDanglingAssistantToolCall = (content: unknown): boolean => {
-  if (!Array.isArray(content)) return false;
-  return content.some((part: any) => part?.type === "tool-call");
-};
-
-const hasUsefulAssistantContent = (content: unknown): boolean => {
-  if (typeof content === "string") return content.trim().length > 0;
-  if (!Array.isArray(content)) return content != null;
-
-  return content.some((part: any) => {
-    if (part?.type === "text") return !!part.text?.trim();
-    if (part?.type === "reasoning" || part?.type === "redacted-reasoning") {
-      return false;
-    }
-    if (part?.type === "tool-call") return false;
-    return true;
-  });
-};
-
-/**
- * Anthropic treats a final assistant message in the prompt as an assistant
- * prefill. Claude Opus 4.6 / Sonnet 4.6 reject prefill, so before calling an
- * Anthropic model we ensure the prompt does not end with assistant content.
- *
- * When the trailing assistant message has useful non-tool context, preserve it
- * and append a provider-only user continuation. If it is empty/reasoning-only
- * or contains a dangling tool call, trim it to avoid follow-up provider errors.
- */
-export function repairAnthropicModelMessagesWithTelemetry(
-  messages: PromptMessage[],
-): AnthropicPromptRepairTelemetry {
-  const lastMessage = messages.at(-1);
-  if (lastMessage?.role !== "assistant") {
-    return {
-      messages,
-      action: "none",
-      reason: "not_trailing_assistant",
-    };
-  }
-
-  const trailingAssistantContentTypes = getContentTypes(lastMessage.content);
-
-  if (hasDanglingAssistantToolCall(lastMessage.content)) {
-    return {
-      messages: messages.slice(0, -1),
-      action: "trimmed",
-      reason: "dangling_tool_call",
-      trailingAssistantContentTypes,
-    };
-  }
-
-  if (hasUsefulAssistantContent(lastMessage.content)) {
-    return {
-      messages: [...messages, ANTHROPIC_CONTINUE_MESSAGE],
-      action: "appended_continue",
-      reason: "useful_assistant_tail",
-      trailingAssistantContentTypes,
-    };
-  }
-
-  return {
-    messages: messages.slice(0, -1),
-    action: "trimmed",
-    reason: "no_useful_content",
-    trailingAssistantContentTypes,
-  };
-}
-
-export function repairAnthropicModelMessages(
-  messages: PromptMessage[],
-): PromptMessage[] {
-  return repairAnthropicModelMessagesWithTelemetry(messages).messages;
 }

@@ -1462,7 +1462,6 @@ export const agentLongTask = task({
                   accountingModel: resolveServedModelForCostAccounting({
                     modelName: activeModelName,
                     responseModel: state.responseModel,
-                    mode,
                   }),
                   rateLimitInfo,
                 };

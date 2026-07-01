@@ -893,7 +893,6 @@ export const createChatHandler = () => {
                   accountingModel: resolveServedModelForCostAccounting({
                     modelName: activeModelName,
                     responseModel: state.responseModel,
-                    mode,
                   }),
                   rateLimitInfo,
                 };

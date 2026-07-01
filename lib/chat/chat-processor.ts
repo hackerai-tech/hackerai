@@ -1,4 +1,3 @@
-import { getModerationResult } from "@/lib/moderation";
 import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
@@ -7,15 +6,7 @@ import {
   getMaxFilesLimitForMode,
   isSupportedImageMediaType,
 } from "@/lib/utils/file-utils";
-import {
-  isAnthropicModel,
-  resolveTierToProviderKey,
-  type ModelName,
-} from "@/lib/ai/providers";
-import {
-  AUTH_DISCLAIMER,
-  type SupportedLang,
-} from "@/lib/chat/auth-disclaimer";
+import { resolveTierToProviderKey, type ModelName } from "@/lib/ai/providers";
 import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
@@ -114,40 +105,6 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
   });
 
   return { hasImage, hasPdf };
-}
-
-/**
- * Adds authorization message to the last user message.
- * Language is detected by moderation from the same combined text it scored,
- * since a short reply like "yes its mine" doesn't carry enough signal.
- */
-export function addAuthMessage(
-  messages: UIMessage[],
-  moderationLanguage: SupportedLang,
-) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      const message = messages[i];
-
-      if (!message.parts) {
-        message.parts = [];
-      }
-
-      const textParts = message.parts.filter(
-        (part: any) => part.type === "text",
-      ) as Array<{ type: "text"; text: string }>;
-
-      const disclaimer = AUTH_DISCLAIMER[moderationLanguage];
-
-      const firstTextPart = textParts[0];
-      if (firstTextPart) {
-        firstTextPart.text = `${firstTextPart.text} ${disclaimer}`;
-      } else {
-        message.parts.push({ type: "text", text: disclaimer });
-      }
-      break;
-    }
-  }
 }
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
@@ -583,46 +540,6 @@ export function limitImageParts(
   });
 }
 
-// isAnthropicModel is imported from @/lib/ai/providers
-// (covers both Sonnet and Opus)
-
-/**
- * Strips providerMetadata from all parts in all messages.
- * Anthropic models require valid signatures on thinking blocks, and signatures
- * from other models (or different Anthropic models) cause "Invalid signature in
- * thinking block" 400 errors. Stripping providerMetadata removes these signatures.
- * Only applied for Anthropic models — other providers (e.g., Gemini) need
- * providerMetadata/thought_signature for tool calling to work.
- */
-function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
-  return messages.map((message) => {
-    if (!message.parts) return message;
-
-    let hasChanges = false;
-    const cleanedParts = message.parts.map((part: any) => {
-      if (
-        part.providerMetadata ||
-        part.callProviderMetadata ||
-        part.providerExecuted ||
-        part.providerOptions
-      ) {
-        hasChanges = true;
-        const {
-          providerMetadata,
-          callProviderMetadata,
-          providerExecuted,
-          providerOptions,
-          ...rest
-        } = part;
-        return rest;
-      }
-      return part;
-    });
-
-    return hasChanges ? { ...message, parts: cleanedParts } : message;
-  });
-}
-
 // UI-only part types that should not be sent to AI providers
 const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
 
@@ -740,28 +657,10 @@ export async function processChatMessages({
     mediaAttachmentRouting.hasPdf,
   );
 
-  // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
-  // Anthropic requires valid signatures on thinking blocks, and signatures from other
-  // models (or different Anthropic models) cause "Invalid signature in thinking block"
-  // 400 errors. Other providers (e.g., Gemini) need providerMetadata for tool calling,
-  // so we only strip it when targeting Anthropic.
-  const sanitizedMessages = isAnthropicModel(selectedModel)
-    ? stripProviderMetadata(messagesWithoutDuplicates)
-    : messagesWithoutDuplicates;
-
   // Strip originalContent from file edit outputs (large data not needed by model)
-  const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
-
-  // Check moderation for the last user message
-  const moderationResult = await getModerationResult(
-    cleanedMessages,
-    subscription !== "free",
+  const cleanedMessages = stripOriginalContentFromMessages(
+    messagesWithoutDuplicates,
   );
-
-  // If moderation allows, add authorization message
-  if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages, moderationResult.language);
-  }
 
   return {
     processedMessages: cleanedMessages,

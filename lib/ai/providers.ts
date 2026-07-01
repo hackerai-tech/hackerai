@@ -1,327 +1,89 @@
 import { customProvider } from "ai";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
-// import { withTracing } from "@posthog/ai";
-// import PostHogClient from "@/app/posthog";
-// import type { SubscriptionTier } from "@/types";
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
+const DEEPSEEK_BASE_URL =
+  process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 
-const isXaiModelSlug = (value: unknown): boolean =>
-  typeof value === "string" && value.toLowerCase().startsWith("x-ai/");
-
-const isGeminiModelSlug = (value: unknown): boolean =>
-  typeof value === "string" && value.toLowerCase().startsWith("google/gemini");
-
-const requestCanRouteToXai = (body: unknown): boolean => {
-  if (!isRecord(body)) return false;
-  if (isXaiModelSlug(body.model)) return true;
-  return Array.isArray(body.models) && body.models.some(isXaiModelSlug);
-};
-
-const requestCanRouteToGemini = (body: unknown): boolean => {
-  if (!isRecord(body)) return false;
-  if (isGeminiModelSlug(body.model)) return true;
-  return Array.isArray(body.models) && body.models.some(isGeminiModelSlug);
-};
-
-const hasOwnEncryptedContent = (value: unknown): boolean =>
-  isRecord(value) && Object.hasOwn(value, "encrypted_content");
-
-const stripEncryptedContent = (
-  value: unknown,
-  inReasoningDetails = false,
-): { value: unknown; changed: boolean } => {
-  if (Array.isArray(value)) {
-    let changed = false;
-    const cleaned: unknown[] = [];
-
-    for (const item of value) {
-      if (inReasoningDetails && hasOwnEncryptedContent(item)) {
-        changed = true;
-        continue;
-      }
-      const result = stripEncryptedContent(item, inReasoningDetails);
-      changed ||= result.changed;
-      cleaned.push(result.value);
-    }
-
-    return changed ? { value: cleaned, changed } : { value, changed: false };
-  }
-
-  if (!isRecord(value)) {
-    return { value, changed: false };
-  }
-
-  let changed = false;
-  const cleaned: Record<string, unknown> = {};
-
-  for (const [key, entryValue] of Object.entries(value)) {
-    if (inReasoningDetails && key === "encrypted_content") {
-      changed = true;
-      continue;
-    }
-
-    const nextInReasoningDetails =
-      inReasoningDetails || key === "reasoning_details";
-    const result = stripEncryptedContent(entryValue, nextInReasoningDetails);
-    changed ||= result.changed;
-
-    if (
-      key === "reasoning_details" &&
-      Array.isArray(result.value) &&
-      result.value.length === 0
-    ) {
-      changed = true;
-      continue;
-    }
-
-    cleaned[key] = result.value;
-  }
-
-  return changed ? { value: cleaned, changed } : { value, changed: false };
-};
-
-export const sanitizeOpenRouterRequestForXai = (
-  body: unknown,
-): { body: unknown; changed: boolean } => {
-  if (
-    !isRecord(body) ||
-    !requestCanRouteToXai(body) ||
-    !Array.isArray(body.messages)
-  ) {
-    return { body, changed: false };
-  }
-
-  let changed = false;
-  const messages = body.messages.map((message) => {
-    const result = stripEncryptedContent(message);
-    changed ||= result.changed;
-    return result.value;
-  });
-
-  if (!changed) return { body, changed: false };
-  return { body: { ...body, messages }, changed: true };
-};
-
-const hasJsonRefKey = (value: unknown): boolean => {
-  if (Array.isArray(value)) return value.some(hasJsonRefKey);
-  if (!isRecord(value)) return false;
-  if (Object.hasOwn(value, "$ref")) return true;
-  return Object.values(value).some(hasJsonRefKey);
-};
-
-const wrapToolContentIfGeminiRefSensitive = (
-  content: unknown,
-): { content: unknown; changed: boolean } => {
-  if (typeof content !== "string" || !content.includes('"$ref"')) {
-    return { content, changed: false };
-  }
-
-  try {
-    const parsed = JSON.parse(content) as unknown;
-    if (!hasJsonRefKey(parsed)) return { content, changed: false };
-  } catch {
-    return { content, changed: false };
-  }
-
-  return {
-    content: JSON.stringify({ result: content }),
-    changed: true,
-  };
-};
-
-export const sanitizeOpenRouterRequestForGeminiFunctionResponses = (
-  body: unknown,
-): { body: unknown; changed: boolean } => {
-  if (
-    !isRecord(body) ||
-    !requestCanRouteToGemini(body) ||
-    !Array.isArray(body.messages)
-  ) {
-    return { body, changed: false };
-  }
-
-  let changed = false;
-  const messages = body.messages.map((message) => {
-    if (!isRecord(message) || message.role !== "tool") return message;
-    const result = wrapToolContentIfGeminiRefSensitive(message.content);
-    if (!result.changed) return message;
-    changed = true;
-    return { ...message, content: result.content };
-  });
-
-  if (!changed) return { body, changed: false };
-  return { body: { ...body, messages }, changed: true };
-};
-
-const patchKimiReasoningToolCalls = (
-  body: unknown,
-): { body: unknown; changed: boolean } => {
-  if (!isRecord(body)) return { body, changed: false };
-  if (
-    !Array.isArray(body.messages) ||
-    !isRecord(body.reasoning) ||
-    body.reasoning.enabled !== true
-  ) {
-    return { body, changed: false };
-  }
-
-  let changed = false;
-  const messages = body.messages.map((message) => {
-    if (
-      isRecord(message) &&
-      message.role === "assistant" &&
-      Array.isArray(message.tool_calls) &&
-      message.tool_calls.length > 0 &&
-      !message.reasoning
-    ) {
-      changed = true;
-      return { ...message, reasoning: "." };
-    }
-    return message;
-  });
-
-  return changed
-    ? { body: { ...body, messages }, changed: true }
-    : { body, changed: false };
-};
-
-const OPENROUTER_METADATA_HEADER = "X-OpenRouter-Experimental-Metadata";
-
-const withOpenRouterMetadataHeader = (
-  headers: HeadersInit | undefined,
-): Headers => {
-  const nextHeaders = new Headers(headers);
-  if (!nextHeaders.has(OPENROUTER_METADATA_HEADER)) {
-    nextHeaders.set(OPENROUTER_METADATA_HEADER, "enabled");
-  }
-  return nextHeaders;
-};
-
-// Custom fetch for OpenRouter provider-specific request-body repairs.
-//
-// - Kimi requires a `reasoning` field on assistant tool-call messages when
-//   reasoning mode is enabled, but the AI SDK does not always include one.
-// - xAI rejects encrypted reasoning blobs generated by a different provider
-//   when OpenRouter falls back to Grok. The visible assistant text remains in
-//   the prompt, so these provider-private blobs are safe to omit for xAI routes.
-// - Gemini 3 treats JSON `$ref` keys in function_response.response as
-//   references to multimodal function_response.parts display names. OpenAPI
-//   documents returned by tools can contain schema `$ref`s, so wrap those tool
-//   results as text when a request can route to Gemini.
-// - The metadata header opts into OpenRouter routing metadata for attribution.
-const openrouterPatchFetch: typeof fetch = async (url, init) => {
-  let nextInit: RequestInit = {
-    ...init,
-    headers: withOpenRouterMetadataHeader(init?.headers),
-  };
-
-  if (nextInit.body && typeof nextInit.body === "string") {
-    try {
-      const parsedBody = JSON.parse(nextInit.body) as unknown;
-      const kimiPatched = patchKimiReasoningToolCalls(parsedBody);
-      const xaiPatched = sanitizeOpenRouterRequestForXai(kimiPatched.body);
-      const geminiPatched = sanitizeOpenRouterRequestForGeminiFunctionResponses(
-        xaiPatched.body,
-      );
-      if (kimiPatched.changed || xaiPatched.changed || geminiPatched.changed) {
-        nextInit = { ...nextInit, body: JSON.stringify(geminiPatched.body) };
-      }
-    } catch {
-      // If parsing fails, send the request as-is
-    }
-  }
-  return globalThis.fetch(url, nextInit);
-};
-
-const openrouter = createOpenRouter({
-  fetch: openrouterPatchFetch,
-  headers: openrouterAttributionHeaders,
+const deepseek = createOpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: DEEPSEEK_BASE_URL,
 });
 
-type OpenRouterInstance = typeof openrouter;
+const deepseekModel = deepseek(DEEPSEEK_MODEL);
 
-const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
-const MINIMAX_M3_SLUG = "minimax/minimax-m3";
-const GROK_4_3_SLUG = "x-ai/grok-4.3";
-
-const buildProviderMap = (or: OpenRouterInstance) =>
-  ({
-    "ask-model": or(GROK_4_3_SLUG),
-    "ask-model-free": or("deepseek/deepseek-v4-flash"),
-    "agent-model": or(MINIMAX_M3_SLUG),
-    "agent-model-free": or(MINIMAX_M3_SLUG),
-    "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
-    "model-grok-4.3": or(GROK_4_3_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // paid Ask media route moved from Gemini 3.5 Flash to Grok 4.3.
-    "model-gemini-3-flash": or(GROK_4_3_SLUG),
-    "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
-    "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
-    "model-opus-4.6": or("anthropic/claude-opus-4.6"),
-    "model-minimax-m3": or(MINIMAX_M3_SLUG),
-    "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
-    // Compatibility alias for stale internal references persisted before the
-    // Kimi 2.7 Code rollout. New Agent Standard selections use model-minimax-m3.
-    "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
-    "fallback-agent-model": or("google/gemini-3-flash-preview"),
-    "fallback-ask-model": or("google/gemini-3-flash-preview"),
-    // Compatibility alias for old multimodal fallback chains.
-    "fallback-gemini-3.5-flash": or(GROK_4_3_SLUG),
-    "fallback-grok-4.3": or("x-ai/grok-4.3"),
-    "title-generator-model": or("google/gemini-3-flash-preview"),
-  }) as Record<string, any>;
-
-const baseProviders = buildProviderMap(openrouter);
+/**
+ * All tiers/modes route to the same DeepSeek model. The key set is kept
+ * stable (rather than collapsed to a single key) because usage tracking,
+ * rate limiting, and cost accounting elsewhere key off of these names.
+ */
+const baseProviders = {
+  "ask-model": deepseekModel,
+  "ask-model-free": deepseekModel,
+  "agent-model": deepseekModel,
+  "agent-model-free": deepseekModel,
+  "model-sonnet-4.6": deepseekModel,
+  "model-grok-4.3": deepseekModel,
+  "model-gemini-3-flash": deepseekModel,
+  "model-deepseek-v4-flash": deepseekModel,
+  "model-deepseek-v4-pro": deepseekModel,
+  "model-opus-4.6": deepseekModel,
+  "model-minimax-m3": deepseekModel,
+  "model-kimi-k2.7-code": deepseekModel,
+  "model-kimi-k2.6": deepseekModel,
+  "fallback-agent-model": deepseekModel,
+  "fallback-ask-model": deepseekModel,
+  "fallback-gemini-3.5-flash": deepseekModel,
+  "fallback-grok-4.3": deepseekModel,
+  "title-generator-model": deepseekModel,
+} as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "April 2026",
+  "ask-model": "May 2025",
   "ask-model-free": "May 2025",
-  "agent-model": "May 2026",
-  "agent-model-free": "May 2026",
+  "agent-model": "May 2025",
+  "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
-  "model-grok-4.3": "April 2026",
-  "model-gemini-3-flash": "April 2026",
+  "model-grok-4.3": "May 2025",
+  "model-gemini-3-flash": "May 2025",
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
-  "model-minimax-m3": "May 2026",
-  "model-kimi-k2.7-code": "June 2025",
-  "model-kimi-k2.6": "June 2025",
-  "fallback-agent-model": "January 2025",
-  "fallback-ask-model": "January 2025",
-  "fallback-gemini-3.5-flash": "April 2026",
-  "fallback-grok-4.3": "April 2026",
-  "title-generator-model": "January 2025",
+  "model-minimax-m3": "May 2025",
+  "model-kimi-k2.7-code": "May 2025",
+  "model-kimi-k2.6": "May 2025",
+  "fallback-agent-model": "May 2025",
+  "fallback-ask-model": "May 2025",
+  "fallback-gemini-3.5-flash": "May 2025",
+  "fallback-grok-4.3": "May 2025",
+  "title-generator-model": "May 2025",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "Auto, an intelligent model router built by HackerAI",
-  "ask-model-free": "Auto, an intelligent model router built by HackerAI",
-  "agent-model": "Auto, an intelligent model router built by HackerAI",
-  "agent-model-free": "Auto, an intelligent model router built by HackerAI",
-  "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
-  "model-grok-4.3": "xAI Grok 4.3",
-  "model-gemini-3-flash": "xAI Grok 4.3",
-  "model-deepseek-v4-flash": "DeepSeek V4 Flash",
-  "model-deepseek-v4-pro": "DeepSeek V4 Pro",
-  "model-opus-4.6": "Anthropic Claude Opus 4.6",
-  "model-minimax-m3": "MiniMax M3",
-  "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
-  "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
-  "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-gemini-3.5-flash": "xAI Grok 4.3",
-  "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "Google Gemini 3 Flash",
+  "ask-model": "DeepSeek",
+  "ask-model-free": "DeepSeek",
+  "agent-model": "DeepSeek",
+  "agent-model-free": "DeepSeek",
+  "model-sonnet-4.6": "DeepSeek",
+  "model-grok-4.3": "DeepSeek",
+  "model-gemini-3-flash": "DeepSeek",
+  "model-deepseek-v4-flash": "DeepSeek",
+  "model-deepseek-v4-pro": "DeepSeek",
+  "model-opus-4.6": "DeepSeek",
+  "model-minimax-m3": "DeepSeek",
+  "model-kimi-k2.7-code": "DeepSeek",
+  "model-kimi-k2.6": "DeepSeek",
+  "fallback-agent-model": "DeepSeek",
+  "fallback-ask-model": "DeepSeek",
+  "fallback-gemini-3.5-flash": "DeepSeek",
+  "fallback-grok-4.3": "DeepSeek",
+  "title-generator-model": "DeepSeek",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -332,71 +94,23 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
   return modelCutoffDates[modelName];
 };
 
-export function isAnthropicModel(modelName: string): boolean {
-  return modelName.includes("sonnet") || modelName.includes("opus");
+/** All models route through the DeepSeek OpenAI-compatible chat API. */
+export function isDeepSeekModel(_modelName: string): boolean {
+  return true;
 }
 
-export function isDeepSeekModel(modelName: string): boolean {
-  return (
-    modelName === "ask-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
-    modelName === "model-deepseek-v4-pro"
-  );
-}
-
-export function isKimiModel(modelName: string): boolean {
-  const normalized = modelName.toLowerCase();
-  return (
-    normalized === "model-kimi-k2.7-code" ||
-    normalized === "model-kimi-k2.6" ||
-    normalized.includes("moonshotai/kimi") ||
-    normalized.includes("kimi-")
-  );
-}
-
-export function isMiniMaxModel(modelName: string): boolean {
-  const normalized = modelName.toLowerCase();
-  return (
-    normalized === "agent-model" ||
-    normalized === "agent-model-free" ||
-    normalized === "model-minimax-m3" ||
-    normalized.includes("minimax/minimax-m3")
-  );
-}
-
-export function supportsMultimodalToolResults(modelName?: string): boolean {
-  if (!modelName) return false;
-
-  const normalized = modelName.toLowerCase();
-
-  return (
-    normalized === "ask-model" ||
-    isKimiModel(normalized) ||
-    isMiniMaxModel(normalized) ||
-    normalized.includes("gemini") ||
-    normalized.includes("google/") ||
-    isAnthropicModel(normalized) ||
-    normalized.includes("anthropic/") ||
-    normalized.includes("claude") ||
-    normalized.includes("openai/") ||
-    normalized.includes("gpt-") ||
-    normalized.includes("o1") ||
-    normalized.includes("o3") ||
-    normalized.includes("o4") ||
-    normalized.includes("x-ai/") ||
-    normalized.includes("grok")
-  );
-}
-
-export function isGeminiModel(modelName: string): boolean {
-  return modelName.toLowerCase().includes("gemini");
+/**
+ * DeepSeek's chat completions API does not return multimodal tool results.
+ */
+export function supportsMultimodalToolResults(_modelName?: string): boolean {
+  return false;
 }
 
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard and Pro are mode-aware; Max maps to Opus in both
- * modes.
+ * key instead). All tiers resolve to the same DeepSeek model; the distinct
+ * keys are kept for usage tracking and rate limiting.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
@@ -417,34 +131,4 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = () =>
-  // userId?: string,
-  // conversationId?: string,
-  // subscription?: SubscriptionTier,
-  // phClient?: ReturnType<typeof PostHogClient> | null,
-  {
-    // PostHog provider tracking disabled
-    // if (!phClient || subscription === "free") {
-    //   return myProvider;
-    // }
-    //
-    // const trackedModels: Record<string, any> = {};
-    //
-    // Object.entries(baseProviders).forEach(([modelName, model]) => {
-    //   trackedModels[modelName] = withTracing(model, phClient, {
-    //     ...(userId && { posthogDistinctId: userId }),
-    //     posthogProperties: {
-    //       modelType: modelName,
-    //       ...(conversationId && { conversationId }),
-    //       subscriptionTier: subscription,
-    //     },
-    //     posthogPrivacyMode: true,
-    //   });
-    // });
-    //
-    // return customProvider({
-    //   languageModels: trackedModels,
-    // });
-
-    return myProvider;
-  };
+export const createTrackedProvider = () => myProvider;

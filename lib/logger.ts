@@ -8,7 +8,6 @@
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
-import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -31,11 +30,6 @@ export interface ProviderRequestDiagnostics {
   tool_count: number;
   active_tool_count: number;
   active_tools_mode: "all" | "subset";
-  reasoning_enabled?: boolean;
-  reasoning_effort?: string;
-  fallback_model_count: number;
-  fallback_model_slugs?: string[];
-  has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
 }
 
@@ -99,31 +93,6 @@ export interface ChatWideEvent {
   model?: {
     configured: string;
     actual?: string;
-    provider_name?: string;
-    openrouter_generation_id?: string;
-    openrouter_request_id?: string;
-    openrouter_is_byok?: boolean;
-    openrouter_router?: string;
-    openrouter_strategy?: string;
-    openrouter_region?: string;
-    openrouter_attempt?: number;
-    openrouter_upstream_id?: string;
-    openrouter_selected_model?: string;
-    openrouter_attempts?: OpenRouterModelMetadata["openrouter_attempts"];
-    fallback_triggered?: boolean;
-    fallback_chain?: string[];
-  };
-
-  prompt_repair?: {
-    anthropic?: {
-      count: number;
-      last_action: "appended_continue" | "trimmed";
-      last_reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
-      last_content_types?: string[];
-    };
   };
 
   // Stream execution
@@ -205,7 +174,6 @@ export interface ChatWideEvent {
     configured_model?: string;
     requested_model_slug?: string;
     model_provider_slug?: string;
-    openrouter_generation_id?: string;
     provider_error_fingerprint?: string;
     // Per-attempt breakdown when the SDK retried internally. Each entry is one
     // upstream call. Lets you tell consistent-500 from a mixed cascade and
@@ -227,7 +195,6 @@ export class WideEventBuilder {
   private event: Partial<ChatWideEvent>;
   private toolCalls: Array<{ name: string; sandbox_type?: string }> = [];
   private streamStartTime?: number;
-  private anthropicPromptRepairCount = 0;
 
   constructor(
     requestId: string,
@@ -354,65 +321,10 @@ export class WideEventBuilder {
   }
 
   /**
-   * Attach OpenRouter routing/provider metadata to the model block.
-   */
-  setOpenRouterMetadata(metadata: OpenRouterModelMetadata): this {
-    if (!this.event.model) {
-      this.event.model = {
-        configured: metadata.openrouter_selected_model ?? "",
-      };
-    }
-
-    this.event.model = {
-      ...this.event.model,
-      ...metadata,
-    };
-
-    return this;
-  }
-
-  /**
-   * Record that OpenRouter served a configured fallback model.
-   */
-  recordModelFallback(fallback: { served: string; chain: string[] }): this {
-    if (!this.event.model) {
-      this.event.model = { configured: fallback.served };
-    }
-    this.event.model.actual = fallback.served;
-    this.event.model.fallback_triggered = true;
-    this.event.model.fallback_chain = fallback.chain;
-    return this;
-  }
-
-  /**
    * Record the sanitized shape of the latest provider request.
    */
   setProviderRequestDiagnostics(diagnostics: ProviderRequestDiagnostics): this {
     this.event.provider_request = diagnostics;
-    return this;
-  }
-
-  /**
-   * Record Anthropic prompt repairs that prevent unsupported assistant prefill.
-   */
-  recordAnthropicPromptRepair(repair: {
-    action: "appended_continue" | "trimmed";
-    reason:
-      | "useful_assistant_tail"
-      | "no_useful_content"
-      | "dangling_tool_call";
-    trailingAssistantContentTypes?: string[];
-  }): this {
-    this.anthropicPromptRepairCount += 1;
-    this.event.prompt_repair = {
-      ...this.event.prompt_repair,
-      anthropic: {
-        count: this.anthropicPromptRepairCount,
-        last_action: repair.action,
-        last_reason: repair.reason,
-        last_content_types: repair.trailingAssistantContentTypes,
-      },
-    };
     return this;
   }
 
@@ -504,8 +416,7 @@ export class WideEventBuilder {
         reasoning_tokens: (usage.reasoningTokens as number) || undefined,
         cache_read_tokens: usage.cacheReadInputTokens as number | undefined,
         cache_write_tokens: usage.cacheCreationInputTokens as
-          | number
-          | undefined,
+          number | undefined,
         total_cost: rawCost,
       };
     }
@@ -592,7 +503,6 @@ export class WideEventBuilder {
     configuredModel?: string;
     requestedModelSlug?: string;
     modelProviderSlug?: string;
-    openrouterGenerationId?: string;
     providerErrorFingerprint?: string;
     attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
@@ -609,7 +519,6 @@ export class WideEventBuilder {
       configured_model: details.configuredModel,
       requested_model_slug: details.requestedModelSlug,
       model_provider_slug: details.modelProviderSlug,
-      openrouter_generation_id: details.openrouterGenerationId,
       provider_error_fingerprint: details.providerErrorFingerprint,
       attempts: details.attempts,
     };

@@ -4,7 +4,6 @@ import {
   pruneToolOutputs,
   pruneModelMessages,
   filterEmptyAssistantMessages,
-  repairAnthropicModelMessages,
   compactMessageForStorage,
   estimateSerializedSizeBytes,
 } from "../prune-tool-outputs";
@@ -1548,78 +1547,5 @@ describe("filterEmptyAssistantMessages", () => {
     expect(result[1]).toEqual(messages[1]); // assistant with tool-call kept
     expect(result[2]).toEqual(messages[2]); // tool result kept
     expect(result[3]).toEqual(messages[4]); // final assistant kept
-  });
-});
-
-describe("repairAnthropicModelMessages", () => {
-  it("preserves useful trailing assistant text by appending a user continuation", () => {
-    const messages = [
-      { role: "user", content: [{ type: "text", text: "build this" }] },
-      { role: "assistant", content: [{ type: "text", text: "half answer" }] },
-    ];
-
-    expect(repairAnthropicModelMessages(messages)).toEqual([
-      ...messages,
-      {
-        role: "user",
-        content:
-          "Continue from the previous assistant message. Do not repeat completed work.",
-      },
-    ]);
-  });
-
-  it("trims a trailing assistant with no useful provider-visible content", () => {
-    const messages = [
-      { role: "user", content: [{ type: "text", text: "build this" }] },
-      {
-        role: "assistant",
-        content: [{ type: "reasoning", text: "thinking..." }],
-      },
-    ];
-
-    expect(repairAnthropicModelMessages(messages)).toEqual([messages[0]]);
-  });
-
-  it("trims a trailing assistant with a dangling tool call", () => {
-    const messages = [
-      { role: "user", content: [{ type: "text", text: "read the file" }] },
-      {
-        role: "assistant",
-        content: [
-          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
-        ],
-      },
-    ];
-
-    expect(repairAnthropicModelMessages(messages)).toEqual([messages[0]]);
-  });
-
-  it("leaves conversations ending in user or tool messages unchanged", () => {
-    const userEnding = [
-      { role: "assistant", content: [{ type: "text", text: "done" }] },
-      { role: "user", content: [{ type: "text", text: "continue" }] },
-    ];
-    const toolEnding = [
-      {
-        role: "assistant",
-        content: [
-          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
-        ],
-      },
-      {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "tc1",
-            toolName: "read",
-            output: "contents",
-          },
-        ],
-      },
-    ];
-
-    expect(repairAnthropicModelMessages(userEnding)).toBe(userEnding);
-    expect(repairAnthropicModelMessages(toolEnding)).toBe(toolEnding);
   });
 });
