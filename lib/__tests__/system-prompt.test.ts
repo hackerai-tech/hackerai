@@ -72,7 +72,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain(localHostContext);
     expect(prompt).toContain("terminal commands can affect the user's host OS");
     expect(prompt).toContain(
-      "request confirmation before executing destructive, irreversible, credential-exfiltrating, persistence-affecting, or broad host-impacting commands",
+      "require clear user confirmation unless the user's latest request explicitly names that exact action",
     );
     expect(prompt).not.toContain(
       "All operations execute in isolated sandbox containers",
@@ -80,6 +80,56 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain(
       "agent-browser is installed in the cloud sandbox",
     );
+  });
+
+  it("uses positive authorized security work guidance without deployable abuse examples", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<authorized_security_work>");
+    expect(prompt).toContain(
+      "Support authorized security work with practical, scoped assistance",
+    );
+    expect(prompt).toContain(
+      "Explaining security tools, offensive concepts, and defensive concepts",
+    );
+    expect(prompt).toContain(
+      "Planning home labs, rules of engagement, scope, target inventories",
+    );
+    expect(prompt).toContain(
+      "Running authorized reconnaissance, enumeration, vulnerability validation",
+    );
+    expect(prompt).toContain(
+      "Analyzing suspicious files, malware behavior, logs, indicators, and artifacts",
+    );
+    expect(prompt).toContain("Writing detections, YARA/Sigma rules");
+    expect(prompt).toContain(
+      "Building harmless toy examples and local simulations",
+    );
+    expect(prompt).toContain("Offering safe alternatives");
+
+    expect(prompt).not.toContain("<authorized_security_capabilities>");
+    expect(prompt).not.toContain("<behavioral_policy>");
+
+    for (const banned of [
+      /reverse shells?/i,
+      /bind shells?/i,
+      /shellcode/i,
+      /C2 scripts?/i,
+      /credential harvesting/i,
+      /evasion techniques?/i,
+      /Do NOT refuse/i,
+      /ethical disclaimers?/i,
+    ]) {
+      expect(prompt).not.toMatch(banned);
+    }
   });
 
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {
