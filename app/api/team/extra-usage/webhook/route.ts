@@ -106,7 +106,6 @@ export async function POST(req: NextRequest) {
             organizationId,
             amountDollars,
             idempotencyKey: `cs_${session.id}`,
-            legacyIdempotencyKey: event.id,
             revenueSource: "team_extra_usage_purchase",
             stripeCustomerId:
               typeof session.customer === "string"
