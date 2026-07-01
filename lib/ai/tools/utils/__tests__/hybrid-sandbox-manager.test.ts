@@ -19,14 +19,18 @@ import {
 } from "../hybrid-sandbox-manager";
 import {
   assertLocalSandboxFallbackAllowed,
+  getSandboxFallbackErrorMessage,
   getSandboxFallbackPromptReminder,
+  getSandboxWithFallbackGuard,
   prepareSandboxContextForPrompt,
+  resolveToolErrorMessage,
 } from "../sandbox-fallback";
 import {
   getConnectionIdFromPresenceClient,
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
 import type { ConnectionInfo } from "../sandbox-types";
+import { ChatSDKError } from "@/lib/errors";
 
 const baseConnection: ConnectionInfo = {
   connectionId: "conn-online",
@@ -446,6 +450,90 @@ describe("HybridSandboxManager prompt-time fallback", () => {
       fallbackInfo,
     });
     expect(writer.write).not.toHaveBeenCalled();
+  });
+
+  it("blocks fallback through guarded sandbox acquisition without consuming fallback info", async () => {
+    const fallbackInfo = {
+      occurred: true,
+      reason: "no_local_connections" as const,
+      requestedPreference: "desktop" as const,
+      actualSandbox: "e2b" as const,
+      actualSandboxName: "Cloud",
+    };
+    const sandboxManager = {
+      getSandbox: jest.fn().mockResolvedValue({ sandbox: { id: "cloud" } }),
+      peekFallbackInfo: jest.fn(() => fallbackInfo),
+      consumeFallbackInfo: jest.fn(),
+      resetSandbox: jest.fn().mockResolvedValue(undefined),
+      clearFallbackInfo: jest.fn(),
+    };
+
+    await expect(
+      getSandboxWithFallbackGuard({ sandboxManager }),
+    ).rejects.toThrow(
+      "The request couldn't be processed. Please check your input and try again.",
+    );
+
+    expect(sandboxManager.getSandbox).toHaveBeenCalledTimes(1);
+    expect(sandboxManager.peekFallbackInfo).toHaveBeenCalledTimes(1);
+    expect(sandboxManager.consumeFallbackInfo).not.toHaveBeenCalled();
+    expect(sandboxManager.resetSandbox).toHaveBeenCalledWith(
+      "blocked_local_sandbox_fallback",
+    );
+    expect(sandboxManager.clearFallbackInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the local-attachment block message for guarded local-only acquisition", async () => {
+    const sandboxManager = {
+      getSandbox: jest.fn().mockResolvedValue({ sandbox: { id: "cloud" } }),
+      peekFallbackInfo: jest.fn(() => ({
+        occurred: true,
+        reason: "no_local_connections" as const,
+        requestedPreference: "desktop" as const,
+        actualSandbox: "e2b" as const,
+        actualSandboxName: "Cloud",
+      })),
+      resetSandbox: jest.fn().mockResolvedValue(undefined),
+      clearFallbackInfo: jest.fn(),
+    };
+
+    let error: unknown;
+    try {
+      await getSandboxWithFallbackGuard({
+        sandboxManager,
+        requireLocalSandbox: true,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(getSandboxFallbackErrorMessage(error)).toContain(
+      "Desktop-local attachments require the Desktop sandbox",
+    );
+    expect(sandboxManager.resetSandbox).toHaveBeenCalledWith(
+      "blocked_local_sandbox_fallback",
+    );
+  });
+
+  it("resolves fallback tool error messages only for fallback metadata", () => {
+    const fallbackError = new ChatSDKError(
+      "bad_request:api",
+      "fallback cause",
+      { localSandboxFallbackBlocked: true },
+    );
+    const genericChatError = new ChatSDKError(
+      "bad_request:api",
+      "generic cause",
+    );
+
+    expect(getSandboxFallbackErrorMessage(fallbackError)).toBe(
+      "fallback cause",
+    );
+    expect(getSandboxFallbackErrorMessage(genericChatError)).toBeNull();
+    expect(resolveToolErrorMessage(fallbackError)).toBe("fallback cause");
+    expect(resolveToolErrorMessage(new Error("plain error"))).toBe(
+      "plain error",
+    );
   });
 });
 

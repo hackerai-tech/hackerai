@@ -10,7 +10,10 @@ type SandboxContextForPromptManager = {
 
 type SandboxAcquisitionManager<TSandbox> = {
   getSandbox: () => Promise<{ sandbox: TSandbox }>;
+  resetSandbox?: (reason?: string) => Promise<void>;
+  peekFallbackInfo?: () => SandboxFallbackInfo | null;
   consumeFallbackInfo?: () => SandboxFallbackInfo | null;
+  clearFallbackInfo?: () => void;
 };
 
 const escapePromptText = (value: string): string =>
@@ -85,13 +88,29 @@ export async function getSandboxWithFallbackGuard<TSandbox>({
   requireLocalSandbox?: boolean;
 }): Promise<{ sandbox: TSandbox }> {
   const result = await sandboxManager.getSandbox();
-  const fallbackInfo = sandboxManager.consumeFallbackInfo?.() ?? null;
+  const fallbackInfo =
+    sandboxManager.peekFallbackInfo?.() ??
+    sandboxManager.consumeFallbackInfo?.() ??
+    null;
 
   if (fallbackInfo?.occurred) {
-    assertLocalSandboxFallbackAllowed({
-      fallbackInfo,
-      requireLocalSandbox,
-    });
+    try {
+      assertLocalSandboxFallbackAllowed({
+        fallbackInfo,
+        requireLocalSandbox,
+      });
+    } catch (error) {
+      try {
+        await sandboxManager.resetSandbox?.("blocked_local_sandbox_fallback");
+      } catch (cleanupError) {
+        console.warn(
+          "[sandbox-fallback] Failed to reset blocked fallback sandbox:",
+          cleanupError,
+        );
+      }
+      sandboxManager.clearFallbackInfo?.();
+      throw error;
+    }
   }
 
   return result;
@@ -108,6 +127,13 @@ export function getSandboxFallbackErrorMessage(error: unknown): string | null {
   }
 
   return null;
+}
+
+export function resolveToolErrorMessage(error: unknown): string {
+  return (
+    getSandboxFallbackErrorMessage(error) ??
+    (error instanceof Error ? error.message : String(error))
+  );
 }
 
 export async function prepareSandboxContextForPrompt({

@@ -321,6 +321,14 @@ export class HybridSandboxManager implements SandboxManager {
    * Returns null if no fallback occurred, otherwise returns the fallback details.
    * Clears the info after returning so it's only reported once.
    */
+  peekFallbackInfo(): SandboxFallbackInfo | null {
+    return this.pendingFallbackInfo;
+  }
+
+  clearFallbackInfo(): void {
+    this.pendingFallbackInfo = null;
+  }
+
   consumeFallbackInfo(): SandboxFallbackInfo | null {
     const info = this.pendingFallbackInfo;
     this.pendingFallbackInfo = null;

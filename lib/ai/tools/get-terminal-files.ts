@@ -4,8 +4,8 @@ import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import { toolBriefSchema } from "./tool-brief";
 import {
-  getSandboxFallbackErrorMessage,
   getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
@@ -153,9 +153,7 @@ Usage:
           failedFiles: blockedFiles,
         };
       } catch (error) {
-        const errorMsg =
-          getSandboxFallbackErrorMessage(error) ??
-          (error instanceof Error ? error.message : String(error));
+        const errorMsg = resolveToolErrorMessage(error);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],

@@ -13,8 +13,8 @@ import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
 import { toolBriefSchema } from "./tool-brief";
 import {
-  getSandboxFallbackErrorMessage,
   getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
@@ -1460,9 +1460,7 @@ ${instructionsDescription}`,
         }
       } catch (error) {
         return {
-          error:
-            getSandboxFallbackErrorMessage(error) ??
-            (error instanceof Error ? error.message : String(error)),
+          error: resolveToolErrorMessage(error),
         };
       }
     },
@@ -1558,10 +1556,7 @@ ${instructionsDescription}`,
             }
             return {
               type: "text" as const,
-              value: `Error: ${
-                getSandboxFallbackErrorMessage(error) ??
-                (error instanceof Error ? error.message : String(error))
-              }`,
+              value: `Error: ${resolveToolErrorMessage(error)}`,
             };
           }
         }

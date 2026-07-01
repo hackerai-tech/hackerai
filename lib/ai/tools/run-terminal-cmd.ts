@@ -28,8 +28,8 @@ import {
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
 import {
-  getSandboxFallbackErrorMessage,
   getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
   waitForOutput,
@@ -292,10 +292,9 @@ In using these tools, adhere to the following guidelines:
               output: "",
               exitCode: 1,
               error:
-                getSandboxFallbackErrorMessage(err) ??
-                (err instanceof Error
-                  ? err.message
-                  : "Failed to create interactive PTY session."),
+                err instanceof Error
+                  ? resolveToolErrorMessage(err)
+                  : "Failed to create interactive PTY session.",
             },
           };
         }
@@ -762,9 +761,7 @@ In using these tools, adhere to the following guidelines:
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
-            error:
-              getSandboxFallbackErrorMessage(error) ??
-              (error instanceof Error ? error.message : String(error)),
+            error: resolveToolErrorMessage(error),
           },
         };
       }
