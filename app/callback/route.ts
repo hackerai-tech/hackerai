@@ -1,16 +1,9 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
 import {
-  isAuthVerifierMissingError,
-  isAuthCookieMissingError,
-  isMissingRequiredAuthParameterError,
-  isOAuthStateMismatchError,
-  isOauthCodeAlreadyExchangedError,
+  getRecoverableAuthkitCallbackErrorBucket,
+  type RecoverableAuthkitCallbackErrorBucket,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
-import {
-  isUnverifiedSignInSessionError,
-  isInvalidCodeVerifierError,
-} from "@/lib/auth/expected-auth-errors";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -25,39 +18,10 @@ const PKCE_COOKIE_PREFIX = "wos-auth-verifier";
 const hasPkceCookie = (request: NextRequest): boolean =>
   request.cookies.getAll().some((c) => c.name.startsWith(PKCE_COOKIE_PREFIX));
 
-type RecoveryBucket =
-  | "missing_auth_parameter"
-  | "state_mismatch"
-  | "verifier_missing"
-  | "cookie_missing"
-  | "code_already_exchanged"
-  | "invalid_code_verifier"
-  | "session_unverified"
-  | "unknown";
+type RecoveryBucket = RecoverableAuthkitCallbackErrorBucket | "unknown";
 
 const classifyCallbackError = (error: unknown): RecoveryBucket => {
-  if (isOauthCodeAlreadyExchangedError(error)) {
-    return "code_already_exchanged";
-  }
-  if (isInvalidCodeVerifierError(error)) {
-    return "invalid_code_verifier";
-  }
-  if (isUnverifiedSignInSessionError(error)) {
-    return "session_unverified";
-  }
-  if (isMissingRequiredAuthParameterError(error)) {
-    return "missing_auth_parameter";
-  }
-  if (isAuthCookieMissingError(error)) {
-    return "cookie_missing";
-  }
-  if (isAuthVerifierMissingError(error)) {
-    return "verifier_missing";
-  }
-  if (isOAuthStateMismatchError(error)) {
-    return "state_mismatch";
-  }
-  return "unknown";
+  return getRecoverableAuthkitCallbackErrorBucket(error) ?? "unknown";
 };
 
 const buildRecoveryResponse = async (

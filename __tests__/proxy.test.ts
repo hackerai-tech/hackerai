@@ -177,4 +177,33 @@ describe("proxy", () => {
       expect.objectContaining({ status: 401 }),
     );
   });
+
+  it("redirects to login when protected browser requests hit thrown ended-session refresh errors", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+        },
+      },
+    );
+    mockAuthkit.mockRejectedValue(endedSessionError);
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/dashboard",
+        accept: "text/html",
+        hasSession: true,
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "redirect" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+    expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+      new URL("/login", "https://hackerai.co/dashboard"),
+    );
+  });
 });
