@@ -50,17 +50,24 @@ describe("AccountTab", () => {
   });
 
   it("shows scheduled cancellation state instead of the cancel action", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
+    const expectedPeriodEnd = new Intl.DateTimeFormat(undefined, {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(currentPeriodEnd));
+
     mockGetSubscriptionCancellationStatus.mockResolvedValue({
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
-      currentPeriodEnd: Date.UTC(2026, 6, 31, 12),
+      currentPeriodEnd,
     } as never);
 
     render(<AccountTab />);
 
     expect(await screen.findByText("Cancellation scheduled.")).toBeVisible();
     expect(
-      screen.getByText("Your plan stays active until July 31, 2026."),
+      screen.getByText(`Your plan stays active until ${expectedPeriodEnd}.`),
     ).toBeVisible();
 
     const user = userEvent.setup();
@@ -91,5 +98,24 @@ describe("AccountTab", () => {
     expect(
       screen.queryByText("Cancellation scheduled."),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not offer cancellation when no active subscription is found", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+    } as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+
+    expect(screen.getByText("No active subscription")).toBeVisible();
+    expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
   });
 });

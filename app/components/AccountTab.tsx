@@ -83,6 +83,8 @@ const AccountTab = () => {
   const cancellationEndDate = formatCancellationDate(
     currentCancellationStatus?.currentPeriodEnd,
   );
+  const noActiveSubscription =
+    currentCancellationStatus?.hasActiveSubscription === false;
   const cancellationScheduled =
     currentCancellationStatus?.cancelAtPeriodEnd === true;
   const isCheckingCancellationStatus =
@@ -97,8 +99,12 @@ const AccountTab = () => {
       .then((status) => {
         if (!ignore) setCancellationStatus({ ...status, subscription });
       })
-      .catch(() => {
+      .catch((error) => {
         if (!ignore) {
+          console.warn(
+            "Failed to load subscription cancellation status",
+            error,
+          );
           setCancellationStatus({
             subscription,
             hasActiveSubscription: false,
@@ -185,6 +191,11 @@ const AccountTab = () => {
                     <DropdownMenuItem disabled>
                       <CalendarClock className="h-4 w-4" />
                       <span>Cancellation scheduled</span>
+                    </DropdownMenuItem>
+                  ) : noActiveSubscription ? (
+                    <DropdownMenuItem disabled>
+                      <CalendarClock className="h-4 w-4" />
+                      <span>No active subscription</span>
                     </DropdownMenuItem>
                   ) : isCheckingCancellationStatus ? (
                     <DropdownMenuItem disabled>
