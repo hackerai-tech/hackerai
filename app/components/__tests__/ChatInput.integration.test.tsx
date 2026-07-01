@@ -7,15 +7,13 @@ import {
   fireEvent,
   waitFor,
 } from "@testing-library/react";
-import { ChatInput } from "../ChatInput";
-import {
-  GlobalStateProvider,
-  useGlobalState,
-} from "../../contexts/GlobalState";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReactNode } from "react";
 import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
+
+const mockUseQuery = jest.fn(() => undefined);
+const mockReadGeneratedTextAttachment = jest.fn();
 
 // Mock only external dependencies, not contexts
 jest.mock("react-hotkeys-hook", () => ({
@@ -27,19 +25,32 @@ jest.mock("convex/react", () => ({
   useAuth: () => ({ user: null, entitlements: [] }),
   useMutation: () => jest.fn(),
   useAction: () => jest.fn(),
-  useQuery: () => undefined,
+  useQuery: (...args: unknown[]) => mockUseQuery(...args),
 }));
 
-jest.mock("../../hooks/useFileUpload", () => ({
+jest.mock("@/app/hooks/useFileUpload", () => ({
   useFileUpload: () => ({
     fileInputRef: { current: null },
     handleFileUploadEvent: jest.fn(),
     handleRemoveFile: jest.fn(),
+    handleUpdateGeneratedTextFile: jest.fn(),
     handleAttachClick: jest.fn(),
     handlePasteEvent: jest.fn(),
     handlePastedTextAttachment: jest.fn(),
   }),
 }));
+
+jest.mock("@/app/hooks/useTauri", () => ({
+  isTauriEnvironment: jest.fn(() => false),
+  readGeneratedTextAttachment: (...args: unknown[]) =>
+    mockReadGeneratedTextAttachment(...args),
+}));
+
+const { ChatInput } =
+  jest.requireActual<typeof import("../ChatInput")>("../ChatInput");
+const { GlobalStateProvider, useGlobalState } = jest.requireActual<
+  typeof import("../../contexts/GlobalState")
+>("../../contexts/GlobalState");
 
 // Wrapper with real providers
 const TestWrapper = ({ children }: { children: ReactNode }) => {
@@ -72,6 +83,9 @@ describe("ChatInput - Integration Tests", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseQuery.mockReset();
+    mockUseQuery.mockReturnValue(undefined);
+    mockReadGeneratedTextAttachment.mockReset();
     window.localStorage.clear();
   });
 
@@ -279,7 +293,12 @@ describe("ChatInput - Integration Tests", () => {
           expect.arrayContaining([
             expect.objectContaining({
               id: "chat-1",
-              attachments: [draftAttachment],
+              attachments: [
+                expect.objectContaining({
+                  ...draftAttachment,
+                  generatedSource: "pasted-text",
+                }),
+              ],
             }),
           ]),
         );
@@ -330,6 +349,153 @@ describe("ChatInput - Integration Tests", () => {
       );
 
       expect(await screen.findByText("pasted-text.txt")).toBeInTheDocument();
+    });
+
+    it("restores pasted-text draft attachments with editable content", async () => {
+      const pastedContent = "Original pasted source material";
+      const draftAttachment = {
+        kind: "pasted-text" as const,
+        fileId: "file_123",
+        name: "pasted-text.txt",
+        mediaType: "text/plain",
+        size: 512,
+        generatedSource: "pasted-text" as const,
+        generatedTextAttachmentId: "generated_123",
+        timestamp: Date.now(),
+      };
+      mockUseQuery.mockImplementation((_query, args) =>
+        args &&
+        args !== "skip" &&
+        Array.isArray((args as { fileIds?: unknown }).fileIds)
+          ? [
+              {
+                id: "file_123",
+                name: "pasted-text.txt",
+                mediaType: "text/plain",
+                content: pastedContent,
+                tokenSize: 120,
+              },
+            ]
+          : undefined,
+      );
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "chat-1",
+              content: "",
+              timestamp: Date.now(),
+              attachments: [draftAttachment],
+            },
+          ],
+        }),
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(await screen.findByText("pasted-text.txt")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(
+          screen.getByLabelText("Open pasted-text.txt"),
+        ).not.toBeDisabled(),
+      );
+
+      fireEvent.click(screen.getByLabelText("Open pasted-text.txt"));
+      expect(screen.getByLabelText("Pasted text content")).toHaveValue(
+        pastedContent,
+      );
+      expect(
+        screen.getByText("Changes save automatically as you edit"),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("Pasted text content")).not.toBeDisabled();
+      expect(
+        window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+      ).not.toContain(pastedContent);
+      expect(
+        window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+      ).toContain("generated_123");
+    });
+
+    it("restores local generated pasted-text drafts from the Desktop file", async () => {
+      const pastedContent = "Local pasted source material";
+      const localPath = "/Users/alice/pasted_content.txt";
+      const draftAttachment = {
+        kind: "pasted-text" as const,
+        storage: "local-desktop" as const,
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: 512,
+        generatedSource: "pasted-text" as const,
+        generatedTextAttachmentId: "generated_local_123",
+        timestamp: Date.now(),
+      };
+      mockReadGeneratedTextAttachment.mockResolvedValue({
+        path: localPath,
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: pastedContent.length,
+        lastModified: 123456,
+        content: pastedContent,
+      });
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "chat-1",
+              content: "",
+              timestamp: Date.now(),
+              attachments: [draftAttachment],
+            },
+          ],
+        }),
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(await screen.findByText("pasted_content.txt")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(mockReadGeneratedTextAttachment).toHaveBeenCalledWith(
+          "generated_local_123",
+          "pasted_content.txt",
+        ),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByLabelText("Open pasted_content.txt"),
+        ).not.toBeDisabled(),
+      );
+
+      fireEvent.click(screen.getByLabelText("Open pasted_content.txt"));
+      expect(screen.getByLabelText("Pasted text content")).toHaveValue(
+        pastedContent,
+      );
+      const storedDraft = window.localStorage.getItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+      );
+      expect(storedDraft).not.toContain(pastedContent);
+      expect(storedDraft).not.toContain(localPath);
     });
 
     it("restores regular S3 draft attachments", async () => {
@@ -485,6 +651,66 @@ describe("ChatInput - Integration Tests", () => {
       });
     });
 
+    it("persists generated pasted-text metadata without draft content", async () => {
+      const pastedContent = "Original pasted source material";
+      const browserFile = new File([pastedContent], "pasted_content.txt", {
+        type: "text/plain",
+        lastModified: 123456,
+      });
+      const uploadedFile: UploadedFileState = {
+        file: browserFile,
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "file_pasted",
+        tokens: 84,
+        generatedSource: "pasted-text",
+        generatedTextAttachment: {
+          id: "generated_123",
+          content: pastedContent,
+        },
+      };
+
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[uploadedFile]} label="Complete upload" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Complete upload"));
+
+      await waitFor(() => {
+        const store = JSON.parse(
+          window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY) ?? "{}",
+        );
+        expect(store.drafts).toEqual([
+          expect.objectContaining({
+            id: "chat-1",
+            attachments: [
+              expect.objectContaining({
+                kind: "pasted-text",
+                fileId: "file_pasted",
+                name: "pasted_content.txt",
+                mediaType: "text/plain",
+                size: pastedContent.length,
+                tokens: 84,
+                generatedSource: "pasted-text",
+                generatedTextAttachmentId: "generated_123",
+              }),
+            ],
+          }),
+        ]);
+        expect(JSON.stringify(store)).not.toContain(pastedContent);
+      });
+    });
+
     it("keeps restored pasted-text drafts when submit is rejected", async () => {
       const rejectedSubmit = jest.fn(() => false);
       const draftAttachment = {
@@ -532,7 +758,12 @@ describe("ChatInput - Integration Tests", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: "chat-1",
-            attachments: [draftAttachment],
+            attachments: [
+              expect.objectContaining({
+                ...draftAttachment,
+                generatedSource: "pasted-text",
+              }),
+            ],
           }),
         ]),
       );

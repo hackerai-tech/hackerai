@@ -22,6 +22,7 @@ import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
+import type * as lib_suspensionGuards from "../lib/suspensionGuards.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
@@ -64,6 +65,7 @@ declare const fullApi: ApiFromModules<{
   fileStorage: typeof fileStorage;
   "lib/logger": typeof lib_logger;
   "lib/retainedTail": typeof lib_retainedTail;
+  "lib/suspensionGuards": typeof lib_suspensionGuards;
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;
   messages: typeof messages;

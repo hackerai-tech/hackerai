@@ -89,17 +89,13 @@ export function ChatInputTextarea({
         return;
       }
 
-      const hasClipboardFiles = Array.from(clipboardData.items ?? []).some(
-        (item) => item.kind === "file",
-      );
-      if (hasClipboardFiles) {
-        await handlePasteEvent(e);
+      const handledAsFile = await handlePasteEvent(e);
+      if (handledAsFile) {
         return;
       }
 
       const pastedText = clipboardData.getData("text");
       if (!pastedText) {
-        await handlePasteEvent(e);
         return;
       }
 
@@ -120,8 +116,6 @@ export function ChatInputTextarea({
         });
         return;
       }
-
-      await handlePasteEvent(e);
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);

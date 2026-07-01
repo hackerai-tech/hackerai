@@ -145,6 +145,9 @@ export function createFileMessagePartFromUploadedFile(
       storage: "local-desktop",
       localAttachmentId: uploadedFile.localAttachmentId,
       localPath: uploadedFile.localPath,
+      ...(uploadedFile.generatedSource
+        ? { generatedSource: uploadedFile.generatedSource }
+        : {}),
     };
   }
 

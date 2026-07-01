@@ -5,6 +5,8 @@ import {
   getLocalFileMetadata,
   pickLocalFiles,
   readLocalFile,
+  removeGeneratedTextAttachment,
+  writeGeneratedTextAttachment,
 } from "@/app/hooks/useTauri";
 import { toast } from "sonner";
 
@@ -42,14 +44,32 @@ jest.mock("@/app/hooks/useTauri", () => ({
   pickLocalFiles: jest.fn(),
   getLocalFileMetadata: jest.fn(),
   readLocalFile: jest.fn(),
+  writeGeneratedTextAttachment: jest.fn(),
+  removeGeneratedTextAttachment: jest.fn(),
 }));
 
 jest.mock("sonner", () => ({
   toast: {
     error: jest.fn(),
+    info: jest.fn(),
     warning: jest.fn(),
   },
 }));
+
+type MockPasteEvent = ClipboardEvent & {
+  preventDefault: jest.Mock;
+};
+
+const createTextPasteEvent = (text: string): MockPasteEvent =>
+  ({
+    clipboardData: {
+      items: [],
+      getData: jest.fn((type: string) =>
+        type === "text/plain" || type === "text" ? text : "",
+      ),
+    },
+    preventDefault: jest.fn(),
+  }) as unknown as MockPasteEvent;
 
 describe("useFileUpload desktop-local agent attachments", () => {
   const originalFetch = global.fetch;
@@ -75,6 +95,14 @@ describe("useFileUpload desktop-local agent attachments", () => {
       fileId: "file_123",
       tokens: 10,
     });
+    (writeGeneratedTextAttachment as jest.Mock).mockResolvedValue({
+      path: "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/pasted_content.txt",
+      name: "pasted_content.txt",
+      mediaType: "text/plain",
+      size: 4100,
+      lastModified: 123,
+    });
+    (removeGeneratedTextAttachment as jest.Mock).mockResolvedValue(true);
   });
 
   afterAll(() => {
@@ -110,6 +138,101 @@ describe("useFileUpload desktop-local agent attachments", () => {
         }),
       );
     });
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps generated pasted text local in desktop Agent mode", async () => {
+    const pastedText = "A".repeat(4100);
+    const event = createTextPasteEvent(pastedText);
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    let handled = false;
+    await act(async () => {
+      handled = await result.current.handlePasteEvent(event);
+    });
+
+    expect(handled).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(writeGeneratedTextAttachment).toHaveBeenCalledWith(
+      expect.any(String),
+      "pasted_content.txt",
+      pastedText,
+    );
+    expect(addUploadedFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uploaded: true,
+        uploading: false,
+        storage: "local-desktop",
+        localAttachmentId: expect.any(String),
+        localPath:
+          "/Users/alice/Library/Application Support/HackerAI/generated-text-attachments/paste-1/pasted_content.txt",
+        generatedSource: "pasted-text",
+        generatedTextAttachmentId: expect.any(String),
+        generatedTextAttachment: expect.objectContaining({
+          content: pastedText,
+        }),
+      }),
+    );
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("updates generated pasted text locally without uploading edited content", async () => {
+    const previousUpload = {
+      file: {
+        name: "pasted_content.txt",
+        type: "text/plain",
+        size: 8,
+        lastModified: 1000,
+      },
+      uploading: false,
+      uploaded: true,
+      storage: "local-desktop" as const,
+      generatedSource: "pasted-text" as const,
+      generatedTextAttachmentId: "paste_1",
+      localAttachmentId: "paste_1",
+      localPath: "/Users/alice/pasted_content.txt",
+      tokens: 0,
+      generatedTextAttachment: {
+        id: "paste_1",
+        content: "original",
+      },
+    };
+    globalState.uploadedFiles = [previousUpload];
+    (writeGeneratedTextAttachment as jest.Mock).mockResolvedValueOnce({
+      path: "/Users/alice/pasted_content.txt",
+      name: "pasted_content.txt",
+      mediaType: "text/plain",
+      size: 6,
+      lastModified: 2000,
+    });
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleUpdateGeneratedTextFile(0, "edited");
+    });
+
+    await waitFor(() => {
+      expect(updateUploadedFile).toHaveBeenLastCalledWith(
+        0,
+        expect.objectContaining({
+          uploaded: true,
+          uploading: false,
+          storage: "local-desktop",
+          localPath: "/Users/alice/pasted_content.txt",
+          generatedTextAttachment: {
+            id: "paste_1",
+            content: "edited",
+          },
+        }),
+      );
+    });
+    expect(writeGeneratedTextAttachment).toHaveBeenCalledWith(
+      "paste_1",
+      "pasted_content.txt",
+      "edited",
+    );
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
   });

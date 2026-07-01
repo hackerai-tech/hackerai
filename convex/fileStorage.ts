@@ -188,7 +188,58 @@ export const getFileContentByFileIds = query({
         id: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        content: isSupportedImage || isPdf ? null : file.content || null,
+        content: isSupportedImage || isPdf ? null : (file.content ?? null),
+        tokenSize: file.file_token_size,
+      };
+    });
+  },
+});
+
+/**
+ * Get file content for the authenticated user.
+ * Used by the client to hydrate editable draft text attachments after reload
+ * without persisting their content in browser storage.
+ */
+export const getTextFileContentForCurrentUser = query({
+  args: {
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(
+    v.union(
+      v.object({
+        id: v.id("files"),
+        name: v.string(),
+        mediaType: v.string(),
+        content: v.union(v.string(), v.null()),
+        tokenSize: v.number(),
+      }),
+      v.null(),
+    ),
+  ),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      return args.fileIds.map(() => null);
+    }
+
+    const files = await Promise.all(
+      args.fileIds.map((fileId) => ctx.db.get(fileId)),
+    );
+
+    return files.map((file, index) => {
+      if (!file || file.user_id !== user.subject) {
+        return null;
+      }
+
+      const isSupportedImage = isSupportedImageMediaType(file.media_type);
+      const isPdf = file.media_type === "application/pdf";
+
+      return {
+        id: args.fileIds[index],
+        name: file.name,
+        mediaType: file.media_type,
+        content: isSupportedImage || isPdf ? null : (file.content ?? null),
         tokenSize: file.file_token_size,
       };
     });

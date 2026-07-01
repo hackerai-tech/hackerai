@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -17,6 +17,7 @@ import {
   FileProcessingResult,
   FileSource,
   LocalDesktopFile,
+  UploadedFileState,
 } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -27,10 +28,69 @@ import {
   isTauriEnvironment,
   pickLocalFiles,
   readLocalFile,
+  removeGeneratedTextAttachment,
+  writeGeneratedTextAttachment,
 } from "./useTauri";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
+const PASTED_TEXT_ATTACHMENT_MIN_CHARS = 4000;
+const PASTED_TEXT_ATTACHMENT_BASE_NAME = "pasted_content";
+const PASTED_TEXT_ATTACHMENT_EXTENSION = ".txt";
+const TEXT_PLAIN_MEDIA_TYPE = "text/plain";
+
+const createGeneratedTextFile = (content: string, name: string): File =>
+  new File([content], name, {
+    type: TEXT_PLAIN_MEDIA_TYPE,
+    lastModified: Date.now(),
+  });
+
+const createGeneratedTextLocalFile = (
+  metadata: {
+    name: string;
+    mediaType: string;
+    size: number;
+    lastModified: number;
+  },
+  fallbackName: string,
+): LocalDesktopFile => ({
+  name: metadata.name || fallbackName,
+  type: metadata.mediaType || TEXT_PLAIN_MEDIA_TYPE,
+  size: metadata.size,
+  lastModified: metadata.lastModified || Date.now(),
+});
+
+const getClipboardPlainText = (event: ClipboardEvent): string => {
+  const clipboardData = event.clipboardData;
+  if (!clipboardData) return "";
+  return (
+    clipboardData.getData("text/plain") || clipboardData.getData("text") || ""
+  );
+};
+
+const createGeneratedTextAttachmentId = () =>
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const getGeneratedPasteFileName = (
+  existingFiles: UploadedFileState[],
+): string => {
+  const existingNames = new Set(existingFiles.map((file) => file.file.name));
+  const firstName = `${PASTED_TEXT_ATTACHMENT_BASE_NAME}${PASTED_TEXT_ATTACHMENT_EXTENSION}`;
+  if (!existingNames.has(firstName)) return firstName;
+
+  let suffix = 2;
+  while (
+    existingNames.has(
+      `${PASTED_TEXT_ATTACHMENT_BASE_NAME}_${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`,
+    )
+  ) {
+    suffix += 1;
+  }
+
+  return `${PASTED_TEXT_ATTACHMENT_BASE_NAME}_${suffix}${PASTED_TEXT_ATTACHMENT_EXTENSION}`;
+};
 
 const logLocalAttachmentDebug = (
   event: string,
@@ -94,6 +154,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     getTotalTokens,
     sandboxPreference,
   } = useGlobalState();
+  const uploadedFilesRef = useRef(uploadedFiles);
+
+  useEffect(() => {
+    uploadedFilesRef.current = uploadedFiles;
+  }, [uploadedFiles]);
 
   // Drag and drop state
   const [isDragOver, setIsDragOver] = useState(false);
@@ -113,6 +178,16 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     isTauriEnvironment() &&
     isAgentMode(mode) &&
     sandboxPreference === "desktop";
+
+  const applyUploadedFileUpdate = useCallback(
+    (indexToUpdate: number, updates: Partial<UploadedFileState>) => {
+      uploadedFilesRef.current = uploadedFilesRef.current.map((file, index) =>
+        index === indexToUpdate ? { ...file, ...updates } : file,
+      );
+      updateUploadedFile(indexToUpdate, updates);
+    },
+    [updateUploadedFile],
+  );
 
   // Helper to show rate limit warning (throttled to once per minute)
   const showRateLimitWarning = useCallback((rateLimit: RateLimitInfo) => {
@@ -250,8 +325,28 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       options: {
         fallbackLocalFile?: LocalDesktopFile & { path: string };
         generatedSource?: "pasted-text";
+        expectedGeneratedTextAttachment?: {
+          id: string;
+          lastModified: number;
+          previousFileId?: string;
+          previousTokens?: number;
+          previousUploadedFile?: UploadedFileState;
+        };
       } = {},
     ) => {
+      const getCurrentUploadIndex = () => {
+        const expected = options.expectedGeneratedTextAttachment;
+        if (!expected) return uploadIndex;
+
+        const currentIndex = uploadedFilesRef.current.findIndex(
+          (currentFile) =>
+            currentFile.generatedTextAttachment?.id === expected.id &&
+            currentFile.file.lastModified === expected.lastModified,
+        );
+
+        return currentIndex >= 0 ? currentIndex : null;
+      };
+
       try {
         logLocalAttachmentDebug("s3-upload-start", {
           fileName: file.name,
@@ -296,17 +391,33 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           mode,
         });
 
+        const currentUploadIndex = getCurrentUploadIndex();
+        if (currentUploadIndex === null) {
+          deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+          return;
+        }
+
         // Only check token limit for "ask" mode
         // In "agent" mode, files are accessed in sandbox, no token limit applies
         if (mode === "ask") {
-          const currentTotal = getTotalTokens();
+          const currentTotal = Math.max(
+            0,
+            getTotalTokens() -
+              (options.expectedGeneratedTextAttachment?.previousTokens ?? 0),
+          );
           const newTotal = currentTotal + tokens;
 
           const maxFileTokens = getMaxFileTokens(subscription);
           if (newTotal > maxFileTokens) {
             // Exceeds limit - delete file from storage and remove from upload list
             deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-            removeUploadedFile(uploadIndex);
+            const previousUploadedFile =
+              options.expectedGeneratedTextAttachment?.previousUploadedFile;
+            if (previousUploadedFile) {
+              applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+            } else {
+              removeUploadedFile(currentUploadIndex);
+            }
 
             toast.error(
               `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
@@ -316,20 +427,33 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         }
 
         // Set success state with tokens
-        updateUploadedFile(uploadIndex, {
+        applyUploadedFileUpdate(currentUploadIndex, {
           tokens,
           uploading: false,
           uploaded: true,
           fileId,
           url,
         });
+
+        const previousFileId =
+          options.expectedGeneratedTextAttachment?.previousFileId;
+        if (previousFileId && previousFileId !== fileId) {
+          deleteFile({ fileId: previousFileId as Id<"files"> }).catch(
+            console.error,
+          );
+        }
       } catch (error) {
+        const currentUploadIndex = getCurrentUploadIndex();
+        if (currentUploadIndex === null) {
+          return;
+        }
+
         if (
           getConvexErrorCode(error) === "FILE_UPLOAD_RATE_LIMIT" &&
           options.fallbackLocalFile
         ) {
           const fallbackFile = options.fallbackLocalFile;
-          updateUploadedFile(uploadIndex, {
+          applyUploadedFileUpdate(currentUploadIndex, {
             file: {
               name: fallbackFile.name,
               type: fallbackFile.type,
@@ -369,8 +493,16 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return "Upload failed";
         })();
 
+        const previousUploadedFile =
+          options.expectedGeneratedTextAttachment?.previousUploadedFile;
+        if (previousUploadedFile) {
+          applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+          toast.error(errorMessage);
+          return;
+        }
+
         // Update the upload state to error
-        updateUploadedFile(uploadIndex, {
+        applyUploadedFileUpdate(currentUploadIndex, {
           uploading: false,
           uploaded: false,
           error: errorMessage,
@@ -385,7 +517,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       getTotalTokens,
       deleteFile,
       removeUploadedFile,
-      updateUploadedFile,
+      applyUploadedFileUpdate,
       showRateLimitWarning,
       mode,
       sandboxPreference,
@@ -422,6 +554,115 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       });
     },
     [uploadedFiles.length, addUploadedFile, uploadFileToS3],
+  );
+
+  const processGeneratedPastedText = useCallback(
+    async (content: string): Promise<boolean> => {
+      if (subscription === "free") {
+        toast.error("Upgrade plan to upload files.");
+        return false;
+      }
+
+      const existingUploadedCount = uploadedFiles.length;
+      const remainingSlots = maxFilesLimit - existingUploadedCount;
+      const hasRemainingSlots = remainingSlots > 0;
+      if (!hasRemainingSlots) {
+        toast.error(
+          `Maximum ${maxFilesLimit} files allowed. Please remove some files before adding more.`,
+        );
+        return false;
+      }
+
+      const fileName = getGeneratedPasteFileName(uploadedFiles);
+      const attachmentId = createGeneratedTextAttachmentId();
+      const file = createGeneratedTextFile(content, fileName);
+      const result = await validateAndFilterFiles([file]);
+
+      showProcessingFeedback(result, "paste", hasRemainingSlots);
+
+      const validFile = result.validFiles[0];
+      if (!validFile) {
+        return false;
+      }
+
+      if (shouldUseLocalDesktopAttachments) {
+        const localMetadata = await writeGeneratedTextAttachment(
+          attachmentId,
+          fileName,
+          content,
+        );
+        if (!localMetadata) {
+          return false;
+        }
+
+        const localFile = createGeneratedTextLocalFile(localMetadata, fileName);
+        const generatedUploadedFile: UploadedFileState = {
+          file: localFile,
+          uploading: false,
+          uploaded: true,
+          storage: "local-desktop",
+          generatedSource: "pasted-text",
+          generatedTextAttachmentId: attachmentId,
+          localAttachmentId: attachmentId,
+          localPath: localMetadata.path,
+          tokens: 0,
+          generatedTextAttachment: {
+            id: attachmentId,
+            content,
+          },
+        };
+
+        uploadedFilesRef.current = [
+          ...uploadedFilesRef.current,
+          generatedUploadedFile,
+        ];
+        addUploadedFile(generatedUploadedFile);
+        logLocalAttachmentDebug("generated-text-local-file-added", {
+          fileName: localFile.name,
+          size: localFile.size,
+          hasLocalPath: Boolean(localMetadata.path),
+        });
+        return true;
+      }
+
+      const generatedUploadedFile: UploadedFileState = {
+        file: validFile,
+        uploading: true,
+        uploaded: false,
+        storage: "s3",
+        generatedSource: "pasted-text",
+        generatedTextAttachment: {
+          id: attachmentId,
+          content,
+        },
+      };
+
+      uploadedFilesRef.current = [
+        ...uploadedFilesRef.current,
+        generatedUploadedFile,
+      ];
+      addUploadedFile(generatedUploadedFile);
+
+      uploadFileToS3(validFile, existingUploadedCount, {
+        generatedSource: "pasted-text",
+        expectedGeneratedTextAttachment: {
+          id: attachmentId,
+          lastModified: validFile.lastModified,
+        },
+      });
+
+      return true;
+    },
+    [
+      addUploadedFile,
+      maxFilesLimit,
+      showProcessingFeedback,
+      subscription,
+      uploadFileToS3,
+      uploadedFiles,
+      validateAndFilterFiles,
+      shouldUseLocalDesktopAttachments,
+    ],
   );
 
   const startDesktopSelectedFiles = useCallback(
@@ -679,9 +920,172 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       }
     }
 
+    if (
+      uploadedFile?.storage === "local-desktop" &&
+      uploadedFile.generatedSource === "pasted-text"
+    ) {
+      const generatedTextAttachmentId =
+        uploadedFile.generatedTextAttachment?.id ||
+        uploadedFile.generatedTextAttachmentId ||
+        uploadedFile.localAttachmentId;
+      if (generatedTextAttachmentId) {
+        removeGeneratedTextAttachment(
+          generatedTextAttachmentId,
+          uploadedFile.file.name,
+        ).catch(console.error);
+      }
+    }
+
     // removeUploadedFile in GlobalState will automatically handle token removal
     removeUploadedFile(indexToRemove);
   };
+
+  const handleUpdateGeneratedTextFile = useCallback(
+    (indexToUpdate: number, content: string) => {
+      const uploadedFile = uploadedFilesRef.current[indexToUpdate];
+      const generatedTextAttachment = uploadedFile?.generatedTextAttachment;
+
+      if (!uploadedFile || !generatedTextAttachment) {
+        return;
+      }
+
+      if (
+        content === generatedTextAttachment.content &&
+        uploadedFile.uploaded &&
+        !uploadedFile.uploading &&
+        !uploadedFile.error
+      ) {
+        return;
+      }
+
+      const nextFile = createGeneratedTextFile(content, uploadedFile.file.name);
+      const previousFileId =
+        uploadedFile.storage !== "local-desktop"
+          ? uploadedFile.fileId
+          : undefined;
+      const previousTokens = uploadedFile.tokens;
+
+      if (uploadedFile.storage === "local-desktop") {
+        const generatedTextAttachmentId =
+          generatedTextAttachment.id ||
+          uploadedFile.generatedTextAttachmentId ||
+          uploadedFile.localAttachmentId;
+        if (!generatedTextAttachmentId) {
+          return;
+        }
+
+        const pendingUploadedFile: UploadedFileState = {
+          ...uploadedFile,
+          file: {
+            name: uploadedFile.file.name,
+            type: uploadedFile.file.type || TEXT_PLAIN_MEDIA_TYPE,
+            size: nextFile.size,
+            lastModified: nextFile.lastModified,
+          },
+          uploading: true,
+          uploaded: false,
+          error: undefined,
+          storage: "local-desktop",
+          generatedSource: "pasted-text",
+          generatedTextAttachmentId,
+          localAttachmentId:
+            uploadedFile.localAttachmentId || generatedTextAttachmentId,
+          tokens: 0,
+          generatedTextAttachment: {
+            id: generatedTextAttachmentId,
+            content,
+          },
+        };
+
+        uploadedFilesRef.current = uploadedFilesRef.current.map(
+          (file, index) =>
+            index === indexToUpdate ? pendingUploadedFile : file,
+        );
+        applyUploadedFileUpdate(indexToUpdate, pendingUploadedFile);
+
+        writeGeneratedTextAttachment(
+          generatedTextAttachmentId,
+          uploadedFile.file.name,
+          content,
+        )
+          .then((localMetadata) => {
+            const currentFile = uploadedFilesRef.current[indexToUpdate];
+            const currentGeneratedId =
+              currentFile?.generatedTextAttachment?.id ||
+              currentFile?.generatedTextAttachmentId ||
+              currentFile?.localAttachmentId;
+
+            if (
+              !localMetadata ||
+              currentGeneratedId !== generatedTextAttachmentId ||
+              currentFile?.generatedTextAttachment?.content !== content
+            ) {
+              if (!localMetadata) {
+                applyUploadedFileUpdate(indexToUpdate, uploadedFile);
+              }
+              return;
+            }
+
+            const updatedUploadedFile: UploadedFileState = {
+              ...pendingUploadedFile,
+              file: createGeneratedTextLocalFile(
+                localMetadata,
+                uploadedFile.file.name,
+              ),
+              uploading: false,
+              uploaded: true,
+              localPath: localMetadata.path,
+              tokens: 0,
+            };
+
+            uploadedFilesRef.current = uploadedFilesRef.current.map(
+              (file, index) =>
+                index === indexToUpdate ? updatedUploadedFile : file,
+            );
+            applyUploadedFileUpdate(indexToUpdate, updatedUploadedFile);
+          })
+          .catch((error) => {
+            console.error("Failed to update local generated text file:", error);
+            applyUploadedFileUpdate(indexToUpdate, uploadedFile);
+            toast.error("Failed to save pasted text locally");
+          });
+        return;
+      }
+
+      const updatedUploadedFile: UploadedFileState = {
+        ...uploadedFile,
+        file: nextFile,
+        uploading: true,
+        uploaded: false,
+        error: undefined,
+        storage: "s3",
+        generatedSource: "pasted-text",
+        fileId: previousFileId,
+        tokens: previousTokens,
+        generatedTextAttachment: {
+          id: generatedTextAttachment.id,
+          content,
+        },
+      };
+
+      uploadedFilesRef.current = uploadedFilesRef.current.map((file, index) =>
+        index === indexToUpdate ? updatedUploadedFile : file,
+      );
+      applyUploadedFileUpdate(indexToUpdate, updatedUploadedFile);
+
+      uploadFileToS3(nextFile, indexToUpdate, {
+        generatedSource: "pasted-text",
+        expectedGeneratedTextAttachment: {
+          id: generatedTextAttachment.id,
+          lastModified: nextFile.lastModified,
+          previousFileId,
+          previousTokens,
+          previousUploadedFile: uploadedFile,
+        },
+      });
+    },
+    [applyUploadedFileUpdate, uploadFileToS3],
+  );
 
   const handleAttachClick = () => {
     const isTauri = isTauriEnvironment();
@@ -717,25 +1121,41 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     async (text: string): Promise<boolean> => {
       if (!text.trim()) return false;
 
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const file = new File([text], `pasted-text-${timestamp}.txt`, {
-        type: "text/plain",
-        lastModified: Date.now(),
-      });
-
-      const started = await processFiles([file], "paste", {
-        generatedSource: "pasted-text",
-      });
+      const started = await processGeneratedPastedText(text);
       if (started) {
         toast.info("Pasted text added as an attachment");
       }
       return started;
     },
-    [processFiles],
+    [processGeneratedPastedText],
   );
 
   const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
     const items = event.clipboardData?.items;
+    const pastedText = getClipboardPlainText(event);
+
+    if (
+      pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
+      !pastedText.trim()
+    ) {
+      event.preventDefault();
+      toast.info("No readable text was added from the paste.");
+      return true;
+    }
+
+    if (
+      pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
+      (!items || Array.from(items).every((item) => item.kind !== "file"))
+    ) {
+      if (subscription === "free") {
+        return false;
+      }
+
+      event.preventDefault();
+      await handlePastedTextAttachment(pastedText);
+      return true;
+    }
+
     if (!items) return false;
 
     const files: File[] = [];
@@ -837,6 +1257,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleUpdateGeneratedTextFile,
     handleAttachClick,
     handlePasteEvent,
     handlePastedTextAttachment,
