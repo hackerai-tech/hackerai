@@ -40,14 +40,19 @@ async function getDeepSeekApiKey(): Promise<string> {
 }
 
 async function getE2bApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting E2B API Key for cloud sandbox")}`);
   console.log(
-    "E2B provides the cloud sandbox environment for agent mode (paid feature, free users use local sandbox)",
+    `\n${chalk.bold("Getting E2B API Key for cloud sandbox (optional)")}`,
+  );
+  console.log(
+    "E2B provides the cloud sandbox environment for agent mode. Leave this blank " +
+      "if agent mode will only run against your own machine (local sandbox / desktop app).",
   );
   console.log("You can find your E2B API Key at: https://e2b.dev/dashboard");
-  const key = await question("Enter your E2B API Key: ");
+  const key = await question(
+    "Enter your E2B API Key (or press Enter to skip): ",
+  );
 
-  if (key.startsWith("e2b_")) {
+  if (key === "" || key.startsWith("e2b_")) {
     return key;
   }
 
@@ -198,8 +203,10 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 
 # =============================================================================
-# CODE EXECUTION - E2B (Required for Agent Mode)
+# CODE EXECUTION - E2B (Optional - only needed for cloud sandbox)
 # =============================================================================
+# Not required if agent mode only runs against your own machine via the local
+# sandbox (packages/local) or the desktop app.
 # Sign up at: https://e2b.dev/
 E2B_API_KEY=${envVars.E2B_API_KEY}
 E2B_TEMPLATE=terminal-agent-sandbox

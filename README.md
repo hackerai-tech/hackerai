@@ -24,13 +24,15 @@ You'll need the following accounts:
 **Required:**
 
 - [DeepSeek](https://platform.deepseek.com/) - AI model provider
-- [E2B](https://e2b.dev/) - Sandbox environment for secure code execution in agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [WorkOS](https://workos.com/) - Authentication and user management
 - [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks
 
 **Optional:**
 
+- [E2B](https://e2b.dev/) - Cloud sandbox for secure code execution in agent mode. Not
+  needed if you only run agent mode against your own machine via the local sandbox
+  (`packages/local`) or the desktop app.
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage (alternative to Convex storage)
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
