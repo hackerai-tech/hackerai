@@ -20,7 +20,10 @@ import {
   resolveSubscriptionTier,
 } from "../lib/auth/entitlements";
 import { convexLogger } from "./lib/logger";
-import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
+import {
+  CHAT_ACCESS_SUSPENDED_CODE,
+  assertUserCanAccessChatHistory,
+} from "./lib/suspensionGuards";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -85,6 +88,12 @@ const CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH = {
   cost: undefined,
   estimated_compacted_input_tokens: undefined,
 };
+
+const emptyChatsPage = () => ({
+  page: [],
+  isDone: true,
+  continueCursor: "",
+});
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -738,13 +747,21 @@ export const getUserChats = query({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      return {
-        page: [],
-        isDone: true,
-        continueCursor: "",
-      };
+      return emptyChatsPage();
     }
-    await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    try {
+      await assertUserCanAccessChatHistory(ctx, identity.subject);
+    } catch (error) {
+      if (
+        getConvexErrorCode(getConvexErrorData(error)) ===
+        CHAT_ACCESS_SUSPENDED_CODE
+      ) {
+        return emptyChatsPage();
+      }
+
+      throw error;
+    }
 
     try {
       const MAX_PINNED_CHATS = 100;
@@ -844,11 +861,7 @@ export const getUserChats = query({
             ? { name: error.name, message: error.message }
             : String(error),
       });
-      return {
-        page: [],
-        isDone: true,
-        continueCursor: "",
-      };
+      return emptyChatsPage();
     }
   },
 });
