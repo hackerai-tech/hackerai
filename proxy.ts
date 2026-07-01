@@ -101,6 +101,46 @@ function withReferralCookie(
   return response;
 }
 
+function withSessionCookieCleared(response: NextResponse): NextResponse {
+  response.cookies.delete("wos-session");
+  return response;
+}
+
+function buildEndedSessionResponse(
+  request: NextRequest,
+  pathname: string,
+): NextResponse {
+  if (isUnauthenticatedPath(pathname)) {
+    return withSessionCookieCleared(
+      withReferralCookie(request, NextResponse.next()),
+    );
+  }
+
+  if (!isBrowserRequest(request)) {
+    return withSessionCookieCleared(
+      withReferralCookie(
+        request,
+        NextResponse.json(
+          {
+            code: "unauthorized:auth",
+            message: "You need to sign in before continuing.",
+            cause: "Session expired or invalid",
+          },
+          { status: 401 },
+        ),
+      ),
+    );
+  }
+
+  const redirectUrl = isDesktopApp(request)
+    ? new URL("/desktop-callback?error=unauthenticated", request.url)
+    : new URL("/login", request.url);
+
+  return withSessionCookieCleared(
+    withReferralCookie(request, NextResponse.redirect(redirectUrl)),
+  );
+}
+
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
@@ -125,44 +165,54 @@ export default async function proxy(request: NextRequest) {
   let refreshHitRateLimit = false;
   const hadSessionCookie = request.cookies.has("wos-session");
 
-  const { session, headers, authorizationUrl } = await authkit(request, {
-    redirectUri: getRedirectUri(),
-    eagerAuth: true,
-    onSessionRefreshError: ({ error }) => {
-      if (isEndedSessionRefreshError(error)) {
-        return;
-      }
+  let authkitResult: Awaited<ReturnType<typeof authkit>>;
+  try {
+    authkitResult = await authkit(request, {
+      redirectUri: getRedirectUri(),
+      eagerAuth: true,
+      onSessionRefreshError: ({ error }) => {
+        if (isEndedSessionRefreshError(error)) {
+          return;
+        }
 
-      if (isRateLimitError(error)) {
-        refreshHitRateLimit = true;
+        if (isRateLimitError(error)) {
+          refreshHitRateLimit = true;
+          console.warn(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "warn",
+              event: "auth.session_refresh_rate_limited",
+              service: "hackerai-web",
+              environment:
+                process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+              pathname,
+            }),
+          );
+          return;
+        }
+
         console.warn(
           JSON.stringify({
             timestamp: new Date().toISOString(),
             level: "warn",
-            event: "auth.session_refresh_rate_limited",
+            event: "auth.session_refresh_failed",
             service: "hackerai-web",
             environment:
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             pathname,
+            error: error instanceof Error ? error.message : String(error),
           }),
         );
-        return;
-      }
+      },
+    });
+  } catch (error) {
+    if (isEndedSessionRefreshError(error)) {
+      return buildEndedSessionResponse(request, pathname);
+    }
+    throw error;
+  }
 
-      console.warn(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "warn",
-          event: "auth.session_refresh_failed",
-          service: "hackerai-web",
-          environment:
-            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-          pathname,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    },
-  });
+  const { session, headers, authorizationUrl } = authkitResult;
 
   const requestHeaders = buildRequestHeaders(request, headers);
   const responseHeaders = buildResponseHeaders(headers);

@@ -4,6 +4,7 @@ import {
   collectAuthErrorText,
   isEndedSessionRefreshError,
   isInvalidCodeVerifierError,
+  isUnverifiedSignInSessionError,
 } from "../expected-auth-errors";
 
 describe("expected auth errors", () => {
@@ -47,6 +48,14 @@ describe("expected auth errors", () => {
     });
 
     expect(isInvalidCodeVerifierError(error)).toBe(true);
+  });
+
+  it("matches unverified sign-in session errors", () => {
+    const error = new Error(
+      "Sign-in session could not be verified. Please try signing in again.",
+    );
+
+    expect(isUnverifiedSignInSessionError(error)).toBe(true);
   });
 
   it("collects nested auth error text without looping on cycles", () => {

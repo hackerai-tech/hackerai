@@ -19,6 +19,7 @@ function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
     init,
     cookies: {
       set: jest.fn(),
+      delete: jest.fn(),
     },
   };
 }
@@ -102,6 +103,71 @@ describe("proxy", () => {
     );
 
     expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      expect.objectContaining({ status: 401 }),
+    );
+  });
+
+  it("treats thrown ended-session refresh errors as unauthenticated home requests", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+          rawData: {
+            error: "invalid_grant",
+            error_description: "Session has already ended.",
+          },
+        },
+      },
+    );
+    mockAuthkit.mockRejectedValue(endedSessionError);
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        accept: "text/html",
+        hasSession: true,
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "next" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
+    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when protected APIs hit thrown ended-session refresh errors", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+        },
+      },
+    );
+    mockAuthkit.mockRejectedValue(endedSessionError);
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/api/subscription-details",
+        hasSession: true,
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
     expect(mockNextResponseJson).toHaveBeenCalledWith(
       {
         code: "unauthorized:auth",

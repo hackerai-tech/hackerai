@@ -1,6 +1,8 @@
 const INVALID_GRANT_ERROR = "invalid_grant";
 const SESSION_ENDED_MESSAGE = "session has already ended";
 const INVALID_CODE_VERIFIER_MESSAGE = "invalid code verifier";
+const SIGN_IN_SESSION_UNVERIFIED_MESSAGE =
+  "sign-in session could not be verified";
 
 const getStringValue = (
   value: Record<string, unknown>,
@@ -59,4 +61,10 @@ export const isInvalidCodeVerifierError = (value: unknown): boolean => {
     errorText.includes(INVALID_GRANT_ERROR) &&
     errorText.includes(INVALID_CODE_VERIFIER_MESSAGE)
   );
+};
+
+export const isUnverifiedSignInSessionError = (value: unknown): boolean => {
+  return collectAuthErrorText(value)
+    .toLowerCase()
+    .includes(SIGN_IN_SESSION_UNVERIFIED_MESSAGE);
 };

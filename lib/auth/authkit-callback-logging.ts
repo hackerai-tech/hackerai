@@ -1,6 +1,7 @@
 import {
   collectAuthErrorText,
   isInvalidCodeVerifierError,
+  isUnverifiedSignInSessionError,
 } from "./expected-auth-errors";
 
 const AUTHKIT_CALLBACK_ERROR_PREFIX = "[AuthKit callback error]";
@@ -82,6 +83,7 @@ export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
     isAuthCookieMissingError(value) ||
     isOauthCodeAlreadyExchangedError(value) ||
     isInvalidCodeVerifierError(value) ||
+    isUnverifiedSignInSessionError(value) ||
     isMissingRequiredAuthParameterError(value) ||
     isOAuthStateMismatchError(value) ||
     isAuthVerifierMissingError(value)

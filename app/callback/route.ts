@@ -7,7 +7,10 @@ import {
   isOauthCodeAlreadyExchangedError,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
-import { isInvalidCodeVerifierError } from "@/lib/auth/expected-auth-errors";
+import {
+  isUnverifiedSignInSessionError,
+  isInvalidCodeVerifierError,
+} from "@/lib/auth/expected-auth-errors";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -29,6 +32,7 @@ type RecoveryBucket =
   | "cookie_missing"
   | "code_already_exchanged"
   | "invalid_code_verifier"
+  | "session_unverified"
   | "unknown";
 
 const classifyCallbackError = (error: unknown): RecoveryBucket => {
@@ -37,6 +41,9 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   }
   if (isInvalidCodeVerifierError(error)) {
     return "invalid_code_verifier";
+  }
+  if (isUnverifiedSignInSessionError(error)) {
+    return "session_unverified";
   }
   if (isMissingRequiredAuthParameterError(error)) {
     return "missing_auth_parameter";
@@ -109,8 +116,8 @@ const buildRecoveryResponse = async (
   }
 
   // Recoverable cases (stale flow, multi-tab, scanner prefetch, ITP,
-  // cross-device link, embedded webview, missing cookie, duplicate callback):
-  // one-click recovery.
+  // cross-device link, embedded webview, missing cookie, duplicate callback,
+  // expired sign-in session): one-click recovery.
   // Preserve post_login_redirect intent so the retry lands where they wanted.
   const loginUrl = new URL("/login", request.url);
   const loginResponse = NextResponse.redirect(loginUrl);
