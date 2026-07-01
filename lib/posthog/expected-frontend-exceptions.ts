@@ -10,11 +10,11 @@ const RESIZE_OBSERVER_MESSAGES = new Set([
   "ResizeObserver loop limit exceeded",
 ]);
 
-const TRIGGER_STREAM_CLOSE_MESSAGES = new Set([
+const TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS = [
   "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close an errored readable stream",
   "ReadableStreamDefaultController is not in a state where it can be closed",
   "ReadableStreamDefaultController.close: Cannot close a stream that is already closed.",
-]);
+];
 
 const collectStrings = (value: unknown, strings: string[] = []): string[] => {
   if (typeof value === "string") {
@@ -50,7 +50,7 @@ const hasResizeObserverMessage = (strings: string[]): boolean =>
   strings.some((value) => RESIZE_OBSERVER_MESSAGES.has(value));
 
 const hasTriggerStreamCloseMessage = (strings: string[]): boolean =>
-  strings.some((value) => TRIGGER_STREAM_CLOSE_MESSAGES.has(value));
+  includesAny(strings, TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS);
 
 type ExpectedFrontendPattern = {
   message: string;

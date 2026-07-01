@@ -220,6 +220,7 @@ describe("shouldDropExpectedFrontendException", () => {
   it("drops Trigger stream double-close noise only with Trigger stream frames", () => {
     for (const value of [
       "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close an errored readable stream",
+      "Failed to execute 'close' on 'ReadableStreamDefaultController': ReadableStreamDefaultController is not in a state where it can be closed",
       "ReadableStreamDefaultController is not in a state where it can be closed",
       "ReadableStreamDefaultController.close: Cannot close a stream that is already closed.",
     ]) {
