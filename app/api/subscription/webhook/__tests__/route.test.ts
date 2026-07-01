@@ -198,6 +198,34 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
+  it("ignores non-subscription Checkout sessions before shared webhook idempotency", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_extra_usage_checkout",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: "cs_extra_usage",
+          mode: "payment",
+          payment_status: "paid",
+          metadata: {
+            type: "extra_usage_purchase",
+            userId: "user_extra_usage",
+          },
+        },
+      },
+    });
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ received: true });
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).not.toHaveBeenCalled();
+  });
+
   it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_invoice_paid_legacy",

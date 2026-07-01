@@ -257,7 +257,7 @@ describe("extra usage purchase ledger", () => {
     );
   });
 
-  it("marks duplicate Checkout sessions as credited but already processed", async () => {
+  it("keeps duplicate Checkout sessions marked as credited", async () => {
     const { ctx, tables } = createMockCtx({
       extra_usage: [
         {
@@ -294,9 +294,52 @@ describe("extra usage purchase ledger", () => {
     expect(tables.extra_usage_purchases[0]).toMatchObject({
       status: "credited",
       last_route: "confirm",
-      last_result: "already_processed",
+      last_result: "credited",
       credited_at: 950_000,
     });
+    expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
+  });
+
+  it("does not mark legacy webhook duplicates as credited without session-key proof", async () => {
+    const { ctx, tables } = createMockCtx({
+      extra_usage: [
+        {
+          _id: "extra-1",
+          user_id: "user_123",
+          balance_points: 0,
+          updated_at: 900_000,
+        },
+      ],
+      extra_usage_purchases: [
+        {
+          _id: "purchase-1",
+          user_id: "user_123",
+          amount_dollars: 50,
+          stripe_checkout_session_id: "cs_test",
+          status: "paid_seen",
+          created_at: 900_000,
+          updated_at: 900_000,
+        },
+      ],
+      processed_webhooks: [
+        {
+          _id: "processed-1",
+          event_id: "evt_test",
+          processed_at: 950_000,
+        },
+      ],
+    });
+
+    const result = await callAddCredits(ctx);
+
+    expect(result).toEqual({ newBalance: 0, alreadyProcessed: true });
+    expect(tables.extra_usage[0].balance_points).toBe(0);
+    expect(tables.extra_usage_purchases[0]).toMatchObject({
+      status: "paid_seen",
+      last_route: "confirm",
+      last_result: "already_processed",
+    });
+    expect(tables.extra_usage_purchases[0]).not.toHaveProperty("credited_at");
     expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
   });
 

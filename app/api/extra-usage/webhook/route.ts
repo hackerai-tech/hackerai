@@ -221,7 +221,6 @@ export async function POST(req: NextRequest) {
           userId,
           amountDollars,
           idempotencyKey: `cs_${session.id}`,
-          legacyIdempotencyKey: event.id, // Guards retries of pre-deploy webhooks that stored `evt_<id>`
           revenueSource: "extra_usage_purchase",
           stripeCustomerId,
           stripeCheckoutSessionId: session.id,

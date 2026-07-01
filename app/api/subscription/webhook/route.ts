@@ -1256,6 +1256,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Payment-mode Checkout Sessions are fulfilled by their own webhook routes.
+  // Do not consume those event ids into the shared webhook idempotency table.
+  if (
+    event.type === "checkout.session.completed" &&
+    (event.data.object as Stripe.Checkout.Session).mode !== "subscription"
+  ) {
+    return NextResponse.json({ received: true });
+  }
+
   // Idempotency check (check only — mark after successful processing)
   try {
     const result = await getConvexClient().mutation(
