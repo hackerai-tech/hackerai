@@ -38,6 +38,7 @@ import {
   isProviderApiError,
   injectNotesIntoMessages,
   getRetryFallbackModel,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
@@ -546,8 +547,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -564,8 +564,7 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -1436,6 +1435,7 @@ export const agentLongTask = task({
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
+            let activeModelName = selectedModel;
 
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
@@ -1459,6 +1459,11 @@ export const agentLongTask = task({
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
+                  accountingModel: resolveServedModelForCostAccounting({
+                    modelName: activeModelName,
+                    responseModel: state.responseModel,
+                    mode,
+                  }),
                   rateLimitInfo,
                 };
                 let usageCostRecord =
@@ -1485,6 +1490,7 @@ export const agentLongTask = task({
                     usageTracker.nonModelCost,
                     organizationId,
                     rateLimitInfo,
+                    usageRecordArgs.accountingModel,
                   );
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
@@ -1506,6 +1512,7 @@ export const agentLongTask = task({
                     selectedModelOverride,
                     responseModel: state.responseModel,
                     configuredModelId,
+                    accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                     billingBreakdown,
                   });
@@ -1577,6 +1584,7 @@ export const agentLongTask = task({
             };
 
             const createStream = (modelName: string) => {
+              activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);

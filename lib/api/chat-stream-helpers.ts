@@ -625,6 +625,30 @@ export function getFallbackSlugs(
   );
 }
 
+export function resolveServedModelForCostAccounting({
+  modelName,
+  responseModel,
+  mode,
+  options = {},
+}: {
+  modelName: string;
+  responseModel?: string;
+  mode?: ChatMode;
+  options?: FallbackOptions;
+}): string {
+  if (!responseModel) return modelName;
+
+  const candidateKeys = [
+    modelName as ModelName,
+    ...(getFallbackKeys(modelName, mode, options) ?? []),
+  ];
+  const matchedKey = candidateKeys.find(
+    (key) => resolveSlug(key) === responseModel,
+  );
+
+  return matchedKey ?? responseModel;
+}
+
 /**
  * Build provider options for streamText
  */
