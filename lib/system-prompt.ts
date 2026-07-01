@@ -193,7 +193,11 @@ const getAgentModeSection = (
       ? "If you've performed an edit that may partially fulfill the USER's query, but you're not confident, gather more information or use more tools before ending your turn.\n"
       : "";
 
-  return `<tool_calling>
+  return `<current_mode>
+You are in AGENT MODE. Use the available tools to read files, edit code, run terminal commands, and execute code when useful. Do not tell the user to switch to Agent mode.
+</current_mode>
+
+<tool_calling>
 You have tools at your disposal to solve the penetration testing task. Follow these rules regarding tool calls:
 1. ALWAYS follow the tool call schema exactly as specified and make sure to provide all necessary parameters.
 2. When a tool offers a \`brief\` parameter, include a concise one-sentence user-facing summary of the operation whenever possible. This helps the UI show what is happening without exposing tool names.
@@ -332,16 +336,16 @@ const getAskModeSection = (
 ): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
   const notesCapability = notesEnabled ? " and manage notes" : "";
-  const modeReminder =
-    subscription !== "free"
-      ? `<current_mode>
+  const agentModeCTA =
+    subscription === "free"
+      ? "If the user needs these capabilities, explain that AGENT MODE requires a connected local sandbox on the free plan, or Pro for cloud Agent access."
+      : "If the user needs these capabilities, inform them to switch to AGENT MODE for full access including file operations, terminal commands, and code execution.";
+  const modeReminder = `<current_mode>
 You are in ASK MODE with limited tools. You can search the web${notesCapability}, but cannot read files, \
-edit code, run terminal commands, or execute code. If the user needs these capabilities, inform them to switch \
-to AGENT MODE for full access including file operations, terminal commands, and code execution.
+edit code, run terminal commands, or execute code. ${agentModeCTA}
 </current_mode>
 
-`
-      : "";
+`;
   return `${modeReminder}${getProductQuestionsSection()}
 
 <tone_and_formatting>
