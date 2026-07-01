@@ -128,6 +128,16 @@ describe("authkit callback logging", () => {
     ).toBe(true);
   });
 
+  it("matches unverified sign-in session callback errors", () => {
+    const error = new Error(
+      "Sign-in session could not be verified. Please try signing in again.",
+    );
+
+    expect(
+      isRecoverableAuthkitCallbackErrorLog(["[AuthKit callback error]", error]),
+    ).toBe(true);
+  });
+
   it("does not match other invalid_grant errors", () => {
     const error = Object.assign(new Error("Error: invalid_grant"), {
       error: "invalid_grant",
@@ -159,6 +169,12 @@ describe("authkit callback logging", () => {
         "[AuthKit callback error]",
         new Error(
           "Error: invalid_grant\nError Description: Invalid code verifier.",
+        ),
+      );
+      console.error(
+        "[AuthKit callback error]",
+        new Error(
+          "Sign-in session could not be verified. Please try signing in again.",
         ),
       );
       console.error(

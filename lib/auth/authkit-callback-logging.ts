@@ -1,6 +1,7 @@
 import {
   collectAuthErrorText,
   isInvalidCodeVerifierError,
+  isUnverifiedSignInSessionError,
 } from "./expected-auth-errors";
 
 const AUTHKIT_CALLBACK_ERROR_PREFIX = "[AuthKit callback error]";
@@ -11,6 +12,15 @@ const OAUTH_STATE_MISMATCH_MESSAGE = "OAuth state mismatch";
 const INVALID_GRANT_ERROR = "invalid_grant";
 const CODE_ALREADY_EXCHANGED_MESSAGE = "already been exchanged";
 const VERIFIER_SCHEMA_KEYS = ['"nonce"', '"codeVerifier"'];
+
+export type RecoverableAuthkitCallbackErrorBucket =
+  | "missing_auth_parameter"
+  | "state_mismatch"
+  | "verifier_missing"
+  | "cookie_missing"
+  | "code_already_exchanged"
+  | "invalid_code_verifier"
+  | "session_unverified";
 
 let activeSuppressions = 0;
 let originalConsoleError: typeof console.error | null = null;
@@ -77,15 +87,52 @@ export const isAuthVerifierMissingError = (value: unknown): boolean => {
   );
 };
 
-export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
+const RECOVERABLE_AUTHKIT_CALLBACK_ERROR_BUCKETS: Array<{
+  bucket: RecoverableAuthkitCallbackErrorBucket;
+  isMatch: (value: unknown) => boolean;
+}> = [
+  {
+    bucket: "code_already_exchanged",
+    isMatch: isOauthCodeAlreadyExchangedError,
+  },
+  {
+    bucket: "invalid_code_verifier",
+    isMatch: isInvalidCodeVerifierError,
+  },
+  {
+    bucket: "session_unverified",
+    isMatch: isUnverifiedSignInSessionError,
+  },
+  {
+    bucket: "missing_auth_parameter",
+    isMatch: isMissingRequiredAuthParameterError,
+  },
+  {
+    bucket: "cookie_missing",
+    isMatch: isAuthCookieMissingError,
+  },
+  {
+    bucket: "verifier_missing",
+    isMatch: isAuthVerifierMissingError,
+  },
+  {
+    bucket: "state_mismatch",
+    isMatch: isOAuthStateMismatchError,
+  },
+];
+
+export const getRecoverableAuthkitCallbackErrorBucket = (
+  value: unknown,
+): RecoverableAuthkitCallbackErrorBucket | null => {
   return (
-    isAuthCookieMissingError(value) ||
-    isOauthCodeAlreadyExchangedError(value) ||
-    isInvalidCodeVerifierError(value) ||
-    isMissingRequiredAuthParameterError(value) ||
-    isOAuthStateMismatchError(value) ||
-    isAuthVerifierMissingError(value)
+    RECOVERABLE_AUTHKIT_CALLBACK_ERROR_BUCKETS.find(({ isMatch }) =>
+      isMatch(value),
+    )?.bucket ?? null
   );
+};
+
+export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
+  return getRecoverableAuthkitCallbackErrorBucket(value) !== null;
 };
 
 export const isRecoverableAuthkitCallbackErrorLog = (
