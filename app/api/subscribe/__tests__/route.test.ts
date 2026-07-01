@@ -102,6 +102,7 @@ describe("POST /api/subscribe", () => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.example";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+    delete process.env.REFERRAL_PROGRAM_ENABLED;
 
     mockConvexMutation.mockResolvedValue(null);
 
@@ -359,6 +360,41 @@ describe("POST /api/subscribe", () => {
   });
 
   it("skips referral attribution and checkout linkage for paid users", async () => {
+    mockGetUserIDAndPro.mockResolvedValueOnce({
+      userId: "user_123",
+      subscription: "pro",
+      freeQuotaSubject: "free_quota_subject",
+    } as never);
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [],
+    } as never);
+    mockCreateOrganization.mockResolvedValue({
+      id: "org_new",
+    } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(
+      makeRequest({ plan: "pro-monthly-plan" }, { hackerai_ref: "REF123" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      url: "https://stripe.example/checkout",
+      checkoutAttemptId: expect.stringMatching(/^ca_/),
+    });
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref");
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref_at");
+  });
+
+  it("clears paid-user referral cookies when referral attribution is disabled", async () => {
+    process.env.REFERRAL_PROGRAM_ENABLED = "false";
     mockGetUserIDAndPro.mockResolvedValueOnce({
       userId: "user_123",
       subscription: "pro",

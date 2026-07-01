@@ -76,53 +76,56 @@ export const POST = async (req: NextRequest) => {
     const orgName = buildWorkOSOrganizationName(user);
     const referralConfig = getReferralRewardConfig();
     const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
+    const validReferralCode = isValidReferralCode(referralCode)
+      ? referralCode
+      : undefined;
     const canRecordReferralCheckoutSession = subscription === "free";
+
+    if (validReferralCode && subscription !== "free") {
+      shouldClearReferralCookies = true;
+    }
 
     if (
       referralConfig.enabled &&
-      referralCode &&
-      isValidReferralCode(referralCode)
+      validReferralCode &&
+      canRecordReferralCheckoutSession
     ) {
-      if (subscription !== "free") {
-        shouldClearReferralCookies = true;
-      } else {
-        try {
-          const attribution = await getConvexClient().mutation(
-            api.referrals.attributeReferredSignup,
-            {
-              serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-              referredUserId: userId,
-              referralCode,
-              starterBonusUnits: 0,
-              referredIdentityHash: freeQuotaSubject,
-              userCreatedAtMs: parseCreatedAtMs(user.createdAt),
-              maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
-              source: "subscribe_route_referral_cookie",
-            },
-          );
+      try {
+        const attribution = await getConvexClient().mutation(
+          api.referrals.attributeReferredSignup,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            referredUserId: userId,
+            referralCode: validReferralCode,
+            starterBonusUnits: 0,
+            referredIdentityHash: freeQuotaSubject,
+            userCreatedAtMs: parseCreatedAtMs(user.createdAt),
+            maxUserAgeDays: referralConfig.attributionMaxUserAgeDays,
+            source: "subscribe_route_referral_cookie",
+          },
+        );
 
-          if (attribution.status === "attributed") {
-            const referrerSubscriptionTier = (
-              attribution as { referrerSubscriptionTier?: string }
-            ).referrerSubscriptionTier;
+        if (attribution.status === "attributed") {
+          const referrerSubscriptionTier = (
+            attribution as { referrerSubscriptionTier?: string }
+          ).referrerSubscriptionTier;
 
-            phLogger.event("referred_signup_attributed", {
-              userId,
-              referrer_user_id: attribution.referrerUserId,
-              referrer_subscription_tier: referrerSubscriptionTier,
-              referral_code: referralCode,
-              starter_bonus_awarded: attribution.starterBonusAwarded,
-              starter_bonus_units: 0,
-              source: "subscribe_route",
-            });
-          }
-        } catch (error) {
-          phLogger.warn("referral_attribution_failed_before_checkout", {
+          phLogger.event("referred_signup_attributed", {
             userId,
-            referral_code: referralCode,
-            error: error instanceof Error ? error.message : String(error),
+            referrer_user_id: attribution.referrerUserId,
+            referrer_subscription_tier: referrerSubscriptionTier,
+            referral_code: validReferralCode,
+            starter_bonus_awarded: attribution.starterBonusAwarded,
+            starter_bonus_units: 0,
+            source: "subscribe_route",
           });
         }
+      } catch (error) {
+        phLogger.warn("referral_attribution_failed_before_checkout", {
+          userId,
+          referral_code: validReferralCode,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     const allowedPlans = new Set([
