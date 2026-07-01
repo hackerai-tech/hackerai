@@ -138,6 +138,8 @@ export function isNetworkStreamError(error: unknown): boolean {
     msg.includes("failed to fetch") ||
     msg.includes("fetch failed") ||
     msg.includes("network") ||
+    msg.includes("connection closed") ||
+    msg.includes("error in input stream") ||
     msg.includes("load failed")
   );
 }

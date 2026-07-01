@@ -38,9 +38,12 @@ import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 interface UseChatHandlersProps {
   chatId: string;
   messages: ChatMessage[];
-  sendMessage: (message?: any, options?: { body?: any }) => void;
+  sendMessage: (
+    message?: any,
+    options?: { body?: any },
+  ) => void | Promise<void>;
   stop: () => void;
-  regenerate: (options?: { body?: any }) => void;
+  regenerate: (options?: { body?: any }) => void | Promise<void>;
   setMessages: (
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
@@ -115,6 +118,19 @@ export const useChatHandlers = ({
     (file.storage === "local-desktop"
       ? !!file.localAttachmentId && !!file.localPath
       : !!file.fileId);
+
+  const runChatAction = (
+    description: string,
+    action: () => void | Promise<void>,
+  ): void => {
+    try {
+      void Promise.resolve(action()).catch((error) => {
+        console.error(`Failed to ${description}:`, error);
+      });
+    } catch (error) {
+      console.error(`Failed to ${description}:`, error);
+    }
+  };
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
@@ -346,38 +362,42 @@ export const useChatHandlers = ({
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
 
-      sendMessage(
-        {
-          text: input.trim() || undefined,
-          files: validFiles.length > 0 ? validFiles : undefined,
-          metadata: { createdAt: Date.now() },
-        },
-        {
-          body: {
-            mode: currentChatMode,
-            todos,
-            temporary: temporaryChatsEnabled,
-            sandboxPreference,
-
-            selectedModel: requestSelectedModel,
+      runChatAction("send message", () =>
+        sendMessage(
+          {
+            text: input.trim() || undefined,
+            files: validFiles.length > 0 ? validFiles : undefined,
+            metadata: { createdAt: Date.now() },
           },
-        },
+          {
+            body: {
+              mode: currentChatMode,
+              todos,
+              temporary: temporaryChatsEnabled,
+              sandboxPreference,
+
+              selectedModel: requestSelectedModel,
+            },
+          },
+        ),
       );
     } catch (error) {
       console.error("Failed to process files:", error);
       // Fallback to text-only message if file processing fails
-      sendMessage(
-        { text: input, metadata: { createdAt: Date.now() } },
-        {
-          body: {
-            mode: currentChatMode,
-            todos,
-            temporary: temporaryChatsEnabled,
-            sandboxPreference,
+      runChatAction("send fallback message", () =>
+        sendMessage(
+          { text: input, metadata: { createdAt: Date.now() } },
+          {
+            body: {
+              mode: currentChatMode,
+              todos,
+              temporary: temporaryChatsEnabled,
+              sandboxPreference,
 
-            selectedModel: requestSelectedModel,
+              selectedModel: requestSelectedModel,
+            },
           },
-        },
+        ),
       );
     }
 
@@ -447,30 +467,35 @@ export const useChatHandlers = ({
         });
       }
       // For persisted chats, backend fetches from database - explicitly send no messages
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: persistentRegenerateMessages,
-          todos: cleanedTodos,
-          regenerate: true,
-          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          temporary: false,
-          sandboxPreference,
-          selectedModel: requestSelectedModel,
-        },
-      });
+      runChatAction("regenerate response", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: persistentRegenerateMessages,
+            todos: cleanedTodos,
+            regenerate: true,
+            useClientMessagesForRegenerate:
+              shouldSendClientMessagesForRegenerate,
+            temporary: false,
+            sandboxPreference,
+            selectedModel: requestSelectedModel,
+          },
+        }),
+      );
     } else {
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: trimmedMessages,
-          todos: cleanedTodos,
-          regenerate: true,
-          temporary: true,
-          sandboxPreference,
-          selectedModel: requestSelectedModel,
-        },
-      });
+      runChatAction("regenerate response", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: trimmedMessages,
+            todos: cleanedTodos,
+            regenerate: true,
+            temporary: true,
+            sandboxPreference,
+            selectedModel: requestSelectedModel,
+          },
+        }),
+      );
     }
   };
 
@@ -503,32 +528,37 @@ export const useChatHandlers = ({
     if (!temporaryChatsEnabled) {
       // For persisted chats, backend fetches from database unless local desktop
       // attachments must be restaged from the client.
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: persistentRegenerateMessages,
-          todos: cleanedTodos,
-          regenerate: true,
-          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          temporary: false,
-          sandboxPreference,
-          selectedModel: requestSelectedModel,
-          ...(options.limitRescue && { limitRescue: options.limitRescue }),
-        },
-      });
+      runChatAction("retry response", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: persistentRegenerateMessages,
+            todos: cleanedTodos,
+            regenerate: true,
+            useClientMessagesForRegenerate:
+              shouldSendClientMessagesForRegenerate,
+            temporary: false,
+            sandboxPreference,
+            selectedModel: requestSelectedModel,
+            ...(options.limitRescue && { limitRescue: options.limitRescue }),
+          },
+        }),
+      );
     } else {
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: messagesToLastUser,
-          todos: cleanedTodos,
-          regenerate: true,
-          temporary: true,
-          sandboxPreference,
-          selectedModel: requestSelectedModel,
-          ...(options.limitRescue && { limitRescue: options.limitRescue }),
-        },
-      });
+      runChatAction("retry response", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: messagesToLastUser,
+            todos: cleanedTodos,
+            regenerate: true,
+            temporary: true,
+            sandboxPreference,
+            selectedModel: requestSelectedModel,
+            ...(options.limitRescue && { limitRescue: options.limitRescue }),
+          },
+        }),
+      );
     }
   };
 
@@ -633,18 +663,20 @@ export const useChatHandlers = ({
     // For persisted chats, backend fetches from database
     // For temporary chats, send all messages up to and including the edited message
     if (!temporaryChatsEnabled) {
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: [],
-          todos: cleanedTodosForEdit,
-          regenerate: true,
-          temporary: false,
-          sandboxPreference,
+      runChatAction("regenerate edited message", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: [],
+            todos: cleanedTodosForEdit,
+            regenerate: true,
+            temporary: false,
+            sandboxPreference,
 
-          selectedModel: requestSelectedModel,
-        },
-      });
+            selectedModel: requestSelectedModel,
+          },
+        }),
+      );
     } else {
       // For temporary chats, send messages up to and including the edited message
       const messagesUpToEdit = messages.slice(0, editedMessageIndex + 1);
@@ -670,18 +702,20 @@ export const useChatHandlers = ({
         parts: updatedParts,
       };
 
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: messagesUpToEdit,
-          todos: cleanedTodosForEdit,
-          regenerate: true,
-          temporary: true,
-          sandboxPreference,
+      runChatAction("regenerate edited message", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: messagesUpToEdit,
+            todos: cleanedTodosForEdit,
+            regenerate: true,
+            temporary: true,
+            sandboxPreference,
 
-          selectedModel: requestSelectedModel,
-        },
-      });
+            selectedModel: requestSelectedModel,
+          },
+        }),
+      );
     }
   };
 
@@ -690,21 +724,23 @@ export const useChatHandlers = ({
     hasManuallyStoppedRef.current = false;
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModel;
-    sendMessage(
-      {
-        text: AUTO_CONTINUE_PROMPT,
-        metadata: { isAutoContinue: true },
-      },
-      {
-        body: {
-          mode: chatModeRef.current,
-          isAutoContinue: true,
-          todos,
-          temporary: temporaryChatsEnabled,
-          sandboxPreference,
-          selectedModel: continuationSelectedModel,
+    runChatAction("continue response", () =>
+      sendMessage(
+        {
+          text: AUTO_CONTINUE_PROMPT,
+          metadata: { isAutoContinue: true },
         },
-      },
+        {
+          body: {
+            mode: chatModeRef.current,
+            isAutoContinue: true,
+            todos,
+            temporary: temporaryChatsEnabled,
+            sandboxPreference,
+            selectedModel: continuationSelectedModel,
+          },
+        },
+      ),
     );
   };
 
@@ -742,16 +778,18 @@ export const useChatHandlers = ({
 
       messagePayload.metadata = { createdAt: message.timestamp };
 
-      sendMessage(messagePayload, {
-        body: {
-          mode: chatModeRef.current,
-          todos,
-          temporary: temporaryChatsEnabled,
-          sandboxPreference,
+      runChatAction("send queued message", () =>
+        sendMessage(messagePayload, {
+          body: {
+            mode: chatModeRef.current,
+            todos,
+            temporary: temporaryChatsEnabled,
+            sandboxPreference,
 
-          selectedModel: requestSelectedModel,
-        },
-      });
+            selectedModel: requestSelectedModel,
+          },
+        }),
+      );
     } catch (error) {
       console.error("Failed to send queued message:", error);
     } finally {
