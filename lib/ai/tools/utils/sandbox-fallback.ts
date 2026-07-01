@@ -8,6 +8,11 @@ type SandboxContextForPromptManager = {
   consumeFallbackInfo?: () => SandboxFallbackInfo | null;
 };
 
+type SandboxAcquisitionManager<TSandbox> = {
+  getSandbox: () => Promise<{ sandbox: TSandbox }>;
+  consumeFallbackInfo?: () => SandboxFallbackInfo | null;
+};
+
 const escapePromptText = (value: string): string =>
   value
     .replaceAll("&", "&amp;")
@@ -70,6 +75,39 @@ export function writeSandboxFallbackEvent(
     id,
     data: fallbackInfo,
   });
+}
+
+export async function getSandboxWithFallbackGuard<TSandbox>({
+  sandboxManager,
+  requireLocalSandbox = false,
+}: {
+  sandboxManager: SandboxAcquisitionManager<TSandbox>;
+  requireLocalSandbox?: boolean;
+}): Promise<{ sandbox: TSandbox }> {
+  const result = await sandboxManager.getSandbox();
+  const fallbackInfo = sandboxManager.consumeFallbackInfo?.() ?? null;
+
+  if (fallbackInfo?.occurred) {
+    assertLocalSandboxFallbackAllowed({
+      fallbackInfo,
+      requireLocalSandbox,
+    });
+  }
+
+  return result;
+}
+
+export function getSandboxFallbackErrorMessage(error: unknown): string | null {
+  if (
+    error instanceof ChatSDKError &&
+    typeof error.cause === "string" &&
+    (error.metadata?.localSandboxFallbackBlocked ||
+      error.metadata?.localSandboxRequired)
+  ) {
+    return error.cause;
+  }
+
+  return null;
 }
 
 export async function prepareSandboxContextForPrompt({

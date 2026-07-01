@@ -28,8 +28,8 @@ import {
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
 import {
-  assertLocalSandboxFallbackAllowed,
-  writeSandboxFallbackEvent,
+  getSandboxFallbackErrorMessage,
+  getSandboxWithFallbackGuard,
 } from "./utils/sandbox-fallback";
 import {
   waitForOutput,
@@ -177,16 +177,9 @@ In using these tools, adhere to the following guidelines:
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
         try {
-          const { sandbox } = await sandboxManager.getSandbox();
-          const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
-          if (fallbackInfo?.occurred) {
-            writeSandboxFallbackEvent(
-              writer,
-              fallbackInfo,
-              `sandbox-fallback-${toolCallId}`,
-            );
-            assertLocalSandboxFallbackAllowed({ fallbackInfo });
-          }
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -299,9 +292,10 @@ In using these tools, adhere to the following guidelines:
               output: "",
               exitCode: 1,
               error:
-                err instanceof Error
+                getSandboxFallbackErrorMessage(err) ??
+                (err instanceof Error
                   ? err.message
-                  : "Failed to create interactive PTY session.",
+                  : "Failed to create interactive PTY session."),
             },
           };
         }
@@ -309,18 +303,9 @@ In using these tools, adhere to the following guidelines:
 
       try {
         // Get fresh sandbox and verify it's ready
-        const { sandbox } = await sandboxManager.getSandbox();
-
-        // Check for sandbox fallback and notify frontend
-        const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
-        if (fallbackInfo?.occurred) {
-          writeSandboxFallbackEvent(
-            writer,
-            fallbackInfo,
-            `sandbox-fallback-${toolCallId}`,
-          );
-          assertLocalSandboxFallbackAllowed({ fallbackInfo });
-        }
+        const { sandbox } = await getSandboxWithFallbackGuard({
+          sandboxManager,
+        });
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -375,7 +360,11 @@ In using these tools, adhere to the following guidelines:
 
             // Reset cached instance to force ensureSandboxConnection to create a fresh one
             sandboxManager.setSandbox(null as any);
-            const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
+            const { sandbox: freshSandbox } = await getSandboxWithFallbackGuard(
+              {
+                sandboxManager,
+              },
+            );
 
             // Verify the fresh sandbox is ready
             try {
@@ -773,7 +762,9 @@ In using these tools, adhere to the following guidelines:
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
-            error: error instanceof Error ? error.message : String(error),
+            error:
+              getSandboxFallbackErrorMessage(error) ??
+              (error instanceof Error ? error.message : String(error)),
           },
         };
       }
