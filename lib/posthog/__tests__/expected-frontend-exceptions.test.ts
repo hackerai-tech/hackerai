@@ -216,4 +216,43 @@ describe("shouldDropExpectedFrontendException", () => {
       }),
     ).toBe(false);
   });
+
+  it("drops Trigger stream double-close noise only with Trigger stream frames", () => {
+    for (const value of [
+      "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close an errored readable stream",
+      "Failed to execute 'close' on 'ReadableStreamDefaultController': ReadableStreamDefaultController is not in a state where it can be closed",
+      "ReadableStreamDefaultController is not in a state where it can be closed",
+      "ReadableStreamDefaultController.close: Cannot close a stream that is already closed.",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: [value],
+            $exception_list: [
+              {
+                stacktrace: {
+                  frames: [
+                    {
+                      source:
+                        "turbopack:///[project]/node_modules/.pnpm/@trigger.dev+core@4.4.6/node_modules/@trigger.dev/core/src/v3/streams/asyncIterableStream.ts",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ).toBe(true);
+
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: [value],
+          },
+        }),
+      ).toBe(false);
+    }
+  });
 });

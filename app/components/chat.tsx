@@ -783,7 +783,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
       shouldUseAgentLongForCurrentChatRef.current &&
       typeof message === "string" &&
-      message.includes("Cannot close an errored readable stream");
+      (message.includes("Cannot close an errored readable stream") ||
+        message.includes(
+          "ReadableStreamDefaultController is not in a state where it can be closed",
+        ) ||
+        message.includes("Cannot close a stream that is already closed"));
 
     const suppressAgentLongDoubleCloseNoise = (event: ErrorEvent) => {
       if (isAgentLongDoubleCloseNoise(event.message)) {
