@@ -126,7 +126,10 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
-import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import {
+  BUDGET_EXHAUSTION_FINISH_REASON,
+  PREEMPTIVE_TIMEOUT_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import {
   omitImageViewToolResultsForProviderRetry,
@@ -1492,9 +1495,31 @@ export const agentLongTask = task({
                     rateLimitInfo,
                     usageRecordArgs.accountingModel,
                   );
+                  if (deductionResult.uncoveredPoints > 0) {
+                    state.stoppedDueToBudgetExhaustion = true;
+                    if (state.streamFinishReason !== "error") {
+                      state.streamFinishReason =
+                        BUDGET_EXHAUSTION_FINISH_REASON;
+                    }
+                    phLogger.warn("Usage deduction left uncovered cost", {
+                      chatId,
+                      endpoint: "/api/agent-long",
+                      mode,
+                      userId,
+                      organizationId,
+                      subscription,
+                      selectedModel,
+                      uncoveredPoints: deductionResult.uncoveredPoints,
+                      usageDeductionFailureReason:
+                        deductionResult.usageDeductionFailureReason,
+                    });
+                  }
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0
+                    deductionResult.extraUsagePointsDeducted > 0 ||
+                    deductionResult.uncoveredPoints > 0 ||
+                    deductionResult.usageDeductionFailed ||
+                    !!deductionResult.usageDeductionFailureReason
                       ? deductionResult
                       : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({
@@ -1788,6 +1813,10 @@ export const agentLongTask = task({
                                     userId,
                                     mode,
                                   });
+                                  // Final reconciliation can change the finish
+                                  // reason to budget-exhausted; do it before
+                                  // analytics and persistence consume state.
+                                  await deductAccumulatedUsage();
                                   const outcome = retryAborted
                                     ? "aborted"
                                     : isTerminalProviderStreamError(state)
@@ -1883,7 +1912,6 @@ export const agentLongTask = task({
                                     });
                                     sendFileMetadataToStream(accumulatedFiles);
                                   }
-                                  await deductAccumulatedUsage();
                                   posthog?.shutdown();
                                 } finally {
                                   await releaseFreeRunLockOnce();
@@ -1916,6 +1944,10 @@ export const agentLongTask = task({
                         cacheWriteTokens: usageTracker.cacheWriteTokens,
                       });
                       captureToolCalls({ posthog, chatLogger, userId, mode });
+                      // Final reconciliation can change the finish reason to
+                      // budget-exhausted; do it before analytics and
+                      // persistence consume state.
+                      await deductAccumulatedUsage();
                       const outcome = isAborted
                         ? "aborted"
                         : isTerminalProviderStreamError(state)
@@ -2138,8 +2170,6 @@ export const agentLongTask = task({
                       ) {
                         writeAutoContinue(writer);
                       }
-
-                      await deductAccumulatedUsage();
                       posthog?.shutdown();
                     } finally {
                       if (!retryScheduled) {

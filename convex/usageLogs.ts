@@ -13,6 +13,16 @@ const typeValidator = v.union(
   v.literal("extra"),
   v.literal("mixed"),
 );
+const usageDeductionFailureReasonValidator = v.union(
+  v.literal("extra_usage_unavailable"),
+  v.literal("insufficient_funds"),
+  v.literal("monthly_cap_exceeded"),
+  v.literal("member_cap_exceeded"),
+  v.literal("member_disabled"),
+  v.literal("pool_disabled"),
+  v.literal("auto_reload_failed"),
+  v.literal("deduction_failed"),
+);
 
 const cleanModelName = (model: string): string =>
   model
@@ -46,8 +56,14 @@ export const logUsage = mutation({
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
+    uncovered_cost_dollars: v.optional(v.number()),
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
+    uncovered_points: v.optional(v.number()),
+    usage_deduction_failed: v.optional(v.boolean()),
+    usage_deduction_failure_reason: v.optional(
+      usageDeductionFailureReasonValidator,
+    ),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
@@ -87,6 +103,9 @@ export const logUsage = mutation({
     const extraCostDollars = Number.isFinite(args.extra_usage_cost_dollars)
       ? args.extra_usage_cost_dollars! * costBreakdownScale
       : undefined;
+    const uncoveredCostDollars = Number.isFinite(args.uncovered_cost_dollars)
+      ? args.uncovered_cost_dollars! * costBreakdownScale
+      : undefined;
 
     if (
       args.type === "mixed" &&
@@ -109,6 +128,7 @@ export const logUsage = mutation({
         : args.type === "extra"
           ? costDollars
           : 0;
+    const uncoveredUsageCostDollars = uncoveredCostDollars ?? 0;
     const costSource =
       args.cost_source === "token_estimate"
         ? "raw_token_estimate"
@@ -132,8 +152,14 @@ export const logUsage = mutation({
       cost_dollars: costDollars,
       included_cost_dollars: includedUsageCostDollars,
       extra_usage_cost_dollars: extraUsageCostDollars,
+      uncovered_cost_dollars: uncoveredUsageCostDollars,
       included_points_deducted: args.included_points_deducted,
       extra_usage_points_deducted: args.extra_usage_points_deducted,
+      uncovered_points: args.uncovered_points,
+      usage_deduction_failed:
+        args.usage_deduction_failed === true ||
+        (args.uncovered_points ?? 0) > 0,
+      usage_deduction_failure_reason: args.usage_deduction_failure_reason,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
@@ -270,8 +296,12 @@ export const getUserUsageLogs = query({
         extra_usage_cost_dollars:
           log.extra_usage_cost_dollars ??
           (log.type === "extra" ? log.cost_dollars : 0),
+        uncovered_cost_dollars: log.uncovered_cost_dollars ?? 0,
         included_points_deducted: log.included_points_deducted,
         extra_usage_points_deducted: log.extra_usage_points_deducted,
+        uncovered_points: log.uncovered_points,
+        usage_deduction_failed: log.usage_deduction_failed,
+        usage_deduction_failure_reason: log.usage_deduction_failure_reason,
         model_cost_dollars: log.model_cost_dollars,
         non_model_cost_dollars: log.non_model_cost_dollars,
         cost_source: log.cost_source,

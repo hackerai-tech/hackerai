@@ -45,6 +45,8 @@ export {
   getMonthlyBucketKey,
   getCycleExpireSeconds,
   POINTS_PER_DOLLAR,
+  type UsageDeductionFailureReason,
+  type UsageDeductionResult,
 } from "./token-bucket";
 
 // Re-export sliding window functions

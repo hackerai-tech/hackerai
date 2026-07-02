@@ -7,7 +7,10 @@ import {
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
-import { AGENT_MAX_STREAM_DURATION_MS } from "@/lib/chat/stop-conditions";
+import {
+  AGENT_MAX_STREAM_DURATION_MS,
+  BUDGET_EXHAUSTION_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -1000,9 +1003,31 @@ export const createChatHandler = () => {
                     rateLimitInfo,
                     usageRecordArgs.accountingModel,
                   );
+                  if (deductionResult.uncoveredPoints > 0) {
+                    state.stoppedDueToBudgetExhaustion = true;
+                    if (state.streamFinishReason !== "error") {
+                      state.streamFinishReason =
+                        BUDGET_EXHAUSTION_FINISH_REASON;
+                    }
+                    phLogger.warn("Usage deduction left uncovered cost", {
+                      chatId,
+                      endpoint,
+                      mode,
+                      userId,
+                      organizationId,
+                      subscription,
+                      selectedModel,
+                      uncoveredPoints: deductionResult.uncoveredPoints,
+                      usageDeductionFailureReason:
+                        deductionResult.usageDeductionFailureReason,
+                    });
+                  }
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0
+                    deductionResult.extraUsagePointsDeducted > 0 ||
+                    deductionResult.uncoveredPoints > 0 ||
+                    deductionResult.usageDeductionFailed ||
+                    !!deductionResult.usageDeductionFailureReason
                       ? deductionResult
                       : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({
@@ -1324,6 +1349,10 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
+                                // Final reconciliation can change the finish
+                                // reason to budget-exhausted; do it before
+                                // analytics and persistence consume state.
+                                await deductAccumulatedUsage();
                                 const outcome = retryAborted
                                   ? "aborted"
                                   : "success";
@@ -1473,8 +1502,6 @@ export const createChatHandler = () => {
                                     imageRecovery.omittedCount,
                                 });
 
-                                // Deduct accumulated usage (includes both original + retry streams)
-                                await deductAccumulatedUsage();
                                 shutdownPostHog(posthog);
                               } finally {
                                 await releaseFreeRunLockOnce();
@@ -1554,6 +1581,10 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
+                    // Final reconciliation can change the finish reason to
+                    // budget-exhausted; do it before analytics and persistence
+                    // consume state.
+                    await deductAccumulatedUsage();
                     const outcome = isAborted ? "aborted" : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
@@ -1859,8 +1890,6 @@ export const createChatHandler = () => {
                     ) {
                       writeAutoContinue(writer);
                     }
-
-                    await deductAccumulatedUsage();
                     shutdownPostHog(posthog);
                   } finally {
                     if (!retryScheduled) {

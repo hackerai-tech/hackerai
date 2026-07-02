@@ -352,8 +352,11 @@ describe("captureUsageCost", () => {
         costDollars: 0.42,
         includedCostDollars: 0.1,
         extraUsageCostDollars: 0.32,
+        uncoveredCostDollars: 0,
         includedPointsDeducted: 1000,
         extraUsagePointsDeducted: 3200,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
         modelCostDollars: 0.3,
         nonModelCostDollars: 0.12,
         costSource: "provider",
@@ -719,8 +722,7 @@ describe("createChatLogger provider stream termination", () => {
       );
       const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
       const capturedError = fields?.error as
-        | (Error & { cause?: unknown })
-        | undefined;
+        (Error & { cause?: unknown }) | undefined;
 
       expect(capturedError).toBeInstanceOf(Error);
       expect(capturedError?.name).toBe("AI_APICallError");

@@ -366,6 +366,8 @@ export const deductWithAutoReloadForTeam = action({
 
     const thresholdPoints = state.autoReloadThresholdPoints ?? 0;
     const reloadAmount = state.autoReloadAmountDollars ?? 0;
+    const requestedDeductionDollars = args.amountPoints / POINTS_PER_DOLLAR;
+    const requestNeedsReload = state.balancePoints < args.amountPoints;
     const balanceForReloadPoints = deductResult.success
       ? deductResult.newBalancePoints
       : state.balancePoints;
@@ -381,7 +383,7 @@ export const deductWithAutoReloadForTeam = action({
       state.enabled &&
       !state.memberDisabled &&
       state.autoReloadEnabled &&
-      balanceForReloadPoints <= thresholdPoints &&
+      (balanceForReloadPoints <= thresholdPoints || requestNeedsReload) &&
       reloadAmount > 0;
 
     if (allConditionsMet) {
@@ -411,13 +413,22 @@ export const deductWithAutoReloadForTeam = action({
               };
             } else {
               const currentBalanceDollars = balanceForReloadDollars;
-              const targetBalanceDollars = reloadAmount;
-              const amountToCharge = Math.max(
+              const targetBalanceDollars = Math.max(
+                reloadAmount,
+                requestNeedsReload ? requestedDeductionDollars : 0,
+              );
+              const rawAmountToCharge = Math.max(
                 0,
                 targetBalanceDollars - currentBalanceDollars,
               );
 
               const MIN_CHARGE_DOLLARS = 1;
+              const amountToCharge =
+                requestNeedsReload &&
+                rawAmountToCharge > 0 &&
+                rawAmountToCharge < MIN_CHARGE_DOLLARS
+                  ? MIN_CHARGE_DOLLARS
+                  : rawAmountToCharge;
               if (amountToCharge < MIN_CHARGE_DOLLARS) {
                 autoReloadResult = {
                   success: false,
