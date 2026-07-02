@@ -2,6 +2,17 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { retainedTailValidator } from "./lib/retainedTail";
 
+const usageDeductionFailureReasonValidator = v.union(
+  v.literal("extra_usage_unavailable"),
+  v.literal("insufficient_funds"),
+  v.literal("monthly_cap_exceeded"),
+  v.literal("member_cap_exceeded"),
+  v.literal("member_disabled"),
+  v.literal("pool_disabled"),
+  v.literal("auto_reload_failed"),
+  v.literal("deduction_failed"),
+);
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -607,7 +618,9 @@ export default defineSchema({
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
     usage_deduction_failed: v.optional(v.boolean()),
-    usage_deduction_failure_reason: v.optional(v.string()),
+    usage_deduction_failure_reason: v.optional(
+      usageDeductionFailureReasonValidator,
+    ),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(

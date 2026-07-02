@@ -45,6 +45,12 @@ jest.mock("@workos-inc/node", () => ({
 
 const mockCheckoutSessionCreate = jest.fn();
 const mockBillingPortalSessionCreate = jest.fn();
+const mockCustomerRetrieve = jest.fn();
+const mockSubscriptionsList = jest.fn();
+const mockInvoicesCreate = jest.fn();
+const mockInvoiceItemsCreate = jest.fn();
+const mockInvoicesFinalize = jest.fn();
+const mockInvoicesPay = jest.fn();
 jest.mock("stripe", () => {
   const Stripe = jest.fn().mockImplementation(() => ({
     checkout: {
@@ -58,10 +64,18 @@ jest.mock("stripe", () => {
       },
     },
     customers: {
-      retrieve: jest.fn(),
+      retrieve: mockCustomerRetrieve,
     },
     subscriptions: {
-      list: jest.fn(),
+      list: mockSubscriptionsList,
+    },
+    invoices: {
+      create: mockInvoicesCreate,
+      finalizeInvoice: mockInvoicesFinalize,
+      pay: mockInvoicesPay,
+    },
+    invoiceItems: {
+      create: mockInvoiceItemsCreate,
     },
   }));
   (Stripe as any).errors = {
@@ -276,6 +290,25 @@ describe("extraUsageActions billing authorization", () => {
 describe("deductWithAutoReload", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCustomerRetrieve.mockResolvedValue({
+      deleted: false,
+      metadata: {},
+      invoice_settings: {},
+    } as never);
+    mockSubscriptionsList.mockResolvedValue({
+      data: [{ default_payment_method: "pm_card" }],
+    } as never);
+    mockInvoicesCreate.mockResolvedValue({ id: "in_auto" } as never);
+    mockInvoiceItemsCreate.mockResolvedValue({ id: "ii_auto" } as never);
+    mockInvoicesFinalize.mockResolvedValue({
+      id: "in_auto",
+      status: "open",
+    } as never);
+    mockInvoicesPay.mockResolvedValue({
+      id: "in_auto",
+      status: "paid",
+      payment_intent: "pi_auto",
+    } as never);
   });
 
   it("attempts auto-reload when the request is larger than the current balance", async () => {
@@ -350,6 +383,114 @@ describe("deductWithAutoReload", () => {
       success: false,
       monthlyCapExceeded: true,
       autoReloadTriggered: false,
+    });
+  });
+
+  it("charges enough to cover the requested deduction when it exceeds the reload target", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      stripeCustomerId: "cus_team",
+    } as never);
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        balanceDollars: 20,
+        balancePoints: 200_000,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 1,
+        autoReloadThresholdPoints: 10_000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      })),
+      runMutation: jest.fn(async (_mutation: unknown, mutationArgs: any) => {
+        if ("amountDollars" in mutationArgs) return null;
+        if ("success" in mutationArgs && !("amountPoints" in mutationArgs)) {
+          return null;
+        }
+        return {
+          success: true,
+          newBalancePoints: 0,
+          newBalanceDollars: 0,
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
+        };
+      }),
+    };
+
+    const result = await callDeductWithAutoReload(ctx, {
+      userId: "user_member",
+      amountPoints: 300_000,
+    });
+
+    expect(mockInvoiceItemsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 1000 }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: true, chargedAmountDollars: 10 },
+    });
+  });
+
+  it("uses the minimum charge when a request is underfunded by less than one dollar", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      stripeCustomerId: "cus_team",
+    } as never);
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        balanceDollars: 29.5,
+        balancePoints: 295_000,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 1,
+        autoReloadThresholdPoints: 10_000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      })),
+      runMutation: jest.fn(async (_mutation: unknown, mutationArgs: any) => {
+        if ("amountDollars" in mutationArgs) return null;
+        if ("success" in mutationArgs && !("amountPoints" in mutationArgs)) {
+          return null;
+        }
+        return {
+          success: true,
+          newBalancePoints: 5_000,
+          newBalanceDollars: 0.5,
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
+        };
+      }),
+    };
+
+    const result = await callDeductWithAutoReload(ctx, {
+      userId: "user_member",
+      amountPoints: 300_000,
+    });
+
+    expect(mockInvoiceItemsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 100 }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: true, chargedAmountDollars: 1 },
     });
   });
 });

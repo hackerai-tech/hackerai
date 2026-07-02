@@ -1,5 +1,6 @@
 import { logUsageRecord } from "@/lib/db/actions";
 import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
+import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 
 interface StepUsage {
@@ -20,7 +21,7 @@ export interface UsageBillingBreakdown {
   extraUsagePointsDeducted: number;
   uncoveredPoints?: number;
   usageDeductionFailed?: boolean;
-  usageDeductionFailureReason?: string;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
 }
 
 interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
@@ -28,6 +29,7 @@ interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
   extraUsagePointsDeducted: number;
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
 }
 
 export interface UsageCostRecord {
@@ -40,7 +42,7 @@ export interface UsageCostRecord {
   extraUsagePointsDeducted: number;
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
-  usageDeductionFailureReason?: string;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -190,12 +192,20 @@ export class UsageTracker {
     rateLimitInfo: RateLimitInfo,
     billingBreakdown?: UsageBillingBreakdown,
   ): UsageBillingType {
-    const { includedPointsDeducted, extraUsagePointsDeducted } =
-      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    const {
+      includedPointsDeducted,
+      extraUsagePointsDeducted,
+      uncoveredPoints,
+    } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
     if (includedPointsDeducted > 0 && extraUsagePointsDeducted > 0) {
       return "mixed";
     }
-    return extraUsagePointsDeducted > 0 ? "extra" : "included";
+    if (includedPointsDeducted > 0 && uncoveredPoints > 0) {
+      return "mixed";
+    }
+    return extraUsagePointsDeducted > 0 || uncoveredPoints > 0
+      ? "extra"
+      : "included";
   }
 
   resolveCostBreakdown(

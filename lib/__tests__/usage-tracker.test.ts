@@ -263,6 +263,40 @@ describe("UsageTracker", () => {
       });
       expect(result).toBe("included");
     });
+
+    it("should return 'extra' when only uncovered usage remains", () => {
+      const result = tracker.resolveUsageType(
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 0,
+        },
+        {
+          includedPointsDeducted: 0,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 50,
+        },
+      );
+      expect(result).toBe("extra");
+    });
+
+    it("should return 'mixed' when included and uncovered usage were both used", () => {
+      const result = tracker.resolveUsageType(
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 50,
+        },
+        {
+          includedPointsDeducted: 50,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 50,
+        },
+      );
+      expect(result).toBe("mixed");
+    });
   });
 
   describe("resolveCostBreakdown", () => {

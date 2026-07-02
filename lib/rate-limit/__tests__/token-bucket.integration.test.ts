@@ -25,6 +25,8 @@ describe("token-bucket async functions", () => {
   const mockScanFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
+  const mockDeductFromTeamBalance = jest.fn();
+  const mockRefundToTeamBalance = jest.fn();
   const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
@@ -50,6 +52,16 @@ describe("token-bucket async functions", () => {
       monthlyCapExceeded: false,
     });
     mockRefundToBalance.mockResolvedValue({
+      success: true,
+      newBalanceDollars: 10,
+    });
+    mockDeductFromTeamBalance.mockResolvedValue({
+      success: true,
+      newBalanceDollars: 10,
+      insufficientFunds: false,
+      monthlyCapExceeded: false,
+    });
+    mockRefundToTeamBalance.mockResolvedValue({
       success: true,
       newBalanceDollars: 10,
     });
@@ -103,6 +115,8 @@ describe("token-bucket async functions", () => {
       jest.doMock("../../extra-usage", () => ({
         deductFromBalance: mockDeductFromBalance,
         refundToBalance: mockRefundToBalance,
+        deductFromTeamBalance: mockDeductFromTeamBalance,
+        refundToTeamBalance: mockRefundToTeamBalance,
       }));
 
       // Now require the module with fresh mocks
@@ -931,6 +945,145 @@ describe("token-bucket async functions", () => {
         uncoveredPoints: 33,
         usageDeductionFailed: true,
         usageDeductionFailureReason: "insufficient_funds",
+      });
+    });
+
+    it("reports monthly cap failures when overflow extra usage deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+      mockDeductFromBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 20,
+        insufficientFunds: true,
+        monthlyCapExceeded: true,
+      });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+      );
+
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 33,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "monthly_cap_exceeded",
+      });
+    });
+
+    it("reports auto-reload failures when overflow extra usage deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+      mockDeductFromBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        autoReloadTriggered: true,
+        autoReloadResult: { success: false, reason: "payment_failed" },
+      });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: false, autoReloadEnabled: true },
+        0.005,
+      );
+
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 33,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "auto_reload_failed",
+      });
+    });
+
+    it("reports team member cap failures when team overflow deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+      mockDeductFromTeamBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 20,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: true,
+        memberDisabled: false,
+        poolDisabled: false,
+      });
+
+      const result = await deductUsage(
+        "user-123",
+        "team",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+        undefined,
+        0,
+        "org-123",
+      );
+
+      expect(mockDeductFromTeamBalance).toHaveBeenCalledWith(
+        "org-123",
+        "user-123",
+        33,
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 33,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "member_cap_exceeded",
       });
     });
 

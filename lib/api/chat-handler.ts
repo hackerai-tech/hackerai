@@ -1344,6 +1344,10 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
+                                // Final reconciliation can change the finish
+                                // reason to budget-exhausted; do it before
+                                // analytics and persistence consume state.
+                                await deductAccumulatedUsage();
                                 const outcome = retryAborted
                                   ? "aborted"
                                   : "success";
@@ -1493,8 +1497,6 @@ export const createChatHandler = () => {
                                     imageRecovery.omittedCount,
                                 });
 
-                                // Deduct accumulated usage (includes both original + retry streams)
-                                await deductAccumulatedUsage();
                                 shutdownPostHog(posthog);
                               } finally {
                                 await releaseFreeRunLockOnce();
@@ -1574,6 +1576,10 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
+                    // Final reconciliation can change the finish reason to
+                    // budget-exhausted; do it before analytics and persistence
+                    // consume state.
+                    await deductAccumulatedUsage();
                     const outcome = isAborted ? "aborted" : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
@@ -1879,8 +1885,6 @@ export const createChatHandler = () => {
                     ) {
                       writeAutoContinue(writer);
                     }
-
-                    await deductAccumulatedUsage();
                     shutdownPostHog(posthog);
                   } finally {
                     if (!retryScheduled) {

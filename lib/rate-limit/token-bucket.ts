@@ -75,17 +75,22 @@ const throwRateLimitServiceNotConfigured = (): never => {
 
 type RedisClient = NonNullable<ReturnType<typeof createRedisClient>>;
 
+export type UsageDeductionFailureReason =
+  | "extra_usage_unavailable"
+  | "insufficient_funds"
+  | "monthly_cap_exceeded"
+  | "member_cap_exceeded"
+  | "member_disabled"
+  | "pool_disabled"
+  | "auto_reload_failed"
+  | "deduction_failed";
+
 export interface UsageDeductionResult {
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
-  usageDeductionFailureReason?:
-    | "extra_usage_unavailable"
-    | "insufficient_funds"
-    | "monthly_cap_exceeded"
-    | "auto_reload_failed"
-    | "deduction_failed";
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
 }
 
 const emptyUsageDeductionResult = (): UsageDeductionResult => ({
@@ -102,10 +107,13 @@ const nonNegativePoints = (value: number | undefined): number =>
 
 const getDeductionFailureReason = (
   result: DeductBalanceResult,
-): UsageDeductionResult["usageDeductionFailureReason"] => {
+): UsageDeductionFailureReason => {
   if (result.monthlyCapExceeded) return "monthly_cap_exceeded";
-  if (result.insufficientFunds) return "insufficient_funds";
+  if (result.memberCapExceeded) return "member_cap_exceeded";
+  if (result.memberDisabled) return "member_disabled";
+  if (result.poolDisabled) return "pool_disabled";
   if (result.autoReloadResult?.success === false) return "auto_reload_failed";
+  if (result.insufficientFunds) return "insufficient_funds";
   return "deduction_failed";
 };
 

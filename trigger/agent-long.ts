@@ -1808,6 +1808,10 @@ export const agentLongTask = task({
                                     userId,
                                     mode,
                                   });
+                                  // Final reconciliation can change the finish
+                                  // reason to budget-exhausted; do it before
+                                  // analytics and persistence consume state.
+                                  await deductAccumulatedUsage();
                                   const outcome = retryAborted
                                     ? "aborted"
                                     : isTerminalProviderStreamError(state)
@@ -1903,7 +1907,6 @@ export const agentLongTask = task({
                                     });
                                     sendFileMetadataToStream(accumulatedFiles);
                                   }
-                                  await deductAccumulatedUsage();
                                   posthog?.shutdown();
                                 } finally {
                                   await releaseFreeRunLockOnce();
@@ -1936,6 +1939,10 @@ export const agentLongTask = task({
                         cacheWriteTokens: usageTracker.cacheWriteTokens,
                       });
                       captureToolCalls({ posthog, chatLogger, userId, mode });
+                      // Final reconciliation can change the finish reason to
+                      // budget-exhausted; do it before analytics and
+                      // persistence consume state.
+                      await deductAccumulatedUsage();
                       const outcome = isAborted
                         ? "aborted"
                         : isTerminalProviderStreamError(state)
@@ -2158,8 +2165,6 @@ export const agentLongTask = task({
                       ) {
                         writeAutoContinue(writer);
                       }
-
-                      await deductAccumulatedUsage();
                       posthog?.shutdown();
                     } finally {
                       if (!retryScheduled) {

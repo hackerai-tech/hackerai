@@ -34,6 +34,7 @@ import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { phLogger } from "@/lib/posthog/server";
 import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
+import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -1619,7 +1620,7 @@ export async function logUsageRecord({
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
   usageDeductionFailed?: boolean;
-  usageDeductionFailureReason?: string;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
