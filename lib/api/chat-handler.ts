@@ -364,7 +364,7 @@ export const createChatHandler = () => {
             isAgentMode(mode) && sandboxPreference === "desktop",
         });
 
-      // Empty after processing → Gemini rejects with "must include at least one parts field".
+      // Empty after processing → providers reject the request before the route can stream.
       if (!processedMessages || processedMessages.length === 0) {
         throw new ChatSDKError(
           "bad_request:api",
@@ -1132,7 +1132,7 @@ export const createChatHandler = () => {
             try {
               result = await createStream(selectedModel);
             } catch (error) {
-              // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback.
+              // If provider returns an API error before streaming, retry with fallback.
               if (
                 isProviderApiError(error) &&
                 !isRetryWithFallback &&

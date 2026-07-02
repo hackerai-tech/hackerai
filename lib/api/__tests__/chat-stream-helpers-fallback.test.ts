@@ -212,7 +212,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("keeps the stale Gemini media route alias on the active Ask fallback chain", () => {
+  it("keeps the stale media route alias on the active Ask fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
     expect(opts.openrouter).toMatchObject({
       models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],

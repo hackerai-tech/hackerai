@@ -421,7 +421,6 @@ describe("token-bucket", () => {
       "ask-model",
       "model-grok-4.3",
       "model-gemini-3-flash",
-      "fallback-gemini-3.5-flash",
       "fallback-grok-4.3",
     ])("should use Grok 4.3 pricing for %s ($1.25/$2.50)", (modelName) => {
       expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(16250);

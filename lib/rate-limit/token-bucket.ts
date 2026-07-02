@@ -34,7 +34,6 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-grok-4.3": { input: 1.25, output: 2.5 },
   "model-gemini-3-flash": { input: 1.25, output: 2.5 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
-  "fallback-gemini-3.5-flash": { input: 1.25, output: 2.5 },
   "fallback-grok-4.3": { input: 1.25, output: 2.5 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // These keys route to minimax/minimax-m3 via lib/ai/providers.ts.

@@ -274,7 +274,7 @@ export function isXaiSafetyError(error: unknown): boolean {
 
 /**
  * Check if an error is a provider API error that should trigger fallback
- * Specifically targets Google/Gemini INVALID_ARGUMENT errors
+ * Specifically targets provider-side invalid argument errors before streaming.
  */
 export function isProviderApiError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -489,6 +489,8 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
