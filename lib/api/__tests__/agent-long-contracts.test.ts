@@ -193,7 +193,7 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/lastEventId/);
     expect(triggerBrowserRealtimeSrc).toMatch(/receivedEventOnConnection/);
     expect(triggerBrowserRealtimeSrc).toMatch(
-      /await waitForRetry\(retryCount, abortController\.signal\)/,
+      /await waitForRetry\(\s*retryCount\s*,\s*abortController\.signal\s*\)/,
     );
   });
 });
