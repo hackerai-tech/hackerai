@@ -7,6 +7,8 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 
+const POINTS_PER_DOLLAR = 10_000;
+
 // =============================================================================
 // SDK Initialization (lazy, cached)
 // =============================================================================
@@ -586,6 +588,7 @@ export const deductWithAutoReload = action({
       autoReloadThresholdDollars?: number;
       autoReloadThresholdPoints?: number;
       autoReloadAmountDollars?: number;
+      monthlyRemainingDollars?: number;
     };
     const balanceLookupStartedAt = Date.now();
     try {
@@ -611,23 +614,34 @@ export const deductWithAutoReload = action({
     // Use points for threshold comparison (more precise)
     const thresholdPoints: number = settings.autoReloadThresholdPoints ?? 0;
     const reloadAmount: number = settings.autoReloadAmountDollars ?? 0;
+    const monthlyRemainingPoints =
+      settings.monthlyRemainingDollars === undefined
+        ? undefined
+        : Math.round(settings.monthlyRemainingDollars * POINTS_PER_DOLLAR);
+    const requestedDeductionDollars = args.amountPoints / POINTS_PER_DOLLAR;
+    const requestNeedsReload = settings.balancePoints < args.amountPoints;
     let autoReloadTriggered = false;
     let autoReloadResult:
       | { success: boolean; chargedAmountDollars?: number; reason?: string }
       | undefined;
 
-    // Check auto-reload conditions individually for debugging
-    // Auto-reload triggers when balance drops to/below threshold, not when balance can't cover request
+    // Check auto-reload conditions individually for debugging.
     const autoReloadConditions = {
       auto_reload_enabled: settings.autoReloadEnabled,
       balance_at_or_below_threshold: settings.balancePoints <= thresholdPoints,
+      balance_cannot_cover_request: requestNeedsReload,
       reload_amount_configured: reloadAmount > 0,
+      monthly_cap_can_cover_request:
+        monthlyRemainingPoints === undefined ||
+        args.amountPoints <= monthlyRemainingPoints,
     };
 
     const allConditionsMet =
       autoReloadConditions.auto_reload_enabled &&
-      autoReloadConditions.balance_at_or_below_threshold &&
-      autoReloadConditions.reload_amount_configured;
+      (autoReloadConditions.balance_at_or_below_threshold ||
+        autoReloadConditions.balance_cannot_cover_request) &&
+      autoReloadConditions.reload_amount_configured &&
+      autoReloadConditions.monthly_cap_can_cover_request;
 
     // Check if auto-reload is needed (compare in points for precision)
     if (allConditionsMet) {
@@ -674,17 +688,26 @@ export const deductWithAutoReload = action({
                 reason: "no_default_payment_method",
               };
             } else {
-              // Calculate how much to charge to reach target balance
-              // reloadAmount is the TARGET balance, not the amount to add
+              // Charge enough to satisfy this deduction, or restore the
+              // configured target balance, whichever is larger.
               const currentBalanceDollars = settings.balanceDollars;
-              const targetBalanceDollars = reloadAmount;
-              const amountToCharge = Math.max(
+              const targetBalanceDollars = Math.max(
+                reloadAmount,
+                requestedDeductionDollars,
+              );
+              const rawAmountToCharge = Math.max(
                 0,
                 targetBalanceDollars - currentBalanceDollars,
               );
 
               // Minimum charge of $1 to avoid tiny transactions
               const MIN_CHARGE_DOLLARS = 1;
+              const amountToCharge =
+                requestNeedsReload &&
+                rawAmountToCharge > 0 &&
+                rawAmountToCharge < MIN_CHARGE_DOLLARS
+                  ? MIN_CHARGE_DOLLARS
+                  : rawAmountToCharge;
               if (amountToCharge < MIN_CHARGE_DOLLARS) {
                 autoReloadResult = {
                   success: false,

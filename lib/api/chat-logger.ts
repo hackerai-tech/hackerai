@@ -595,9 +595,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
     recordAnthropicPromptRepair(repair: {
       action: "appended_continue" | "trimmed";
       reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
+        "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
       trailingAssistantContentTypes?: string[];
       model: string;
     }) {
@@ -833,8 +831,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
           (error.metadata?.capReason as LimitCapReason | undefined) ??
           "unknown";
         const resetTimestamp = error.metadata?.resetTimestamp as
-          | number
-          | undefined;
+          number | undefined;
         const subscriptionTier = isSubscriptionTier(subscription)
           ? subscription
           : undefined;
@@ -1338,8 +1335,12 @@ export function captureUsageCost({
       cost_dollars: usage.costDollars,
       included_cost_dollars: usage.includedCostDollars,
       extra_usage_cost_dollars: usage.extraUsageCostDollars,
+      uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
+      uncovered_points: usage.uncoveredPoints,
+      usage_deduction_failed: usage.usageDeductionFailed,
+      usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
       input_tokens: usage.inputTokens,

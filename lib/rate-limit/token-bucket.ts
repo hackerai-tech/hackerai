@@ -11,6 +11,7 @@ import {
   refundToBalance,
   deductFromTeamBalance,
   refundToTeamBalance,
+  type DeductBalanceResult,
 } from "@/lib/extra-usage";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import {
@@ -77,17 +78,36 @@ type RedisClient = NonNullable<ReturnType<typeof createRedisClient>>;
 export interface UsageDeductionResult {
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
+  uncoveredPoints: number;
+  usageDeductionFailed: boolean;
+  usageDeductionFailureReason?:
+    | "extra_usage_unavailable"
+    | "insufficient_funds"
+    | "monthly_cap_exceeded"
+    | "auto_reload_failed"
+    | "deduction_failed";
 }
 
 const emptyUsageDeductionResult = (): UsageDeductionResult => ({
   includedPointsDeducted: 0,
   extraUsagePointsDeducted: 0,
+  uncoveredPoints: 0,
+  usageDeductionFailed: false,
 });
 
 const nonNegativePoints = (value: number | undefined): number =>
   typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, Math.round(value))
     : 0;
+
+const getDeductionFailureReason = (
+  result: DeductBalanceResult,
+): UsageDeductionResult["usageDeductionFailureReason"] => {
+  if (result.monthlyCapExceeded) return "monthly_cap_exceeded";
+  if (result.insufficientFunds) return "insufficient_funds";
+  if (result.autoReloadResult?.success === false) return "auto_reload_failed";
+  return "deduction_failed";
+};
 
 const scanRedisKeys = async (
   redis: RedisClient,
@@ -575,6 +595,22 @@ export const deductUsage = async (
   }
 
   let lastKnownDeductionResult = emptyUsageDeductionResult();
+  let actualCostPoints = 0;
+
+  const withFinalCoverage = (
+    result: UsageDeductionResult,
+    failureReason?: UsageDeductionResult["usageDeductionFailureReason"],
+  ): UsageDeductionResult => {
+    const coveredPoints =
+      result.includedPointsDeducted + result.extraUsagePointsDeducted;
+    const uncoveredPoints = Math.max(0, actualCostPoints - coveredPoints);
+    return {
+      ...result,
+      uncoveredPoints,
+      usageDeductionFailed: uncoveredPoints > 0 || !!failureReason,
+      ...(failureReason && { usageDeductionFailureReason: failureReason }),
+    };
+  };
 
   try {
     const { monthly, monthlyLimit } = createRateLimiter(
@@ -614,14 +650,14 @@ export const deductUsage = async (
           nonNegativePoints(extraUsageDeltaPoints) -
           nonNegativePoints(extraUsageRefundPoints),
       ),
+      uncoveredPoints: 0,
+      usageDeductionFailed: false,
     });
     lastKnownDeductionResult = buildDeductionResult();
 
     // Calculate actual cost - prefer provider cost if available.
     // Provider cost already includes non-model costs (sandbox/tools) when present.
     // When absent (non-clean streams), add non-model costs on top of token-based estimate.
-    let actualCostPoints: number;
-
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
       actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
     } else {
@@ -693,7 +729,8 @@ export const deductUsage = async (
     }
 
     // If actual cost equals estimate, nothing more to do
-    if (costDifference === 0) return lastKnownDeductionResult;
+    if (costDifference === 0)
+      return withFinalCoverage(lastKnownDeductionResult);
 
     // Otherwise, we need to charge the additional cost.
     // First, peek at remaining balance to avoid going negative.
@@ -712,27 +749,34 @@ export const deductUsage = async (
 
     // Send overflow to extra usage if enabled
     let extraUsageDeducted = 0;
-    if (
-      fromExtraUsage > 0 &&
-      extraUsageConfig?.enabled &&
-      (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
-    ) {
-      const isTeamPool = subscription === "team" && !!organizationId;
-      const deductResult = isTeamPool
-        ? await deductFromTeamBalance(organizationId!, userId, fromExtraUsage)
-        : await deductFromBalance(userId, fromExtraUsage);
-      if (deductResult.success) {
-        extraUsageDeducted = fromExtraUsage;
-        lastKnownDeductionResult = buildDeductionResult(
-          fromBucket,
-          extraUsageDeducted,
-        );
+    let failureReason:
+      UsageDeductionResult["usageDeductionFailureReason"] | undefined;
+    if (fromExtraUsage > 0) {
+      if (
+        extraUsageConfig?.enabled &&
+        (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
+      ) {
+        const isTeamPool = subscription === "team" && !!organizationId;
+        const deductResult = isTeamPool
+          ? await deductFromTeamBalance(organizationId!, userId, fromExtraUsage)
+          : await deductFromBalance(userId, fromExtraUsage);
+        if (deductResult.success) {
+          extraUsageDeducted = fromExtraUsage;
+          lastKnownDeductionResult = buildDeductionResult(
+            fromBucket,
+            extraUsageDeducted,
+          );
+        } else {
+          failureReason = getDeductionFailureReason(deductResult);
+        }
+      } else {
+        failureReason = "extra_usage_unavailable";
       }
     }
-    return lastKnownDeductionResult;
+    return withFinalCoverage(lastKnownDeductionResult, failureReason);
   } catch (error) {
     console.error("Failed to deduct usage:", error);
-    return lastKnownDeductionResult;
+    return withFinalCoverage(lastKnownDeductionResult, "deduction_failed");
   }
 };
 

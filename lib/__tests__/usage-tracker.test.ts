@@ -287,6 +287,35 @@ describe("UsageTracker", () => {
       });
       expect(result.includedCostDollars).toBeCloseTo(2);
       expect(result.extraUsageCostDollars).toBeCloseTo(1);
+      expect(result.uncoveredCostDollars).toBeCloseTo(0);
+      expect(result.uncoveredPoints).toBe(0);
+      expect(result.usageDeductionFailed).toBe(false);
+    });
+
+    it("splits uncovered cost away from paid extra usage", () => {
+      const result = tracker.resolveCostBreakdown(
+        10,
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 0,
+        },
+        {
+          includedPointsDeducted: 0,
+          extraUsagePointsDeducted: 50_000,
+          uncoveredPoints: 50_000,
+          usageDeductionFailed: true,
+          usageDeductionFailureReason: "insufficient_funds",
+        },
+      );
+
+      expect(result.includedCostDollars).toBeCloseTo(0);
+      expect(result.extraUsageCostDollars).toBeCloseTo(5);
+      expect(result.uncoveredCostDollars).toBeCloseTo(5);
+      expect(result.uncoveredPoints).toBe(50_000);
+      expect(result.usageDeductionFailed).toBe(true);
+      expect(result.usageDeductionFailureReason).toBe("insufficient_funds");
     });
   });
 
@@ -386,8 +415,12 @@ describe("UsageTracker", () => {
         type: "included",
         includedCostDollars: 0.01,
         extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
         includedPointsDeducted: 100,
         extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+        usageDeductionFailureReason: undefined,
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,

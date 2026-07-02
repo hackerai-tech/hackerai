@@ -72,10 +72,13 @@ jest.mock("stripe", () => {
 
 const ORIGINAL_STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const ORIGINAL_WORKOS_API_KEY = process.env.WORKOS_API_KEY;
+const ORIGINAL_SERVICE_KEY = process.env.CONVEX_SERVICE_ROLE_KEY;
+const SERVICE_KEY = "test-service-key";
 
 beforeAll(() => {
   process.env.STRIPE_SECRET_KEY = "sk_test";
   process.env.WORKOS_API_KEY = "workos_test";
+  process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
 });
 
 afterAll(() => {
@@ -88,6 +91,11 @@ afterAll(() => {
     delete process.env.WORKOS_API_KEY;
   } else {
     process.env.WORKOS_API_KEY = ORIGINAL_WORKOS_API_KEY;
+  }
+  if (ORIGINAL_SERVICE_KEY === undefined) {
+    delete process.env.CONVEX_SERVICE_ROLE_KEY;
+  } else {
+    process.env.CONVEX_SERVICE_ROLE_KEY = ORIGINAL_SERVICE_KEY;
   }
 });
 
@@ -113,6 +121,17 @@ async function callCreateBillingPortalSession(ctx: any) {
   return (createBillingPortalSession as any).handler(ctx, {
     flow: "payment_method",
     baseUrl: "https://hackerai.example/settings",
+  });
+}
+
+async function callDeductWithAutoReload(
+  ctx: any,
+  args: { userId: string; amountPoints: number },
+) {
+  const { deductWithAutoReload } = await import("../extraUsageActions");
+  return (deductWithAutoReload as any).handler(ctx, {
+    serviceKey: SERVICE_KEY,
+    ...args,
   });
 }
 
@@ -250,6 +269,87 @@ describe("extraUsageActions billing authorization", () => {
     expect(result).toEqual({
       url: "https://checkout.stripe.test/session",
       checkoutSessionId: "cs_test",
+    });
+  });
+});
+
+describe("deductWithAutoReload", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("attempts auto-reload when the request is larger than the current balance", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        balanceDollars: 20,
+        balancePoints: 200_000,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 1,
+        autoReloadThresholdPoints: 10_000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: false,
+        newBalancePoints: 200_000,
+        newBalanceDollars: 20,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReload(ctx, {
+      userId: "user_member",
+      amountPoints: 300_000,
+    });
+
+    expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+      userId: "user_member",
+      statuses: ["active"],
+    });
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: false, reason: "no_stripe_customer" },
+    });
+  });
+
+  it("does not auto-reload when the monthly cap cannot cover the request", async () => {
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        balanceDollars: 0,
+        balancePoints: 0,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 5,
+        autoReloadThresholdPoints: 50_000,
+        autoReloadAmountDollars: 50,
+        monthlyRemainingDollars: 1,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: false,
+        newBalancePoints: 0,
+        newBalanceDollars: 0,
+        insufficientFunds: false,
+        monthlyCapExceeded: true,
+      })),
+    };
+
+    const result = await callDeductWithAutoReload(ctx, {
+      userId: "user_member",
+      amountPoints: 20_000,
+    });
+
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      monthlyCapExceeded: true,
+      autoReloadTriggered: false,
     });
   });
 });

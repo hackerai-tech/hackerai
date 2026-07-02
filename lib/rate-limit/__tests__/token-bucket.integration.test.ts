@@ -348,6 +348,8 @@ describe("token-bucket async functions", () => {
       ).resolves.toEqual({
         includedPointsDeducted: 0,
         extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
       });
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
@@ -457,6 +459,8 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 23,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
       });
     });
 
@@ -493,6 +497,9 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 33,
+        uncoveredPoints: 10,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "deduction_failed",
       });
       consoleSpy.mockRestore();
     });
@@ -763,6 +770,50 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 33,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
+    it("reports uncovered points when overflow extra usage deduction fails", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 10,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      mockDeductFromBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+      });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+      );
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 33,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "insufficient_funds",
       });
     });
 

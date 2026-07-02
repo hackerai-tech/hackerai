@@ -16,6 +16,7 @@ jest.mock("convex/values", () => ({
     string: jest.fn(() => "string"),
     number: jest.fn(() => "number"),
     optional: jest.fn(() => "optional"),
+    boolean: jest.fn(() => "boolean"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
     null: jest.fn(() => "null"),
@@ -54,8 +55,12 @@ describe("usageLogs", () => {
       output_tokens: 50,
       total_tokens: 150,
       cost_dollars: 15,
-      included_cost_dollars: 9,
+      included_cost_dollars: 6,
       extra_usage_cost_dollars: 6,
+      uncovered_cost_dollars: 3,
+      uncovered_points: 30000,
+      usage_deduction_failed: true,
+      usage_deduction_failure_reason: "insufficient_funds",
       model_cost_dollars: 13,
       non_model_cost_dollars: 2,
       cost_source: "token_estimate",
@@ -68,15 +73,19 @@ describe("usageLogs", () => {
       non_model_cost_dollars: 2,
       cost_source: "raw_token_estimate",
     });
-    expect(inserted.included_cost_dollars).toBeCloseTo(7.2);
+    expect(inserted.included_cost_dollars).toBeCloseTo(4.8);
     expect(inserted.extra_usage_cost_dollars).toBeCloseTo(4.8);
+    expect(inserted.uncovered_cost_dollars).toBeCloseTo(2.4);
+    expect(inserted.uncovered_points).toBe(30000);
+    expect(inserted.usage_deduction_failed).toBe(true);
+    expect(inserted.usage_deduction_failure_reason).toBe("insufficient_funds");
 
     const unitEconomicsDelta = mockApplyUnitEconomicsDelta.mock.calls[0][1];
     expect(unitEconomicsDelta).toMatchObject({
       modelCostDollars: 10,
       nonModelCostDollars: 2,
     });
-    expect(unitEconomicsDelta.includedUsageCostDollars).toBeCloseTo(7.2);
+    expect(unitEconomicsDelta.includedUsageCostDollars).toBeCloseTo(4.8);
     expect(unitEconomicsDelta.extraUsageCostDollars).toBeCloseTo(4.8);
   });
 

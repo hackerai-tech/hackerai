@@ -18,6 +18,16 @@ export type UsageBillingType = "included" | "extra" | "mixed";
 export interface UsageBillingBreakdown {
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
+  uncoveredPoints?: number;
+  usageDeductionFailed?: boolean;
+  usageDeductionFailureReason?: string;
+}
+
+interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
+  includedPointsDeducted: number;
+  extraUsagePointsDeducted: number;
+  uncoveredPoints: number;
+  usageDeductionFailed: boolean;
 }
 
 export interface UsageCostRecord {
@@ -25,8 +35,12 @@ export interface UsageCostRecord {
   type: UsageBillingType;
   includedCostDollars: number;
   extraUsageCostDollars: number;
+  uncoveredCostDollars: number;
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
+  uncoveredPoints: number;
+  usageDeductionFailed: boolean;
+  usageDeductionFailureReason?: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -142,7 +156,7 @@ export class UsageTracker {
   getBillingBreakdown(
     rateLimitInfo: RateLimitInfo,
     billingBreakdown?: UsageBillingBreakdown,
-  ): UsageBillingBreakdown {
+  ): ResolvedUsageBillingBreakdown {
     return {
       includedPointsDeducted: Math.max(
         0,
@@ -156,6 +170,12 @@ export class UsageTracker {
           rateLimitInfo.extraUsagePointsDeducted ??
           0,
       ),
+      uncoveredPoints: Math.max(0, billingBreakdown?.uncoveredPoints ?? 0),
+      usageDeductionFailed:
+        billingBreakdown?.usageDeductionFailed === true ||
+        (billingBreakdown?.uncoveredPoints ?? 0) > 0,
+      usageDeductionFailureReason:
+        billingBreakdown?.usageDeductionFailureReason,
     };
   }
 
@@ -179,38 +199,51 @@ export class UsageTracker {
     UsageCostRecord,
     | "includedCostDollars"
     | "extraUsageCostDollars"
+    | "uncoveredCostDollars"
     | "includedPointsDeducted"
     | "extraUsagePointsDeducted"
+    | "uncoveredPoints"
+    | "usageDeductionFailed"
+    | "usageDeductionFailureReason"
   > {
-    const { includedPointsDeducted, extraUsagePointsDeducted } =
-      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
-    const totalPoints = includedPointsDeducted + extraUsagePointsDeducted;
+    const {
+      includedPointsDeducted,
+      extraUsagePointsDeducted,
+      uncoveredPoints,
+      usageDeductionFailed,
+      usageDeductionFailureReason,
+    } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    const totalPoints =
+      includedPointsDeducted + extraUsagePointsDeducted + uncoveredPoints;
 
-    if (extraUsagePointsDeducted <= 0 || totalPoints <= 0) {
+    if (totalPoints <= 0) {
       return {
         includedCostDollars: costDollars,
         extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
         includedPointsDeducted,
         extraUsagePointsDeducted,
+        uncoveredPoints,
+        usageDeductionFailed,
+        usageDeductionFailureReason,
       };
     }
 
-    if (includedPointsDeducted <= 0) {
-      return {
-        includedCostDollars: 0,
-        extraUsageCostDollars: costDollars,
-        includedPointsDeducted,
-        extraUsagePointsDeducted,
-      };
-    }
-
+    const includedCostDollars =
+      costDollars * (includedPointsDeducted / totalPoints);
     const extraUsageCostDollars =
       costDollars * (extraUsagePointsDeducted / totalPoints);
+    const uncoveredCostDollars =
+      costDollars - includedCostDollars - extraUsageCostDollars;
     return {
-      includedCostDollars: costDollars - extraUsageCostDollars,
+      includedCostDollars,
       extraUsageCostDollars,
+      uncoveredCostDollars,
       includedPointsDeducted,
       extraUsagePointsDeducted,
+      uncoveredPoints,
+      usageDeductionFailed,
+      usageDeductionFailureReason,
     };
   }
 
@@ -304,6 +337,10 @@ export class UsageTracker {
       extraUsageCostDollars: usage.extraUsageCostDollars,
       includedPointsDeducted: usage.includedPointsDeducted,
       extraUsagePointsDeducted: usage.extraUsagePointsDeducted,
+      uncoveredCostDollars: usage.uncoveredCostDollars,
+      uncoveredPoints: usage.uncoveredPoints,
+      usageDeductionFailed: usage.usageDeductionFailed,
+      usageDeductionFailureReason: usage.usageDeductionFailureReason,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,

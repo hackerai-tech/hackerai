@@ -48,9 +48,7 @@ const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
-  | "token_threshold"
-  | "provider_input_threshold"
-  | "provider_pressure";
+  "token_threshold" | "provider_input_threshold" | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -654,8 +652,7 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
     const usageForSave = sanitizeForConvexValue(usage) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1019,8 +1016,7 @@ export async function getMessagesByChatId({
             );
             const budgetForMessages = maxTokens - summaryTokens;
             const retainedTail = latestSummary.retained_tail as
-              | RetainedTailMetadata
-              | undefined;
+              RetainedTailMetadata | undefined;
             let truncatedAfterCutoff: UIMessage[] = [];
 
             if (budgetForMessages > 0 && retainedTail) {
@@ -1592,8 +1588,12 @@ export async function logUsageRecord({
   type,
   includedCostDollars,
   extraUsageCostDollars,
+  uncoveredCostDollars,
   includedPointsDeducted,
   extraUsagePointsDeducted,
+  uncoveredPoints,
+  usageDeductionFailed,
+  usageDeductionFailureReason,
   inputTokens,
   outputTokens,
   totalTokens,
@@ -1614,8 +1614,12 @@ export async function logUsageRecord({
   type: "included" | "extra" | "mixed";
   includedCostDollars?: number;
   extraUsageCostDollars?: number;
+  uncoveredCostDollars?: number;
   includedPointsDeducted?: number;
   extraUsagePointsDeducted?: number;
+  uncoveredPoints?: number;
+  usageDeductionFailed?: boolean;
+  usageDeductionFailureReason?: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -1639,8 +1643,12 @@ export async function logUsageRecord({
       type,
       included_cost_dollars: includedCostDollars,
       extra_usage_cost_dollars: extraUsageCostDollars,
+      uncovered_cost_dollars: uncoveredCostDollars,
       included_points_deducted: includedPointsDeducted,
       extra_usage_points_deducted: extraUsagePointsDeducted,
+      uncovered_points: uncoveredPoints,
+      usage_deduction_failed: usageDeductionFailed,
+      usage_deduction_failure_reason: usageDeductionFailureReason,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,

@@ -7,7 +7,10 @@ import {
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
-import { AGENT_MAX_STREAM_DURATION_MS } from "@/lib/chat/stop-conditions";
+import {
+  AGENT_MAX_STREAM_DURATION_MS,
+  BUDGET_EXHAUSTION_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -176,8 +179,7 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      | ReturnType<typeof createPreemptiveTimeout>
-      | undefined;
+      ReturnType<typeof createPreemptiveTimeout> | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -404,8 +406,7 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        | PaidDailyFreeAllowanceReservation
-        | undefined;
+        PaidDailyFreeAllowanceReservation | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -993,9 +994,26 @@ export const createChatHandler = () => {
                     organizationId,
                     rateLimitInfo,
                   );
+                  if (deductionResult.uncoveredPoints > 0) {
+                    state.stoppedDueToBudgetExhaustion = true;
+                    state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
+                    phLogger.warn("Usage deduction left uncovered cost", {
+                      chatId,
+                      endpoint,
+                      mode,
+                      userId,
+                      organizationId,
+                      subscription,
+                      selectedModel,
+                      uncoveredPoints: deductionResult.uncoveredPoints,
+                      usageDeductionFailureReason:
+                        deductionResult.usageDeductionFailureReason,
+                    });
+                  }
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0
+                    deductionResult.extraUsagePointsDeducted > 0 ||
+                    deductionResult.uncoveredPoints > 0
                       ? deductionResult
                       : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({

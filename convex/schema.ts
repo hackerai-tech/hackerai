@@ -602,8 +602,12 @@ export default defineSchema({
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
+    uncovered_cost_dollars: v.optional(v.number()),
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
+    uncovered_points: v.optional(v.number()),
+    usage_deduction_failed: v.optional(v.boolean()),
+    usage_deduction_failure_reason: v.optional(v.string()),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(

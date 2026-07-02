@@ -671,6 +671,47 @@ describe("deductWithAutoReloadForTeam", () => {
       autoReloadTriggered: false,
     });
   });
+
+  it("checks auto-reload when the request is larger than the current balance", async () => {
+    mockGetOrganization.mockResolvedValue({ stripeCustomerId: null });
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        enabled: true,
+        balanceDollars: 20,
+        balancePoints: 200_000,
+        autoReloadEnabled: true,
+        autoReloadThresholdDollars: 1,
+        autoReloadThresholdPoints: 10_000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      })),
+      runMutation: jest.fn(async () => ({
+        success: false,
+        newBalancePoints: 200_000,
+        newBalanceDollars: 20,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: false,
+      })),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 300_000,
+    });
+
+    expect(mockGetOrganization).toHaveBeenCalledWith(ORG_ID);
+    expect(ctx.runMutation).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      insufficientFunds: true,
+      autoReloadTriggered: true,
+      autoReloadResult: { success: false, reason: "no_stripe_customer" },
+    });
+  });
 });
 
 describe("refundTeamPoints", () => {

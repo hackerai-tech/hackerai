@@ -125,7 +125,10 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
-import { PREEMPTIVE_TIMEOUT_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import {
+  BUDGET_EXHAUSTION_FINISH_REASON,
+  PREEMPTIVE_TIMEOUT_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
 import {
   omitImageViewToolResultsForProviderRetry,
@@ -546,8 +549,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -564,8 +566,7 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -1486,9 +1487,26 @@ export const agentLongTask = task({
                     organizationId,
                     rateLimitInfo,
                   );
+                  if (deductionResult.uncoveredPoints > 0) {
+                    state.stoppedDueToBudgetExhaustion = true;
+                    state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
+                    phLogger.warn("Usage deduction left uncovered cost", {
+                      chatId,
+                      endpoint: "/api/agent-long",
+                      mode,
+                      userId,
+                      organizationId,
+                      subscription,
+                      selectedModel,
+                      uncoveredPoints: deductionResult.uncoveredPoints,
+                      usageDeductionFailureReason:
+                        deductionResult.usageDeductionFailureReason,
+                    });
+                  }
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0
+                    deductionResult.extraUsagePointsDeducted > 0 ||
+                    deductionResult.uncoveredPoints > 0
                       ? deductionResult
                       : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({
