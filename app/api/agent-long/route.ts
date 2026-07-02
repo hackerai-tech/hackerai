@@ -22,7 +22,12 @@ import {
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
-import type { Todo, SandboxPreference, SelectedModel } from "@/types";
+import type {
+  Todo,
+  SandboxPreference,
+  SelectedModel,
+  SubscriptionTier,
+} from "@/types";
 import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import {
@@ -39,6 +44,20 @@ import {
 } from "@/lib/utils/sandbox-file-utils";
 
 export const maxDuration = 30;
+
+const AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<
+  SubscriptionTier,
+  number
+> = {
+  free: 0,
+  pro: 5,
+  "pro-plus": 5,
+  ultra: 10,
+  team: 5,
+};
+
+const getAgentLongTriggerPriority = (subscription: SubscriptionTier) =>
+  AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
 export async function POST(req: NextRequest) {
   const routeStartedAt = Date.now();
@@ -211,6 +230,7 @@ export async function POST(req: NextRequest) {
       temporary || localDesktopAttachmentsPrepared ? messagesForTrigger : [];
 
     const triggerRequestedAt = Date.now();
+    const triggerPriority = getAgentLongTriggerPriority(subscription);
     const handle = await tasks.trigger<typeof agentLongTask>(
       "agent-long",
       {
@@ -236,6 +256,7 @@ export async function POST(req: NextRequest) {
         },
       },
       {
+        ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
         tags: triggerTags,
         ...(triggerRegion ? { region: triggerRegion } : {}),
         metadata: {
@@ -246,6 +267,7 @@ export async function POST(req: NextRequest) {
           loginRequired: false,
           routeStartedAt,
           triggerRequestedAt,
+          triggerPriority,
           triggerPayloadMessageCount: messagesForPayload.length,
         },
       },
