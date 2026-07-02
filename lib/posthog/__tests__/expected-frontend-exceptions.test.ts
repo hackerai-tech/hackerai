@@ -71,25 +71,12 @@ describe("shouldDropExpectedFrontendException", () => {
     }
   });
 
-  it("drops manual chat stop aborts only when the stack is app-owned", () => {
+  it("drops exact manual chat stop aborts", () => {
     expect(
       shouldDropExpectedFrontendException({
         event: "$exception",
         properties: {
           $exception_values: ["AbortError: Fetch is aborted"],
-          $exception_list: [
-            {
-              stacktrace: {
-                frames: [
-                  {
-                    source:
-                      "turbopack:///[project]/app/hooks/useChatHandlers.ts",
-                    resolved_name: "handleStop",
-                  },
-                ],
-              },
-            },
-          ],
         },
       }),
     ).toBe(true);
@@ -98,10 +85,44 @@ describe("shouldDropExpectedFrontendException", () => {
       shouldDropExpectedFrontendException({
         event: "$exception",
         properties: {
-          $exception_values: ["AbortError: Fetch is aborted"],
+          $exception_values: ["AbortError: The user aborted a request."],
         },
       }),
     ).toBe(false);
+  });
+
+  it("drops exact React DOM mutation noise", () => {
+    for (const value of [
+      "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
+      "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_types: ["DOMException"],
+            $exception_values: [value],
+          },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("drops exact opaque synthetic browser exceptions", () => {
+    for (const value of [
+      "Event captured as exception with keys: isTrusted",
+      "'Error' captured as exception with message: 'Aa'",
+      "'TypeError' captured as exception with message: 'undefined is not an object (evaluating 'a.J')'",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: [value],
+          },
+        }),
+      ).toBe(true);
+    }
   });
 
   it("drops expected auth refresh failures only with auth stack sources", () => {
@@ -217,7 +238,7 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(false);
   });
 
-  it("drops Trigger stream double-close noise only with Trigger stream frames", () => {
+  it("drops exact Trigger stream double-close noise", () => {
     for (const value of [
       "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close an errored readable stream",
       "Failed to execute 'close' on 'ReadableStreamDefaultController': ReadableStreamDefaultController is not in a state where it can be closed",
@@ -244,15 +265,6 @@ describe("shouldDropExpectedFrontendException", () => {
           },
         }),
       ).toBe(true);
-
-      expect(
-        shouldDropExpectedFrontendException({
-          event: "$exception",
-          properties: {
-            $exception_values: [value],
-          },
-        }),
-      ).toBe(false);
     }
   });
 });

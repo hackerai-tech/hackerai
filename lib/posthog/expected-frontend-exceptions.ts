@@ -10,6 +10,21 @@ const RESIZE_OBSERVER_MESSAGES = new Set([
   "ResizeObserver loop limit exceeded",
 ]);
 
+const MANUAL_CHAT_STOP_ABORT_MESSAGES = new Set([
+  "AbortError: Fetch is aborted",
+]);
+
+const REACT_DOM_MUTATION_MESSAGES = new Set([
+  "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
+  "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+]);
+
+const OPAQUE_SYNTHETIC_MESSAGES = new Set([
+  "Event captured as exception with keys: isTrusted",
+  "'Error' captured as exception with message: 'Aa'",
+  "'TypeError' captured as exception with message: 'undefined is not an object (evaluating 'a.J')'",
+]);
+
 const TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS = [
   "Failed to execute 'close' on 'ReadableStreamDefaultController': Cannot close an errored readable stream",
   "ReadableStreamDefaultController is not in a state where it can be closed",
@@ -46,6 +61,11 @@ const includesAny = (strings: string[], fragments: string[]): boolean =>
 const hasExactString = (strings: string[], expected: string): boolean =>
   strings.some((value) => value === expected);
 
+const hasExactStringFrom = (
+  strings: string[],
+  expected: Set<string>,
+): boolean => strings.some((value) => expected.has(value));
+
 const hasResizeObserverMessage = (strings: string[]): boolean =>
   strings.some((value) => RESIZE_OBSERVER_MESSAGES.has(value));
 
@@ -58,10 +78,6 @@ type ExpectedFrontendPattern = {
 };
 
 const EXPECTED_FRONTEND_PATTERNS: ExpectedFrontendPattern[] = [
-  {
-    message: "AbortError: Fetch is aborted",
-    sourceFragments: ["app/hooks/useChatHandlers.ts"],
-  },
   {
     message: "Failed to refresh access token",
     sourceFragments: [
@@ -89,11 +105,7 @@ const matchesExpectedFrontendPattern = (strings: string[]): boolean =>
   );
 
 const matchesTriggerStreamClosePattern = (strings: string[]): boolean =>
-  hasTriggerStreamCloseMessage(strings) &&
-  includesAny(strings, [
-    "@trigger.dev/core/src/v3/streams/asyncIterableStream.ts",
-    "@trigger.dev+core",
-  ]);
+  hasTriggerStreamCloseMessage(strings);
 
 export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   if (event.event !== "$exception") {
@@ -108,6 +120,9 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
 
   return (
     hasResizeObserverMessage(strings) ||
+    hasExactStringFrom(strings, MANUAL_CHAT_STOP_ABORT_MESSAGES) ||
+    hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES) ||
+    hasExactStringFrom(strings, OPAQUE_SYNTHETIC_MESSAGES) ||
     matchesExpectedFrontendPattern(strings) ||
     matchesTriggerStreamClosePattern(strings)
   );
