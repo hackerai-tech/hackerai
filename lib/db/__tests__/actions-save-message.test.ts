@@ -40,10 +40,16 @@ const loadSaveMessageWithMocks = async () => {
     compactMessageForStorage: mockCompactMessageForStorage,
   }));
 
-  const { deleteChatForBackend, getMessagesByChatId, saveChat, saveMessage } =
-    await import("../actions");
+  const {
+    deleteChatForBackend,
+    getChatById,
+    getMessagesByChatId,
+    saveChat,
+    saveMessage,
+  } = await import("../actions");
   return {
     deleteChatForBackend,
+    getChatById,
     getMessagesByChatId,
     mockCompactMessageForStorage,
     mockMutation,
@@ -121,9 +127,9 @@ describe("saveChat", () => {
       }).catch((error) => error);
 
       expect(thrown).toMatchObject({
-        type: "bad_request",
+        type: "offline",
         surface: "database",
-        statusCode: 400,
+        statusCode: 503,
         metadata: expect.objectContaining({
           db_operation: "chats.saveChat",
           db_error_name: "ConvexError",
@@ -131,6 +137,7 @@ describe("saveChat", () => {
           db_request_id: "abc",
           db_error_code: "CHAT_SAVE_FAILED",
           db_failure_stage: "insert_chat",
+          db_retry_reason: "worker_overloaded",
           chat_id: "chat-1",
           user_id: "user-1",
           title_length: 100,
@@ -144,10 +151,97 @@ describe("saveChat", () => {
           db_request_id: "abc",
           db_error_code: "CHAT_SAVE_FAILED",
           db_failure_stage: "insert_chat",
+          db_retry_reason: "worker_overloaded",
           chat_id: "chat-1",
           user_id: "user-1",
           userId: "user-1",
           title_length: 100,
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("getChatById", () => {
+  it("retries transient Convex fetch failures before returning a chat", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    const fetchError = new TypeError("fetch failed");
+    mockQuery
+      .mockRejectedValueOnce(fetchError as never)
+      .mockRejectedValueOnce(fetchError as never)
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" } as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(getChatById({ id: "chat-1" })).resolves.toEqual({
+        id: "chat-1",
+        user_id: "user-1",
+      });
+
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_fetch_retry_scheduled");
+
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "network_fetch_failed",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+      });
+      expect(retryEvents[1]).toMatchObject({
+        retry_reason: "network_fetch_failed",
+        attempt: 2,
+        next_attempt: 3,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("classifies exhausted transient fetch failures as database availability errors", async () => {
+    const { getChatById, mockPhEvent, mockQuery } =
+      await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(new TypeError("fetch failed") as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await getChatById({ id: "chat-1" }).catch(
+        (error) => error,
+      );
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.getChatById",
+          db_error_name: "TypeError",
+          db_error_message: "fetch failed",
+          db_retry_reason: "network_fetch_failed",
+          chat_id: "chat-1",
+        }),
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_operation: "chats.getChatById",
+          db_error_name: "TypeError",
+          db_error_message: "fetch failed",
+          db_retry_reason: "network_fetch_failed",
+          chat_id: "chat-1",
         }),
       );
       expect(errorSpy).toHaveBeenCalledTimes(1);
