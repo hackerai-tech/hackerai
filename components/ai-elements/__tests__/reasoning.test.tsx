@@ -43,8 +43,10 @@ describe("Reasoning", () => {
     );
 
     expect(screen.getByText("Reasoning")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Visible reasoning text"),
-    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Visible reasoning text"),
+      ).not.toBeInTheDocument();
+    });
   });
 });
