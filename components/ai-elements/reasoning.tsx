@@ -47,7 +47,7 @@ export function Reasoning({
   });
 
   useEffect(() => {
-    if (isStreaming) setIsOpen(true);
+    setIsOpen(isStreaming);
   }, [isStreaming, setIsOpen]);
 
   const contextValue = useMemo(

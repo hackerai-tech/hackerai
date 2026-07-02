@@ -23,7 +23,7 @@ describe("Reasoning", () => {
     expect(content).toHaveClass("[overflow-wrap:anywhere]");
   });
 
-  it("keeps visible reasoning open after streaming stops", async () => {
+  it("keeps the reasoning row visible but collapses content after streaming stops", async () => {
     const { rerender } = render(
       <Reasoning isStreaming>
         <ReasoningTrigger />
@@ -42,6 +42,9 @@ describe("Reasoning", () => {
       </Reasoning>,
     );
 
-    expect(screen.getByText("Visible reasoning text")).toBeVisible();
+    expect(screen.getByText("Reasoning")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Visible reasoning text"),
+    ).not.toBeInTheDocument();
   });
 });
