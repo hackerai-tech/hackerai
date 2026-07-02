@@ -71,9 +71,20 @@ type FileViewStage = "initial_inspection" | "model_output";
 type FileViewErrorClassification = {
   failureReason: string;
   failureDetail: string;
+  failureCategory: FileViewFailureCategory;
+  expectedFailure: boolean;
+  imageValidationReason?: string;
   errorName?: string;
   errorMessageHash: string;
 };
+
+type FileViewFailureCategory =
+  | "image_validation"
+  | "inspection_protocol"
+  | "missing_file"
+  | "sandbox_lifecycle"
+  | "unsupported_capability"
+  | "unsupported_input";
 
 const VIEW_FILE_SCRIPT = String.raw`
 import base64
@@ -340,82 +351,156 @@ function getPathTelemetry(path: string, userId: string) {
   };
 }
 
+function getFailureCategory(
+  failureReason?: string,
+  failureDetail?: string,
+): FileViewFailureCategory | undefined {
+  if (!failureReason && !failureDetail) return undefined;
+
+  if (
+    failureReason === "unsupported_model" ||
+    failureReason === "unsupported_sandbox"
+  ) {
+    return "unsupported_capability";
+  }
+  if (
+    failureReason === "unsupported_media_type" ||
+    failureReason === "unsupported_svg" ||
+    failureReason === "file_too_large"
+  ) {
+    return "unsupported_input";
+  }
+  if (failureReason === "file_not_found") return "missing_file";
+  if (
+    failureReason === "sandbox_unavailable" ||
+    failureReason === "sandbox_timeout"
+  ) {
+    return "sandbox_lifecycle";
+  }
+  if (
+    failureReason === "image_validation_failed" ||
+    failureDetail === "invalid_image_data"
+  ) {
+    return "image_validation";
+  }
+  if (failureReason === "inspection_error") return "inspection_protocol";
+
+  return undefined;
+}
+
+function isExpectedFileViewFailure(
+  failureCategory?: FileViewFailureCategory,
+): boolean | undefined {
+  if (!failureCategory) return undefined;
+  return (
+    failureCategory === "unsupported_capability" ||
+    failureCategory === "unsupported_input"
+  );
+}
+
+function extractImageValidationReason(message: string): string | undefined {
+  const match = message.match(
+    /^View inspection found invalid image data \(([a-zA-Z0-9_]+)\)\.$/,
+  );
+  return match?.[1];
+}
+
 function classifyFileViewError(error: unknown): FileViewErrorClassification {
   const message = error instanceof Error ? error.message : String(error);
   const base = {
     errorName: error instanceof Error ? error.name : undefined,
     errorMessageHash: hashTelemetryValue(message),
   };
+  const build = (classification: {
+    failureReason: string;
+    failureDetail: string;
+    imageValidationReason?: string;
+  }): FileViewErrorClassification => {
+    const failureCategory = getFailureCategory(
+      classification.failureReason,
+      classification.failureDetail,
+    );
+    return {
+      ...base,
+      ...classification,
+      failureCategory: failureCategory ?? "inspection_protocol",
+      expectedFailure: isExpectedFileViewFailure(failureCategory) ?? false,
+    };
+  };
+
+  if (base.errorName === "SandboxNotFoundError") {
+    return build({
+      failureReason: "sandbox_unavailable",
+      failureDetail: "sandbox_not_found",
+    });
+  }
+  if (base.errorName === "TimeoutError") {
+    return build({
+      failureReason: "sandbox_timeout",
+      failureDetail: "sandbox_command_timeout",
+    });
+  }
 
   if (message.includes("Unsupported media type")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_media_type",
       failureDetail: "unsupported_media_type",
-    };
+    });
   }
   if (message.includes("too large")) {
-    return {
-      ...base,
+    return build({
       failureReason: "file_too_large",
       failureDetail: "file_too_large",
-    };
+    });
   }
   if (message.includes("File not found")) {
-    return {
-      ...base,
+    return build({
       failureReason: "file_not_found",
       failureDetail: "file_not_found",
-    };
+    });
   }
   if (message.includes("Windows local sandboxes")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_sandbox",
       failureDetail: "windows_local_sandbox",
-    };
+    });
   }
   if (message.includes("SVG files")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_svg",
       failureDetail: "unsupported_svg",
-    };
+    });
   }
   if (message.includes("Failed to inspect file for view")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "invalid_inspection_output",
-    };
+    });
   }
   if (message.includes("View inspection returned an invalid payload")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "invalid_payload",
-    };
+    });
   }
   if (message.includes("View inspection did not return image data")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "missing_image_data",
-    };
+    });
   }
   if (message.includes("View inspection found invalid image data")) {
-    return {
-      ...base,
-      failureReason: "inspection_error",
+    return build({
+      failureReason: "image_validation_failed",
       failureDetail: "invalid_image_data",
-    };
+      imageValidationReason: extractImageValidationReason(message),
+    });
   }
 
-  return {
-    ...base,
+  return build({
     failureReason: "inspection_error",
     failureDetail: "inspection_error",
-  };
+  });
 }
 
 function captureFileViewImageUsage(args: {
@@ -430,6 +515,9 @@ function captureFileViewImageUsage(args: {
   previewUploadSucceeded?: boolean;
   failureReason?: string;
   failureDetail?: string;
+  failureCategory?: FileViewFailureCategory;
+  expectedFailure?: boolean;
+  imageValidationReason?: string;
   errorName?: string;
   errorMessageHash?: string;
 }) {
@@ -445,9 +533,16 @@ function captureFileViewImageUsage(args: {
     previewUploadSucceeded,
     failureReason,
     failureDetail,
+    failureCategory,
+    expectedFailure,
+    imageValidationReason,
     errorName,
     errorMessageHash,
   } = args;
+  const derivedFailureCategory =
+    failureCategory ?? getFailureCategory(failureReason, failureDetail);
+  const derivedExpectedFailure =
+    expectedFailure ?? isExpectedFileViewFailure(derivedFailureCategory);
 
   phLogger.event("file_view_image_used", {
     userId: context.userID,
@@ -472,6 +567,13 @@ function captureFileViewImageUsage(args: {
     }),
     ...(failureReason && { failure_reason: failureReason }),
     ...(failureDetail && { failure_detail: failureDetail }),
+    ...(derivedFailureCategory && { failure_category: derivedFailureCategory }),
+    ...(typeof derivedExpectedFailure === "boolean" && {
+      expected_failure: derivedExpectedFailure,
+    }),
+    ...(imageValidationReason && {
+      image_validation_reason: imageValidationReason,
+    }),
     ...(errorName && { error_name: errorName }),
     ...(errorMessageHash && { error_message_hash: errorMessageHash }),
   });
@@ -1195,6 +1297,9 @@ ${instructionsDescription}`,
                 durationMs: Date.now() - viewStartedAt,
                 failureReason: classification.failureReason,
                 failureDetail: classification.failureDetail,
+                failureCategory: classification.failureCategory,
+                expectedFailure: classification.expectedFailure,
+                imageValidationReason: classification.imageValidationReason,
                 errorName: classification.errorName,
                 errorMessageHash: classification.errorMessageHash,
               });
@@ -1548,6 +1653,9 @@ ${instructionsDescription}`,
                 previewUploadSucceeded: viewOutput.previewUploadSucceeded,
                 failureReason: classification.failureReason,
                 failureDetail: classification.failureDetail,
+                failureCategory: classification.failureCategory,
+                expectedFailure: classification.expectedFailure,
+                imageValidationReason: classification.imageValidationReason,
                 errorName: classification.errorName,
                 errorMessageHash: classification.errorMessageHash,
               });

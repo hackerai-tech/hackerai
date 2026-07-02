@@ -524,6 +524,8 @@ describe("file tool image view", () => {
         success: false,
         failure_reason: "file_not_found",
         failure_detail: "file_not_found",
+        failure_category: "missing_file",
+        expected_failure: false,
         error_name: "Error",
         error_message_hash: expect.any(String),
         file_extension: undefined,
@@ -536,6 +538,40 @@ describe("file tool image view", () => {
       }),
     );
     expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
+  });
+
+  test("classifies unavailable sandbox failures separately from inspection errors", async () => {
+    const sandboxError = new Error("Sandbox is no longer available");
+    sandboxError.name = "SandboxNotFoundError";
+    const commandRun = jest.fn(async () => {
+      throw sandboxError;
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(makeContext(sandbox));
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect a screenshot after sandbox expiry",
+    });
+
+    expect(result).toEqual({ error: "Sandbox is no longer available" });
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "file_view_image_used",
+      expect.objectContaining({
+        stage: "initial_inspection",
+        outcome: "inspection_failed",
+        success: false,
+        failure_reason: "sandbox_unavailable",
+        failure_detail: "sandbox_not_found",
+        failure_category: "sandbox_lifecycle",
+        expected_failure: false,
+        error_name: "SandboxNotFoundError",
+        error_message_hash: expect.any(String),
+        file_extension: "png",
+        path_prefix_class: "tmp",
+      }),
+    );
   });
 
   test("keeps successful image handoff when success telemetry throws", async () => {
@@ -630,8 +666,11 @@ describe("file tool image view", () => {
         stage: "model_output",
         outcome: "inspection_failed",
         success: false,
-        failure_reason: "inspection_error",
+        failure_reason: "image_validation_failed",
         failure_detail: "invalid_image_data",
+        failure_category: "image_validation",
+        expected_failure: false,
+        image_validation_reason: "missing_png_ihdr",
         error_name: "Error",
         error_message_hash: expect.any(String),
         media_type: "image/png",
