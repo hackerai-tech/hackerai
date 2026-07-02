@@ -146,9 +146,11 @@ const AutoReloadDialogContent = ({
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          You agree that HackerAI will charge the card you have on file in the
-          amount above on a recurring basis whenever your balance reaches the
-          amount indicated. To cancel, turn off auto-reload.
+          By turning this on, you agree that HackerAI may charge your card on
+          file when your extra usage balance is low. Auto-reload usually tops
+          your balance up to the amount above; if a request costs more, it may
+          charge enough to cover that request. Set a monthly spending limit to
+          cap auto-reload charges. To cancel, turn off auto-reload.
         </p>
       </div>
       <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
