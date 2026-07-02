@@ -1005,7 +1005,10 @@ export const createChatHandler = () => {
                   );
                   if (deductionResult.uncoveredPoints > 0) {
                     state.stoppedDueToBudgetExhaustion = true;
-                    state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
+                    if (state.streamFinishReason !== "error") {
+                      state.streamFinishReason =
+                        BUDGET_EXHAUSTION_FINISH_REASON;
+                    }
                     phLogger.warn("Usage deduction left uncovered cost", {
                       chatId,
                       endpoint,
@@ -1022,7 +1025,9 @@ export const createChatHandler = () => {
                   const billingBreakdown =
                     deductionResult.includedPointsDeducted > 0 ||
                     deductionResult.extraUsagePointsDeducted > 0 ||
-                    deductionResult.uncoveredPoints > 0
+                    deductionResult.uncoveredPoints > 0 ||
+                    deductionResult.usageDeductionFailed ||
+                    !!deductionResult.usageDeductionFailureReason
                       ? deductionResult
                       : undefined;
                   usageCostRecord = usageTracker.createUsageCostRecord({
