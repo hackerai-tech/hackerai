@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { phLogger } from "@/lib/posthog/server";
 import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import type { ToolContext } from "@/types";
@@ -59,12 +60,6 @@ const getUrlHostname = (url: string): string => {
     return "invalid_url";
   }
 };
-
-const getEnvironment = (): string =>
-  process.env.VERCEL_ENV ??
-  process.env.NODE_ENV ??
-  process.env.ENVIRONMENT ??
-  "unknown";
 
 const isOpenUrlNetworkError = (error: unknown): boolean => {
   const errorCode = getNestedErrorCode(error);
@@ -131,29 +126,25 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         const errorCode = getNestedErrorCode(error);
         const errorMessage = stringifyRedactedError(error);
         const logFields = {
-          timestamp: new Date().toISOString(),
-          level: isNetworkFailure ? "warn" : "error",
           event: isNetworkFailure
             ? "open_url_fetch_failed"
             : "open_url_tool_failed",
-          service: process.env.POSTHOG_LOG_SERVICE_NAME ?? "hackerai-web",
-          environment: getEnvironment(),
           provider: "jina",
           url_hostname: getUrlHostname(url),
           duration_ms: Date.now() - startedAt,
           ...(context?.chatId && { chat_id: context.chatId }),
-          ...(context?.userID && { user_id: context.userID }),
+          ...(context?.userID && { userId: context.userID }),
           ...(errorCode && { error_code: errorCode }),
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
 
         if (isNetworkFailure) {
-          console.warn("Open URL provider fetch failed", logFields);
+          phLogger.warn("Open URL provider fetch failed", logFields);
           return "Error opening URL: The URL reader timed out or could not reach the page. Do not retry the same URL unless the user asks.";
         }
 
-        console.error("Open URL tool error", logFields);
+        phLogger.error("Open URL tool error", logFields);
         return `Error opening URL: ${errorMessage}`;
       }
     },
