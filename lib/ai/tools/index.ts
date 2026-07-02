@@ -146,7 +146,7 @@ export const createTools = (
         web_search: createWebSearch(context),
       }),
       ...(process.env.JINA_API_KEY && {
-        open_url: createOpenUrlTool(),
+        open_url: createOpenUrlTool(context),
       }),
     };
 
@@ -164,7 +164,7 @@ export const createTools = (
             web_search: createWebSearch(context),
           }),
           ...(process.env.JINA_API_KEY && {
-            open_url: createOpenUrlTool(),
+            open_url: createOpenUrlTool(context),
           }),
         }
       : allTools;
