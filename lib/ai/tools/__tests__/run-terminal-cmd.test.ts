@@ -398,7 +398,86 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         output_truncated: true,
         pid: 123,
         termination_attempted: true,
+        termination_succeeded: true,
       });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not report noisy timeout termination when PID discovery fails", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const noisyOutput = "line with repeated output\n".repeat(20_000);
+    const pendingCommand = new Promise<never>(() => {});
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          (
+            command: string,
+            opts?: { onStdout?: (s: string) => void },
+          ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+            if (command.startsWith("pgrep -f")) {
+              return Promise.resolve({
+                stdout: "",
+                stderr: "",
+                exitCode: 1,
+              });
+            }
+
+            opts?.onStdout?.(noisyOutput);
+            return pendingCommand;
+          },
+        ),
+      },
+    };
+
+    try {
+      const { context } = makeContext({ sandbox: nonE2B });
+      const tool = createRunTerminalCmd(context);
+
+      const result = (await runTool(tool, {
+        command: "yes",
+        brief: "run noisy command",
+        is_background: false,
+        timeout: 0.01,
+      })) as {
+        result: {
+          output: string;
+          exitCode: number | null;
+          terminatedOnTimeout?: boolean;
+        };
+      };
+
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.terminatedOnTimeout).toBeUndefined();
+      expect(result.result.output).toContain("continues in background");
+      expect(result.result.output).not.toContain(
+        "noisy foreground process was terminated",
+      );
+      expect(nonE2B.commands.run).not.toHaveBeenCalledWith("kill -9 123", {});
+
+      const noisyTimeoutLog = warnSpy.mock.calls
+        .map(([line]) => {
+          try {
+            return JSON.parse(String(line));
+          } catch {
+            return null;
+          }
+        })
+        .find((line) => line?.event === "agent_terminal_noisy_timeout");
+
+      expect(noisyTimeoutLog).toMatchObject({
+        event: "agent_terminal_noisy_timeout",
+        chat_id: "chat-1",
+        user_id: "u1",
+        tool_call_id: "call-1",
+        output_truncated: true,
+        termination_attempted: false,
+        termination_succeeded: false,
+      });
+      expect(noisyTimeoutLog?.pid).toBeUndefined();
     } finally {
       warnSpy.mockRestore();
     }

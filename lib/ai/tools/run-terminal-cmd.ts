@@ -437,6 +437,7 @@ In using these tools, adhere to the following guidelines:
 
             const logNoisyTimeout = (fields: {
               terminationAttempted: boolean;
+              terminationSucceeded: boolean;
               processId: number | null;
               terminationError?: unknown;
             }) => {
@@ -460,6 +461,7 @@ In using these tools, adhere to the following guidelines:
                     sandboxManager.getSandboxType("run_terminal_cmd"),
                   pid: fields.processId ?? undefined,
                   termination_attempted: fields.terminationAttempted,
+                  termination_succeeded: fields.terminationSucceeded,
                   termination_error:
                     fields.terminationError instanceof Error
                       ? fields.terminationError.message
@@ -578,6 +580,7 @@ In using these tools, adhere to the following guidelines:
                   }
 
                   let terminationAttempted = false;
+                  let terminationSucceeded = false;
                   let terminationError: unknown;
                   if (terminateNoisyCommand) {
                     terminationAttempted = Boolean(
@@ -585,7 +588,7 @@ In using these tools, adhere to the following guidelines:
                     );
                     try {
                       if (terminationAttempted) {
-                        await terminateProcessReliably(
+                        terminationSucceeded = await terminateProcessReliably(
                           sandboxInstance,
                           execution,
                           processId,
@@ -596,12 +599,15 @@ In using these tools, adhere to the following guidelines:
                     }
                     logNoisyTimeout({
                       terminationAttempted,
+                      terminationSucceeded,
                       processId,
                       terminationError,
                     });
                   }
 
-                  const timeoutMessage = terminateNoisyCommand
+                  const commandTerminated =
+                    terminateNoisyCommand && terminationSucceeded;
+                  const timeoutMessage = commandTerminated
                     ? TERMINATED_TIMEOUT_MESSAGE(
                         effectiveStreamTimeout,
                         processId ?? undefined,
@@ -626,8 +632,8 @@ In using these tools, adhere to the following guidelines:
                   resolve({
                     result: {
                       output: result.output,
-                      exitCode: terminateNoisyCommand ? 124 : null,
-                      ...(terminateNoisyCommand && {
+                      exitCode: commandTerminated ? 124 : null,
+                      ...(commandTerminated && {
                         terminatedOnTimeout: true,
                       }),
                     },

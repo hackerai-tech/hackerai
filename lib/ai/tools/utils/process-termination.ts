@@ -89,13 +89,13 @@ export async function forceKillProcess(
  * @param sandbox - The sandbox instance (E2B or CentrifugoSandbox)
  * @param execution - The execution object with kill() method (optional for foreground commands)
  * @param pid - Process ID (if available)
- * @returns Promise<void>
+ * @returns Promise<boolean> - true if termination succeeded or the process is gone
  */
 export async function terminateProcessReliably(
   sandbox: AnySandbox,
   execution: { kill?: () => Promise<void> } | null,
   pid: number | null | undefined,
-): Promise<void> {
+): Promise<boolean> {
   // If we have PID but no execution object (foreground commands during abort), use direct kill
   if (pid && (!execution || !execution.kill)) {
     await forceKillProcess(sandbox, pid);
@@ -105,12 +105,12 @@ export async function terminateProcessReliably(
         `[Process Termination] PID ${pid}: Process still running after direct kill!`,
       );
     }
-    return;
+    return finalCheck;
   }
 
   // If no way to kill, nothing to do
   if (!execution || !execution.kill) {
-    return;
+    return false;
   }
 
   try {
@@ -120,23 +120,27 @@ export async function terminateProcessReliably(
     // Step 2: If we have a PID, verify termination
     if (pid) {
       const isTerminated = await verifyProcessTerminated(sandbox, pid);
+      if (isTerminated) {
+        return true;
+      }
 
       // Step 3: If still running, force kill
-      if (!isTerminated) {
-        console.warn(
-          `[Process Termination] PID ${pid}: Graceful kill failed, using force kill`,
-        );
-        await forceKillProcess(sandbox, pid);
+      console.warn(
+        `[Process Termination] PID ${pid}: Graceful kill failed, using force kill`,
+      );
+      await forceKillProcess(sandbox, pid);
 
-        // Final verification after force kill
-        const finalCheck = await verifyProcessTerminated(sandbox, pid, 2, 150);
-        if (!finalCheck) {
-          console.error(
-            `[Process Termination] PID ${pid}: Process still running after force kill!`,
-          );
-        }
+      // Final verification after force kill
+      const finalCheck = await verifyProcessTerminated(sandbox, pid, 2, 150);
+      if (!finalCheck) {
+        console.error(
+          `[Process Termination] PID ${pid}: Process still running after force kill!`,
+        );
       }
+      return finalCheck;
     }
+
+    return true;
   } catch (error) {
     console.error(
       `[Process Termination] ${pid ? `PID ${pid}` : "Unknown PID"}: Error during termination:`,
@@ -147,6 +151,7 @@ export async function terminateProcessReliably(
     if (pid) {
       try {
         await forceKillProcess(sandbox, pid);
+        return await verifyProcessTerminated(sandbox, pid, 2, 150);
       } catch (forceError) {
         console.error(
           `[Process Termination] PID ${pid}: Force kill also failed:`,
@@ -155,4 +160,6 @@ export async function terminateProcessReliably(
       }
     }
   }
+
+  return false;
 }
