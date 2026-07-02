@@ -41,11 +41,17 @@ import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
+const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+
+const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
+  pid
+    ? `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated (PID: ${pid}).`
+    : `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated.`;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -97,7 +103,7 @@ In using these tools, adhere to the following guidelines:
         .optional()
         .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command output before returning. For interactive=false, the command keeps running in background on timeout. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
@@ -419,6 +425,49 @@ In using these tools, adhere to the following guidelines:
             let handler: ReturnType<typeof createTerminalHandler> | null = null;
             let processId: number | null = null; // Store PID for all processes
 
+            const shouldTerminateNoisyTimedOutCommand = () => {
+              if (is_background || !handler) return false;
+              return (
+                handler.wasTruncated() ||
+                handler.wasFullOutputCapped() ||
+                handler.getBufferedCharCount() >=
+                  NOISY_TIMEOUT_MIN_BUFFERED_CHARS
+              );
+            };
+
+            const logNoisyTimeout = (fields: {
+              terminationAttempted: boolean;
+              processId: number | null;
+              terminationError?: unknown;
+            }) => {
+              console.warn(
+                JSON.stringify({
+                  level: "warn",
+                  event: "agent_terminal_noisy_timeout",
+                  service: "chat-handler",
+                  timestamp: new Date().toISOString(),
+                  chat_id: chatId,
+                  user_id: context.userID,
+                  mode: context.mode,
+                  subscription: context.subscription,
+                  tool_call_id: toolCallId,
+                  timeout_seconds: effectiveStreamTimeout,
+                  output_chars_buffered: handler?.getBufferedCharCount() ?? 0,
+                  output_truncated: handler?.wasTruncated() ?? false,
+                  output_full_output_capped:
+                    handler?.wasFullOutputCapped() ?? false,
+                  sandbox_type:
+                    sandboxManager.getSandboxType("run_terminal_cmd"),
+                  pid: fields.processId ?? undefined,
+                  termination_attempted: fields.terminationAttempted,
+                  termination_error:
+                    fields.terminationError instanceof Error
+                      ? fields.terminationError.message
+                      : undefined,
+                }),
+              );
+            };
+
             // Handle abort signal
             const onAbort = async () => {
               if (resolved) {
@@ -517,29 +566,71 @@ In using these tools, adhere to the following guidelines:
                     processId = (execution as any).pid;
                   }
 
-                  // For foreground commands on stream timeout, try to discover PID for user reference
-                  // DO NOT kill the process - it may still be working and saving to files
-                  // The process has its own MAX_COMMAND_EXECUTION_TIME timeout via commonOptions
+                  const terminateNoisyCommand =
+                    shouldTerminateNoisyTimedOutCommand();
+
+                  // For foreground commands on stream timeout, try to discover
+                  // PID for user reference and, for noisy truncated output,
+                  // terminate the process before the sandbox transport keeps
+                  // buffering output until MAX_COMMAND_EXECUTION_TIME.
                   if (!processId && !is_background) {
                     processId = await findProcessPid(sandboxInstance, command);
                   }
 
-                  await createTerminalWriter(
-                    TIMEOUT_MESSAGE(
-                      effectiveStreamTimeout,
-                      processId ?? undefined,
-                    ),
-                  );
+                  let terminationAttempted = false;
+                  let terminationError: unknown;
+                  if (terminateNoisyCommand) {
+                    terminationAttempted = Boolean(
+                      (execution && execution.kill) || processId,
+                    );
+                    try {
+                      if (terminationAttempted) {
+                        await terminateProcessReliably(
+                          sandboxInstance,
+                          execution,
+                          processId,
+                        );
+                      }
+                    } catch (error) {
+                      terminationError = error;
+                    }
+                    logNoisyTimeout({
+                      terminationAttempted,
+                      processId,
+                      terminationError,
+                    });
+                  }
+
+                  const timeoutMessage = terminateNoisyCommand
+                    ? TERMINATED_TIMEOUT_MESSAGE(
+                        effectiveStreamTimeout,
+                        processId ?? undefined,
+                      )
+                    : TIMEOUT_MESSAGE(
+                        effectiveStreamTimeout,
+                        processId ?? undefined,
+                      );
+
+                  await createTerminalWriter(timeoutMessage);
 
                   resolved = true;
+                  abortSignal?.removeEventListener("abort", onAbort);
                   const result = handler
-                    ? handler.getResult(processId ?? undefined)
+                    ? handler.getResult(processId ?? undefined, {
+                        timeoutMessage,
+                      })
                     : { output: "" };
                   if (handler) {
                     handler.cleanup();
                   }
                   resolve({
-                    result: { output: result.output, exitCode: null },
+                    result: {
+                      output: result.output,
+                      exitCode: terminateNoisyCommand ? 124 : null,
+                      ...(terminateNoisyCommand && {
+                        terminatedOnTimeout: true,
+                      }),
+                    },
                   });
                 },
               },
