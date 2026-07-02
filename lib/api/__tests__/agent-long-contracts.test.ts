@@ -375,6 +375,21 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
+  test("runs use small subscription-aware Trigger.dev priority offsets", () => {
+    expect(routeSrc).toMatch(
+      /AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
+    );
+    expect(routeSrc).toMatch(/free:\s*0/);
+    expect(routeSrc).toMatch(/pro:\s*5/);
+    expect(routeSrc).toMatch(/"pro-plus":\s*5/);
+    expect(routeSrc).toMatch(/ultra:\s*10/);
+    expect(routeSrc).toMatch(/team:\s*5/);
+    expect(routeSrc).toMatch(
+      /\.\.\.\(triggerPriority\s*>\s*0\s*\?\s*{\s*priority:\s*triggerPriority\s*}\s*:\s*{}\)/,
+    );
+    expect(routeSrc).toMatch(/triggerPriority/);
+  });
+
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
     expect(routeSrc).toMatch(
       /const messagesForPayload\s*=\s*temporary\s*\|\|\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
