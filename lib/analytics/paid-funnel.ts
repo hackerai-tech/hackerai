@@ -13,6 +13,7 @@ export const PAID_FUNNEL_EVENTS = {
   cancellationReasonSelected: "cancellation_reason_selected",
   cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
   cancellationCompleted: "cancellation_completed",
+  cancellationReversed: "cancellation_reversed",
   limitHit: "limit_hit",
   paidDailyFreeAllowanceImpressed: "paid_daily_free_allowance_impressed",
   paidDailyFreeAllowanceClicked: "paid_daily_free_allowance_clicked",
