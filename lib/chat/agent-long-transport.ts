@@ -1,6 +1,10 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
 import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
+import {
+  readTriggerRunStream,
+  retrieveTriggerRunStatus,
+} from "./trigger-browser-realtime";
 
 /**
  * `fetch` adapter for "agent-long" mode used by the chat transport.
@@ -166,14 +170,16 @@ const buildSSEResponseFromRun = (
     async start(controller) {
       let closed = false;
       let readAbortController: AbortController | undefined;
-      let statusSubscription: { unsubscribe?: () => void } | undefined;
+      let statusMonitorInterval: ReturnType<typeof setInterval> | undefined;
       let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
       const isControllerErrored = () => controller.desiredSize === null;
 
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
-        statusSubscription?.unsubscribe?.();
+        if (statusMonitorInterval !== undefined) {
+          clearInterval(statusMonitorInterval);
+        }
         await streamIterator?.return?.(undefined).catch(() => undefined);
       };
 
@@ -233,354 +239,331 @@ const buildSSEResponseFromRun = (
       signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
-        const { streams, runs, auth } = await import("@trigger.dev/sdk");
+        readAbortController = new AbortController();
+        if (signal?.aborted || consumerCanceled) {
+          userAborted = true;
+          readAbortController.abort();
+          return;
+        }
 
-        await auth.withAuth({ accessToken: publicAccessToken }, async () => {
-          readAbortController = new AbortController();
-          if (signal?.aborted || consumerCanceled) {
-            userAborted = true;
-            readAbortController.abort();
+        const completedRunDrainTimeout = Symbol("completed-run-drain-timeout");
+        let completedRunDrainTimer: ReturnType<typeof setTimeout> | undefined;
+        let resolveCompletedRunDrain:
+          ((value: typeof completedRunDrainTimeout) => void) | undefined;
+        const completedRunDrainPromise = new Promise<
+          typeof completedRunDrainTimeout
+        >((resolve) => {
+          resolveCompletedRunDrain = resolve;
+        });
+
+        let sawTerminalChunk = false;
+        let sawFinishChunk = false;
+        let timedOutAfterFinish = false;
+        let completedRunDrainElapsed = false;
+        let firstEventReceived = false;
+        let lastEventReceivedAt = Date.now();
+        let isPollingRunStatus = false;
+
+        const clearCompletedRunDrainTimer = () => {
+          if (completedRunDrainTimer === undefined) return;
+          clearTimeout(completedRunDrainTimer);
+          completedRunDrainTimer = undefined;
+        };
+
+        const startCompletedRunDrainTimer = () => {
+          if (
+            completedRunDrainTimer !== undefined ||
+            sawTerminalChunk ||
+            closed
+          ) {
             return;
           }
 
-          const completedRunDrainTimeout = Symbol(
-            "completed-run-drain-timeout",
-          );
-          let completedRunDrainTimer: ReturnType<typeof setTimeout> | undefined;
-          let resolveCompletedRunDrain:
-            | ((value: typeof completedRunDrainTimeout) => void)
-            | undefined;
-          const completedRunDrainPromise = new Promise<
-            typeof completedRunDrainTimeout
-          >((resolve) => {
-            resolveCompletedRunDrain = resolve;
-          });
+          completedRunDrainTimer = setTimeout(() => {
+            resolveCompletedRunDrain?.(completedRunDrainTimeout);
+          }, COMPLETED_RUN_DRAIN_TIMEOUT_MS);
+        };
 
-          let sawTerminalChunk = false;
-          let sawFinishChunk = false;
-          let timedOutAfterFinish = false;
-          let completedRunDrainElapsed = false;
-          let firstEventReceived = false;
-          let lastEventReceivedAt = Date.now();
-          let isPollingRunStatus = false;
-
-          const clearCompletedRunDrainTimer = () => {
-            if (completedRunDrainTimer === undefined) return;
-            clearTimeout(completedRunDrainTimer);
-            completedRunDrainTimer = undefined;
-          };
-
-          const startCompletedRunDrainTimer = () => {
-            if (
-              completedRunDrainTimer !== undefined ||
-              sawTerminalChunk ||
-              closed
-            ) {
-              return;
-            }
-
-            completedRunDrainTimer = setTimeout(() => {
-              resolveCompletedRunDrain?.(completedRunDrainTimeout);
-            }, COMPLETED_RUN_DRAIN_TIMEOUT_MS);
-          };
-
-          const enqueueSyntheticFinish = () => {
-            if (closed || sawFinishChunk) return;
-            try {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ type: "finish" })}\n\n`,
-                ),
-              );
-            } catch {
-              // controller may already be closed
-            }
-            sawFinishChunk = true;
-          };
-
-          const handleRunStatus = (status: string | undefined) => {
-            if (status === "COMPLETED") {
-              startCompletedRunDrainTimer();
-              return;
-            }
-            if (status && TERMINAL_RUN_STATUSES.has(status)) {
-              readAbortController?.abort();
-            }
-          };
-
-          const pollResumeEndpointForTerminalRun = async () => {
-            if (!chatId) return;
-            const response = await fetchWithErrorHandlers(
-              `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
-              { method: "GET", signal: readAbortController?.signal },
+        const enqueueSyntheticFinish = () => {
+          if (closed || sawFinishChunk) return;
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ type: "finish" })}\n\n`),
             );
-            if (response.status === 204) {
-              handleRunStatus("COMPLETED");
-            }
-          };
+          } catch {
+            // controller may already be closed
+          }
+          sawFinishChunk = true;
+        };
 
-          // Monitor run failure separately from the UI stream. Reading the
-          // stream directly avoids a race where the mixed run+stream
-          // subscription can discover the stream late and replay chunks only
-          // at completion.
-          statusSubscription = runs.subscribeToRun(runId, {
-            skipColumns: ["payload", "output"],
-          });
-          const statusMonitor = (async () => {
-            for await (const run of statusSubscription as AsyncIterable<{
-              status?: string;
-            }>) {
-              const status = run.status;
-              handleRunStatus(status);
-              if (
-                status === "COMPLETED" ||
-                (status && TERMINAL_RUN_STATUSES.has(status))
-              ) {
-                break;
-              }
-            }
-          })().catch(() => undefined);
+        const handleRunStatus = (status: string | undefined) => {
+          if (status === "COMPLETED") {
+            startCompletedRunDrainTimer();
+            return;
+          }
+          if (status && TERMINAL_RUN_STATUSES.has(status)) {
+            readAbortController?.abort();
+          }
+        };
 
-          const uiStream = await streams.read<unknown>(
+        const pollRunStatusForTerminalRun = async () => {
+          const status = await retrieveTriggerRunStatus(
             runId,
-            AGENT_UI_STREAM_ID,
-            {
-              signal: readAbortController.signal,
-              timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
-            },
+            publicAccessToken,
+            readAbortController?.signal,
           );
+          handleRunStatus(status);
+        };
 
-          const statusPollInterval = setInterval(() => {
-            if (
-              !firstEventReceived ||
-              sawTerminalChunk ||
-              closed ||
-              isPollingRunStatus ||
-              Date.now() - lastEventReceivedAt <
-                QUIET_STREAM_STATUS_POLL_AFTER_MS
-            ) {
-              return;
-            }
+        // Monitor run failure separately from the UI stream. Reading the
+        // stream directly avoids a race where the mixed run+stream
+        // subscription can discover the stream late and replay chunks only
+        // at completion.
+        statusMonitorInterval = setInterval(() => {
+          if (
+            firstEventReceived ||
+            sawTerminalChunk ||
+            closed ||
+            readAbortController?.signal.aborted
+          ) {
+            return;
+          }
+          void pollRunStatusForTerminalRun().catch(() => undefined);
+        }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
+        void pollRunStatusForTerminalRun().catch(() => undefined);
 
-            isPollingRunStatus = true;
-            void (async () => {
-              try {
-                const run = await runs.retrieve(runId);
-                handleRunStatus(run.status);
-              } catch {
-                // Fall back to the app's authenticated resume endpoint below.
-              }
-              if (!sawTerminalChunk) {
-                await pollResumeEndpointForTerminalRun().catch(() => undefined);
-              }
-            })().finally(() => {
+        const uiStream = readTriggerRunStream<unknown>(
+          runId,
+          AGENT_UI_STREAM_ID,
+          {
+            accessToken: publicAccessToken,
+            signal: readAbortController.signal,
+            timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
+          },
+        );
+
+        const statusPollInterval = setInterval(() => {
+          if (
+            !firstEventReceived ||
+            sawTerminalChunk ||
+            closed ||
+            isPollingRunStatus ||
+            Date.now() - lastEventReceivedAt < QUIET_STREAM_STATUS_POLL_AFTER_MS
+          ) {
+            return;
+          }
+
+          isPollingRunStatus = true;
+          void pollRunStatusForTerminalRun()
+            .catch(() => undefined)
+            .finally(() => {
               isPollingRunStatus = false;
             });
-          }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
+        }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
 
-          // text-delta and reasoning-delta chunks are emitted per-token and
-          // can number in the thousands for long tasks. Forwarding each one
-          // as a separate SSE frame causes the browser to process thousands
-          // of React state updates in rapid succession, freezing the UI.
-          // We buffer consecutive delta chunks and flush them as a single
-          // merged chunk, reducing ~9k events to a few hundred.
-          const DELTA_FLUSH_COUNT = 50; // flush after this many buffered deltas
-          const DELTA_FLUSH_MS = 30; // or after this many ms (live streaming)
+        // text-delta and reasoning-delta chunks are emitted per-token and
+        // can number in the thousands for long tasks. Forwarding each one
+        // as a separate SSE frame causes the browser to process thousands
+        // of React state updates in rapid succession, freezing the UI.
+        // We buffer consecutive delta chunks and flush them as a single
+        // merged chunk, reducing ~9k events to a few hundred.
+        const DELTA_FLUSH_COUNT = 50; // flush after this many buffered deltas
+        const DELTA_FLUSH_MS = 30; // or after this many ms (live streaming)
 
-          type DeltaBatch = {
-            type: "text-delta" | "reasoning-delta";
-            id: string;
-            delta: string;
-          };
-          const deltaBuffers = new Map<string, DeltaBatch>();
-          let batchedDeltaCount = 0;
-          let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
-          const toolInputDedup = createToolInputDedupFilter();
+        type DeltaBatch = {
+          type: "text-delta" | "reasoning-delta";
+          id: string;
+          delta: string;
+        };
+        const deltaBuffers = new Map<string, DeltaBatch>();
+        let batchedDeltaCount = 0;
+        let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const toolInputDedup = createToolInputDedupFilter();
 
-          const flushDeltaBuffers = () => {
-            if (deltaFlushTimer !== null) {
-              clearTimeout(deltaFlushTimer);
-              deltaFlushTimer = null;
+        const flushDeltaBuffers = () => {
+          if (deltaFlushTimer !== null) {
+            clearTimeout(deltaFlushTimer);
+            deltaFlushTimer = null;
+          }
+          if (deltaBuffers.size === 0) return;
+          for (const batch of deltaBuffers.values()) {
+            try {
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(batch)}\n\n`),
+              );
+            } catch {
+              // controller may already be closed (e.g. timer fired after error)
             }
-            if (deltaBuffers.size === 0) return;
-            for (const batch of deltaBuffers.values()) {
-              try {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify(batch)}\n\n`),
-                );
-              } catch {
-                // controller may already be closed (e.g. timer fired after error)
-              }
-            }
-            deltaBuffers.clear();
-            batchedDeltaCount = 0;
-          };
+          }
+          deltaBuffers.clear();
+          batchedDeltaCount = 0;
+        };
 
-          // Race stream.next() against the consumer's abort signal so Stop
-          // closes the local stream in one tick, even when the LLM is mid-step
-          // and no chunks are flowing.
-          const abortSentinel = Symbol("aborted");
-          const postFinishDrainTimeout = Symbol("post-finish-drain-timeout");
-          const abortPromise = new Promise<typeof abortSentinel>((resolve) => {
-            if (!signal) return; // never resolves — Promise.race ignores it
-            signal.addEventListener("abort", () => resolve(abortSentinel), {
-              once: true,
-            });
+        // Race stream.next() against the consumer's abort signal so Stop
+        // closes the local stream in one tick, even when the LLM is mid-step
+        // and no chunks are flowing.
+        const abortSentinel = Symbol("aborted");
+        const postFinishDrainTimeout = Symbol("post-finish-drain-timeout");
+        const abortPromise = new Promise<typeof abortSentinel>((resolve) => {
+          if (!signal) return; // never resolves — Promise.race ignores it
+          signal.addEventListener("abort", () => resolve(abortSentinel), {
+            once: true,
           });
+        });
 
-          const iter = uiStream[Symbol.asyncIterator]();
-          streamIterator = iter;
-          const readNextChunk = () => {
-            if (!sawFinishChunk) {
-              return Promise.race([
-                iter.next(),
-                abortPromise,
-                completedRunDrainPromise,
-              ]);
-            }
-
-            let timeoutId: ReturnType<typeof setTimeout> | undefined;
-            const timeoutPromise = new Promise<typeof postFinishDrainTimeout>(
-              (resolve) => {
-                timeoutId = setTimeout(
-                  () => resolve(postFinishDrainTimeout),
-                  POST_FINISH_DRAIN_TIMEOUT_MS,
-                );
-              },
-            );
-
+        const iter = uiStream[Symbol.asyncIterator]();
+        streamIterator = iter;
+        const readNextChunk = () => {
+          if (!sawFinishChunk) {
             return Promise.race([
               iter.next(),
               abortPromise,
-              timeoutPromise,
               completedRunDrainPromise,
-            ]).finally(() => {
-              if (timeoutId !== undefined) {
-                clearTimeout(timeoutId);
-              }
-            });
-          };
+            ]);
+          }
 
-          while (true) {
-            const next = await readNextChunk();
-            if (next === abortSentinel) {
-              userAborted = true;
-              break;
-            }
-            if (next === postFinishDrainTimeout) {
-              timedOutAfterFinish = true;
-              break;
-            }
-            if (next === completedRunDrainTimeout) {
-              completedRunDrainElapsed = true;
-              enqueueSyntheticFinish();
-              sawTerminalChunk = true;
-              break;
-            }
-            if (next.done) break;
-            const chunk = next.value;
-            lastEventReceivedAt = Date.now();
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<typeof postFinishDrainTimeout>(
+            (resolve) => {
+              timeoutId = setTimeout(
+                () => resolve(postFinishDrainTimeout),
+                POST_FINISH_DRAIN_TIMEOUT_MS,
+              );
+            },
+          );
 
-            // Disarm the "no first event" timeout once the UI stream is
-            // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
-            // would have its stream force-closed mid-execution.
-            if (!firstEventReceived) {
-              firstEventReceived = true;
+          return Promise.race([
+            iter.next(),
+            abortPromise,
+            timeoutPromise,
+            completedRunDrainPromise,
+          ]).finally(() => {
+            if (timeoutId !== undefined) {
               clearTimeout(timeoutId);
             }
+          });
+        };
 
-            if (
-              typeof chunk !== "object" ||
-              chunk === null ||
-              !("type" in chunk)
-            ) {
-              continue;
-            }
+        while (true) {
+          const next = await readNextChunk();
+          if (next === abortSentinel) {
+            userAborted = true;
+            break;
+          }
+          if (next === postFinishDrainTimeout) {
+            timedOutAfterFinish = true;
+            break;
+          }
+          if (next === completedRunDrainTimeout) {
+            completedRunDrainElapsed = true;
+            enqueueSyntheticFinish();
+            sawTerminalChunk = true;
+            break;
+          }
+          if (next.done) break;
+          const chunk = next.value;
+          lastEventReceivedAt = Date.now();
 
-            const chunkType = (chunk as { type?: string }).type;
-            const chunkId = (chunk as { id?: string }).id;
-            const chunkDelta = (chunk as { delta?: string }).delta;
-
-            if (
-              (chunkType === "text-delta" || chunkType === "reasoning-delta") &&
-              typeof chunkId === "string" &&
-              typeof chunkDelta === "string"
-            ) {
-              const key = `${chunkType}:${chunkId}`;
-              const existing = deltaBuffers.get(key);
-              if (existing) {
-                existing.delta += chunkDelta;
-              } else {
-                deltaBuffers.set(key, {
-                  type: chunkType as "text-delta" | "reasoning-delta",
-                  id: chunkId,
-                  delta: chunkDelta,
-                });
-              }
-              batchedDeltaCount++;
-              if (batchedDeltaCount >= DELTA_FLUSH_COUNT) {
-                flushDeltaBuffers();
-              } else if (deltaFlushTimer === null) {
-                deltaFlushTimer = setTimeout(flushDeltaBuffers, DELTA_FLUSH_MS);
-              }
-              continue;
-            }
-
-            // Non-delta chunk: flush any buffered deltas first so ordering
-            // is preserved (e.g. text-delta before tool-input-start).
-            flushDeltaBuffers();
-
-            if (
-              toolInputDedup.shouldDrop(
-                chunk as { type?: string; toolCallId?: string },
-              )
-            ) {
-              continue;
-            }
-
-            if (!closed) {
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
-              );
-            }
-            if (chunkType === "finish") {
-              // The task writes a few data chunks after `finish`
-              // (message-metadata, auto-continue).
-              // Drain that short tail so the browser receives them.
-              clearCompletedRunDrainTimer();
-              sawTerminalChunk = true;
-              sawFinishChunk = true;
-              continue;
-            }
-
-            // abort / error are terminal and do not have useful trailing data.
-            if (chunkType === "abort" || chunkType === "error") {
-              clearCompletedRunDrainTimer();
-              sawTerminalChunk = true;
-              break;
-            }
+          // Disarm the "no first event" timeout once the UI stream is
+          // proven live. Without this, a run longer than STREAM_TIMEOUT_MS
+          // would have its stream force-closed mid-execution.
+          if (!firstEventReceived) {
+            firstEventReceived = true;
+            clearTimeout(timeoutId);
           }
 
-          // Flush any deltas that didn't trigger a count- or timer-based flush.
+          if (
+            typeof chunk !== "object" ||
+            chunk === null ||
+            !("type" in chunk)
+          ) {
+            continue;
+          }
+
+          const chunkType = (chunk as { type?: string }).type;
+          const chunkId = (chunk as { id?: string }).id;
+          const chunkDelta = (chunk as { delta?: string }).delta;
+
+          if (
+            (chunkType === "text-delta" || chunkType === "reasoning-delta") &&
+            typeof chunkId === "string" &&
+            typeof chunkDelta === "string"
+          ) {
+            const key = `${chunkType}:${chunkId}`;
+            const existing = deltaBuffers.get(key);
+            if (existing) {
+              existing.delta += chunkDelta;
+            } else {
+              deltaBuffers.set(key, {
+                type: chunkType as "text-delta" | "reasoning-delta",
+                id: chunkId,
+                delta: chunkDelta,
+              });
+            }
+            batchedDeltaCount++;
+            if (batchedDeltaCount >= DELTA_FLUSH_COUNT) {
+              flushDeltaBuffers();
+            } else if (deltaFlushTimer === null) {
+              deltaFlushTimer = setTimeout(flushDeltaBuffers, DELTA_FLUSH_MS);
+            }
+            continue;
+          }
+
+          // Non-delta chunk: flush any buffered deltas first so ordering
+          // is preserved (e.g. text-delta before tool-input-start).
           flushDeltaBuffers();
 
-          if (userAborted || timedOutAfterFinish || completedRunDrainElapsed) {
-            // Release the trigger.dev subscription so it doesn't keep
-            // streaming chunks into a dead controller.
-            await cancelRealtimeSubscriptions?.();
+          if (
+            toolInputDedup.shouldDrop(
+              chunk as { type?: string; toolCallId?: string },
+            )
+          ) {
+            continue;
           }
 
-          if (!sawTerminalChunk) {
-            // Subscription ended without a terminal UI chunk — run crashed,
-            // was canceled, or failed before registering the stream.
-            sendAbortAndClose();
+          if (!closed) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
+            );
+          }
+          if (chunkType === "finish") {
+            // The task writes a few data chunks after `finish`
+            // (message-metadata, auto-continue).
+            // Drain that short tail so the browser receives them.
+            clearCompletedRunDrainTimer();
+            sawTerminalChunk = true;
+            sawFinishChunk = true;
+            continue;
           }
 
-          statusSubscription?.unsubscribe?.();
-          clearCompletedRunDrainTimer();
-          clearInterval(statusPollInterval);
-          void statusMonitor;
-        });
+          // abort / error are terminal and do not have useful trailing data.
+          if (chunkType === "abort" || chunkType === "error") {
+            clearCompletedRunDrainTimer();
+            sawTerminalChunk = true;
+            break;
+          }
+        }
+
+        // Flush any deltas that didn't trigger a count- or timer-based flush.
+        flushDeltaBuffers();
+
+        if (userAborted || timedOutAfterFinish || completedRunDrainElapsed) {
+          // Release the trigger.dev subscription so it doesn't keep
+          // streaming chunks into a dead controller.
+          await cancelRealtimeSubscriptions?.();
+        }
+
+        if (!sawTerminalChunk) {
+          // Subscription ended without a terminal UI chunk — run crashed,
+          // was canceled, or failed before registering the stream.
+          sendAbortAndClose();
+        }
+
+        clearCompletedRunDrainTimer();
+        clearInterval(statusPollInterval);
+        if (statusMonitorInterval !== undefined) {
+          clearInterval(statusMonitorInterval);
+        }
 
         // Normal close path (sawTerminalChunk = true exits loop above).
         clearTimeout(timeoutId);
@@ -593,7 +576,9 @@ const buildSSEResponseFromRun = (
         }
       } finally {
         signal?.removeEventListener("abort", onAbort);
-        statusSubscription?.unsubscribe?.();
+        if (statusMonitorInterval !== undefined) {
+          clearInterval(statusMonitorInterval);
+        }
         cancelRealtimeSubscriptions = undefined;
         closeConsumerStream = undefined;
         unregisterRealtimeCancel?.();

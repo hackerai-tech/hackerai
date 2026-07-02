@@ -78,9 +78,10 @@ const agentStreamRunnerSrc = fs.readFileSync(
 );
 
 describe("agent-long-transport — direct UI stream reader", () => {
-  test("reads the Trigger.dev ui stream directly instead of using withStreams", () => {
-    expect(transportSrc).toMatch(/streams\.read<unknown>\(/);
+  test("reads the Trigger.dev ui stream directly through the browser realtime helper", () => {
+    expect(transportSrc).toMatch(/readTriggerRunStream<unknown>\(/);
     expect(transportSrc).toMatch(/AGENT_UI_STREAM_ID/);
+    expect(transportSrc).not.toMatch(/@trigger\.dev\/sdk/);
     expect(transportSrc).not.toMatch(/\.withStreams\(/);
   });
 
@@ -92,7 +93,8 @@ describe("agent-long-transport — direct UI stream reader", () => {
   });
 
   test("failed run statuses abort the direct stream reader", () => {
-    expect(transportSrc).toMatch(/runs\.subscribeToRun\(runId/);
+    expect(transportSrc).toMatch(/retrieveTriggerRunStatus\(/);
+    expect(transportSrc).toMatch(/pollRunStatusForTerminalRun/);
     expect(transportSrc).toMatch(/TERMINAL_RUN_STATUSES\.has\(status\)/);
     expect(transportSrc).toMatch(/readAbortController\?\.abort\(\)/);
   });
@@ -131,10 +133,7 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(transportSrc).toMatch(/QUIET_STREAM_STATUS_POLL_AFTER_MS/);
     expect(transportSrc).toMatch(/status\s*===\s*"COMPLETED"/);
     expect(transportSrc).toMatch(/startCompletedRunDrainTimer\(\)/);
-    expect(transportSrc).toMatch(/runs\s*\.\s*retrieve\(runId\)/);
-    expect(transportSrc).toMatch(/pollResumeEndpointForTerminalRun/);
-    expect(transportSrc).toMatch(/\/api\/agent-long\/resume\?chatId=/);
-    expect(transportSrc).toMatch(/response\.status\s*===\s*204/);
+    expect(transportSrc).toMatch(/retrieveTriggerRunStatus\(/);
     expect(transportSrc).toMatch(/options\?\.chatId\s*\?\?\s*handle\.chatId/);
     expect(transportSrc).toMatch(/completedRunDrainPromise/);
     expect(transportSrc).toMatch(/completedRunDrainElapsed\s*=\s*true/);
@@ -152,7 +151,8 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(transportSrc).toMatch(/activeAgentLongRealtimeCancels/);
     expect(transportSrc).toMatch(/cancelAgentLongRealtimeStreams/);
     expect(transportSrc).toMatch(/registerAgentLongRealtimeCancel/);
-    expect(transportSrc).toMatch(/statusSubscription\?\.unsubscribe\?\.\(\)/);
+    expect(transportSrc).toMatch(/statusMonitorInterval/);
+    expect(transportSrc).toMatch(/clearInterval\(statusMonitorInterval\)/);
     expect(transportSrc).toMatch(/streamIterator\?\.return\?\.\(undefined\)/);
     expect(transportSrc).toMatch(
       /cancelConsumerRealtime[\s\S]*consumerCanceled\s*=\s*true/,
