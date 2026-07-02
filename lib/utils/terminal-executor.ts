@@ -52,6 +52,10 @@ export const createTerminalHandler = (
   }
 
   const handleOutput = async (output: string) => {
+    // Once the caller has timed out, ignore late output. Some sandbox command
+    // transports can keep delivering bytes until the underlying process exits.
+    if (timedOut) return;
+
     // Accumulate output in chronological order, up to the memory cap
     if (!fullOutputCapped) {
       if (totalChars + output.length > MAX_FULL_OUTPUT_CHARS) {
@@ -64,8 +68,8 @@ export const createTerminalHandler = (
       }
     }
 
-    // Don't stream if truncated or timed out
-    if (truncated || timedOut) return;
+    // Don't stream if truncated
+    if (truncated) return;
 
     const tokens = safeCountTokens(output);
     if (totalTokens + tokens > maxTokens) {
@@ -96,9 +100,12 @@ export const createTerminalHandler = (
   return {
     stdout: (output: string) => void handleOutput(output),
     stderr: (output: string) => void handleOutput(output),
-    getResult: (pid?: number): TerminalResult => {
+    getResult: (
+      pid?: number,
+      opts?: { timeoutMessage?: string },
+    ): TerminalResult => {
       const timeoutMsg = timedOut
-        ? TIMEOUT_MESSAGE(timeoutSeconds || 0, pid)
+        ? (opts?.timeoutMessage ?? TIMEOUT_MESSAGE(timeoutSeconds || 0, pid))
         : "";
       let finalOutput = outputChunks.join("");
       if (timeoutMsg) {
@@ -114,6 +121,8 @@ export const createTerminalHandler = (
     wasTruncated: (): boolean => truncated,
     /** Returns the full buffered output (for saving to file). May be capped at 5MB. */
     getFullOutput: (): string => outputChunks.join(""),
+    /** Returns buffered character count without joining chunks. */
+    getBufferedCharCount: (): number => totalChars,
     /** Returns true if the full output exceeded the memory cap and was itself truncated */
     wasFullOutputCapped: (): boolean => fullOutputCapped,
     cleanup: () => {
