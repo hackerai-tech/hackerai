@@ -300,6 +300,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 
   return (
     normalized === "ask-model" ||
+    normalized === "model-gemini-3-flash" ||
     isKimiModel(normalized) ||
     isMiniMaxModel(normalized) ||
     isAnthropicModel(normalized) ||

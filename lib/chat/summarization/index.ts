@@ -194,16 +194,8 @@ const isMalformedProviderJsonError = (
 const buildSummarizationRetryProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
 ): Record<string, Record<string, unknown>> => {
-  if (!providerOptions) {
-    return {
-      openrouter: {
-        models: [...SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS],
-      },
-    };
-  }
-
   const retryProviderOptions: Record<string, Record<string, unknown>> = {};
-  for (const [providerName, options] of Object.entries(providerOptions)) {
+  for (const [providerName, options] of Object.entries(providerOptions ?? {})) {
     retryProviderOptions[providerName] = { ...options };
   }
 

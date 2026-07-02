@@ -201,6 +201,7 @@ describe("supportsMultimodalToolResults", () => {
 
   it("allows multimodal fallback keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("model-grok-4.3")).toBe(true);
+    expect(supportsMultimodalToolResults("model-gemini-3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
   });
