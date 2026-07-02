@@ -171,6 +171,7 @@ const buildSSEResponseFromRun = (
       let closed = false;
       let readAbortController: AbortController | undefined;
       let statusMonitorInterval: ReturnType<typeof setInterval> | undefined;
+      let statusPollInterval: ReturnType<typeof setInterval> | undefined;
       let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
       const isControllerErrored = () => controller.desiredSize === null;
@@ -179,6 +180,9 @@ const buildSSEResponseFromRun = (
         readAbortController?.abort();
         if (statusMonitorInterval !== undefined) {
           clearInterval(statusMonitorInterval);
+        }
+        if (statusPollInterval !== undefined) {
+          clearInterval(statusPollInterval);
         }
         await streamIterator?.return?.(undefined).catch(() => undefined);
       };
@@ -315,22 +319,41 @@ const buildSSEResponseFromRun = (
           handleRunStatus(status);
         };
 
+        const pollRunStatusWhenIdle = async (options?: {
+          beforeFirstEvent?: boolean;
+        }) => {
+          if (
+            sawTerminalChunk ||
+            closed ||
+            readAbortController?.signal.aborted ||
+            isPollingRunStatus ||
+            (options?.beforeFirstEvent === true && firstEventReceived) ||
+            (options?.beforeFirstEvent !== true &&
+              (!firstEventReceived ||
+                Date.now() - lastEventReceivedAt <
+                  QUIET_STREAM_STATUS_POLL_AFTER_MS))
+          ) {
+            return;
+          }
+
+          isPollingRunStatus = true;
+          try {
+            await pollRunStatusForTerminalRun();
+          } catch {
+            // The stream path remains authoritative; retry on the next poll.
+          } finally {
+            isPollingRunStatus = false;
+          }
+        };
+
         // Monitor run failure separately from the UI stream. Reading the
         // stream directly avoids a race where the mixed run+stream
         // subscription can discover the stream late and replay chunks only
         // at completion.
         statusMonitorInterval = setInterval(() => {
-          if (
-            firstEventReceived ||
-            sawTerminalChunk ||
-            closed ||
-            readAbortController?.signal.aborted
-          ) {
-            return;
-          }
-          void pollRunStatusForTerminalRun().catch(() => undefined);
+          void pollRunStatusWhenIdle({ beforeFirstEvent: true });
         }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
-        void pollRunStatusForTerminalRun().catch(() => undefined);
+        void pollRunStatusWhenIdle({ beforeFirstEvent: true });
 
         const uiStream = readTriggerRunStream<unknown>(
           runId,
@@ -342,23 +365,8 @@ const buildSSEResponseFromRun = (
           },
         );
 
-        const statusPollInterval = setInterval(() => {
-          if (
-            !firstEventReceived ||
-            sawTerminalChunk ||
-            closed ||
-            isPollingRunStatus ||
-            Date.now() - lastEventReceivedAt < QUIET_STREAM_STATUS_POLL_AFTER_MS
-          ) {
-            return;
-          }
-
-          isPollingRunStatus = true;
-          void pollRunStatusForTerminalRun()
-            .catch(() => undefined)
-            .finally(() => {
-              isPollingRunStatus = false;
-            });
+        statusPollInterval = setInterval(() => {
+          void pollRunStatusWhenIdle();
         }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
 
         // text-delta and reasoning-delta chunks are emitted per-token and
@@ -456,6 +464,7 @@ const buildSSEResponseFromRun = (
           }
           if (next === completedRunDrainTimeout) {
             completedRunDrainElapsed = true;
+            flushDeltaBuffers();
             enqueueSyntheticFinish();
             sawTerminalChunk = true;
             break;
@@ -560,7 +569,9 @@ const buildSSEResponseFromRun = (
         }
 
         clearCompletedRunDrainTimer();
-        clearInterval(statusPollInterval);
+        if (statusPollInterval !== undefined) {
+          clearInterval(statusPollInterval);
+        }
         if (statusMonitorInterval !== undefined) {
           clearInterval(statusMonitorInterval);
         }
@@ -578,6 +589,9 @@ const buildSSEResponseFromRun = (
         signal?.removeEventListener("abort", onAbort);
         if (statusMonitorInterval !== undefined) {
           clearInterval(statusMonitorInterval);
+        }
+        if (statusPollInterval !== undefined) {
+          clearInterval(statusPollInterval);
         }
         cancelRealtimeSubscriptions = undefined;
         closeConsumerStream = undefined;

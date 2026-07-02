@@ -298,13 +298,14 @@ export async function* readTriggerRunStream<T>(
           continue;
         }
 
-        retryCount = 0;
         const streamVersion = response.headers.get("X-Stream-Version") ?? "v1";
+        let receivedEventOnConnection = false;
 
         for await (const event of readSSEEvents(
           response,
           abortController.signal,
         )) {
+          receivedEventOnConnection = true;
           if (streamVersion === "v1") {
             if (event.id) lastEventId = event.id;
             yield safeParseJSON(event.data) as T;
@@ -337,7 +338,9 @@ export async function* readTriggerRunStream<T>(
           }
         }
 
-        return;
+        if (abortController.signal.aborted) return;
+        retryCount = receivedEventOnConnection ? 1 : retryCount + 1;
+        await waitForRetry(retryCount, abortController.signal);
       } catch (error) {
         clearTimeout(fetchTimeoutId);
         if (abortController.signal.aborted) return;

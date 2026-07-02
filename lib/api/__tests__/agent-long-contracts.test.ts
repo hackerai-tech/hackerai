@@ -22,6 +22,11 @@ const transportSrc = fs.readFileSync(
   "utf8",
 );
 
+const triggerBrowserRealtimeSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../chat/trigger-browser-realtime.ts"),
+  "utf8",
+);
+
 const cancelSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent-long/cancel/route.ts"),
   "utf8",
@@ -153,6 +158,8 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(transportSrc).toMatch(/registerAgentLongRealtimeCancel/);
     expect(transportSrc).toMatch(/statusMonitorInterval/);
     expect(transportSrc).toMatch(/clearInterval\(statusMonitorInterval\)/);
+    expect(transportSrc).toMatch(/statusPollInterval/);
+    expect(transportSrc).toMatch(/clearInterval\(statusPollInterval\)/);
     expect(transportSrc).toMatch(/streamIterator\?\.return\?\.\(undefined\)/);
     expect(transportSrc).toMatch(
       /cancelConsumerRealtime[\s\S]*consumerCanceled\s*=\s*true/,
@@ -179,6 +186,15 @@ describe("agent-long-transport — direct UI stream reader", () => {
       /if\s*\(\s*!isControllerErrored\(\)\s*\)[\s\S]*controller\.enqueue\(/,
     );
     expect(abortAndCloseSrc).toMatch(/controller\.close\(\)/);
+  });
+
+  test("browser realtime helper resumes Trigger streams after clean SSE disconnects", () => {
+    expect(triggerBrowserRealtimeSrc).toMatch(/Last-Event-ID/);
+    expect(triggerBrowserRealtimeSrc).toMatch(/lastEventId/);
+    expect(triggerBrowserRealtimeSrc).toMatch(/receivedEventOnConnection/);
+    expect(triggerBrowserRealtimeSrc).toMatch(
+      /await waitForRetry\(retryCount, abortController\.signal\)/,
+    );
   });
 });
 
