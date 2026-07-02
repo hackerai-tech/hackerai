@@ -2,6 +2,7 @@ import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockListSubscriptions = jest.fn();
 const mockGetBillingActionContext = jest.fn();
+const mockPostHogError = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -15,10 +16,18 @@ jest.mock("@/lib/actions/billing-context", () => ({
   getBillingActionContext: mockGetBillingActionContext,
 }));
 
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: {
+    error: mockPostHogError,
+  },
+}));
+
 describe("getSubscriptionCancellationStatusAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetBillingActionContext.mockResolvedValue({
+      organizationId: "org_123",
+      user: { id: "user_123" },
       stripeCustomerId: "cus_123",
     } as never);
   });
@@ -68,5 +77,29 @@ describe("getSubscriptionCancellationStatusAction", () => {
       hasActiveSubscription: false,
       cancelAtPeriodEnd: false,
     });
+  });
+
+  it("logs the action stage when Stripe subscription lookup fails", async () => {
+    const error = new Error("Stripe unavailable");
+    mockListSubscriptions.mockRejectedValue(error as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).rejects.toThrow(
+      "Stripe unavailable",
+    );
+
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_subscription_status_action_failed",
+      expect.objectContaining({
+        event: "billing_subscription_status_action_failed",
+        stage: "stripe_subscription_list",
+        userId: "user_123",
+        org_id: "org_123",
+        stripe_customer_id: "cus_123",
+        error,
+      }),
+    );
   });
 });

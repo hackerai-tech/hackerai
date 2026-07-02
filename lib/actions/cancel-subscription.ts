@@ -130,10 +130,36 @@ export default async function cancelSubscriptionAction(
   const cancellationReason = parseCancellationReasonInput(
     input.cancellationReason,
   );
-  const { organizationId, user, stripeCustomerId } =
-    await getBillingActionContext();
-  const subscriptionContext =
-    await getActiveSubscriptionContext(stripeCustomerId);
+  const startedAt = Date.now();
+  const context = await getBillingActionContext().catch((error) => {
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      stage: "billing_context",
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  });
+  const { organizationId, user, stripeCustomerId } = context;
+  const billingFields = {
+    userId: user.id,
+    org_id: organizationId,
+    stripe_customer_id: stripeCustomerId,
+  };
+
+  let subscriptionContext: SubscriptionContext;
+  try {
+    subscriptionContext = await getActiveSubscriptionContext(stripeCustomerId);
+  } catch (error) {
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      ...billingFields,
+      stage: "stripe_subscription_lookup",
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  }
 
   if (subscriptionContext.cancelAtPeriodEnd) {
     return {
@@ -191,15 +217,32 @@ export default async function cancelSubscriptionAction(
     });
   }
 
-  const updatedSubscription = await stripe.subscriptions.update(
-    subscriptionContext.id,
-    {
-      cancel_at_period_end: true,
-      cancellation_details: {
-        feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+  let updatedSubscription: Awaited<
+    ReturnType<typeof stripe.subscriptions.update>
+  >;
+  try {
+    updatedSubscription = await stripe.subscriptions.update(
+      subscriptionContext.id,
+      {
+        cancel_at_period_end: true,
+        cancellation_details: {
+          feedback: stripeCancellationFeedback(
+            cancellationReason.reasonCategory,
+          ),
+        },
       },
-    },
-  );
+    );
+  } catch (error) {
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      ...billingFields,
+      stage: "stripe_subscription_update",
+      stripe_subscription_id: subscriptionContext.id,
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  }
 
   const completedAt = updatedSubscription.canceled_at
     ? updatedSubscription.canceled_at * 1000

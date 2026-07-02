@@ -9,6 +9,7 @@ import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
+import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -96,6 +97,7 @@ export default function RootLayout({
   const content = (
     <GlobalStateProvider>
       <PostHogProvider>
+        <ChunkLoadRecovery />
         <DataStreamProvider>
           <TodoBlockProvider>
             <TooltipProvider>
