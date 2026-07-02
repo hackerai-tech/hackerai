@@ -642,6 +642,8 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: expectedActualCost,
         extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
       });
     });
 
@@ -697,6 +699,8 @@ describe("token-bucket async functions", () => {
       expect(result).toEqual({
         includedPointsDeducted: expectedProviderCost,
         extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
       });
     });
   });
