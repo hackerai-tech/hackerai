@@ -94,5 +94,11 @@ To use the agent locally:
 3. Start the worker in a third terminal:
 
    ```bash
-   npx trigger.dev@latest dev
+   pnpm dev:trigger
    ```
+
+   This runs `trigger dev start --branch <name>` so parallel Codex worktrees
+   and local dev sessions do not collide in Trigger.dev. The branch name
+   defaults to the current Git branch, sanitized for Trigger.dev. Override it
+   with `TRIGGER_DEV_BRANCH=my-local-agent pnpm dev:trigger` when you need a
+   stable custom branch name.
