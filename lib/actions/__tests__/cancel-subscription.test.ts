@@ -225,4 +225,83 @@ describe("cancelSubscriptionAction", () => {
       }),
     );
   });
+
+  it("does not log expected billing context failures", async () => {
+    const error = new Error("User not authenticated");
+    mockGetBillingActionContext.mockRejectedValue(error as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await expect(
+      cancelSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "other",
+          reasonDetails: "Done for now",
+        },
+      }),
+    ).rejects.toThrow("User not authenticated");
+
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockPostHogError).not.toHaveBeenCalled();
+  });
+
+  it("does not log when there is no active subscription to cancel", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_canceled",
+          status: "canceled",
+          cancel_at_period_end: false,
+          items: { data: [] },
+        },
+      ],
+    } as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await expect(
+      cancelSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "other",
+          reasonDetails: "Done for now",
+        },
+      }),
+    ).rejects.toThrow("No active subscription found");
+
+    expect(mockPostHogError).not.toHaveBeenCalledWith(
+      "billing_subscription_cancellation_action_failed",
+      expect.anything(),
+    );
+  });
+
+  it("logs the action stage when Stripe subscription lookup fails", async () => {
+    const error = new Error("Stripe unavailable");
+    mockListSubscriptions.mockRejectedValue(error as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+
+    await expect(
+      cancelSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "other",
+          reasonDetails: "Done for now",
+        },
+      }),
+    ).rejects.toThrow("Stripe unavailable");
+
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_subscription_cancellation_action_failed",
+      expect.objectContaining({
+        event: "billing_subscription_cancellation_action_failed",
+        stage: "stripe_subscription_lookup",
+        userId: "user_123",
+        org_id: "org_123",
+        stripe_customer_id: "cus_123",
+        error,
+      }),
+    );
+  });
 });

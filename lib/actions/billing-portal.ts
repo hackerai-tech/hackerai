@@ -1,12 +1,17 @@
 "use server";
 
 import { stripe } from "../../app/api/stripe";
+import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 
 export default async function redirectToBillingPortal() {
   const startedAt = Date.now();
   const context = await getBillingActionContext().catch((error) => {
+    if (isExpectedBillingContextError(error)) {
+      throw error;
+    }
+
     phLogger.error("billing_portal_action_failed", {
       event: "billing_portal_action_failed",
       stage: "billing_context",

@@ -77,4 +77,63 @@ describe("redirectToBillingPortal", () => {
       }),
     );
   });
+
+  it("does not log expected billing context failures", async () => {
+    const error = new Error("Only admins or owners can manage billing");
+    mockGetBillingActionContext.mockRejectedValue(error as never);
+
+    const { default: redirectToBillingPortal } =
+      await import("../billing-portal");
+
+    await expect(redirectToBillingPortal()).rejects.toThrow(
+      "Only admins or owners can manage billing",
+    );
+
+    expect(mockCreateBillingPortalSession).not.toHaveBeenCalled();
+    expect(mockPostHogError).not.toHaveBeenCalled();
+  });
+
+  it("logs unexpected billing context failures", async () => {
+    const error = new Error("Failed to fetch organization details");
+    mockGetBillingActionContext.mockRejectedValue(error as never);
+
+    const { default: redirectToBillingPortal } =
+      await import("../billing-portal");
+
+    await expect(redirectToBillingPortal()).rejects.toThrow(
+      "Failed to fetch organization details",
+    );
+
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_portal_action_failed",
+      expect.objectContaining({
+        event: "billing_portal_action_failed",
+        stage: "billing_context",
+        error,
+      }),
+    );
+  });
+
+  it("logs the action stage when Stripe returns no portal URL", async () => {
+    mockCreateBillingPortalSession.mockResolvedValue({} as never);
+
+    const { default: redirectToBillingPortal } =
+      await import("../billing-portal");
+
+    await expect(redirectToBillingPortal()).rejects.toThrow(
+      "Failed to create billing portal session",
+    );
+
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_portal_action_failed",
+      expect.objectContaining({
+        event: "billing_portal_action_failed",
+        stage: "missing_session_url",
+        userId: "user_123",
+        org_id: "org_123",
+        stripe_customer_id: "cus_123",
+        error: expect.any(Error),
+      }),
+    );
+  });
 });

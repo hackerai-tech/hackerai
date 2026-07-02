@@ -2,6 +2,10 @@
 
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
+import {
+  isExpectedBillingContextError,
+  isExpectedSubscriptionLookupError,
+} from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import {
   isCancellationReasonCategory,
@@ -132,6 +136,10 @@ export default async function cancelSubscriptionAction(
   );
   const startedAt = Date.now();
   const context = await getBillingActionContext().catch((error) => {
+    if (isExpectedBillingContextError(error)) {
+      throw error;
+    }
+
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
       stage: "billing_context",
@@ -151,6 +159,10 @@ export default async function cancelSubscriptionAction(
   try {
     subscriptionContext = await getActiveSubscriptionContext(stripeCustomerId);
   } catch (error) {
+    if (isExpectedSubscriptionLookupError(error)) {
+      throw error;
+    }
+
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
       ...billingFields,

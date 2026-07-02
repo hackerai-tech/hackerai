@@ -11,32 +11,43 @@ const CHUNK_LOAD_PATTERNS = [
   /Loading chunk \d+ failed/i,
   /error loading dynamically imported module/i,
   /Importing a module script failed/i,
+  /Failed to fetch dynamically imported module/i,
 ];
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
-function collectErrorStrings(value: unknown, strings: string[] = []): string[] {
+function collectErrorStrings(
+  value: unknown,
+  strings: string[] = [],
+  seen: WeakSet<object> = new WeakSet(),
+): string[] {
   if (typeof value === "string") {
     strings.push(value);
     return strings;
   }
 
   if (value instanceof Error) {
+    if (seen.has(value)) return strings;
+    seen.add(value);
     strings.push(value.name, value.message);
     if (value.stack) strings.push(value.stack);
     return strings;
   }
 
   if (Array.isArray(value)) {
+    if (seen.has(value)) return strings;
+    seen.add(value);
     for (const item of value) {
-      collectErrorStrings(item, strings);
+      collectErrorStrings(item, strings, seen);
     }
     return strings;
   }
 
   if (value && typeof value === "object") {
+    if (seen.has(value)) return strings;
+    seen.add(value);
     for (const nestedValue of Object.values(value)) {
-      collectErrorStrings(nestedValue, strings);
+      collectErrorStrings(nestedValue, strings, seen);
     }
   }
 
@@ -66,18 +77,23 @@ export function maybeRecoverFromChunkLoadFailure(
 ): boolean {
   if (!isChunkLoadFailure(error)) return false;
 
-  const storedReloadedAt = storage.getItem(CHUNK_LOAD_RELOAD_STORAGE_KEY);
-  const lastReloadedAt =
-    storedReloadedAt === null ? undefined : Number(storedReloadedAt);
-  if (
-    lastReloadedAt !== undefined &&
-    Number.isFinite(lastReloadedAt) &&
-    now - lastReloadedAt < cooldownMs
-  ) {
-    return false;
+  try {
+    const storedReloadedAt = storage.getItem(CHUNK_LOAD_RELOAD_STORAGE_KEY);
+    const lastReloadedAt =
+      storedReloadedAt === null ? undefined : Number(storedReloadedAt);
+    if (
+      lastReloadedAt !== undefined &&
+      Number.isFinite(lastReloadedAt) &&
+      now - lastReloadedAt < cooldownMs
+    ) {
+      return false;
+    }
+
+    storage.setItem(CHUNK_LOAD_RELOAD_STORAGE_KEY, String(now));
+  } catch {
+    // Storage can be unavailable in restricted browser modes; still recover.
   }
 
-  storage.setItem(CHUNK_LOAD_RELOAD_STORAGE_KEY, String(now));
   reload();
   return true;
 }
@@ -99,11 +115,11 @@ export function ChunkLoadRecovery() {
       recover(event.reason);
     };
 
-    window.addEventListener("error", onError);
+    window.addEventListener("error", onError, true);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
 
     return () => {
-      window.removeEventListener("error", onError);
+      window.removeEventListener("error", onError, true);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
     };
   }, []);

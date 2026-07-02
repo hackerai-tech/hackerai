@@ -102,4 +102,40 @@ describe("getSubscriptionCancellationStatusAction", () => {
       }),
     );
   });
+
+  it("does not log expected billing context failures", async () => {
+    const error = new Error("No billing account found for this organization");
+    mockGetBillingActionContext.mockRejectedValue(error as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).rejects.toThrow(
+      "No billing account found for this organization",
+    );
+
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockPostHogError).not.toHaveBeenCalled();
+  });
+
+  it("logs unexpected billing context failures", async () => {
+    const error = new Error("Failed to fetch organization details");
+    mockGetBillingActionContext.mockRejectedValue(error as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).rejects.toThrow(
+      "Failed to fetch organization details",
+    );
+
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_subscription_status_action_failed",
+      expect.objectContaining({
+        event: "billing_subscription_status_action_failed",
+        stage: "billing_context",
+        error,
+      }),
+    );
+  });
 });

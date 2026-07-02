@@ -1,6 +1,7 @@
 "use server";
 
 import { stripe } from "../../app/api/stripe";
+import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 
@@ -23,6 +24,10 @@ function currentPeriodEndMs(subscription: unknown): number | undefined {
 export default async function getSubscriptionCancellationStatusAction(): Promise<SubscriptionCancellationStatus> {
   const startedAt = Date.now();
   const context = await getBillingActionContext().catch((error) => {
+    if (isExpectedBillingContextError(error)) {
+      throw error;
+    }
+
     phLogger.error("billing_subscription_status_action_failed", {
       event: "billing_subscription_status_action_failed",
       stage: "billing_context",

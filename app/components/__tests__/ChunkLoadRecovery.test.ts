@@ -1,4 +1,7 @@
+import { render } from "@testing-library/react";
+import { createElement } from "react";
 import {
+  ChunkLoadRecovery,
   isChunkLoadFailure,
   maybeRecoverFromChunkLoadFailure,
 } from "../ChunkLoadRecovery";
@@ -30,7 +33,22 @@ describe("ChunkLoadRecovery", () => {
       }),
     ).toBe(true);
 
+    expect(
+      isChunkLoadFailure(
+        "Failed to fetch dynamically imported module: https://example.com/chunk.js",
+      ),
+    ).toBe(true);
+
     expect(isChunkLoadFailure(new Error("Failed to fetch"))).toBe(false);
+  });
+
+  it("handles cyclic rejection payloads while checking chunk load failures", () => {
+    const reason: { message: string; self?: unknown } = {
+      message: "ChunkLoadError",
+    };
+    reason.self = reason;
+
+    expect(isChunkLoadFailure(reason)).toBe(true);
   });
 
   it("reloads once for chunk load failures and records the attempt", () => {
@@ -68,5 +86,48 @@ describe("ChunkLoadRecovery", () => {
     ).toBe(false);
 
     expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("still reloads when storage is unavailable", () => {
+    const storage = {
+      getItem: jest.fn(() => {
+        throw new Error("Storage disabled");
+      }),
+      setItem: jest.fn(),
+    };
+    const reload = jest.fn();
+
+    expect(
+      maybeRecoverFromChunkLoadFailure(new Error("ChunkLoadError"), {
+        storage,
+        reload,
+      }),
+    ).toBe(true);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers the global error listener in capture mode", () => {
+    const addEventListener = jest.spyOn(window, "addEventListener");
+    const removeEventListener = jest.spyOn(window, "removeEventListener");
+
+    const { unmount } = render(createElement(ChunkLoadRecovery));
+
+    expect(addEventListener).toHaveBeenCalledWith(
+      "error",
+      expect.any(Function),
+      true,
+    );
+
+    unmount();
+
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "error",
+      expect.any(Function),
+      true,
+    );
+
+    addEventListener.mockRestore();
+    removeEventListener.mockRestore();
   });
 });
