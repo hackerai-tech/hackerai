@@ -25,7 +25,10 @@ import { ChatSDKError } from "@/lib/errors";
 import type { Todo, SandboxPreference, SelectedModel } from "@/types";
 import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
-import { assertLocalSandboxFallbackAllowed } from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
+  assertLocalSandboxFallbackAllowed,
+  getSandboxWithFallbackGuard,
+} from "@/lib/ai/tools/utils/sandbox-fallback";
 import {
   getUploadBasePath,
   hasLocalDesktopSourcePaths,
@@ -159,7 +162,10 @@ export async function POST(req: NextRequest) {
         let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
         try {
           uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
-            const { sandbox } = await sandboxManager.getSandbox();
+            const { sandbox } = await getSandboxWithFallbackGuard({
+              sandboxManager,
+              requireLocalSandbox: true,
+            });
             stagedSandbox = sandbox;
             return sandbox;
           });

@@ -115,6 +115,52 @@ function makeSandbox(
 }
 
 describe("file tool large text safety", () => {
+  test("blocks file operations when a selected local sandbox falls back", async () => {
+    const commandRun = jest.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const writerWrites: unknown[] = [];
+    const context = makeContext(sandbox, {
+      sandboxManager: {
+        getSandbox: jest.fn(async () => ({ sandbox })),
+        setSandbox: jest.fn(),
+        getSandboxType: jest.fn(),
+        getSandboxInfo: jest.fn(() => null),
+        getEffectivePreference: jest.fn(() => "e2b"),
+        recordHealthFailure: jest.fn(() => false),
+        resetHealthFailures: jest.fn(),
+        isSandboxUnavailable: jest.fn(() => false),
+        consumeFallbackInfo: jest.fn(() => ({
+          occurred: true,
+          reason: "no_local_connections",
+          requestedPreference: "desktop",
+          actualSandbox: "e2b",
+          actualSandboxName: "Cloud",
+        })),
+      } as never,
+      writer: {
+        write: (part: unknown) => writerWrites.push(part),
+      } as never,
+    });
+    const tool = createFile(context);
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "/home/user/report.txt",
+      brief: "Read file",
+    })) as { error: string };
+
+    expect(result.error).toContain("HackerAI did not switch this run to Cloud");
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+    expect(commandRun).not.toHaveBeenCalled();
+    expect(writerWrites).not.toContainEqual(
+      expect.objectContaining({ type: "data-sandbox-fallback" }),
+    );
+  });
+
   test("does not load oversized files for full reads", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: JSON.stringify({

@@ -3,6 +3,10 @@ import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import { toolBriefSchema } from "./tool-brief";
+import {
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
   const { sandboxManager, backgroundProcessTracker } = context;
@@ -27,7 +31,9 @@ Usage:
     }),
     execute: async ({ files }: { files: string[] }) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        const { sandbox } = await getSandboxWithFallbackGuard({
+          sandboxManager,
+        });
 
         const providedFiles: Array<{ path: string }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
@@ -147,7 +153,7 @@ Usage:
           failedFiles: blockedFiles,
         };
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
+        const errorMsg = resolveToolErrorMessage(error);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],

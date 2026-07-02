@@ -36,6 +36,7 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { isE2BSandbox } from "./utils/sandbox-types";
+import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 
 export { isE2BSandbox };
 
@@ -179,7 +180,9 @@ export const createTools = (
     if (options?.refresh) {
       await sandboxManager.resetSandbox?.(options.reason);
     }
-    const { sandbox: ensured } = await sandboxManager.getSandbox();
+    const { sandbox: ensured } = await getSandboxWithFallbackGuard({
+      sandboxManager,
+    });
     return ensured;
   };
   const getTodoManager = () => todoManager;

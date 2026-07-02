@@ -12,6 +12,10 @@ import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
 import { toolBriefSchema } from "./tool-brief";
+import {
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -60,9 +64,7 @@ type SandboxViewPayload = {
 };
 
 type FileViewImageUsageOutcome =
-  | "success"
-  | "unsupported_model"
-  | "inspection_failed";
+  "success" | "unsupported_model" | "inspection_failed";
 
 type FileViewStage = "initial_inspection" | "model_output";
 
@@ -1069,6 +1071,10 @@ const editSchema = z.object({
 
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
+  const getSandboxForFileTool = () =>
+    getSandboxWithFallbackGuard({
+      sandboxManager,
+    });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
   const supportsViewInSchema = canViewMultimodalFiles();
@@ -1155,7 +1161,7 @@ ${instructionsDescription}`,
     }),
     execute: async ({ action, path, text, range, edits }) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        const { sandbox } = await getSandboxForFileTool();
 
         switch (action) {
           case "view": {
@@ -1454,7 +1460,7 @@ ${instructionsDescription}`,
         }
       } catch (error) {
         return {
-          error: error instanceof Error ? error.message : String(error),
+          error: resolveToolErrorMessage(error),
         };
       }
     },
@@ -1490,7 +1496,7 @@ ${instructionsDescription}`,
           const viewStartedAt = Date.now();
           let outputSandbox: any | undefined;
           try {
-            const { sandbox } = await sandboxManager.getSandbox();
+            const { sandbox } = await getSandboxForFileTool();
             outputSandbox = sandbox;
             const viewPayload = await readSandboxFileForView(
               sandbox,
@@ -1528,7 +1534,7 @@ ${instructionsDescription}`,
           } catch (error) {
             try {
               const sandbox =
-                outputSandbox ?? (await sandboxManager.getSandbox()).sandbox;
+                outputSandbox ?? (await getSandboxForFileTool()).sandbox;
               const classification = classifyFileViewError(error);
               captureFileViewImageUsage({
                 context,
@@ -1550,9 +1556,7 @@ ${instructionsDescription}`,
             }
             return {
               type: "text" as const,
-              value: `Error: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+              value: `Error: ${resolveToolErrorMessage(error)}`,
             };
           }
         }
