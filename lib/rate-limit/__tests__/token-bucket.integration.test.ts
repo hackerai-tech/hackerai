@@ -586,6 +586,119 @@ describe("token-bucket async functions", () => {
       // Should charge additional via limiter
       expect(mockLimitFn).toHaveBeenCalled();
     });
+
+    it("should use served fallback model pricing for actual token cost when provider cost is absent", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      const estimatedInputTokens = 1_000_000;
+      const actualInputTokens = 1_000_000;
+      const actualOutputTokens = 1_000_000;
+      const selectedModel = "agent-model-free";
+      const servedModel = "model-kimi-k2.7-code";
+      const initialDeduction = calculateTokenCost(
+        estimatedInputTokens,
+        "input",
+        selectedModel,
+      );
+      const expectedActualCost =
+        calculateTokenCost(actualInputTokens, "input", servedModel) +
+        calculateTokenCost(actualOutputTokens, "output", servedModel);
+      const expectedAdditional = expectedActualCost - initialDeduction;
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 100_000,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 100_000 - expectedAdditional,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        actualInputTokens,
+        actualOutputTokens,
+        undefined,
+        undefined,
+        selectedModel,
+        0,
+        undefined,
+        { pointsDeducted: initialDeduction },
+        servedModel,
+      );
+
+      expect(expectedAdditional).toBe(60_450);
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: expectedAdditional }),
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: expectedActualCost,
+        extraUsagePointsDeducted: 0,
+      });
+    });
+
+    it("should prefer raw provider cost over served fallback token pricing", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      const estimatedInputTokens = 1_000_000;
+      const selectedModel = "agent-model-free";
+      const servedModel = "model-kimi-k2.7-code";
+      const providerCostDollars = 0.42;
+      const initialDeduction = calculateTokenCost(
+        estimatedInputTokens,
+        "input",
+        selectedModel,
+      );
+      const expectedProviderCost = Math.ceil(providerCostDollars * 10_000);
+      const expectedAdditional = expectedProviderCost - initialDeduction;
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 100_000,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 100_000 - expectedAdditional,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        1_000_000,
+        1_000_000,
+        undefined,
+        providerCostDollars,
+        selectedModel,
+        0,
+        undefined,
+        { pointsDeducted: initialDeduction },
+        servedModel,
+      );
+
+      expect(expectedAdditional).toBe(300);
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: expectedAdditional }),
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: expectedProviderCost,
+        extraUsagePointsDeducted: 0,
+      });
+    });
   });
 
   describe("refundUsage", () => {

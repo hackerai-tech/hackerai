@@ -419,14 +419,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(e2b.commands.run).not.toHaveBeenCalled();
     expect(result.result.exitCode).toBe(1);
-    expect(result.result.error).toContain("request couldn't be processed");
-    expect(writerWrites).toContainEqual(
+    expect(result.result.error).toContain(
+      "HackerAI did not switch this run to Cloud",
+    );
+    expect(writerWrites).not.toContainEqual(
       expect.objectContaining({
         type: "data-sandbox-fallback",
-        data: expect.objectContaining({
-          actualSandbox: "e2b",
-          requestedPreference: "desktop",
-        }),
       }),
     );
   });
@@ -456,14 +454,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(mockCreateE2BPtyHandle).not.toHaveBeenCalled();
     expect(result.result.exitCode).toBe(1);
-    expect(result.result.error).toContain("request couldn't be processed");
-    expect(writerWrites).toContainEqual(
+    expect(result.result.error).toContain(
+      "commands would run on the wrong host",
+    );
+    expect(writerWrites).not.toContainEqual(
       expect.objectContaining({
         type: "data-sandbox-fallback",
-        data: expect.objectContaining({
-          actualSandbox: "other-local",
-          requestedPreference: "desktop",
-        }),
       }),
     );
   });

@@ -458,10 +458,7 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const markPurchaseCredited = async (
-      result: "credited" | "already_processed",
-      creditedAt?: number,
-    ) => {
+    const markPurchaseCredited = async (creditedAt?: number) => {
       if (!args.stripeCheckoutSessionId) return;
 
       await upsertExtraUsagePurchase(ctx, {
@@ -472,9 +469,25 @@ export const addCredits = mutation({
         stripeInvoiceId: args.stripeInvoiceId,
         status: "credited",
         route: args.purchaseRoute ?? "repair",
-        result,
+        result: "credited",
         lastError: null,
         creditedAt,
+      });
+    };
+
+    const markPurchaseAlreadyProcessed = async () => {
+      if (!args.stripeCheckoutSessionId) return;
+
+      await upsertExtraUsagePurchase(ctx, {
+        userId: args.userId,
+        amountDollars: args.amountDollars,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        stripePaymentIntentId: args.stripePaymentIntentId,
+        stripeInvoiceId: args.stripeInvoiceId,
+        status: "paid_seen",
+        route: args.purchaseRoute ?? "repair",
+        result: "already_processed",
+        lastError: null,
       });
     };
 
@@ -487,10 +500,7 @@ export const addCredits = mutation({
         .withIndex("by_session_key", (q) => q.eq("session_key", sessionKey))
         .unique();
       if (durableExisting) {
-        await markPurchaseCredited(
-          "already_processed",
-          durableExisting.processed_at,
-        );
+        await markPurchaseCredited(durableExisting.processed_at);
         return { newBalance: 0, alreadyProcessed: true };
       }
     }
@@ -505,7 +515,13 @@ export const addCredits = mutation({
         .first();
 
       if (existing) {
-        await markPurchaseCredited("already_processed", existing.processed_at);
+        if (key === args.idempotencyKey) {
+          await markPurchaseCredited(existing.processed_at);
+        } else {
+          // A legacy evt_* row only proves another webhook endpoint saw this
+          // Stripe event; it does not prove the Checkout Session was credited.
+          await markPurchaseAlreadyProcessed();
+        }
         return { newBalance: 0, alreadyProcessed: true };
       }
     }
@@ -577,7 +593,7 @@ export const addCredits = mutation({
       description: args.revenueSource ?? "extra_usage_purchase",
     });
 
-    await markPurchaseCredited("credited");
+    await markPurchaseCredited();
 
     convexLogger.info("credits_added", {
       user_id: args.userId,

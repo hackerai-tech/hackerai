@@ -70,6 +70,54 @@ describe("get_terminal_files", () => {
     jest.clearAllMocks();
   });
 
+  it("blocks file delivery when a selected local sandbox falls back", async () => {
+    const writerWrites: unknown[] = [];
+    const context = makeContext({
+      sandboxManager: {
+        getSandbox: jest.fn(async () => ({ sandbox: { id: "cloud" } })),
+        setSandbox: jest.fn(),
+        getSandboxType: jest.fn(),
+        getSandboxInfo: jest.fn(() => null),
+        getEffectivePreference: jest.fn(() => "e2b"),
+        recordHealthFailure: jest.fn(() => false),
+        resetHealthFailures: jest.fn(),
+        isSandboxUnavailable: jest.fn(() => false),
+        consumeFallbackInfo: jest.fn(() => ({
+          occurred: true,
+          reason: "no_local_connections",
+          requestedPreference: "desktop",
+          actualSandbox: "e2b",
+          actualSandboxName: "Cloud",
+        })),
+      } as never,
+      writer: {
+        write: (part: unknown) => writerWrites.push(part),
+      } as never,
+    });
+    const tool = createGetTerminalFiles(context);
+
+    const result = (await runTool(tool, {
+      brief: "Deliver report",
+      files: ["/home/user/report.txt"],
+    })) as {
+      result: string;
+      files: Array<{ path: string }>;
+      failedFiles: Array<{ path: string; reason: string }>;
+    };
+
+    expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+    expect(result.files).toEqual([]);
+    expect(result.failedFiles[0]?.reason).toContain(
+      "HackerAI did not switch this run to Cloud",
+    );
+    expect(result.result).toContain(
+      "HackerAI did not switch this run to Cloud",
+    );
+    expect(writerWrites).not.toContainEqual(
+      expect.objectContaining({ type: "data-sandbox-fallback" }),
+    );
+  });
+
   it("reports partial upload failures without claiming every file was sent", async () => {
     mockUploadSandboxFileToConvex
       .mockResolvedValueOnce({

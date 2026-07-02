@@ -29,7 +29,9 @@ export interface SandboxManager {
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this
+  peekFallbackInfo?(): SandboxFallbackInfo | null;
   consumeFallbackInfo?(): SandboxFallbackInfo | null;
+  clearFallbackInfo?(): void;
   /** Get the effective sandbox preference after any fallbacks (e.g. "e2b" or connectionId). */
   getEffectivePreference(): string;
   /** Track consecutive sandbox health failures across all tools. Returns true if the limit has been exceeded. */

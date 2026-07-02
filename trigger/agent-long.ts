@@ -38,6 +38,7 @@ import {
   isProviderApiError,
   injectNotesIntoMessages,
   getRetryFallbackModel,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
@@ -1437,6 +1438,7 @@ export const agentLongTask = task({
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
+            let activeModelName = selectedModel;
 
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
@@ -1460,6 +1462,11 @@ export const agentLongTask = task({
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
+                  accountingModel: resolveServedModelForCostAccounting({
+                    modelName: activeModelName,
+                    responseModel: state.responseModel,
+                    mode,
+                  }),
                   rateLimitInfo,
                 };
                 let usageCostRecord =
@@ -1486,6 +1493,7 @@ export const agentLongTask = task({
                     usageTracker.nonModelCost,
                     organizationId,
                     rateLimitInfo,
+                    usageRecordArgs.accountingModel,
                   );
                   if (deductionResult.uncoveredPoints > 0) {
                     state.stoppedDueToBudgetExhaustion = true;
@@ -1524,6 +1532,7 @@ export const agentLongTask = task({
                     selectedModelOverride,
                     responseModel: state.responseModel,
                     configuredModelId,
+                    accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                     billingBreakdown,
                   });
@@ -1595,6 +1604,7 @@ export const agentLongTask = task({
             };
 
             const createStream = (modelName: string) => {
+              activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);

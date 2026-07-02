@@ -1,14 +1,14 @@
 import { stripe } from "../stripe";
 import { workos } from "../workos";
-import { getUserID } from "@/lib/auth/get-user-id";
+import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name";
-import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import {
+  REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
   getReferralRewardConfig,
   isValidReferralCode,
@@ -37,7 +37,21 @@ function parseCreatedAtMs(raw: unknown): number | undefined {
   return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
+function clearReferralCookies(response: NextResponse) {
+  response.cookies.delete(REFERRAL_COOKIE_NAME);
+  response.cookies.delete(REFERRAL_COOKIE_CREATED_AT_NAME);
+}
+
 export const POST = async (req: NextRequest) => {
+  let shouldClearReferralCookies = false;
+  const json = (body: unknown, init?: ResponseInit) => {
+    const response = NextResponse.json(body, init);
+    if (shouldClearReferralCookies) {
+      clearReferralCookies(response);
+    }
+    return response;
+  };
+
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
@@ -53,20 +67,28 @@ export const POST = async (req: NextRequest) => {
     );
     const fromTier = paidFunnelTierFromUnknown(body?.fromTier);
     const posthogSessionId = req.headers.get("x-posthog-session-id");
-    // Get user ID from authenticated session
-    const userId = await getUserID(req);
+    // Get user ID and subscription state from authenticated session
+    const { userId, subscription, freeQuotaSubject } =
+      await getUserIDAndPro(req);
 
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
     const orgName = buildWorkOSOrganizationName(user);
-    const freeQuotaSubject = createFreeQuotaSubject(user.email);
     const referralConfig = getReferralRewardConfig();
     const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
+    const validReferralCode = isValidReferralCode(referralCode)
+      ? referralCode
+      : undefined;
+    const canRecordReferralCheckoutSession = subscription === "free";
+
+    if (validReferralCode && subscription !== "free") {
+      shouldClearReferralCookies = true;
+    }
 
     if (
       referralConfig.enabled &&
-      referralCode &&
-      isValidReferralCode(referralCode)
+      validReferralCode &&
+      canRecordReferralCheckoutSession
     ) {
       try {
         const attribution = await getConvexClient().mutation(
@@ -74,7 +96,7 @@ export const POST = async (req: NextRequest) => {
           {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             referredUserId: userId,
-            referralCode,
+            referralCode: validReferralCode,
             starterBonusUnits: 0,
             referredIdentityHash: freeQuotaSubject,
             userCreatedAtMs: parseCreatedAtMs(user.createdAt),
@@ -92,7 +114,7 @@ export const POST = async (req: NextRequest) => {
             userId,
             referrer_user_id: attribution.referrerUserId,
             referrer_subscription_tier: referrerSubscriptionTier,
-            referral_code: referralCode,
+            referral_code: validReferralCode,
             starter_bonus_awarded: attribution.starterBonusAwarded,
             starter_bonus_units: 0,
             source: "subscribe_route",
@@ -101,7 +123,7 @@ export const POST = async (req: NextRequest) => {
       } catch (error) {
         phLogger.warn("referral_attribution_failed_before_checkout", {
           userId,
-          referral_code: referralCode,
+          referral_code: validReferralCode,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -146,7 +168,7 @@ export const POST = async (req: NextRequest) => {
       // User already has an organization, use the first one
       const membership = existingMemberships.data[0];
       if (!canManageOrganizationBilling(membership)) {
-        return NextResponse.json(
+        return json(
           { error: "Only organization admins or owners can manage billing" },
           { status: 403 },
         );
@@ -182,7 +204,7 @@ export const POST = async (req: NextRequest) => {
         console.error(
           `No price found for lookup key: ${subscriptionLevel}. This is likely because the products and prices have not been created yet. Run the setup script \`pnpm run setup\` to automatically create them.`,
         );
-        return NextResponse.json(
+        return json(
           {
             error: "Subscription plan not found",
             details: `No price found for plan: ${subscriptionLevel}`,
@@ -195,7 +217,7 @@ export const POST = async (req: NextRequest) => {
         `Error retrieving price from Stripe for lookup key: ${subscriptionLevel}. This is likely because the products and prices have not been created yet. Run the setup script \`pnpm run setup\` to automatically create them.`,
         error,
       );
-      return NextResponse.json(
+      return json(
         { error: "Error retrieving price from Stripe" },
         { status: 500 },
       );
@@ -211,7 +233,7 @@ export const POST = async (req: NextRequest) => {
       );
 
       if ("deleted" in existingCustomer && existingCustomer.deleted) {
-        return NextResponse.json(
+        return json(
           { error: "Billing account is no longer available" },
           { status: 409 },
         );
@@ -239,7 +261,7 @@ export const POST = async (req: NextRequest) => {
     if (customer) {
       // Reject blocked customers (flagged by fraud webhook)
       if (customer.metadata.blocked === "true") {
-        return NextResponse.json(
+        return json(
           {
             error: getSuspensionMessage(customer.metadata.blocked_reason),
           },
@@ -280,7 +302,7 @@ export const POST = async (req: NextRequest) => {
 
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
     if (!baseUrl) {
-      return NextResponse.json(
+      return json(
         { error: "NEXT_PUBLIC_BASE_URL is not configured" },
         { status: 500 },
       );
@@ -345,7 +367,7 @@ export const POST = async (req: NextRequest) => {
       },
     });
 
-    if (referralConfig.enabled) {
+    if (referralConfig.enabled && canRecordReferralCheckoutSession) {
       try {
         const referralSession = await getConvexClient().mutation(
           api.referrals.recordReferralCheckoutSession,
@@ -420,11 +442,11 @@ export const POST = async (req: NextRequest) => {
     );
     after(() => phLogger.flush());
 
-    return NextResponse.json({ url: session.url, checkoutAttemptId });
+    return json({ url: session.url, checkoutAttemptId });
   } catch (error: unknown) {
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";
     console.error(errorMessage, error);
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return json({ error: errorMessage }, { status: 500 });
   }
 };

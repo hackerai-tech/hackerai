@@ -82,6 +82,7 @@ import {
   estimatePreflightInputTokens,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -863,6 +864,7 @@ export const createChatHandler = () => {
             const fallbackModel = getRetryFallbackModel(selectedModel, mode);
             const fallbackModelId =
               trackedProvider.languageModel(fallbackModel).modelId;
+            let activeModelName = selectedModel;
 
             const usageTracker = new UsageTracker();
             let hasRecordedUsage = false;
@@ -891,6 +893,11 @@ export const createChatHandler = () => {
                   selectedModelOverride,
                   responseModel: state.responseModel,
                   configuredModelId,
+                  accountingModel: resolveServedModelForCostAccounting({
+                    modelName: activeModelName,
+                    responseModel: state.responseModel,
+                    mode,
+                  }),
                   rateLimitInfo,
                 };
                 let usageCostRecord =
@@ -942,6 +949,7 @@ export const createChatHandler = () => {
                     selectedModelOverride,
                     responseModel: state.responseModel,
                     configuredModelId,
+                    accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                   });
                   const cutOff = state.stoppedDueToBudgetExhaustion;
@@ -993,6 +1001,7 @@ export const createChatHandler = () => {
                     usageTracker.nonModelCost,
                     organizationId,
                     rateLimitInfo,
+                    usageRecordArgs.accountingModel,
                   );
                   if (deductionResult.uncoveredPoints > 0) {
                     state.stoppedDueToBudgetExhaustion = true;
@@ -1031,6 +1040,7 @@ export const createChatHandler = () => {
                     selectedModelOverride,
                     responseModel: state.responseModel,
                     configuredModelId,
+                    accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                     billingBreakdown,
                   });
@@ -1107,6 +1117,7 @@ export const createChatHandler = () => {
             };
 
             const createStream = (modelName: string) => {
+              activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);

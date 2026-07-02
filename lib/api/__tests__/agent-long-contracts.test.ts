@@ -266,6 +266,12 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /shouldUseAgentLongForCurrentChatRef\.current/,
     );
     expect(chatComponentSrc).toMatch(/Cannot close an errored readable stream/);
+    expect(chatComponentSrc).toMatch(
+      /ReadableStreamDefaultController is not in a state where it can be closed/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /Cannot close a stream that is already closed/,
+    );
     expect(chatComponentSrc).toMatch(/event\.preventDefault\(\)/);
   });
 

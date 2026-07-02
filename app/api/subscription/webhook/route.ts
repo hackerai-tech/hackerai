@@ -1135,20 +1135,36 @@ async function handleSubscriptionDeleted(
       : subscription.customer?.id;
   if (!customerId) return;
 
-  const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
-  if (!lookupKey) {
-    console.info(
-      `[Subscription Webhook] subscription.deleted: skipping subscription ${subscription.id} without HackerAI price lookup_key for customer ${customerId}`,
-    );
-    return;
-  }
+  let price = subscription.items?.data[0]?.price;
+  const lookupKey = price?.lookup_key ?? null;
+  let tier: SubscriptionTier | null = null;
 
-  const tier = planLookupKeyToTier(lookupKey);
-  if (!tier) {
-    console.error(
-      `[Subscription Webhook] subscription.deleted: unknown price lookup_key "${lookupKey}" for subscription ${subscription.id}`,
-    );
-    return;
+  if (!lookupKey) {
+    const resolved = await resolveSubscription(subscription.id);
+    if (!resolved) {
+      console.info(
+        `[Subscription Webhook] subscription.deleted: skipping subscription ${subscription.id} without HackerAI price lookup_key or product fallback for customer ${customerId}`,
+      );
+      return;
+    }
+
+    if (resolved.kind === "legacy_pentestgpt") {
+      console.info(
+        `[Subscription Webhook] subscription.deleted: skipping legacy PentestGPT subscription ${subscription.id} for customer ${customerId}`,
+      );
+      return;
+    }
+
+    tier = resolved.tier;
+    price = resolved.subscription.items?.data[0]?.price ?? price;
+  } else {
+    tier = planLookupKeyToTier(lookupKey);
+    if (!tier) {
+      console.error(
+        `[Subscription Webhook] subscription.deleted: unknown price lookup_key "${lookupKey}" for subscription ${subscription.id}`,
+      );
+      return;
+    }
   }
 
   const { userIds, orgId, reason } =
@@ -1175,7 +1191,7 @@ async function handleSubscriptionDeleted(
     userIds,
     orgId: orgId ?? undefined,
     tier,
-    price: subscription.items?.data[0]?.price,
+    price,
     completionType: "deleted",
   });
 
@@ -1254,6 +1270,15 @@ export async function POST(req: NextRequest) {
       { error: "Webhook signature verification failed" },
       { status: 400 },
     );
+  }
+
+  // Payment-mode Checkout Sessions are fulfilled by their own webhook routes.
+  // Do not consume those event ids into the shared webhook idempotency table.
+  if (
+    event.type === "checkout.session.completed" &&
+    (event.data.object as Stripe.Checkout.Session).mode !== "subscription"
+  ) {
+    return NextResponse.json({ received: true });
   }
 
   // Idempotency check (check only — mark after successful processing)
