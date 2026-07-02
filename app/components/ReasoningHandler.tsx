@@ -124,7 +124,7 @@ export const ReasoningHandler = memo(function ReasoningHandler({
     return null;
   }
 
-  // Don't show reasoning if empty or only contains [REDACTED] (encrypted reasoning from providers like Gemini)
+  // Don't show reasoning if empty or only contains redacted provider-private reasoning.
   if (!combined || REDACTED_PATTERN.test(combined.trim())) return null;
 
   const isLastPart = partIndex === parts.length - 1;

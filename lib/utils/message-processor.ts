@@ -17,9 +17,8 @@ const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
  * Filters out redacted reasoning parts from a message.
  *
  * IMPORTANT: This function intentionally preserves providerMetadata on all parts.
- * Gemini 3 models require thought signatures (stored in providerMetadata) to be
- * passed back in subsequent requests for function calling to work correctly.
- * Stripping providerMetadata causes "missing thought_signature" 400 errors.
+ * Some providers require signed reasoning/tool metadata to be passed back in
+ * subsequent requests for function calling to work correctly.
  */
 export const filterRedactedReasoning = <T extends { parts?: any[] }>(
   message: T,
@@ -45,9 +44,7 @@ interface BaseToolPart {
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
   type:
-    | "tool-run_terminal_cmd"
-    | "tool-interact_terminal_session"
-    | "tool-shell";
+    "tool-run_terminal_cmd" | "tool-interact_terminal_session" | "tool-shell";
   input?: {
     command?: string;
     is_background?: boolean;
@@ -151,7 +148,7 @@ export const normalizeMessages = (
     });
 
     // Process each part, transform incomplete tools, filter out data-terminal parts
-    // NOTE: We intentionally keep providerMetadata - Gemini requires thought_signature for tool calls
+    // NOTE: We intentionally keep providerMetadata for providers that require signed tool metadata.
     message.parts.forEach((part: any) => {
       const toolPart = part as BaseToolPart;
 

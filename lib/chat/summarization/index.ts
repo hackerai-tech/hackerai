@@ -16,7 +16,11 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
-import { myProvider } from "@/lib/ai/providers";
+import {
+  GROK_4_3_SLUG,
+  KIMI_K2_7_CODE_SLUG,
+  myProvider,
+} from "@/lib/ai/providers";
 import type { ProviderPromptPressure } from "./provider-pressure";
 
 import {
@@ -46,9 +50,7 @@ export type { SummarizationResult, SummarizationUsage } from "./helpers";
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
 type CompactionLogReason =
-  | "provider_pressure"
-  | "provider_input_tokens"
-  | "estimated_token_threshold";
+  "provider_pressure" | "provider_input_tokens" | "estimated_token_threshold";
 
 type SummarizationAttempt = "primary" | "fallback";
 
@@ -56,6 +58,10 @@ const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
   ask: "fallback-ask-model",
   agent: "fallback-agent-model",
 };
+const SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS = [
+  KIMI_K2_7_CODE_SLUG,
+  GROK_4_3_SLUG,
+] as const;
 const SUMMARIZATION_ATTEMPT_ERROR_KEY = "__hackeraiSummarizationAttempt";
 
 const getLanguageModelId = (
@@ -187,17 +193,24 @@ const isMalformedProviderJsonError = (
 
 const buildSummarizationRetryProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
-): Record<string, Record<string, unknown>> | undefined => {
-  if (!providerOptions) return undefined;
+): Record<string, Record<string, unknown>> => {
+  if (!providerOptions) {
+    return {
+      openrouter: {
+        models: [...SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS],
+      },
+    };
+  }
 
   const retryProviderOptions: Record<string, Record<string, unknown>> = {};
   for (const [providerName, options] of Object.entries(providerOptions)) {
     retryProviderOptions[providerName] = { ...options };
   }
 
-  if (retryProviderOptions.openrouter) {
-    delete retryProviderOptions.openrouter.models;
-  }
+  retryProviderOptions.openrouter = {
+    ...(retryProviderOptions.openrouter ?? {}),
+    models: [...SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS],
+  };
 
   return retryProviderOptions;
 };
