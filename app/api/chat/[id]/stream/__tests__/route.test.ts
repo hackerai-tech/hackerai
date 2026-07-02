@@ -25,6 +25,7 @@ jest.mock("@/lib/db/actions", () => ({
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: jest.fn(() => ({
     mutation: jest.fn(),
+    query: jest.fn(),
   })),
 }));
 
