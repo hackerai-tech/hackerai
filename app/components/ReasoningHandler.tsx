@@ -33,13 +33,6 @@ const collectReasoningText = (
   return collected.join("");
 };
 
-const collectReasoningComparisonKey = (
-  parts: UIMessage["parts"],
-  startIndex: number,
-): string => {
-  return collectReasoningText(parts, startIndex);
-};
-
 // Hoist regex outside component to avoid recreation
 const REDACTED_PATTERN = /^(\[REDACTED\])+$/;
 
@@ -59,8 +52,8 @@ function areReasoningPropsEqual(
   if (prevPart?.type !== nextPart?.type) return false;
   if (prevPart?.type === "reasoning" && nextPart?.type === "reasoning") {
     return (
-      collectReasoningComparisonKey(prev.message.parts, prev.partIndex) ===
-      collectReasoningComparisonKey(next.message.parts, next.partIndex)
+      collectReasoningText(prev.message.parts, prev.partIndex) ===
+      collectReasoningText(next.message.parts, next.partIndex)
     );
   }
   return true;
@@ -78,22 +71,21 @@ export const ReasoningHandler = memo(function ReasoningHandler({
     [message.parts],
   );
   const currentPart = parts[partIndex];
+  const previousPart = parts[partIndex - 1];
+  const isPreviousReasoning = previousPart?.type === "reasoning";
 
   // Memoize combined text collection - only recompute when parts or index changes
   const combined = useMemo(() => {
     if (currentPart?.type !== "reasoning") return "";
-    // Skip if previous part is also reasoning (avoid duplicate renders)
-    const previousPart = parts[partIndex - 1];
-    if (previousPart?.type === "reasoning") return "";
+    if (isPreviousReasoning) return "";
     return collectReasoningText(parts, partIndex);
-  }, [parts, partIndex, currentPart?.type]);
+  }, [parts, partIndex, currentPart?.type, isPreviousReasoning]);
 
   // Early return for non-reasoning parts
   if (currentPart?.type !== "reasoning") return null;
 
   // Skip if previous part is also reasoning (avoid duplicate renders)
-  const previousPart = parts[partIndex - 1];
-  if (previousPart?.type === "reasoning") return null;
+  if (isPreviousReasoning) return null;
 
   // Don't show reasoning if empty or only contains [REDACTED] (encrypted reasoning from providers like Gemini)
   if (!combined || REDACTED_PATTERN.test(combined.trim())) return null;
