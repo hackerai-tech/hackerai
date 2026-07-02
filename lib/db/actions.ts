@@ -46,11 +46,11 @@ const SAVE_MESSAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_CHAT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
-  | "token_threshold"
-  | "provider_input_threshold"
-  | "provider_pressure";
+  "token_threshold" | "provider_input_threshold" | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -251,6 +251,9 @@ const getRetryableDatabaseErrorReason = (
     .join(" ");
 
   if (/WorkerOverloaded/i.test(errorText)) return "worker_overloaded";
+  if (/failed to fetch|fetch failed/i.test(errorText)) {
+    return "network_fetch_failed";
+  }
   if (
     /ServiceUnavailable|temporarily unavailable|ECONNRESET|ETIMEDOUT/i.test(
       errorText,
@@ -265,6 +268,7 @@ const getRetryableDatabaseErrorReason = (
 };
 
 const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
+const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
 
 const getRetryableSaveChatErrorReason = (
   error: unknown,
@@ -348,6 +352,7 @@ const databaseError = (
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
   const isMessageTooLarge = isMessageTooLargeError(operation, dbErrorData);
+  const retryReason = getRetryableDatabaseErrorReason(error);
   const logLevel =
     isChatNotFound || isChatCanceled || isChatUnauthorized || isMessageTooLarge
       ? "warn"
@@ -369,7 +374,9 @@ const databaseError = (
         ? "forbidden:chat"
         : isMessageTooLarge
           ? "bad_request:api"
-          : "bad_request:database";
+          : retryReason
+            ? "offline:database"
+            : "bad_request:database";
   const errorMessage = isChatNotFound
     ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
     : isChatCanceled
@@ -378,7 +385,9 @@ const databaseError = (
         ? `Chat access denied while executing database operation: ${operation}: ${dbErrorMessage}`
         : isMessageTooLarge
           ? "Your message is too large to save. Please shorten it or attach the content as a file instead."
-          : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+          : retryReason
+            ? `Database temporarily unavailable: ${operation}: ${dbErrorMessage}`
+            : `Database operation failed: ${operation}: ${dbErrorMessage}`;
   const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
@@ -387,6 +396,7 @@ const databaseError = (
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    db_retry_reason: retryReason,
     ...metadata,
   };
 
@@ -419,11 +429,38 @@ const databaseError = (
 
 export async function getChatById({ id }: { id: string }) {
   try {
-    const selectedChat = await getConvexClient().query(api.chats.getChatById, {
+    const queryArgs = {
       serviceKey,
       id,
-    });
-    return selectedChat;
+    };
+
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().query(api.chats.getChatById, queryArgs);
+      } catch (error) {
+        const retryReason = getRetryableGetChatErrorReason(error);
+        const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
+        if (!retryReason || retryDelayMs === undefined) {
+          throw error;
+        }
+
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "chat_fetch_retry_scheduled",
+            service: "chat-handler",
+            timestamp: new Date().toISOString(),
+            db_operation: "chats.getChatById",
+            retry_reason: retryReason,
+            attempt: attemptIndex + 1,
+            next_attempt: attemptIndex + 2,
+            retry_delay_ms: retryDelayMs,
+            chat_id: id,
+          }),
+        );
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("chats.getChatById", error, { chat_id: id });
   }
@@ -654,8 +691,7 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
     const usageForSave = sanitizeForConvexValue(usage) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1019,8 +1055,7 @@ export async function getMessagesByChatId({
             );
             const budgetForMessages = maxTokens - summaryTokens;
             const retainedTail = latestSummary.retained_tail as
-              | RetainedTailMetadata
-              | undefined;
+              RetainedTailMetadata | undefined;
             let truncatedAfterCutoff: UIMessage[] = [];
 
             if (budgetForMessages > 0 && retainedTail) {
