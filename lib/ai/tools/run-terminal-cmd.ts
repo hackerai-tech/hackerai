@@ -291,10 +291,7 @@ In using these tools, adhere to the following guidelines:
             result: {
               output: "",
               exitCode: 1,
-              error:
-                err instanceof Error
-                  ? resolveToolErrorMessage(err)
-                  : "Failed to create interactive PTY session.",
+              error: resolveToolErrorMessage(err),
             },
           };
         }

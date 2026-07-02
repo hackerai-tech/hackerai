@@ -317,9 +317,8 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get and clear any pending fallback info.
+   * Peek at any pending fallback info without clearing it.
    * Returns null if no fallback occurred, otherwise returns the fallback details.
-   * Clears the info after returning so it's only reported once.
    */
   peekFallbackInfo(): SandboxFallbackInfo | null {
     return this.pendingFallbackInfo;
@@ -329,6 +328,11 @@ export class HybridSandboxManager implements SandboxManager {
     this.pendingFallbackInfo = null;
   }
 
+  /**
+   * Get and clear any pending fallback info.
+   * Returns null if no fallback occurred, otherwise returns the fallback details.
+   * Clears the info after returning so it's only reported once.
+   */
   consumeFallbackInfo(): SandboxFallbackInfo | null {
     const info = this.pendingFallbackInfo;
     this.pendingFallbackInfo = null;
