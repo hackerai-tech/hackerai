@@ -200,6 +200,48 @@ describe("AccountTab", () => {
     expect(screen.queryByText("Keep plan")).not.toBeInTheDocument();
   });
 
+  it("leaves scheduled cancellation visible when keeping the plan fails", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
+    let rejectKeepPlan: (error: Error) => void = () => {};
+
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd,
+    } as never);
+    mockKeepSubscription.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectKeepPlan = reject;
+      }) as never,
+    );
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Cancellation scheduled.")).toBeVisible();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+    await user.click(screen.getByText("Keep plan"));
+
+    expect(screen.getByRole("button", { name: /keeping/i })).toBeVisible();
+
+    act(() => {
+      rejectKeepPlan(new Error("Stripe update failed"));
+    });
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith("Stripe update failed");
+    });
+
+    expect(screen.getByText("Cancellation scheduled.")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /manage/i })[0]).toBeVisible();
+
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+
+    expect(screen.getByText("Keep plan")).toBeVisible();
+    expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  });
+
   it("does not offer cancellation when no active subscription is found", async () => {
     mockGetSubscriptionCancellationStatus.mockResolvedValue({
       hasActiveSubscription: false,

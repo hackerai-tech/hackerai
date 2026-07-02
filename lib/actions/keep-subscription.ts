@@ -8,6 +8,7 @@ import {
   paidFunnelProperties,
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
+import type Stripe from "stripe";
 import type { SubscriptionTier } from "@/types";
 
 type SubscriptionContext = {
@@ -45,15 +46,21 @@ function currentPeriodEndMs(subscription: unknown): number | undefined {
 async function getActiveSubscriptionContext(
   stripeCustomerId: string,
 ): Promise<SubscriptionContext> {
-  const subscriptions = await stripe.subscriptions.list({
+  const subscriptions = stripe.subscriptions.list({
     customer: stripeCustomerId,
     status: "all",
-    limit: 10,
+    limit: 100,
     expand: ["data.items.data.price"],
   });
-  const currentSubscription = subscriptions.data.find((subscription) =>
-    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
-  );
+  let currentSubscription: Stripe.Subscription | undefined;
+  for await (const subscription of subscriptions) {
+    if (
+      ["active", "trialing", "past_due", "unpaid"].includes(subscription.status)
+    ) {
+      currentSubscription = subscription;
+      break;
+    }
+  }
 
   if (!currentSubscription) {
     throw new Error("No active subscription found");

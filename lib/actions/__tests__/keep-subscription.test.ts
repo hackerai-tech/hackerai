@@ -6,6 +6,14 @@ const mockUpdateSubscription = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogEvent = jest.fn();
 
+function mockStripeSubscriptionsList(data: unknown[]) {
+  mockListSubscriptions.mockReturnValue({
+    async *[Symbol.asyncIterator]() {
+      yield* data;
+    },
+  } as never);
+}
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {
@@ -38,26 +46,24 @@ describe("keepSubscriptionAction", () => {
   });
 
   it("removes scheduled cancellation from the active subscription", async () => {
-    mockListSubscriptions.mockResolvedValue({
-      data: [
-        {
-          id: "sub_123",
-          status: "active",
-          cancel_at_period_end: true,
-          current_period_end: 1_782_444_800,
-          items: {
-            data: [
-              {
-                price: {
-                  id: "price_pro",
-                  lookup_key: "pro-monthly-plan",
-                },
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_123",
+        status: "active",
+        cancel_at_period_end: true,
+        current_period_end: 1_782_444_800,
+        items: {
+          data: [
+            {
+              price: {
+                id: "price_pro",
+                lookup_key: "pro-monthly-plan",
               },
-            ],
-          },
+            },
+          ],
         },
-      ],
-    } as never);
+      },
+    ]);
     mockUpdateSubscription.mockResolvedValue({
       id: "sub_123",
       cancel_at_period_end: false,
@@ -77,7 +83,7 @@ describe("keepSubscriptionAction", () => {
     expect(mockListSubscriptions).toHaveBeenCalledWith({
       customer: "cus_123",
       status: "all",
-      limit: 10,
+      limit: 100,
       expand: ["data.items.data.price"],
     });
     expect(mockUpdateSubscription).toHaveBeenCalledWith("sub_123", {
@@ -100,26 +106,24 @@ describe("keepSubscriptionAction", () => {
   });
 
   it("returns success without updating Stripe when cancellation is already removed", async () => {
-    mockListSubscriptions.mockResolvedValue({
-      data: [
-        {
-          id: "sub_123",
-          status: "active",
-          cancel_at_period_end: false,
-          current_period_end: 1_782_444_800,
-          items: {
-            data: [
-              {
-                price: {
-                  id: "price_pro",
-                  lookup_key: "pro-monthly-plan",
-                },
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_123",
+        status: "active",
+        cancel_at_period_end: false,
+        current_period_end: 1_782_444_800,
+        items: {
+          data: [
+            {
+              price: {
+                id: "price_pro",
+                lookup_key: "pro-monthly-plan",
               },
-            ],
-          },
+            },
+          ],
         },
-      ],
-    } as never);
+      },
+    ]);
 
     const { default: keepSubscriptionAction } =
       await import("../keep-subscription");
@@ -136,16 +140,14 @@ describe("keepSubscriptionAction", () => {
   });
 
   it("throws when there is no active subscription to keep", async () => {
-    mockListSubscriptions.mockResolvedValue({
-      data: [
-        {
-          id: "sub_canceled",
-          status: "canceled",
-          cancel_at_period_end: false,
-          items: { data: [] },
-        },
-      ],
-    } as never);
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_canceled",
+        status: "canceled",
+        cancel_at_period_end: false,
+        items: { data: [] },
+      },
+    ]);
 
     const { default: keepSubscriptionAction } =
       await import("../keep-subscription");

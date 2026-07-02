@@ -207,9 +207,23 @@ const AccountTab = () => {
             canManageBilling ? (
               <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline" size="sm">
-                    Manage
-                    <ChevronDown className="h-4 w-4" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isKeepingPlan}
+                  >
+                    {isKeepingPlan ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Keeping...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Manage</span>
+                        <ChevronDown className="h-4 w-4" />
+                      </>
+                    )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
