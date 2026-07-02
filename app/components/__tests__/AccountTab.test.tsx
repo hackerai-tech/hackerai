@@ -1,10 +1,15 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockGetSubscriptionCancellationStatus = jest.fn();
+const mockKeepSubscription = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
+const mockToastSuccess = jest.fn();
+const mockToastError = jest.fn();
+let mockOnCancellationScheduled:
+  ((result: { currentPeriodEnd?: number }) => void) | undefined;
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -31,6 +36,18 @@ jest.mock("@/lib/actions/subscription-status", () => ({
   default: mockGetSubscriptionCancellationStatus,
 }));
 
+jest.mock("@/lib/actions/keep-subscription", () => ({
+  __esModule: true,
+  default: mockKeepSubscription,
+}));
+
+jest.mock("sonner", () => ({
+  toast: {
+    success: mockToastSuccess,
+    error: mockToastError,
+  },
+}));
+
 jest.mock("../DeleteAccountDialog", () => ({
   __esModule: true,
   default: () => null,
@@ -38,7 +55,12 @@ jest.mock("../DeleteAccountDialog", () => ({
 
 jest.mock("../CancelSubscriptionDialog", () => ({
   __esModule: true,
-  default: () => null,
+  default: (props: {
+    onCancellationScheduled?: (result: { currentPeriodEnd?: number }) => void;
+  }) => {
+    mockOnCancellationScheduled = props.onCancellationScheduled;
+    return null;
+  },
 }));
 
 const AccountTab = require("../AccountTab")
@@ -47,6 +69,7 @@ const AccountTab = require("../AccountTab")
 describe("AccountTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockOnCancellationScheduled = undefined;
   });
 
   it("shows scheduled cancellation state instead of the cancel action", async () => {
@@ -76,6 +99,7 @@ describe("AccountTab", () => {
     await waitFor(() => {
       expect(screen.getByText("Cancellation scheduled")).toBeVisible();
     });
+    expect(screen.getByText("Keep plan")).toBeVisible();
     expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
   });
 
@@ -98,6 +122,82 @@ describe("AccountTab", () => {
     expect(
       screen.queryByText("Cancellation scheduled."),
     ).not.toBeInTheDocument();
+  });
+
+  it("updates the tab when cancellation is scheduled from the dialog", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
+    const expectedPeriodEnd = new Intl.DateTimeFormat(undefined, {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(currentPeriodEnd));
+
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+    } as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      mockOnCancellationScheduled?.({ currentPeriodEnd });
+    });
+
+    expect(await screen.findByText("Cancellation scheduled.")).toBeVisible();
+    expect(
+      screen.getByText(`Your plan stays active until ${expectedPeriodEnd}.`),
+    ).toBeVisible();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+
+    expect(screen.getByText("Cancellation scheduled")).toBeVisible();
+    expect(screen.getByText("Keep plan")).toBeVisible();
+    expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  });
+
+  it("keeps the plan and restores the cancel action from the manage menu", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
+
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd,
+    } as never);
+    mockKeepSubscription.mockResolvedValue({
+      kept: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd,
+      alreadyKept: false,
+    } as never);
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Cancellation scheduled.")).toBeVisible();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+    await user.click(screen.getByText("Keep plan"));
+
+    await waitFor(() => {
+      expect(mockKeepSubscription).toHaveBeenCalledTimes(1);
+      expect(mockToastSuccess).toHaveBeenCalledWith(
+        "Cancellation removed. Your plan will renew as usual.",
+      );
+    });
+
+    expect(
+      screen.queryByText("Cancellation scheduled."),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+
+    expect(screen.getByText("Cancel subscription")).toBeVisible();
+    expect(screen.queryByText("Keep plan")).not.toBeInTheDocument();
   });
 
   it("does not offer cancellation when no active subscription is found", async () => {

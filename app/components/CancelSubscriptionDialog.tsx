@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 type CancelSubscriptionDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCancellationScheduled?: (result: CancellationResult) => void;
 };
 
 type CancellationResult = {
@@ -99,6 +100,7 @@ function getPlanDisplayName(tier: SubscriptionTier) {
 export const CancelSubscriptionDialog = ({
   open,
   onOpenChange,
+  onCancellationScheduled,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
@@ -191,6 +193,10 @@ export const CancelSubscriptionDialog = ({
         currentPeriodEnd: result.currentPeriodEnd,
         alreadyScheduled: result.alreadyScheduled,
       });
+      onCancellationScheduled?.({
+        currentPeriodEnd: result.currentPeriodEnd,
+        alreadyScheduled: result.alreadyScheduled,
+      });
       toast.success(
         result.alreadyScheduled
           ? "Subscription already scheduled to cancel"
@@ -210,7 +216,7 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [reasonCategory, reasonDetails]);
+  }, [onCancellationScheduled, reasonCategory, reasonDetails]);
 
   const handleReasonCategoryChange = useCallback(
     (value: string) => {

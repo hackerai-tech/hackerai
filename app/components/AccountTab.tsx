@@ -13,7 +13,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
-import { CalendarClock, X, ChevronDown, Loader2, Sparkle } from "lucide-react";
+import {
+  CalendarClock,
+  X,
+  ChevronDown,
+  Loader2,
+  Sparkle,
+  Undo2,
+} from "lucide-react";
 import {
   proFeatures,
   proPlusFeatures,
@@ -26,6 +33,7 @@ import redirectToBillingPortalAction from "@/lib/actions/billing-portal";
 import getSubscriptionCancellationStatusAction, {
   type SubscriptionCancellationStatus,
 } from "@/lib/actions/subscription-status";
+import keepSubscriptionAction from "@/lib/actions/keep-subscription";
 import type { SubscriptionTier } from "@/types";
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
@@ -46,6 +54,7 @@ const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
+  const [isKeepingPlan, setIsKeepingPlan] = useState(false);
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const [cancellationStatus, setCancellationStatus] =
     useState<AccountCancellationStatus | null>(null);
@@ -137,6 +146,41 @@ const AccountTab = () => {
     setShowCancelDialog(true);
   };
 
+  const handleCancellationScheduled = ({
+    currentPeriodEnd,
+  }: {
+    currentPeriodEnd?: number;
+  }) => {
+    setCancellationStatus({
+      subscription,
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd,
+    });
+  };
+
+  const handleKeepPlan = async () => {
+    if (isKeepingPlan) return;
+
+    setIsKeepingPlan(true);
+    try {
+      const result = await keepSubscriptionAction();
+      setCancellationStatus({
+        subscription,
+        hasActiveSubscription: true,
+        cancelAtPeriodEnd: result.cancelAtPeriodEnd,
+        currentPeriodEnd: result.currentPeriodEnd,
+      });
+      toast.success("Cancellation removed. Your plan will renew as usual.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to keep plan active",
+      );
+    } finally {
+      setIsKeepingPlan(false);
+    }
+  };
+
   const handleOpenMigrateConfirm = () => {
     if (isMigrating) return;
     setMigrateFromPentestgptDialogOpen(true);
@@ -188,10 +232,24 @@ const AccountTab = () => {
                     </>
                   )}
                   {cancellationScheduled ? (
-                    <DropdownMenuItem disabled>
-                      <CalendarClock className="h-4 w-4" />
-                      <span>Cancellation scheduled</span>
-                    </DropdownMenuItem>
+                    <>
+                      <DropdownMenuItem disabled>
+                        <CalendarClock className="h-4 w-4" />
+                        <span>Cancellation scheduled</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={handleKeepPlan}
+                        disabled={isKeepingPlan}
+                      >
+                        {isKeepingPlan ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Undo2 className="h-4 w-4" />
+                        )}
+                        <span>Keep plan</span>
+                      </DropdownMenuItem>
+                    </>
                   ) : noActiveSubscription ? (
                     <DropdownMenuItem disabled>
                       <CalendarClock className="h-4 w-4" />
@@ -341,6 +399,7 @@ const AccountTab = () => {
       <CancelSubscriptionDialog
         open={showCancelDialog}
         onOpenChange={setShowCancelDialog}
+        onCancellationScheduled={handleCancellationScheduled}
       />
     </div>
   );
