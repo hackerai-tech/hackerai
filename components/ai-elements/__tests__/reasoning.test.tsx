@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "../reasoning";
 
 describe("Reasoning", () => {
@@ -21,5 +21,27 @@ describe("Reasoning", () => {
     expect(content).toHaveClass("overflow-x-hidden");
     expect(content).toHaveClass("break-words");
     expect(content).toHaveClass("[overflow-wrap:anywhere]");
+  });
+
+  it("keeps visible reasoning open after streaming stops", async () => {
+    const { rerender } = render(
+      <Reasoning isStreaming>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Visible reasoning text")).toBeVisible();
+    });
+
+    rerender(
+      <Reasoning isStreaming={false}>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    expect(screen.getByText("Visible reasoning text")).toBeVisible();
   });
 });

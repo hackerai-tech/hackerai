@@ -5,7 +5,6 @@ type MessageWithParts = {
 type SanitizePartResult = {
   part: unknown;
   changed: boolean;
-  drop: boolean;
 };
 
 const PROVIDER_METADATA_KEYS = [
@@ -19,23 +18,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
-
-function hasOpenRouterReasoningDetails(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false;
-  const openrouter = metadata.openrouter;
-  return (
-    isRecord(openrouter) &&
-    Array.isArray(openrouter.reasoning_details) &&
-    openrouter.reasoning_details.length > 0
-  );
-}
-
-export function partHasOpenRouterReasoningDetails(part: unknown): boolean {
-  if (!isRecord(part)) return false;
-  return PROVIDER_METADATA_KEYS.some((key) =>
-    hasOpenRouterReasoningDetails(part[key]),
-  );
-}
 
 function stripOpenRouterReasoningDetailsFromMetadata(metadata: unknown): {
   metadata: unknown;
@@ -62,11 +44,7 @@ function stripOpenRouterReasoningDetailsFromMetadata(metadata: unknown): {
 function sanitizeOpenRouterReasoningPartMetadata(
   part: unknown,
 ): SanitizePartResult {
-  if (!isRecord(part)) return { part, changed: false, drop: false };
-
-  if (part.type === "reasoning" && partHasOpenRouterReasoningDetails(part)) {
-    return { part, changed: true, drop: true };
-  }
+  if (!isRecord(part)) return { part, changed: false };
 
   let changed = false;
   const cleanedPart = { ...part };
@@ -90,9 +68,7 @@ function sanitizeOpenRouterReasoningPartMetadata(
     }
   }
 
-  return changed
-    ? { part: cleanedPart, changed, drop: false }
-    : { part, changed: false, drop: false };
+  return changed ? { part: cleanedPart, changed } : { part, changed: false };
 }
 
 export function stripOpenRouterReasoningMetadataFromParts<T extends unknown[]>(
@@ -103,10 +79,6 @@ export function stripOpenRouterReasoningMetadataFromParts<T extends unknown[]>(
 
   for (const part of parts) {
     const result = sanitizeOpenRouterReasoningPartMetadata(part);
-    if (result.drop) {
-      changed = true;
-      continue;
-    }
     if (result.changed) changed = true;
     nextParts.push(result.part);
   }

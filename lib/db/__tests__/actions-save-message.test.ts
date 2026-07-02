@@ -344,17 +344,20 @@ describe("saveMessage", () => {
       parts: Array<Record<string, unknown>>;
     };
 
-    expect(compactedMessage.parts).toHaveLength(1);
-    expect(compactedMessage.parts[0].type).toBe("tool-run_terminal_cmd");
-    expect(compactedMessage.parts[0].providerMetadata).toEqual({
+    expect(compactedMessage.parts).toHaveLength(2);
+    expect(compactedMessage.parts[0]).toMatchObject({
+      type: "reasoning",
+      state: "done",
+      text: "private chain of thought",
+    });
+    expect(compactedMessage.parts[0].providerMetadata).toBeUndefined();
+    expect(compactedMessage.parts[1].type).toBe("tool-run_terminal_cmd");
+    expect(compactedMessage.parts[1].providerMetadata).toEqual({
       google: { thought_signature: "gemini-signature" },
     });
-    expect(compactedMessage.parts[0].callProviderMetadata).toBeUndefined();
+    expect(compactedMessage.parts[1].callProviderMetadata).toBeUndefined();
     expect(JSON.stringify(compactedMessage.parts)).not.toContain(
       "reasoning_details",
-    );
-    expect(JSON.stringify(compactedMessage.parts)).not.toContain(
-      "private chain of thought",
     );
   });
 

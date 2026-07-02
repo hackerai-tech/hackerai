@@ -662,12 +662,12 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   allowLocalDesktopFiles?: boolean;
 }) {
-  const messagesWithoutOpenRouterReasoning =
+  const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
 
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts =
-    messagesWithoutOpenRouterReasoning.map(filterUIOnlyParts);
+    messagesWithoutOpenRouterReasoningMetadata.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
