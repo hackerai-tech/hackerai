@@ -76,6 +76,25 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("sandbox-preference")).toHaveTextContent("e2b");
   });
 
+  it("defaults first-time Pro Plus users to Agent with the auto model and cloud sandbox", async () => {
+    window.localStorage.setItem("selected_model", "hackerai-max");
+    mockAuthUser(["pro-plus-plan"]);
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+
+    expect(screen.getByTestId("subscription")).toHaveTextContent("pro-plus");
+    expect(screen.getByTestId("selected-model")).toHaveTextContent("auto");
+    expect(screen.getByTestId("sandbox-preference")).toHaveTextContent("e2b");
+  });
+
   it("refreshes AuthKit access token after checkout entitlement refresh before showing paid state", async () => {
     const refreshAuth = jest.fn().mockResolvedValue(undefined);
     const refreshAccessToken = jest.fn().mockResolvedValue("fresh-paid-token");

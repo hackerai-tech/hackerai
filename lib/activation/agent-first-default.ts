@@ -2,10 +2,7 @@ import type { ChatMode, SandboxPreference } from "@/types/chat";
 import type { SubscriptionTier } from "@/types";
 
 export type AgentFirstSandboxType =
-  | "desktop"
-  | "remote-connection"
-  | "e2b"
-  | "none";
+  "desktop" | "remote-connection" | "e2b" | "none";
 
 export type AgentFirstDefaultEligibility = {
   chatMode: ChatMode;
@@ -22,9 +19,15 @@ export type AgentFirstDefaultEligibility = {
 };
 
 export type AgentFirstDefaultDecision = {
-  eligibleSubscriptionTier: "free" | "ultra";
-  experimentKey: "free_agent_first_v1" | "ultra_agent_default_v1";
-  selectionReason: "eligible_free_user_local_sandbox" | "eligible_ultra_user";
+  eligibleSubscriptionTier: "free" | "pro-plus" | "ultra";
+  experimentKey:
+    | "free_agent_first_v1"
+    | "pro_plus_agent_default_v1"
+    | "ultra_agent_default_v1";
+  selectionReason:
+    | "eligible_free_user_local_sandbox"
+    | "eligible_pro_plus_user"
+    | "eligible_ultra_user";
   useDefaultLocalSandbox: boolean;
 };
 
@@ -84,6 +87,15 @@ export function getAgentFirstDefaultDecision({
     };
   }
 
+  if (subscription === "pro-plus") {
+    return {
+      eligibleSubscriptionTier: "pro-plus",
+      experimentKey: "pro_plus_agent_default_v1",
+      selectionReason: "eligible_pro_plus_user",
+      useDefaultLocalSandbox: false,
+    };
+  }
+
   return null;
 }
 
@@ -102,5 +114,14 @@ export function shouldDefaultUltraUserToAgent(
   return (
     getAgentFirstDefaultDecision(eligibility)?.eligibleSubscriptionTier ===
     "ultra"
+  );
+}
+
+export function shouldDefaultProPlusUserToAgent(
+  eligibility: AgentFirstDefaultEligibility,
+): boolean {
+  return (
+    getAgentFirstDefaultDecision(eligibility)?.eligibleSubscriptionTier ===
+    "pro-plus"
   );
 }
