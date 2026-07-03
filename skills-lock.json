@@ -5,7 +5,7 @@
       "source": "triggerdotdev/skills",
       "sourceType": "github",
       "skillPath": "trigger-agents/SKILL.md",
-      "computedHash": "4beeedd5d5c842ccd11d15af7abafb394d242d862f4e770bb44811838610d103"
+      "computedHash": "3d166e17b1f2afb93ecddf3a37872ebeca6dad1f496365a03da506fdec392b3d"
     },
     "trigger-config": {
       "source": "triggerdotdev/skills",

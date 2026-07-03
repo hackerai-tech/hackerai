@@ -11,7 +11,7 @@ Build production-ready AI agents using Trigger.dev's durable execution.
 
 Use the new 4.5 agent primitives when they match the shape of the work:
 
-```
+```text
 Need to...                              → Use
 ────────────────────────────────────────────────────────────
 Build a durable AI SDK chat UI          → chat.agent
@@ -190,7 +190,7 @@ and browser reconnect/resume behavior before swapping the current Agent stack.
 
 ## Pattern Selection
 
-```
+```text
 Need to...                              → Use
 ─────────────────────────────────────────────────────
 Build a durable Vercel AI SDK chat      → chat.agent
