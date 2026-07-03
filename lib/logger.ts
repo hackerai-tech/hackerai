@@ -9,6 +9,7 @@
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -218,38 +219,6 @@ export interface ChatWideEvent {
     }>;
   };
 }
-
-const isPositiveFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value > 0;
-
-const getProviderUsageCost = (
-  usage: Record<string, unknown>,
-): number | undefined => {
-  const raw = usage.raw;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return undefined;
-  }
-
-  const rawRecord = raw as Record<string, unknown>;
-  const costDetails = rawRecord.cost_details ?? rawRecord.costDetails;
-  if (
-    typeof costDetails === "object" &&
-    costDetails !== null &&
-    !Array.isArray(costDetails)
-  ) {
-    const costDetailsRecord = costDetails as Record<string, unknown>;
-    const upstreamInferenceCost =
-      costDetailsRecord.upstream_inference_cost ??
-      costDetailsRecord.upstreamInferenceCost;
-    if (isPositiveFiniteNumber(upstreamInferenceCost)) {
-      return upstreamInferenceCost;
-    }
-  }
-
-  return typeof rawRecord.cost === "number" && Number.isFinite(rawRecord.cost)
-    ? rawRecord.cost
-    : undefined;
-};
 
 /**
  * Builder for constructing wide events throughout the request lifecycle
@@ -521,7 +490,7 @@ export class WideEventBuilder {
    */
   setUsage(usage: Record<string, unknown> | undefined): this {
     if (usage) {
-      const providerCost = getProviderUsageCost(usage);
+      const providerCost = getProviderUsageRawModelCost(usage.raw);
 
       this.event.usage = {
         input_tokens: usage.inputTokens as number | undefined,

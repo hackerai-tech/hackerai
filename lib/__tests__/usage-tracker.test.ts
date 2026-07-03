@@ -251,6 +251,7 @@ describe("UsageTracker", () => {
         outputTokens: 500,
         raw: {
           cost: 0,
+          cost_details: {},
           costDetails: {
             upstreamInferenceCost: 0.002,
           },

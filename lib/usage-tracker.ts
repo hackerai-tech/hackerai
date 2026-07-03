@@ -1,4 +1,8 @@
 import { logUsageRecord } from "@/lib/db/actions";
+import {
+  getProviderUsageRawModelCost,
+  isPositiveFiniteNumber,
+} from "@/lib/provider-usage-cost";
 import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
@@ -23,23 +27,6 @@ interface StepUsage {
     };
   };
 }
-
-const isPositiveFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value > 0;
-
-const getRawModelCost = (usage: StepUsage): number | undefined => {
-  const upstreamInferenceCost =
-    usage.raw?.cost_details?.upstream_inference_cost ??
-    usage.raw?.cost_details?.upstreamInferenceCost ??
-    usage.raw?.costDetails?.upstream_inference_cost ??
-    usage.raw?.costDetails?.upstreamInferenceCost;
-
-  if (isPositiveFiniteNumber(upstreamInferenceCost)) {
-    return upstreamInferenceCost;
-  }
-
-  return usage.raw?.cost;
-};
 
 type ModelStepCost = {
   rawCost: number;
@@ -136,7 +123,7 @@ export class UsageTracker {
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
-    const stepCost = getRawModelCost(usage);
+    const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex = this.modelStepCosts.push({ rawCost }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
