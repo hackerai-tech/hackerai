@@ -292,8 +292,6 @@ describe("buildProviderOptions fallback chain", () => {
     "ask-model",
     "model-grok-4.3",
     "model-gemini-3-flash",
-    "model-sonnet-4.6",
-    "model-opus-4.6",
   ])("enables medium reasoning for ask mode model %s", (modelName) => {
     const opts = buildProviderOptions(false, "user-1", modelName, "ask");
     expect(opts.openrouter.reasoning).toEqual({
@@ -301,6 +299,28 @@ describe("buildProviderOptions fallback chain", () => {
       effort: "medium",
     });
   });
+
+  it.each(["model-sonnet-4.6", "model-opus-4.6"])(
+    "enables high reasoning for ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
+
+  it.each(["model-sonnet-4.6", "model-opus-4.6"])(
+    "enables high reasoning for agent mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
   it("includes reasoning settings independent of fallback chain", () => {
     const reasoning = buildProviderOptions(
@@ -310,19 +330,19 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(reasoning.openrouter).toMatchObject({
-      reasoning: { enabled: true },
+      reasoning: { enabled: true, effort: "high" },
       models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
     });
 
     const noReasoning = buildProviderOptions(
       false,
       "user-1",
-      "model-opus-4.6",
+      "agent-model",
       "agent",
     );
     expect(noReasoning.openrouter).toMatchObject({
       reasoning: { enabled: false },
-      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
+      models: [KIMI_SLUG, GROK_SLUG],
     });
 
     const multimodal = buildProviderOptions(
@@ -333,7 +353,7 @@ describe("buildProviderOptions fallback chain", () => {
       { hasMultimodalToolResults: true },
     );
     expect(multimodal.openrouter).toMatchObject({
-      reasoning: { enabled: true },
+      reasoning: { enabled: true, effort: "high" },
       models: [KIMI_SLUG, GROK_SLUG],
     });
   });
