@@ -1788,12 +1788,14 @@ export const agentLongTask = task({
                         ).parts ?? [];
                       const assistantContentLoopDetection =
                         state.assistantContentLoopDetection ??
-                        detectAssistantContentLoopFromParts(
-                          lastAssistantMessageParts,
-                        );
+                        (isAborted
+                          ? { detected: false as const }
+                          : detectAssistantContentLoopFromParts(
+                              lastAssistantMessageParts,
+                            ));
                       const stoppedDueToAssistantContentLoop =
                         state.stoppedDueToAssistantContentLoop ||
-                        assistantContentLoopDetection.detected;
+                        (!isAborted && assistantContentLoopDetection.detected);
                       const shouldRetryWithFallback =
                         shouldRetryAgentLongWithFallback(
                           lastAssistantMessageParts,
@@ -1802,6 +1804,7 @@ export const agentLongTask = task({
                               isTerminalProviderStreamError(state),
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
+                            detectAssistantContentLoop: !isAborted,
                           },
                         );
                       const imageRecovery =

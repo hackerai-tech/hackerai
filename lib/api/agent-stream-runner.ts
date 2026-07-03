@@ -432,6 +432,38 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
+  type AbortStepLike = {
+    usage?: unknown;
+    response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
+      modelId?: string;
+    };
+    providerMetadata?: unknown;
+  };
+  const recordAssistantContentLoopAbortState = (
+    steps?: readonly AbortStepLike[],
+  ) => {
+    if (!state.stoppedDueToAssistantContentLoop) return;
+
+    const lastStep = steps?.at(-1);
+    state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
+    if (lastStep?.usage) {
+      state.streamUsage = lastStep.usage as Record<string, unknown>;
+    }
+    state.responseModel = lastStep?.response?.modelId ?? state.responseModel;
+    state.responseModel ??= requestedSlug;
+
+    const openRouterMetadata = lastStep
+      ? extractOpenRouterMetadata({
+          response: lastStep.response,
+          providerMetadata: lastStep.providerMetadata,
+        })
+      : undefined;
+    ctx.chatLogger?.setStreamResponse(
+      state.responseModel,
+      state.streamUsage,
+      openRouterMetadata,
+    );
+  };
 
   type DoomLoopRecovery = {
     nudge?: string;
@@ -766,6 +798,7 @@ export async function createAgentStream(
             repeatedText: loopDetection.repeatedText,
             repeatCount: loopDetection.repeatCount,
           });
+          recordAssistantContentLoopAbortState();
           assistantContentLoopAbortController.abort();
         }
       }
@@ -949,7 +982,8 @@ export async function createAgentStream(
         );
     },
 
-    onAbort: async () => {
+    onAbort: async ({ steps }) => {
+      recordAssistantContentLoopAbortState(steps);
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>

@@ -1209,12 +1209,14 @@ export const createChatHandler = () => {
                       lastAssistantMessage?.parts ?? [];
                     const assistantContentLoopDetection =
                       state.assistantContentLoopDetection ??
-                      detectAssistantContentLoopFromParts(
-                        lastAssistantMessageParts,
-                      );
+                      (isAborted
+                        ? { detected: false as const }
+                        : detectAssistantContentLoopFromParts(
+                            lastAssistantMessageParts,
+                          ));
                     const stoppedDueToAssistantContentLoop =
                       state.stoppedDueToAssistantContentLoop ||
-                      assistantContentLoopDetection.detected;
+                      (!isAborted && assistantContentLoopDetection.detected);
                     const shouldRetryWithFallback =
                       shouldRetryProviderStreamWithFallback(
                         lastAssistantMessageParts,
@@ -1223,6 +1225,7 @@ export const createChatHandler = () => {
                             state.streamFinishReason === "error",
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
+                          detectAssistantContentLoop: !isAborted,
                         },
                       );
                     const imageRecovery =

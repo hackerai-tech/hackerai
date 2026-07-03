@@ -98,6 +98,23 @@ describe("shouldRetryAgentLongWithFallback", () => {
     ).toBe(true);
   });
 
+  it("can disable fresh repeated-text detection for aborted streams", () => {
+    const repeatedLoop = Array.from(
+      { length: 5 },
+      () => "Sorry. Single clean command now:",
+    ).join(" ");
+
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [{ type: "step-start" }, { type: "text", text: repeatedLoop }],
+        {
+          hasTerminalProviderStreamError: false,
+          detectAssistantContentLoop: false,
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("does not discard tool calls or tool output when a provider stream fails", () => {
     expect(
       shouldRetryAgentLongWithFallback(

@@ -7,6 +7,7 @@ type RetryDecisionOptions = {
   hasTerminalProviderStreamError: boolean;
   stoppedDueToDoomLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
+  detectAssistantContentLoop?: boolean;
 };
 
 export type AssistantContentLoopDetection = {
@@ -189,7 +190,10 @@ export const shouldRetryProviderStreamWithFallback = (
     return true;
   }
 
-  if (detectAssistantContentLoopFromParts(parts).detected) {
+  if (
+    (options.detectAssistantContentLoop ?? true) &&
+    detectAssistantContentLoopFromParts(parts).detected
+  ) {
     return true;
   }
 
