@@ -163,7 +163,10 @@ import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { shouldRetryProviderStreamWithFallback } from "@/lib/chat/agent-long-provider-retry";
+import {
+  detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamWithFallback,
+} from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 
 function getStreamContext() {
@@ -180,7 +183,8 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      ReturnType<typeof createPreemptiveTimeout> | undefined;
+      | ReturnType<typeof createPreemptiveTimeout>
+      | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -407,7 +411,8 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
+        | PaidDailyFreeAllowanceReservation
+        | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -1155,6 +1160,8 @@ export const createChatHandler = () => {
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
+                state.stoppedDueToAssistantContentLoop = false;
+                state.assistantContentLoopDetection = undefined;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
                 state.budgetAbortDetails = undefined;
@@ -1200,12 +1207,22 @@ export const createChatHandler = () => {
                       .find((m) => m.role === "assistant");
                     const lastAssistantMessageParts =
                       lastAssistantMessage?.parts ?? [];
+                    const assistantContentLoopDetection =
+                      state.assistantContentLoopDetection ??
+                      detectAssistantContentLoopFromParts(
+                        lastAssistantMessageParts,
+                      );
+                    const stoppedDueToAssistantContentLoop =
+                      state.stoppedDueToAssistantContentLoop ||
+                      assistantContentLoopDetection.detected;
                     const shouldRetryWithFallback =
                       shouldRetryProviderStreamWithFallback(
                         lastAssistantMessageParts,
                         {
                           hasTerminalProviderStreamError:
                             state.streamFinishReason === "error",
+                          stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
+                          stoppedDueToAssistantContentLoop,
                         },
                       );
                     const imageRecovery =
@@ -1219,12 +1236,26 @@ export const createChatHandler = () => {
                       shouldRetryWithFallback ||
                       shouldRetryWithoutImageToolResults
                     ) {
+                      const loopTriggeredRetry =
+                        stoppedDueToAssistantContentLoop ||
+                        state.stoppedDueToDoomLoop;
+                      const retryReason = shouldRetryWithoutImageToolResults
+                        ? "image_tool_result_rejection"
+                        : stoppedDueToAssistantContentLoop
+                          ? "assistant_content_loop"
+                          : state.stoppedDueToDoomLoop
+                            ? "doom_loop"
+                            : "incomplete_stream";
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
-                          : state.streamFinishReason === "error"
-                            ? "Provider stream errored before useful output - triggering fallback"
-                            : "Stream finished incomplete - triggering fallback",
+                          : retryReason === "assistant_content_loop"
+                            ? "Assistant content loop detected - triggering fallback"
+                            : retryReason === "doom_loop"
+                              ? "Agent doom loop detected - triggering fallback"
+                              : state.streamFinishReason === "error"
+                                ? "Provider stream errored before useful output - triggering fallback"
+                                : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1237,6 +1268,12 @@ export const createChatHandler = () => {
                           parts: lastAssistantMessage?.parts,
                           isRetryWithFallback,
                           assistantMessageId,
+                          retryReason,
+                          stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
+                          assistantContentLoop:
+                            assistantContentLoopDetection.detected
+                              ? assistantContentLoopDetection
+                              : undefined,
                           imageToolResultsOmitted: imageRecovery.omittedCount,
                         },
                       );
@@ -1247,8 +1284,10 @@ export const createChatHandler = () => {
                       // text placeholders.
                       if (
                         !isRetryWithFallback &&
-                        !isAborted &&
-                        (isAutoModel || shouldRetryWithoutImageToolResults)
+                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (isAutoModel ||
+                          shouldRetryWithoutImageToolResults ||
+                          loopTriggeredRetry)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
@@ -1258,6 +1297,8 @@ export const createChatHandler = () => {
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
+                        state.stoppedDueToAssistantContentLoop = false;
+                        state.assistantContentLoopDetection = undefined;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
                         state.budgetAbortDetails = undefined;
@@ -1489,10 +1530,7 @@ export const createChatHandler = () => {
                                   isTemporary: temporary,
                                   paidAskMode:
                                     mode === "ask" && subscription !== "free",
-                                  retryReason:
-                                    shouldRetryWithoutImageToolResults
-                                      ? "image_tool_result_rejection"
-                                      : "incomplete_stream",
+                                  retryReason,
                                   imageToolResultsOmitted:
                                     imageRecovery.omittedCount,
                                 });
