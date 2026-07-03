@@ -68,6 +68,7 @@ export type AppendMetadataStreamFn = (event: {
   data: { terminal: string; toolCallId: string };
 }) => Promise<void>;
 
+/** Provider/tool-scoped failure data. Host runtimes attach request/user context separately. */
 export type ToolFailureLogEvent = {
   event: string;
   tool_name: string;

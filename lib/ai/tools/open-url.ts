@@ -138,28 +138,25 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         const isNetworkFailure = isOpenUrlNetworkError(error);
         const errorCode = getNestedErrorCode(error);
         const errorMessage = stringifyRedactedError(error);
-        const logFields = {
+        const toolFailureFields = {
           event: isNetworkFailure
             ? "open_url_fetch_failed"
             : "open_url_tool_failed",
           provider: "jina",
           url_hostname: getUrlHostname(url),
           duration_ms: Date.now() - startedAt,
-          ...(context?.chatId && { chat_id: context.chatId }),
-          ...(context?.userID && { userId: context.userID }),
           ...(errorCode && { error_code: errorCode }),
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
+        const logFields = {
+          ...toolFailureFields,
+          ...(context?.chatId && { chat_id: context.chatId }),
+          ...(context?.userID && { userId: context.userID }),
+        };
         reportToolFailure(context?.onToolFailure, {
-          event: logFields.event,
+          ...toolFailureFields,
           tool_name: "open_url",
-          provider: "jina",
-          duration_ms: logFields.duration_ms,
-          url_hostname: logFields.url_hostname,
-          ...(errorCode && { error_code: errorCode }),
-          error_name: logFields.error_name,
-          error_message: errorMessage,
         });
 
         if (isNetworkFailure) {
