@@ -773,15 +773,22 @@ export async function createAgentStream(
         steps?: Array<{
           response?: typeof response;
           providerMetadata?: unknown;
+          usage?: { raw?: unknown };
         }>;
       };
       const stepOpenRouterMetadatas = Array.isArray(finishMetadata.steps)
-        ? finishMetadata.steps.map((step) =>
-            extractOpenRouterMetadata({
+        ? finishMetadata.steps.map((step) => {
+            const metadata = extractOpenRouterMetadata({
               response: step.response,
               providerMetadata: step.providerMetadata,
-            }),
-          )
+            });
+            return {
+              ...metadata,
+              openrouter_upstream_inference_cost:
+                metadata.openrouter_upstream_inference_cost ??
+                getOpenRouterUpstreamInferenceCostFromUsageRaw(step.usage?.raw),
+            };
+          })
         : [];
       for (const [index, metadata] of stepOpenRouterMetadatas.entries()) {
         ctx.usageTracker.setAuthoritativeModelCostForStep(
@@ -793,17 +800,8 @@ export async function createAgentStream(
         response,
         providerMetadata: finishMetadata.providerMetadata,
       });
-      const rawUpstreamInferenceCost =
-        getOpenRouterUpstreamInferenceCostFromUsageRaw(
-          (usage as { raw?: unknown } | undefined)?.raw,
-        );
       const openRouterMetadata = mergeOpenRouterMetadata(
-        {
-          ...finishOpenRouterMetadata,
-          openrouter_upstream_inference_cost:
-            finishOpenRouterMetadata.openrouter_upstream_inference_cost ??
-            rawUpstreamInferenceCost,
-        },
+        finishOpenRouterMetadata,
         stepOpenRouterMetadatas.at(-1),
       );
 
