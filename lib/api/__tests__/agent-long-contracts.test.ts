@@ -391,6 +391,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
+  test("handled tool failures are visible in Trigger logs and metadata", () => {
+    expect(taskSrc).toMatch(/recordAgentLongHandledToolFailureForDashboard/);
+    expect(taskSrc).toMatch(/lastHandledToolFailureStatus/);
+    expect(taskSrc).toMatch(/handled_tool_failure/);
+    expect(taskSrc).toMatch(/buildTriggerTag\("tool_status_"/);
+    expect(taskSrc).toMatch(
+      /triggerLogger\.warn\("\[agent-long\] handled tool failure"/,
+    );
+    expect(taskSrc).toMatch(/const onToolFailure\s*=/);
+    expect(taskSrc).toMatch(/onToolFailure,\s*\)/);
+  });
+
   test("runs use small subscription-aware Trigger.dev priority offsets", () => {
     expect(routeSrc).toMatch(
       /AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,

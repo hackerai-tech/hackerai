@@ -108,6 +108,7 @@ import type {
   SelectedModel,
   RateLimitInfo,
   SandboxBootInfo,
+  ToolFailureLogEvent,
 } from "@/types";
 import {
   createAgentStream,
@@ -754,6 +755,46 @@ const recordAgentLongHandledRateLimitForDashboard = async (
   await metadata.flush();
 };
 
+const recordAgentLongHandledToolFailureForDashboard = async (
+  failure: ToolFailureLogEvent,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+    handledToolFailureCount: number;
+  },
+) => {
+  const failedAt = new Date().toISOString();
+  metadata
+    .set("handledToolFailureCount", context.handledToolFailureCount)
+    .set("lastHandledToolFailure", failure.tool_name)
+    .set("lastHandledToolFailureProvider", failure.provider)
+    .set("lastHandledToolFailureEvent", failure.event)
+    .set("lastHandledToolFailureAt", failedAt);
+  if (failure.status != null) {
+    metadata.set("lastHandledToolFailureStatus", failure.status);
+  }
+
+  await tags.add([
+    "handled_tool_failure",
+    buildTriggerTag("tool_", failure.tool_name),
+    buildTriggerTag("tool_provider_", failure.provider),
+    ...(failure.status != null
+      ? [buildTriggerTag("tool_status_", String(failure.status))]
+      : []),
+  ]);
+
+  triggerLogger.warn("[agent-long] handled tool failure", {
+    chatId: context.chatId,
+    userId: context.userId,
+    runId: context.runId,
+    handled_tool_failure_count: context.handledToolFailureCount,
+    ...failure,
+  });
+
+  await metadata.flush();
+};
+
 const withAgentLongStreamHeartbeat = (
   source: ReadableStream<AgentLongUiStreamPart>,
   signal: AbortSignal,
@@ -1183,6 +1224,16 @@ export const agentLongTask = task({
             });
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
+            let handledToolFailureCount = 0;
+            const onToolFailure = async (failure: ToolFailureLogEvent) => {
+              handledToolFailureCount += 1;
+              await recordAgentLongHandledToolFailureForDashboard(failure, {
+                chatId,
+                userId,
+                runId: ctx.run.id,
+                handledToolFailureCount,
+              });
+            };
             const {
               tools,
               ensureSandbox,
@@ -1216,6 +1267,7 @@ export const agentLongTask = task({
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
+              onToolFailure,
             );
 
             const sendFileMetadataToStream = (

@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { ToolContext } from "@/types";
+import type { ToolContext, ToolFailureLogEvent } from "@/types";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import {
   PerplexityApiError,
@@ -184,6 +184,17 @@ const normalizeSearchQueries = (
   return { queries: queries.slice(0, 3) };
 };
 
+const reportToolFailure = async (
+  context: ToolContext,
+  event: ToolFailureLogEvent,
+) => {
+  try {
+    await context.onToolFailure?.(event);
+  } catch {
+    // Tool failure observability must not change the tool result.
+  }
+};
+
 export const createWebSearch = (context: ToolContext) => {
   const { userLocation, onToolCost } = context;
 
@@ -272,20 +283,37 @@ export const createWebSearch = (context: ToolContext) => {
         }
 
         if (error instanceof PerplexityApiError) {
-          console.error("Web search tool error:", {
+          const attempts = error.retryable ? WEB_SEARCH_MAX_ATTEMPTS : 1;
+          const logFields = {
             name: error.name,
             status: error.status,
             statusText: error.statusText,
             retryable: error.retryable,
             bodySummary: error.bodySummary,
+          };
+          await reportToolFailure(context, {
+            event: "web_search_provider_failed",
+            tool_name: "web_search",
+            provider: "perplexity",
+            status: error.status,
+            status_text: error.statusText,
+            retryable: error.retryable,
+            attempts,
+            error_name: error.name,
+            body_summary: error.bodySummary,
           });
-          return formatPerplexityFailureForTool(
-            error,
-            error.retryable ? WEB_SEARCH_MAX_ATTEMPTS : 1,
-          );
+          console.error("Web search tool error:", logFields);
+          return formatPerplexityFailureForTool(error, attempts);
         }
 
         const errorMessage = stringifyRedactedError(error);
+        await reportToolFailure(context, {
+          event: "web_search_tool_failed",
+          tool_name: "web_search",
+          provider: "perplexity",
+          error_name: error instanceof Error ? error.name : "UnknownError",
+          error_message: errorMessage,
+        });
         console.error("Web search tool error:", errorMessage);
         return `Error performing web search: ${errorMessage}`;
       }

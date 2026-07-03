@@ -3,7 +3,7 @@ import { z } from "zod";
 import { phLogger } from "@/lib/posthog/server";
 import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
-import type { ToolContext } from "@/types";
+import type { ToolContext, ToolFailureLogEvent } from "@/types";
 import { toolBriefSchema } from "./tool-brief";
 
 const NETWORK_ERROR_CODES = new Set([
@@ -23,7 +23,9 @@ const NETWORK_ERROR_CODES = new Set([
 const NETWORK_ERROR_MESSAGE_PATTERN =
   /fetch failed|failed to fetch|network|timed?\s*out|timeout|connection (?:closed|reset|refused)|socket|getaddrinfo/i;
 
-type OpenUrlLogContext = Pick<ToolContext, "chatId" | "userID">;
+type OpenUrlLogContext = Partial<
+  Pick<ToolContext, "chatId" | "onToolFailure" | "userID">
+>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -70,6 +72,17 @@ const isOpenUrlNetworkError = (error: unknown): boolean => {
   );
 };
 
+const reportToolFailure = async (
+  context: OpenUrlLogContext | undefined,
+  event: ToolFailureLogEvent,
+) => {
+  try {
+    await context?.onToolFailure?.(event);
+  } catch {
+    // Tool failure observability must not change the tool result.
+  }
+};
+
 /**
  * Open URL tool using Jina AI for content retrieval
  * Retrieves and returns the full contents of a webpage
@@ -109,6 +122,16 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
 
         if (!response.ok) {
           const errorBody = await response.text();
+          await reportToolFailure(context, {
+            event: "open_url_provider_failed",
+            tool_name: "open_url",
+            provider: "jina",
+            status: response.status,
+            status_text: response.statusText,
+            duration_ms: Date.now() - startedAt,
+            url_hostname: getUrlHostname(url),
+            error_message: `HTTP ${response.status}`,
+          });
           return `Error: HTTP ${response.status} - ${errorBody}`;
         }
 
@@ -138,6 +161,16 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
+        await reportToolFailure(context, {
+          event: logFields.event,
+          tool_name: "open_url",
+          provider: "jina",
+          duration_ms: logFields.duration_ms,
+          url_hostname: logFields.url_hostname,
+          ...(errorCode && { error_code: errorCode }),
+          error_name: logFields.error_name,
+          error_message: errorMessage,
+        });
 
         if (isNetworkFailure) {
           phLogger.warn("Open URL provider fetch failed", logFields);
