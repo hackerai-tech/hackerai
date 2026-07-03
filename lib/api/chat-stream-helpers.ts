@@ -536,13 +536,20 @@ const ASK_STANDARD_REASONING_MODELS = [
 
 const ASK_MEDIUM_REASONING_MODELS = [
   ...ASK_STANDARD_REASONING_MODELS,
-  "model-sonnet-4.6",
-  "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
 const isAskMediumReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+
+const HIGH_REASONING_MODELS = [
+  "model-sonnet-4.6",
+  "model-opus-4.6",
+] as const satisfies readonly ModelName[];
+
+const isHighReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const ASK_KIMI_REASONING_MODELS = [
   "model-kimi-k2.7-code",
@@ -692,21 +699,26 @@ export function buildProviderOptions(
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning =
     options.reasoningOverride ??
-    (isReasoningModel
+    (isHighReasoningModel(modelName)
       ? {
           enabled: true,
-          ...(isDeepSeekV4 && { effort: "xhigh" }),
+          effort: "high",
         }
-      : mode === "ask" && isAskKimiReasoningModel(modelName)
+      : isReasoningModel
         ? {
             enabled: true,
+            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
           }
-        : mode === "ask" && isAskMediumReasoningModel(modelName)
+        : mode === "ask" && isAskKimiReasoningModel(modelName)
           ? {
               enabled: true,
-              effort: "medium",
             }
-          : { enabled: false });
+          : mode === "ask" && isAskMediumReasoningModel(modelName)
+            ? {
+                enabled: true,
+                effort: "medium",
+              }
+            : { enabled: false });
 
   return {
     openrouter: {
