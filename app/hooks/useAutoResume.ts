@@ -27,19 +27,14 @@ export function mergeResumedMessage(
   initialMessages: ChatMessage[],
   resumedMessage: ChatMessage,
 ): ChatMessage[] {
-  if (currentMessages.some((message) => message.id === resumedMessage.id)) {
-    return currentMessages;
-  }
-  if (initialMessages.some((message) => message.id === resumedMessage.id)) {
-    return initialMessages;
+  const baseMessages =
+    currentMessages.length > 0 ? currentMessages : initialMessages;
+
+  if (baseMessages.some((message) => message.id === resumedMessage.id)) {
+    return baseMessages;
   }
 
-  return [
-    ...(currentMessages.length > initialMessages.length
-      ? currentMessages
-      : initialMessages),
-    resumedMessage,
-  ];
+  return [...baseMessages, resumedMessage];
 }
 
 export function useAutoResume({

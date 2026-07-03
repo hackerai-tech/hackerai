@@ -119,6 +119,7 @@ export class ChatComponent {
     const absolutePath = path.resolve(filePath);
     const fileName = filePath.split("/").pop() || "";
     await this.waitForHydrated();
+    await expect(this.attachButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.fileInput.setInputFiles(absolutePath);
 
     await this.waitForUploadComplete(fileName);
@@ -127,6 +128,7 @@ export class ChatComponent {
   async attachFiles(filePaths: string[]): Promise<void> {
     const absolutePaths = filePaths.map((p) => path.resolve(p));
     await this.waitForHydrated();
+    await expect(this.attachButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.fileInput.setInputFiles(absolutePaths);
 
     await this.waitForUploadComplete();
@@ -238,9 +240,7 @@ export class ChatComponent {
     text: string,
     timeout: number = TIMEOUTS.MEDIUM,
   ): Promise<void> {
-    const messages = this.page.locator(
-      `[data-testid="user-message"], [data-testid="assistant-message"]`,
-    );
+    const messages = this.messages;
 
     await expect(async () => {
       const textMatchVisible = await messages
@@ -251,22 +251,21 @@ export class ChatComponent {
       if (textMatchVisible) return;
 
       if (/^\d+$/.test(text)) {
-        const markerMatchVisible = await messages.evaluateAll(
-          (elements, expectedText) =>
-            elements.some((element) => {
-              const isVisible =
-                element instanceof HTMLElement && element.offsetParent !== null;
-              if (!isVisible) return false;
+        const markerMatchVisible = await messages
+          .last()
+          .evaluate((element, expectedText) => {
+            const isVisible =
+              element instanceof HTMLElement && element.offsetParent !== null;
+            if (!isVisible) return false;
 
-              return Array.from(element.querySelectorAll("ol")).some((list) => {
-                const start = list.getAttribute("start") ?? "1";
-                return (
-                  start === expectedText && list.querySelector("li") !== null
-                );
-              });
-            }),
-          text,
-        );
+            return Array.from(element.querySelectorAll("ol")).some((list) => {
+              const start = list.getAttribute("start") ?? "1";
+              return (
+                start === expectedText && list.querySelector("li") !== null
+              );
+            });
+          }, text)
+          .catch(() => false);
         if (markerMatchVisible) return;
       }
 

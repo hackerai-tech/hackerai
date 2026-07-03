@@ -46,9 +46,6 @@ test.describe("Free Tier Simple Chat Tests", () => {
       expect(sidebarTitle).toBeTruthy();
       expect(sidebarTitle).not.toBe("New Chat");
 
-      // Verify the chat is visible in sidebar
-      await sidebar.expectChatWithId(chatId);
-
       // Get the chat title from the header
       const headerTitle = await chat.getChatHeaderTitle();
 

@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { useHasAuthenticatedBefore } from "../useHasAuthenticatedBefore";
 import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
@@ -30,14 +31,22 @@ describe("useHasAuthenticatedBefore", () => {
     expect(mockHasAuthenticatedBefore).not.toHaveBeenCalled();
   });
 
-  it("reads the browser auth hint in the client snapshot", async () => {
+  it("corrects to the browser auth hint after hydrating server-rendered markup", async () => {
     mockHasAuthenticatedBefore.mockReturnValue(true);
 
-    render(<AuthHintProbe />);
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<AuthHintProbe />);
+    document.body.appendChild(container);
+    const root = hydrateRoot(container, <AuthHintProbe />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("auth-hint")).toHaveTextContent("yes");
-    });
-    expect(mockHasAuthenticatedBefore).toHaveBeenCalled();
+    try {
+      await waitFor(() => {
+        expect(screen.getByTestId("auth-hint")).toHaveTextContent("yes");
+      });
+      expect(mockHasAuthenticatedBefore).toHaveBeenCalled();
+    } finally {
+      root.unmount();
+      container.remove();
+    }
   });
 });
