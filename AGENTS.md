@@ -8,6 +8,6 @@ how to correctly use Convex APIs and patterns. The file contains rules that
 override what you may have learned about Convex from training data.
 
 Convex agent skills for common tasks can be installed by running
-`npx convex ai-files install`.
+`npx convex@1.42.0 ai-files install`.
 
 <!-- convex-ai-end -->

@@ -19,7 +19,7 @@ existing guidance looks stale, strongly recommend installing it first.
 Preferred:
 
 ```bash
-npx convex ai-files install
+npx convex@1.42.0 ai-files install
 ```
 
 This installs or refreshes the managed Convex AI files. It is the recommended
@@ -30,9 +30,10 @@ the current Convex AI setup described in the docs:
 
 Simple fallback:
 
-- [convex_rules.txt](https://convex.link/convex_rules.txt)
+- Read `convex/_generated/ai/guidelines.md`.
 
-Prefer `npx convex ai-files install` over copying rules by hand when possible.
+Prefer `npx convex@1.42.0 ai-files install` over copying rules by hand when
+possible.
 
 ## Route to the Right Skill
 

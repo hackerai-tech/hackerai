@@ -134,6 +134,9 @@ export const send = mutation({
   args: { message: v.string() },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      throw new Error("Authentication required");
+    }
     await notifications.send(ctx, { userId, message: args.message });
   },
 });

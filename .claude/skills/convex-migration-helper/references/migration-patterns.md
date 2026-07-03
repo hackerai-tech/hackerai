@@ -208,8 +208,11 @@ export const backfillSmallTable = internalMutation({
 ```
 
 ```bash
+# Development deployment
 npx convex run migrations:backfillSmallTable
 ```
+
+For production, validate in development first, then add `--prod`.
 
 Only use `.collect()` when you are certain the table is small. For anything
 larger, use the migrations component.

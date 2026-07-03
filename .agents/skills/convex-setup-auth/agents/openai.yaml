@@ -7,8 +7,8 @@ interface:
   brand_color: "#2563EB"
   default_prompt:
     "Set up authentication for this Convex app. Figure out the provider first,
-    then wire up the user model, identity mapping, and access control with the
-    smallest solid implementation."
+    then wire up identity mapping and only the app-level storage and access
+    control the app actually needs."
 
 policy:
   allow_implicit_invocation: true

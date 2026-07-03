@@ -26,13 +26,13 @@ export default app;
 // convex/migrations.ts
 import { Migrations } from "@convex-dev/migrations";
 import { components } from "./_generated/api.js";
-import { DataModel } from "./_generated/dataModel.js";
+import schema from "./_generated/schema.js";
 
-export const migrations = new Migrations<DataModel>(components.migrations);
+export const migrations = new Migrations(components.migrations, { schema });
 ```
 
-The `DataModel` type parameter is optional but provides type safety for
-migration definitions.
+Providing `schema` gives migration definitions type safety and enables
+`customRange` pagination over custom indexes.
 
 ## Define a Migration
 
