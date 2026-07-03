@@ -25,8 +25,6 @@ type ResponseLike = {
   headers?: unknown;
 };
 
-const OPENROUTER_GENERATION_URL = "https://openrouter.ai/api/v1/generation";
-const GENERATION_FETCH_TIMEOUT_MS = 1500;
 const MAX_ATTEMPTS_TO_LOG = 8;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -198,17 +196,6 @@ const metadataFromRouterPayload = (
   };
 };
 
-const metadataFromGenerationPayload = (
-  data: Record<string, unknown>,
-): Partial<OpenRouterModelMetadata> => ({
-  provider_name: pickString(data.provider_name),
-  openrouter_request_id: pickString(data.request_id),
-  openrouter_is_byok: pickBoolean(data.is_byok),
-  openrouter_router: pickString(data.router),
-  openrouter_upstream_id: pickString(data.upstream_id),
-  openrouter_upstream_inference_cost: pickUpstreamInferenceCost(data),
-});
-
 export function extractOpenRouterMetadata(args: {
   response?: ResponseLike;
   providerMetadata?: unknown;
@@ -256,51 +243,4 @@ function compactOpenRouterMetadata(
   }
 
   return compact;
-}
-
-export async function fetchOpenRouterGenerationMetadata(
-  generationId: string | undefined,
-  options: {
-    apiKey?: string;
-    fetchImpl?: typeof fetch;
-    timeoutMs?: number;
-  } = {},
-): Promise<OpenRouterModelMetadata | undefined> {
-  if (!generationId) return undefined;
-
-  const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return undefined;
-
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? GENERATION_FETCH_TIMEOUT_MS,
-  );
-
-  try {
-    const url = new URL(OPENROUTER_GENERATION_URL);
-    url.searchParams.set("id", generationId);
-
-    const response = await fetchImpl(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) return undefined;
-
-    const payload = (await response.json()) as unknown;
-    if (!isRecord(payload) || !isRecord(payload.data)) return undefined;
-
-    return compactOpenRouterMetadata({
-      openrouter_generation_id: generationId,
-      ...metadataFromGenerationPayload(payload.data),
-    });
-  } catch {
-    return undefined;
-  } finally {
-    clearTimeout(timeout);
-  }
 }

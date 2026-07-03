@@ -1,6 +1,5 @@
 import {
   extractOpenRouterMetadata,
-  fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
 } from "../openrouter-metadata";
 
@@ -61,46 +60,6 @@ describe("OpenRouter metadata extraction", () => {
     });
   });
 
-  it("uses generation API metadata when stream metadata is incomplete", async () => {
-    const fetchImpl = jest.fn(async () => {
-      return {
-        ok: true,
-        json: async () => ({
-          data: {
-            provider_name: "Azure",
-            request_id: "req-openrouter",
-            is_byok: true,
-            router: "openrouter/auto",
-            upstream_id: "chatcmpl-upstream",
-            upstream_inference_cost: 0.00016,
-          },
-        }),
-      } as Response;
-    });
-
-    const metadata = await fetchOpenRouterGenerationMetadata("gen-123", {
-      apiKey: "sk-test",
-      fetchImpl,
-      timeoutMs: 100,
-    });
-
-    expect(metadata).toEqual({
-      provider_name: "Azure",
-      openrouter_generation_id: "gen-123",
-      openrouter_request_id: "req-openrouter",
-      openrouter_is_byok: true,
-      openrouter_router: "openrouter/auto",
-      openrouter_upstream_id: "chatcmpl-upstream",
-      openrouter_upstream_inference_cost: 0.00016,
-    });
-
-    const [url, init] = fetchImpl.mock.calls[0];
-    expect(String(url)).toContain("id=gen-123");
-    expect((init?.headers as Record<string, string>).Authorization).toBe(
-      "Bearer sk-test",
-    );
-  });
-
   it("extracts the direct provider field exposed by the OpenRouter SDK", () => {
     const metadata = extractOpenRouterMetadata({
       response: {
@@ -144,6 +103,26 @@ describe("OpenRouter metadata extraction", () => {
     });
   });
 
+  it("ignores non-positive upstream inference costs from provider metadata", () => {
+    const metadata = extractOpenRouterMetadata({
+      response: {
+        id: "gen-zero-cost",
+      },
+      providerMetadata: {
+        openrouter: {
+          provider: "Anthropic",
+          upstream_inference_cost: 0,
+          upstreamInferenceCost: Number.NaN,
+        },
+      },
+    });
+
+    expect(metadata).toEqual({
+      provider_name: "Anthropic",
+      openrouter_generation_id: "gen-zero-cost",
+    });
+  });
+
   it("merges generation metadata without overwriting response metadata", () => {
     const merged = mergeOpenRouterMetadata(
       {
@@ -167,31 +146,6 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_request_id: "req-123",
       openrouter_router: "openrouter/auto",
       openrouter_upstream_inference_cost: 0.00016,
-    });
-  });
-
-  it("ignores non-positive upstream inference costs", async () => {
-    const fetchImpl = jest.fn(async () => {
-      return {
-        ok: true,
-        json: async () => ({
-          data: {
-            provider_name: "Anthropic",
-            upstream_inference_cost: 0,
-          },
-        }),
-      } as Response;
-    });
-
-    const metadata = await fetchOpenRouterGenerationMetadata("gen-zero-cost", {
-      apiKey: "sk-test",
-      fetchImpl,
-      timeoutMs: 100,
-    });
-
-    expect(metadata).toEqual({
-      provider_name: "Anthropic",
-      openrouter_generation_id: "gen-zero-cost",
     });
   });
 
