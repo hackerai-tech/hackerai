@@ -627,6 +627,28 @@ export function getFallbackSlugs(
   );
 }
 
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+  "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
+  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+};
+
+function resolveOpenRouterResponseModelCostKey(
+  responseModel: string,
+): ModelName | undefined {
+  const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
+  if (exactKey) return exactKey;
+  // Scope Claude response aliases to the priced generation. Families like
+  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
+    return "model-opus-4.6";
+  }
+  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
+    return "model-sonnet-4.6";
+  }
+  return undefined;
+}
+
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
@@ -648,7 +670,11 @@ export function resolveServedModelForCostAccounting({
     (key) => resolveSlug(key) === responseModel,
   );
 
-  return matchedKey ?? responseModel;
+  return (
+    matchedKey ??
+    resolveOpenRouterResponseModelCostKey(responseModel) ??
+    responseModel
+  );
 }
 
 /**
