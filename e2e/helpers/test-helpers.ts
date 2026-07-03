@@ -66,7 +66,9 @@ export async function attachTestFile(
  */
 export async function setupChat(page: Page): Promise<ChatComponent> {
   await page.goto("/");
-  return new ChatComponent(page);
+  const chat = new ChatComponent(page);
+  await chat.waitForHydrated();
+  return chat;
 }
 
 function chatIdFromUrl(url: string): string {
