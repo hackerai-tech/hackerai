@@ -1,5 +1,4 @@
 import { tool } from "ai";
-import { z } from "zod";
 import { createHash } from "crypto";
 import type { AnySandbox, ToolContext } from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
@@ -11,24 +10,16 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
-import { toolBriefSchema } from "./tool-brief";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
+import { createFileToolSchema, type FileToolAction } from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
-const FILE_ACTIONS_WITH_VIEW = [
-  "view",
-  "read",
-  "write",
-  "append",
-  "edit",
-] as const;
-const FILE_ACTIONS_TEXT_ONLY = ["read", "write", "append", "edit"] as const;
-type FileAction = (typeof FILE_ACTIONS_WITH_VIEW)[number];
+type FileAction = FileToolAction;
 
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
@@ -1056,19 +1047,6 @@ async function uploadViewPreviewFiles(args: {
   ];
 }
 
-const editSchema = z.object({
-  find: z.string().describe("The exact text string to find in the file"),
-  replace: z
-    .string()
-    .describe("The replacement text that will substitute the found text"),
-  all: z
-    .boolean()
-    .optional()
-    .describe(
-      "Whether to replace all occurrences instead of just the first one. Defaults to false.",
-    ),
-});
-
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
   const getSandboxForFileTool = () =>
@@ -1078,87 +1056,12 @@ export const createFile = (context: ToolContext) => {
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
   const supportsViewInSchema = canViewMultimodalFiles();
-  const actionSchema = (
-    supportsViewInSchema
-      ? z.enum(FILE_ACTIONS_WITH_VIEW)
-      : z.enum(FILE_ACTIONS_TEXT_ONLY)
-  ) as z.ZodType<FileAction>;
-  const supportedActionsDescription = [
-    supportsViewInSchema
-      ? "- view: View raster image files through multimodal understanding."
-      : null,
-    "- read: Read file content as text (Markdown, code, logs).",
-    "- write: Overwrite the full content of a text file.",
-    "- append: Append content to a text file.",
-    "- edit: Make targeted edits to a text file.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const instructions = [
-    "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
-    "For file copying, moving, and deletion, use the shell tool.",
-    ...(supportsViewInSchema
-      ? [
-          "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
-          "Do not use 'view' for PDFs. Use 'read' for extractable text, or use the shell tool to convert PDF pages to images first if visual inspection is required.",
-          "Use 'read' for text-based or line-oriented formats.",
-        ]
-      : [
-          "Use 'read' for text-based or line-oriented formats.",
-          "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
-        ]),
-    "Code MUST be saved to a file using this tool before execution via the shell tool.",
-    "DO NOT write partial or truncated content; always output the full content.",
-    "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
-    "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
-    "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
-    "If the range parameter is not specified, the entire file will be read by default.",
-    "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
-    "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
-    "write and append actions will automatically create files if they do not exist.",
-    "When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.",
-    "DO NOT read files that were just written, as their content remains in context.",
-    "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
-  ];
-  const instructionsDescription = instructions
-    .map((instruction, index) => `${index + 1}. ${instruction}`)
-    .join("\n");
+  const fileToolSchema = createFileToolSchema({
+    supportsView: supportsViewInSchema,
+  });
 
   return tool({
-    description: `Perform operations on files in the sandbox file system.
-This tool is the primary way to manage file content, allowing for reading, writing, appending, editing text-based files, and viewing raster image files.
-
-### Supported Actions
-
-${supportedActionsDescription}
-
-### Instructions
-
-${instructionsDescription}`,
-    inputSchema: z.object({
-      action: actionSchema.describe("The action to perform"),
-      path: z.string().describe("The absolute path to the target file"),
-      brief: toolBriefSchema,
-      text: z
-        .string()
-        .optional()
-        .describe(
-          "The content to be written or appended. Required for `write` and `append` actions.",
-        ),
-      range: z
-        .array(z.number().int())
-        .length(2)
-        .optional()
-        .describe(
-          "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
-        ),
-      edits: z
-        .array(editSchema)
-        .optional()
-        .describe(
-          "A list of edits to be sequentially applied to the file. Required for `edit` action.",
-        ),
-    }),
+    ...fileToolSchema,
     execute: async ({ action, path, text, range, edits }) => {
       try {
         const { sandbox } = await getSandboxForFileTool();

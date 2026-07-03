@@ -1,10 +1,9 @@
 import { tool } from "ai";
-import { z } from "zod";
 import { phLogger } from "@/lib/posthog/server";
 import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import type { ToolContext } from "@/types";
-import { toolBriefSchema } from "./tool-brief";
+import { openUrlTool } from "./schemas";
 
 const NETWORK_ERROR_CODES = new Set([
   "ECONNREFUSED",
@@ -76,18 +75,7 @@ const isOpenUrlNetworkError = (error: unknown): boolean => {
  */
 export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
   return tool({
-    description: `Retrieve the full contents of a specific webpage by URL.
-
-<instructions>
-- Use to fetch and read a specific webpage, usually obtained from a prior search
-- URLs must be valid and publicly accessible
-- Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
-- Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
-</instructions>`,
-    inputSchema: z.object({
-      url: z.string().describe("The URL to open and retrieve content from"),
-      brief: toolBriefSchema,
-    }),
+    ...openUrlTool,
     execute: async ({ url }: { url: string }, { abortSignal }) => {
       const startedAt = Date.now();
 

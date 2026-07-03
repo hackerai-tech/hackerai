@@ -1,5 +1,4 @@
 import { tool } from "ai";
-import { z } from "zod";
 import type { ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
 import {
@@ -13,12 +12,17 @@ import {
   peekExited,
 } from "./utils/pty-wait-utils";
 import { translateInput } from "./utils/pty-keys";
-import { toolBriefSchema } from "./tool-brief";
+import {
+  INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
+  INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  interactTerminalSessionTool,
+} from "./schemas";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
-const DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
-const MAX_WAIT_TIMEOUT_SECONDS = 300;
+const DEFAULT_WAIT_TIMEOUT_SECONDS =
+  INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS;
+const MAX_WAIT_TIMEOUT_SECONDS = INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS;
 // Brief window to capture the immediate response to a `send` (e.g. a prompt
 // echoing "Hello, X!"). Too short and we miss instant CLI replies; too long
 // and we block the agent on long-running processes that need explicit `wait`.
@@ -32,64 +36,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
 
   return tool({
-    description: `Interact with persistent shell sessions in the sandbox environment.
-
-<supported_actions>
-- \`view\`: View the content of a shell session
-- \`wait\`: Wait for the running process in a shell session to return
-- \`send\`: Send input to the active process (stdin) in a shell session
-- \`kill\`: Terminate the running process in a shell session
-</supported_actions>
-
-<instructions>
-- Sessions are created by \`run_terminal_cmd\` with \`interactive=true\`; pass the returned \`session\` id here
-- When using \`view\` action, ensure command has completed execution before using its output
-- Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
-- Processes are NEVER killed on timeout — they keep running in the session; \`timeout\` only controls how long to wait for output before returning
-- Use \`wait\` action when a process needs additional time to complete and return
-- Only use \`wait\` after \`send\` (or after \`run_terminal_cmd\` returned without finishing); decide whether to wait based on the prior output
-- DO NOT use \`wait\` for long-running daemon processes
-- \`send\` writes input and captures only the immediate response chunk; if the process needs more time before it replies, follow up with \`action=wait\`
-- \`input\` is sent verbatim. Without a trailing \\n (or \`Enter\`), the line is typed but NOT submitted — a follow-up \`send\` will append to the same line. ALWAYS include \\n unless you specifically want to type without pressing Enter (e.g. building up a key sequence)
-- For special keys, use official tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Home, End, Escape, Tab, Enter, Space, F1-F12, PageUp, PageDown
-- For modifier combinations: M-key (Alt), C-S-key (Ctrl+Shift)
-- Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
-- For non-key strings in \`input\`, DO NOT perform any escaping; send the raw string directly
-</instructions>
-
-<recommended_usage>
-- Use \`view\` to check shell session history and latest status
-- Use \`wait\` to wait for the completion of long-running commands
-- Use \`send\` to interact with processes that require user input (e.g., responding to prompts)
-- Use \`send\` with special keys like C-c to interrupt, C-d to send EOF
-- Use \`kill\` to stop background processes that are no longer needed
-- Use \`kill\` to clean up dead or unresponsive processes
-</recommended_usage>`,
-    inputSchema: z.object({
-      action: z
-        .enum(["view", "wait", "send", "kill"])
-        .describe("The action to perform"),
-      brief: toolBriefSchema,
-      input: z
-        .string()
-        .optional()
-        .describe(
-          'Input text to send to the interactive session. Required for `send`. Sent verbatim — without a trailing \\n (or `Enter`) the line is typed but NOT submitted, and a subsequent `send` will append to the same line. To submit just Enter, pass `"Enter"` or `"\\n"`.',
-        ),
-      session: z
-        .string()
-        .describe(
-          "The unique identifier of the target shell session (returned by `run_terminal_cmd` with `interactive=true`)",
-        ),
-      timeout: z
-        .number()
-        .int()
-        .optional()
-        .default(DEFAULT_WAIT_TIMEOUT_SECONDS)
-        .describe(
-          `Timeout in seconds to wait for output. Only used for \`wait\` action. Defaults to ${DEFAULT_WAIT_TIMEOUT_SECONDS} seconds. Max ${MAX_WAIT_TIMEOUT_SECONDS} seconds.`,
-        ),
-    }),
+    ...interactTerminalSessionTool,
     execute: async (
       {
         session: sessionId,
