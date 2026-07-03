@@ -671,19 +671,15 @@ export function buildProviderOptions(
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning =
     options.reasoningOverride ??
-    (isReasoningModel
+    (isHighReasoningModel(modelName)
       ? {
           enabled: true,
-          ...(isDeepSeekV4
-            ? { effort: "xhigh" }
-            : isHighReasoningModel(modelName)
-              ? { effort: "high" }
-              : {}),
+          effort: "high",
         }
-      : isHighReasoningModel(modelName)
+      : isReasoningModel
         ? {
             enabled: true,
-            effort: "high",
+            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
           }
         : mode === "ask" && isAskKimiReasoningModel(modelName)
           ? {
