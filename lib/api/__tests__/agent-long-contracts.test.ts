@@ -448,6 +448,42 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("emits hidden fast-start heartbeats before setup and model streaming can go quiet", () => {
+    expect(taskSrc).toMatch(/createAgentLongHeartbeatPart/);
+    expect(taskSrc).toMatch(/phase:\s*"setup"\s*\|\s*"model_stream"/);
+    expect(taskSrc).toMatch(/transient:\s*true/);
+
+    const executeIdx = taskSrc.indexOf("execute: async ({ writer })");
+    const fastStartIdx = taskSrc.indexOf(
+      'writeAgentLongFastStart(writer, "setup")',
+      executeIdx,
+    );
+    const costCheckIdx = taskSrc.indexOf(
+      "await assertUserCanMakeCostIncurringRequest(userId)",
+      executeIdx,
+    );
+
+    expect(executeIdx).toBeGreaterThan(-1);
+    expect(fastStartIdx).toBeGreaterThan(executeIdx);
+    expect(costCheckIdx).toBeGreaterThan(fastStartIdx);
+
+    const heartbeatWrapperIdx = taskSrc.indexOf(
+      "const withAgentLongStreamHeartbeat",
+    );
+    const immediateModelHeartbeatIdx = taskSrc.indexOf(
+      'safeEnqueue(createAgentLongHeartbeatPart("model_stream"))',
+      heartbeatWrapperIdx,
+    );
+    const readerLoopIdx = taskSrc.indexOf(
+      "void (async () =>",
+      heartbeatWrapperIdx,
+    );
+
+    expect(heartbeatWrapperIdx).toBeGreaterThan(-1);
+    expect(immediateModelHeartbeatIdx).toBeGreaterThan(heartbeatWrapperIdx);
+    expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);

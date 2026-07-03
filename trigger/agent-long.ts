@@ -157,6 +157,22 @@ const getAgentLongMaxDurationMs = (subscription: SubscriptionTier) =>
 
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
 
+const createAgentLongHeartbeatPart = (
+  phase: "setup" | "model_stream",
+): AgentLongUiStreamPart =>
+  ({
+    type: AGENT_LONG_HEARTBEAT_PART_TYPE,
+    data: { at: Date.now(), phase },
+    transient: true,
+  }) as AgentLongUiStreamPart;
+
+const writeAgentLongFastStart = (
+  writer: UIMessageStreamWriter,
+  phase: "setup" | "model_stream",
+): void => {
+  writer.write(createAgentLongHeartbeatPart(phase));
+};
+
 const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
 const TRIGGER_TAG_MAX_LENGTH = 64;
 
@@ -842,14 +858,14 @@ const withAgentLongStreamHeartbeat = (
           return;
         }
 
-        safeEnqueue({
-          type: AGENT_LONG_HEARTBEAT_PART_TYPE,
-          data: { at: Date.now() },
-        } as AgentLongUiStreamPart);
+        safeEnqueue(createAgentLongHeartbeatPart("model_stream"));
       }, AGENT_LONG_HEARTBEAT_INTERVAL_MS);
 
       signal.addEventListener("abort", stop, { once: true });
       if (signal.aborted) stop();
+      if (!stopped) {
+        safeEnqueue(createAgentLongHeartbeatPart("model_stream"));
+      }
 
       void (async () => {
         try {
@@ -1171,6 +1187,7 @@ export const agentLongTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            writeAgentLongFastStart(writer, "setup");
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
               const lock = await acquireFreeRunConcurrencyLock(
