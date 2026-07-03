@@ -5,7 +5,7 @@
       "source": "triggerdotdev/skills",
       "sourceType": "github",
       "skillPath": "trigger-agents/SKILL.md",
-      "computedHash": "e3e1d05b7589aba63215ce17a002217547f918da16984099bf924cdc4d8a8a61"
+      "computedHash": "4beeedd5d5c842ccd11d15af7abafb394d242d862f4e770bb44811838610d103"
     },
     "trigger-config": {
       "source": "triggerdotdev/skills",
@@ -29,7 +29,7 @@
       "source": "triggerdotdev/skills",
       "sourceType": "github",
       "skillPath": "trigger-setup/SKILL.md",
-      "computedHash": "e6bea732fe6c8da34bd23e57d28351cc55e648039d28a10960306a06c68a6139"
+      "computedHash": "ba7e61f0c3e77305f969453cf6f1672d713b8bb389a5ab016cade72f9773e7bf"
     },
     "trigger-tasks": {
       "source": "triggerdotdev/skills",
