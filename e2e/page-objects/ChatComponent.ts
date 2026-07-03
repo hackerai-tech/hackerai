@@ -118,6 +118,8 @@ export class ChatComponent {
   async attachFile(filePath: string): Promise<void> {
     const absolutePath = path.resolve(filePath);
     const fileName = filePath.split("/").pop() || "";
+    await this.waitForHydrated();
+    await expect(this.attachButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.fileInput.setInputFiles(absolutePath);
 
     await this.waitForUploadComplete(fileName);
@@ -125,6 +127,8 @@ export class ChatComponent {
 
   async attachFiles(filePaths: string[]): Promise<void> {
     const absolutePaths = filePaths.map((p) => path.resolve(p));
+    await this.waitForHydrated();
+    await expect(this.attachButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.fileInput.setInputFiles(absolutePaths);
 
     await this.waitForUploadComplete();
@@ -236,13 +240,37 @@ export class ChatComponent {
     text: string,
     timeout: number = TIMEOUTS.MEDIUM,
   ): Promise<void> {
-    await expect(
-      this.page
-        .locator(
-          `[data-testid="user-message"], [data-testid="assistant-message"]`,
-        )
-        .filter({ hasText: text }),
-    ).toBeVisible({ timeout });
+    const messages = this.messages;
+
+    await expect(async () => {
+      const textMatchVisible = await messages
+        .filter({ hasText: text })
+        .first()
+        .isVisible({ timeout: 1000 })
+        .catch(() => false);
+      if (textMatchVisible) return;
+
+      if (/^\d+$/.test(text)) {
+        const markerMatchVisible = await messages
+          .last()
+          .evaluate((element, expectedText) => {
+            const isVisible =
+              element instanceof HTMLElement && element.offsetParent !== null;
+            if (!isVisible) return false;
+
+            return Array.from(element.querySelectorAll("ol")).some((list) => {
+              const start = list.getAttribute("start") ?? "1";
+              return (
+                start === expectedText && list.querySelector("li") !== null
+              );
+            });
+          }, text)
+          .catch(() => false);
+        if (markerMatchVisible) return;
+      }
+
+      throw new Error(`Message containing ${text} was not visible`);
+    }).toPass({ timeout });
   }
 
   async expectStreamingVisible(): Promise<void> {
@@ -332,8 +360,14 @@ export class ChatComponent {
     });
   }
 
+  async waitForHydrated(): Promise<void> {
+    await expect(this.chatInput).toBeVisible({ timeout: TIMEOUTS.MEDIUM });
+    await expect(this.chatInput).toBeEditable({ timeout: TIMEOUTS.MEDIUM });
+    await expect(this.sendButton).toBeVisible({ timeout: TIMEOUTS.MEDIUM });
+  }
+
   async expectChatInputVisible(): Promise<void> {
-    await expect(this.chatInput).toBeVisible();
+    await expect(this.chatInput).toBeVisible({ timeout: TIMEOUTS.MEDIUM });
   }
 
   async expectSendButtonEnabled(): Promise<void> {

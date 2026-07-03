@@ -6,9 +6,9 @@ import Loading from "@/components/ui/loading";
 import PricingDialog from "../../../components/PricingDialog";
 import { usePricingDialog } from "../../../hooks/usePricingDialog";
 import { useGlobalState } from "../../../contexts/GlobalState";
-import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 import { use, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useHasAuthenticatedBefore } from "@/app/hooks/useHasAuthenticatedBefore";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
@@ -18,9 +18,9 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
   const { showPricing, handleClosePricing, pricingContext } =
     usePricingDialog(subscription);
   const { isLoading, isAuthenticated } = useConvexAuth();
+  const hasAuthHint = useHasAuthenticatedBefore();
 
-  const shouldRenderChat =
-    isAuthenticated || (isLoading && hasAuthenticatedBefore());
+  const shouldRenderChat = isAuthenticated || (isLoading && hasAuthHint);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {

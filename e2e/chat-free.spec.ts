@@ -36,20 +36,15 @@ test.describe("Free Tier Simple Chat Tests", () => {
       const chatCount = await chatItems.count();
       expect(chatCount).toBeGreaterThan(0);
 
-      // Get the first chat item and verify it has a title (not empty or "New Chat")
-      const firstChat = chatItems.first();
-      const ariaLabel = await firstChat.getAttribute("aria-label");
+      const chatId = new URL(page.url()).pathname.replace(/^\/c\//, "");
+      expect(chatId).toBeTruthy();
 
-      // Extract title from aria-label (format: "Open chat: {title}")
-      const titleMatch = ariaLabel?.match(/^Open chat: (.+)$/);
-      const sidebarTitle = titleMatch ? titleMatch[1] : "";
+      await sidebar.expectChatWithId(chatId);
+      const sidebarTitle = await sidebar.getChatTitleById(chatId);
 
       // Verify title is set and not empty or "New Chat"
       expect(sidebarTitle).toBeTruthy();
       expect(sidebarTitle).not.toBe("New Chat");
-
-      // Verify the chat is visible in sidebar
-      await expect(firstChat).toBeVisible();
 
       // Get the chat title from the header
       const headerTitle = await chat.getChatHeaderTitle();

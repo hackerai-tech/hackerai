@@ -16,11 +16,9 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
 import { useTypingAnimation } from "../hooks/useTypingAnimation";
-import {
-  hasAuthenticatedBefore,
-  upsertDraft,
-} from "@/lib/utils/client-storage";
+import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
+import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
@@ -134,6 +132,7 @@ export default function Page() {
   const { showPricing, handleClosePricing, pricingContext } =
     usePricingDialog(subscription);
   const { isLoading, isAuthenticated } = useConvexAuth();
+  const hasAuthHint = useHasAuthenticatedBefore();
 
   const { isMigrating, migrate } = usePentestgptMigration();
   const searchParams =
@@ -161,7 +160,7 @@ export default function Page() {
     return { initialSeats: seats, initialPlan: plan };
   }, [searchParams]);
 
-  if (isAuthenticated || (isLoading && hasAuthenticatedBefore())) {
+  if (isAuthenticated || (isLoading && hasAuthHint)) {
     return (
       <>
         <AuthenticatedContent />
