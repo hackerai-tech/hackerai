@@ -903,18 +903,13 @@ export const createChatHandler = () => {
                 let usageCostRecord =
                   usageTracker.createUsageCostRecord(usageRecordArgs);
 
-                // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
-                // non-clean streams. Each completed step reports authoritative cost with
-                // cache discounts baked in, so summing them is more accurate than the
-                // token-based fallback (which ignores cache reads and overcharges).
-                // Gate on modelProviderCost (not providerCost) because providerCost also
-                // includes tool/sandbox spend — if the model never reported raw.cost,
-                // tool/sandbox cost alone would incorrectly suppress the token fallback
-                // and drop the model portion entirely.
-                const providerCost =
-                  usageTracker.modelProviderCost > 0
-                    ? usageTracker.providerCost
-                    : undefined;
+                // Trust accumulated provider cost only when every model step has
+                // an authoritative cost. providerCost also includes tool/sandbox
+                // spend; if any model step is missing cost, keep token fallback
+                // for the model portion and add nonModelCost separately.
+                const providerCost = usageTracker.hasAuthoritativeModelCost
+                  ? usageTracker.providerCost
+                  : undefined;
 
                 if (paidDailyFreeAllowanceReservation) {
                   const allowanceCostRecord =

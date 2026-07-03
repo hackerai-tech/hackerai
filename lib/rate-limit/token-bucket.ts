@@ -571,8 +571,9 @@ export const checkTokenBucketLimit = async (
  * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
  * If we over-estimated input cost, refunds the difference back to the bucket.
  *
- * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation.
- *   On clean completions this includes model + sandbox + tool costs.
+ * @param providerCostDollars - If provided (from authoritative provider cost),
+ *   uses this instead of token calculation. On clean completions this includes
+ *   model + sandbox + tool costs.
  *   On non-clean completions this is undefined; nonModelCostDollars covers sandbox/tool costs.
  * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When providerCostDollars
  *   is undefined (non-clean streams), this is added on top of token-based model cost.

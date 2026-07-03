@@ -191,6 +191,156 @@ describe("UsageTracker", () => {
       expect(tracker.computeCostDollars("model-default")).toBe(0.05);
     });
 
+    it("should use OpenRouter upstream inference cost from raw cost details when raw cost is zero", () => {
+      tracker.accumulateStep({
+        inputTokens: 5264,
+        outputTokens: 18,
+        raw: {
+          cost: 0,
+          cost_details: {
+            upstream_inference_cost: 0.0030955,
+          },
+        },
+      });
+
+      expect(tracker.hasAuthoritativeModelCost).toBe(true);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0030955);
+      expect(tracker.computeModelCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+      expect(tracker.computeCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+    });
+
+    it("should prefer OpenRouter upstream inference cost over raw provider cost", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0.003,
+          },
+        },
+      });
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.003);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+    });
+
+    it("should fall back to raw provider cost when OpenRouter upstream inference cost is not positive", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0,
+            upstreamInferenceCost: Number.NaN,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.001);
+    });
+
+    it("should accept camelCase OpenRouter upstream inference cost from raw cost details", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0,
+          cost_details: {},
+          costDetails: {
+            upstreamInferenceCost: 0.002,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.002);
+    });
+
+    it("should use authoritative model cost from provider metadata when raw cost is missing", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      expect(tracker.computeModelCostDollars("model-default")).toBe(0.00016);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.00016);
+    });
+
+    it("should sum authoritative metadata costs across model steps", () => {
+      const firstStepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      const secondStepCostIndex = tracker.accumulateStep({
+        inputTokens: 20,
+        outputTokens: 5,
+        raw: { cost: 0 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(firstStepCostIndex, 0.00016);
+      tracker.setAuthoritativeModelCostForStep(secondStepCostIndex, 0.0002);
+
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00036,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00036);
+    });
+
+    it("should use token estimates when any model step lacks authoritative cost", () => {
+      const firstStepCostIndex = tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0 },
+      });
+      tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(firstStepCostIndex, 0.00016);
+
+      expect(tracker.computeCostDollars("model-default")).toBe(0.5);
+    });
+
+    it("should prefer authoritative metadata cost over raw provider cost while preserving non-model spend", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.05 },
+      });
+      tracker.providerCost += 0.01;
+      tracker.nonModelCost = 0.01;
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00016);
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00016,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.01016);
+    });
+
+    it("should ignore non-positive metadata cost", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.05 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0);
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, Number.NaN);
+
+      expect(tracker.computeCostDollars("model-default")).toBe(0.05);
+    });
+
     it("should fall back to token calculation when no provider cost", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 
@@ -531,6 +681,31 @@ describe("UsageTracker", () => {
       expect(usage.model).toBe("auto");
       expect(usage.modelCostDollars).toBe(0.42);
       expect(usage.costDollars).toBe(0.42);
+      expect(usage.costSource).toBe("provider");
+    });
+
+    it("keeps upstream metadata cost ahead of token estimates when raw cost is zero", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "model-opus-4.6",
+        accountingModel: "model-opus-4.6",
+        configuredModelId: "anthropic/claude-4.6-opus-20260205",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.modelCostDollars).toBe(0.00016);
+      expect(usage.costDollars).toBe(0.00016);
       expect(usage.costSource).toBe("provider");
     });
 

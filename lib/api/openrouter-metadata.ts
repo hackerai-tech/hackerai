@@ -15,6 +15,7 @@ export type OpenRouterModelMetadata = {
   openrouter_region?: string;
   openrouter_attempt?: number;
   openrouter_upstream_id?: string;
+  openrouter_upstream_inference_cost?: number;
   openrouter_selected_model?: string;
   openrouter_attempts?: OpenRouterAttemptMetadata[];
 };
@@ -24,8 +25,6 @@ type ResponseLike = {
   headers?: unknown;
 };
 
-const OPENROUTER_GENERATION_URL = "https://openrouter.ai/api/v1/generation";
-const GENERATION_FETCH_TIMEOUT_MS = 1500;
 const MAX_ATTEMPTS_TO_LOG = 8;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -37,8 +36,19 @@ const pickString = (value: unknown): string | undefined =>
 const pickNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
+const pickPositiveNumber = (value: unknown): number | undefined => {
+  const number = pickNumber(value);
+  return number !== undefined && number > 0 ? number : undefined;
+};
+
 const pickBoolean = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
+
+const pickUpstreamInferenceCost = (
+  metadata: Record<string, unknown>,
+): number | undefined =>
+  pickPositiveNumber(metadata.upstream_inference_cost) ??
+  pickPositiveNumber(metadata.upstreamInferenceCost);
 
 const normalizeHeaders = (headers: unknown): Record<string, string> => {
   if (!headers) return {};
@@ -106,6 +116,7 @@ const findOpenRouterMetadata = (source: unknown): Record<string, unknown> => {
     typeof openrouter.provider === "string" ||
     typeof openrouter.requested === "string" ||
     typeof openrouter.strategy === "string" ||
+    pickUpstreamInferenceCost(openrouter) !== undefined ||
     isRecord(openrouter.endpoints) ||
     Array.isArray(openrouter.attempts)
   ) {
@@ -177,22 +188,13 @@ const metadataFromRouterPayload = (
     openrouter_strategy: pickString(metadata.strategy),
     openrouter_region: pickString(metadata.region),
     openrouter_attempt: pickNumber(metadata.attempt),
+    openrouter_upstream_inference_cost: pickUpstreamInferenceCost(metadata),
     openrouter_selected_model:
       pickString(selectedEndpoint?.model) ??
       pickString(successfulAttempt?.model),
     openrouter_attempts: attempts,
   };
 };
-
-const metadataFromGenerationPayload = (
-  data: Record<string, unknown>,
-): Partial<OpenRouterModelMetadata> => ({
-  provider_name: pickString(data.provider_name),
-  openrouter_request_id: pickString(data.request_id),
-  openrouter_is_byok: pickBoolean(data.is_byok),
-  openrouter_router: pickString(data.router),
-  openrouter_upstream_id: pickString(data.upstream_id),
-});
 
 export function extractOpenRouterMetadata(args: {
   response?: ResponseLike;
@@ -223,6 +225,9 @@ export function mergeOpenRouterMetadata(
     openrouter_router: primary.openrouter_router ?? secondary.openrouter_router,
     openrouter_upstream_id:
       primary.openrouter_upstream_id ?? secondary.openrouter_upstream_id,
+    openrouter_upstream_inference_cost:
+      primary.openrouter_upstream_inference_cost ??
+      secondary.openrouter_upstream_inference_cost,
   });
 }
 
@@ -238,51 +243,4 @@ function compactOpenRouterMetadata(
   }
 
   return compact;
-}
-
-export async function fetchOpenRouterGenerationMetadata(
-  generationId: string | undefined,
-  options: {
-    apiKey?: string;
-    fetchImpl?: typeof fetch;
-    timeoutMs?: number;
-  } = {},
-): Promise<OpenRouterModelMetadata | undefined> {
-  if (!generationId) return undefined;
-
-  const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return undefined;
-
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? GENERATION_FETCH_TIMEOUT_MS,
-  );
-
-  try {
-    const url = new URL(OPENROUTER_GENERATION_URL);
-    url.searchParams.set("id", generationId);
-
-    const response = await fetchImpl(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) return undefined;
-
-    const payload = (await response.json()) as unknown;
-    if (!isRecord(payload) || !isRecord(payload.data)) return undefined;
-
-    return compactOpenRouterMetadata({
-      openrouter_generation_id: generationId,
-      ...metadataFromGenerationPayload(payload.data),
-    });
-  } catch {
-    return undefined;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
