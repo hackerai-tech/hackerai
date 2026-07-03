@@ -68,6 +68,27 @@ export type AppendMetadataStreamFn = (event: {
   data: { terminal: string; toolCallId: string };
 }) => Promise<void>;
 
+/** Provider/tool-scoped failure data. Host runtimes attach request/user context separately. */
+export type ToolFailureLogEvent = {
+  event: string;
+  tool_name: string;
+  provider: string;
+  status?: number;
+  status_text?: string;
+  retryable?: boolean;
+  attempts?: number;
+  duration_ms?: number;
+  error_code?: string;
+  error_name?: string;
+  error_message?: string;
+  url_hostname?: string;
+  body_summary?: string;
+};
+
+export type ToolFailureLogger = (
+  event: ToolFailureLogEvent,
+) => void | Promise<void>;
+
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
@@ -91,4 +112,6 @@ export interface ToolContext {
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;
+  /** Callback to report handled provider/tool failures to the request's host runtime. */
+  onToolFailure?: ToolFailureLogger;
 }

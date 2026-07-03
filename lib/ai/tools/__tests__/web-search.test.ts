@@ -19,10 +19,14 @@ const HTML_504 = `
   </body>
 </html>`;
 
-function makeContext(onToolCost = jest.fn()): ToolContext {
+function makeContext(
+  onToolCost = jest.fn(),
+  overrides: Partial<ToolContext> = {},
+): ToolContext {
   return {
     userLocation: { country: "US" },
     onToolCost,
+    ...overrides,
   } as unknown as ToolContext;
 }
 
@@ -98,18 +102,23 @@ describe("web_search", () => {
 
   it("returns a validation message for blank queries without calling Perplexity or logging", async () => {
     const onToolCost = jest.fn();
+    const onToolFailure = jest.fn();
     global.fetch = jest.fn();
 
-    const result = await runTool(createWebSearch(makeContext(onToolCost)), {
-      queries: ["", "   ", "\n"],
-      brief: "search with blank input",
-    });
+    const result = await runTool(
+      createWebSearch(makeContext(onToolCost, { onToolFailure })),
+      {
+        queries: ["", "   ", "\n"],
+        brief: "search with blank input",
+      },
+    );
 
     expect(result).toBe(
       "Error performing web search: Provide at least one non-empty query.",
     );
     expect(global.fetch).not.toHaveBeenCalled();
     expect(onToolCost).not.toHaveBeenCalled();
+    expect(onToolFailure).not.toHaveBeenCalled();
     expect(console.warn).not.toHaveBeenCalled();
     expect(console.error).not.toHaveBeenCalled();
   });
@@ -158,18 +167,23 @@ describe("web_search", () => {
 
   it("rejects overlong queries without calling Perplexity or logging", async () => {
     const onToolCost = jest.fn();
+    const onToolFailure = jest.fn();
     global.fetch = jest.fn();
 
-    const result = await runTool(createWebSearch(makeContext(onToolCost)), {
-      queries: ["x".repeat(8193)],
-      brief: "search with overlong input",
-    });
+    const result = await runTool(
+      createWebSearch(makeContext(onToolCost, { onToolFailure })),
+      {
+        queries: ["x".repeat(8193)],
+        brief: "search with overlong input",
+      },
+    );
 
     expect(result).toBe(
       "Error performing web search: Each query must be 8192 characters or fewer.",
     );
     expect(global.fetch).not.toHaveBeenCalled();
     expect(onToolCost).not.toHaveBeenCalled();
+    expect(onToolFailure).not.toHaveBeenCalled();
     expect(console.error).not.toHaveBeenCalled();
   });
 
@@ -236,6 +250,7 @@ describe("web_search", () => {
 
   it("returns a compact fallback message after repeated 504s", async () => {
     jest.useFakeTimers();
+    const onToolFailure = jest.fn();
 
     global.fetch = jest.fn().mockResolvedValue(
       response(HTML_504, {
@@ -245,10 +260,13 @@ describe("web_search", () => {
       }),
     );
 
-    const resultPromise = runTool(createWebSearch(makeContext()), {
-      queries: ["perplexity status"],
-      brief: "check provider status",
-    });
+    const resultPromise = runTool(
+      createWebSearch(makeContext(jest.fn(), { onToolFailure })),
+      {
+        queries: ["perplexity status"],
+        brief: "check provider status",
+      },
+    );
     await jest.runAllTimersAsync();
     const result = await resultPromise;
 
@@ -268,6 +286,18 @@ describe("web_search", () => {
         bodySummary: expect.stringContaining("Gateway time-out"),
       }),
     );
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 3,
+        body_summary: expect.stringContaining("Gateway time-out"),
+        event: "web_search_provider_failed",
+        provider: "perplexity",
+        retryable: true,
+        status: 504,
+        status_text: "Gateway Timeout",
+        tool_name: "web_search",
+      }),
+    );
     const loggedPayload = (console.error as jest.Mock).mock.calls[0][1] as {
       bodySummary: string;
     };
@@ -276,6 +306,7 @@ describe("web_search", () => {
   });
 
   it("does not retry authorization failures", async () => {
+    const onToolFailure = jest.fn();
     global.fetch = jest.fn().mockResolvedValue(
       response(JSON.stringify({ error: "invalid api key" }), {
         status: 401,
@@ -284,14 +315,29 @@ describe("web_search", () => {
       }),
     );
 
-    const result = await runTool(createWebSearch(makeContext()), {
-      queries: ["perplexity status"],
-      brief: "check provider status",
-    });
+    const result = await runTool(
+      createWebSearch(makeContext(jest.fn(), { onToolFailure })),
+      {
+        queries: ["perplexity status"],
+        brief: "check provider status",
+      },
+    );
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(result).toBe(
       "Error performing web search: Perplexity search is not authorized (HTTP 401 Unauthorized). Check the Perplexity API key or account access.",
+    );
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 1,
+        body_summary: expect.stringContaining("invalid api key"),
+        event: "web_search_provider_failed",
+        provider: "perplexity",
+        retryable: false,
+        status: 401,
+        status_text: "Unauthorized",
+        tool_name: "web_search",
+      }),
     );
   });
 

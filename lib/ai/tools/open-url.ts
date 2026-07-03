@@ -5,6 +5,7 @@ import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import type { ToolContext } from "@/types";
 import { toolBriefSchema } from "./tool-brief";
+import { reportToolFailure } from "./tool-failure";
 
 const NETWORK_ERROR_CODES = new Set([
   "ECONNREFUSED",
@@ -23,7 +24,9 @@ const NETWORK_ERROR_CODES = new Set([
 const NETWORK_ERROR_MESSAGE_PATTERN =
   /fetch failed|failed to fetch|network|timed?\s*out|timeout|connection (?:closed|reset|refused)|socket|getaddrinfo/i;
 
-type OpenUrlLogContext = Pick<ToolContext, "chatId" | "userID">;
+type OpenUrlLogContext = Partial<
+  Pick<ToolContext, "chatId" | "onToolFailure" | "userID">
+>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -109,6 +112,16 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
 
         if (!response.ok) {
           const errorBody = await response.text();
+          reportToolFailure(context?.onToolFailure, {
+            event: "open_url_provider_failed",
+            tool_name: "open_url",
+            provider: "jina",
+            status: response.status,
+            status_text: response.statusText,
+            duration_ms: Date.now() - startedAt,
+            url_hostname: getUrlHostname(url),
+            error_message: `HTTP ${response.status}`,
+          });
           return `Error: HTTP ${response.status} - ${errorBody}`;
         }
 
@@ -125,19 +138,26 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         const isNetworkFailure = isOpenUrlNetworkError(error);
         const errorCode = getNestedErrorCode(error);
         const errorMessage = stringifyRedactedError(error);
-        const logFields = {
+        const toolFailureFields = {
           event: isNetworkFailure
             ? "open_url_fetch_failed"
             : "open_url_tool_failed",
           provider: "jina",
           url_hostname: getUrlHostname(url),
           duration_ms: Date.now() - startedAt,
-          ...(context?.chatId && { chat_id: context.chatId }),
-          ...(context?.userID && { userId: context.userID }),
           ...(errorCode && { error_code: errorCode }),
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
+        const logFields = {
+          ...toolFailureFields,
+          ...(context?.chatId && { chat_id: context.chatId }),
+          ...(context?.userID && { userId: context.userID }),
+        };
+        reportToolFailure(context?.onToolFailure, {
+          ...toolFailureFields,
+          tool_name: "open_url",
+        });
 
         if (isNetworkFailure) {
           phLogger.warn("Open URL provider fetch failed", logFields);

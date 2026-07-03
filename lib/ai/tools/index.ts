@@ -29,6 +29,7 @@ import type {
   AppendMetadataStreamFn,
   SubscriptionTier,
   SandboxBootInfo,
+  ToolFailureLogger,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -58,6 +59,7 @@ export const createTools = (
   subscription?: SubscriptionTier,
   onSandboxBoot?: (info: SandboxBootInfo) => void,
   modelName?: string,
+  onToolFailure?: ToolFailureLogger,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -123,6 +125,7 @@ export const createTools = (
     isE2BSandbox,
     appendMetadataStream,
     onToolCost,
+    onToolFailure,
   };
 
   const buildTools = (): ToolSet => {

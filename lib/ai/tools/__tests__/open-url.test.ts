@@ -45,6 +45,7 @@ describe("open_url", () => {
   });
 
   it("logs expected Jina network timeouts as warnings without raw error objects", async () => {
+    const onToolFailure = jest.fn();
     const timeoutError = Object.assign(new Error("connect ETIMEDOUT"), {
       code: "ETIMEDOUT",
     });
@@ -54,7 +55,7 @@ describe("open_url", () => {
     global.fetch = jest.fn().mockRejectedValue(fetchError);
 
     const result = await runTool(
-      createOpenUrlTool({ chatId: "chat-1", userID: "user-1" }),
+      createOpenUrlTool({ chatId: "chat-1", onToolFailure, userID: "user-1" }),
       {
         url: "https://example.com/private-path?token=secret",
         brief: "open example page",
@@ -77,23 +78,81 @@ describe("open_url", () => {
         userId: "user-1",
       }),
     );
-    expect(mockPhLoggerError).not.toHaveBeenCalled();
-    expect(JSON.stringify(mockPhLoggerWarn.mock.calls)).not.toContain(
-      "private-path",
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        duration_ms: expect.any(Number),
+        error_code: "ETIMEDOUT",
+        error_message: "fetch failed",
+        error_name: "TypeError",
+        event: "open_url_fetch_failed",
+        provider: "jina",
+        tool_name: "open_url",
+        url_hostname: "example.com",
+      }),
     );
-    expect(JSON.stringify(mockPhLoggerWarn.mock.calls)).not.toContain("secret");
+    expect(mockPhLoggerError).not.toHaveBeenCalled();
+    const loggedPayloads = JSON.stringify([
+      mockPhLoggerWarn.mock.calls,
+      onToolFailure.mock.calls,
+    ]);
+    expect(loggedPayloads).not.toContain("private-path");
+    expect(loggedPayloads).not.toContain("secret");
+  });
+
+  it("reports non-OK Jina HTTP responses to the tool failure hook", async () => {
+    const onToolFailure = jest.fn();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      text: jest.fn(async () => "upstream down"),
+    });
+
+    const result = await runTool(
+      createOpenUrlTool({ chatId: "chat-1", onToolFailure, userID: "user-1" }),
+      {
+        url: "https://example.com/advisory",
+        brief: "open example page",
+      },
+    );
+
+    expect(result).toBe("Error: HTTP 502 - upstream down");
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        duration_ms: expect.any(Number),
+        error_message: "HTTP 502",
+        event: "open_url_provider_failed",
+        provider: "jina",
+        status: 502,
+        status_text: "Bad Gateway",
+        tool_name: "open_url",
+        url_hostname: "example.com",
+      }),
+    );
   });
 
   it("keeps unexpected tool exceptions as errors", async () => {
+    const onToolFailure = jest.fn();
     global.fetch = jest.fn().mockRejectedValue(new Error("unexpected boom"));
 
-    const result = await runTool(createOpenUrlTool(), {
+    const result = await runTool(createOpenUrlTool({ onToolFailure }), {
       url: "not-a-url",
       brief: "open malformed page",
     });
 
     expect(result).toBe("Error opening URL: unexpected boom");
     expect(mockPhLoggerWarn).not.toHaveBeenCalled();
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        duration_ms: expect.any(Number),
+        error_message: "unexpected boom",
+        error_name: "Error",
+        event: "open_url_tool_failed",
+        provider: "jina",
+        tool_name: "open_url",
+        url_hostname: "invalid_url",
+      }),
+    );
     expect(mockPhLoggerError).toHaveBeenCalledWith(
       "Open URL tool error",
       expect.objectContaining({
