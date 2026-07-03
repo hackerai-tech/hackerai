@@ -44,6 +44,9 @@ export function elapsedTimeExceeds(state: {
 
 export const DOOM_LOOP_FINISH_REASON = "doom-loop";
 
+export const POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON =
+  "compaction-incomplete";
+
 export function doomLoopDetected(state: {
   onFired: () => void;
 }): StopCondition<any> {

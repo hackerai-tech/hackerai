@@ -570,8 +570,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -588,8 +587,7 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -1737,6 +1735,10 @@ export const agentLongTask = task({
                 state.assistantContentLoopDetection = undefined;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
+                state.stoppedDueToPostSummarizationIncomplete = false;
+                state.postSummarizationContinuationActive = false;
+                state.postSummarizationToolCallCount = 0;
+                state.postSummarizationText = "";
                 state.budgetAbortDetails = undefined;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
@@ -1866,6 +1868,10 @@ export const agentLongTask = task({
                         state.assistantContentLoopDetection = undefined;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
+                        state.stoppedDueToPostSummarizationIncomplete = false;
+                        state.postSummarizationContinuationActive = false;
+                        state.postSummarizationToolCallCount = 0;
+                        state.postSummarizationText = "";
                         state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
@@ -2301,6 +2307,7 @@ export const agentLongTask = task({
                       // explicitly decide whether to continue.
                       if (
                         (state.stoppedDueToTokenExhaustion ||
+                          state.stoppedDueToPostSummarizationIncomplete ||
                           state.streamFinishReason === "tool-calls") &&
                         !temporary
                       ) {

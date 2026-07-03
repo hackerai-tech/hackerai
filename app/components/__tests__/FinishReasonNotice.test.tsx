@@ -6,6 +6,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
+import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 
 function DataStreamSetter({
@@ -82,6 +83,14 @@ describe("FinishReasonNotice", () => {
       { finishReason: "tool-calls" as const, autoContinueCount: 2 },
       { finishReason: "tool-calls" as const, autoContinueCount: 4 },
       { finishReason: "preemptive-timeout" as const, autoContinueCount: 0 },
+      {
+        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+        autoContinueCount: 0,
+      },
+      {
+        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+        autoContinueCount: 4,
+      },
     ])(
       "returns null in agent mode when autoContinueCount=$autoContinueCount < MAX for finishReason=$finishReason",
       ({ finishReason, autoContinueCount }) => {
@@ -131,6 +140,10 @@ describe("FinishReasonNotice", () => {
       {
         finishReason: "budget-exhausted",
         expectedText: "Stopped at a usage guardrail for this run",
+      },
+      {
+        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+        expectedText: "Paused after compacting the conversation",
       },
     ])(
       "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
@@ -216,6 +229,7 @@ describe("FinishReasonNotice", () => {
       "context-limit",
       "preemptive-timeout",
       "agent-run-spend-cap",
+      POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
     ])("renders the Continue button for finishReason=%s", (finishReason) => {
       const onContinue = jest.fn();
       renderNotice(

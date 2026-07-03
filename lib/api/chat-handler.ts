@@ -183,8 +183,7 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      | ReturnType<typeof createPreemptiveTimeout>
-      | undefined;
+      ReturnType<typeof createPreemptiveTimeout> | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -411,8 +410,7 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        | PaidDailyFreeAllowanceReservation
-        | undefined;
+        PaidDailyFreeAllowanceReservation | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -1164,6 +1162,10 @@ export const createChatHandler = () => {
                 state.assistantContentLoopDetection = undefined;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
+                state.stoppedDueToPostSummarizationIncomplete = false;
+                state.postSummarizationContinuationActive = false;
+                state.postSummarizationToolCallCount = 0;
+                state.postSummarizationText = "";
                 state.budgetAbortDetails = undefined;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
@@ -1304,6 +1306,10 @@ export const createChatHandler = () => {
                         state.assistantContentLoopDetection = undefined;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
+                        state.stoppedDueToPostSummarizationIncomplete = false;
+                        state.postSummarizationContinuationActive = false;
+                        state.postSummarizationToolCallCount = 0;
+                        state.postSummarizationText = "";
                         state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
@@ -1920,6 +1926,7 @@ export const createChatHandler = () => {
                     if (
                       (state.stoppedDueToTokenExhaustion ||
                         state.stoppedDueToElapsedTimeout ||
+                        state.stoppedDueToPostSummarizationIncomplete ||
                         state.streamFinishReason === "tool-calls") &&
                       isAgentMode(mode) &&
                       !temporary

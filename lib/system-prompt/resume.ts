@@ -1,3 +1,5 @@
+import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
+
 export const getResumeSection = (finishReason?: string): string => {
   if (finishReason === "tool-calls") {
     return `<resume_context>
@@ -42,6 +44,13 @@ resume the task exactly where you left off without repeating what was already do
 Your previous response was paused because the monthly usage budget or extra usage spending limit was reached. \
 This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
 resume the task exactly where you left off without repeating completed work or starting the task over.
+</resume_context>`;
+  } else if (finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON) {
+    return `<resume_context>
+Your previous response stopped immediately after conversation compaction before completing the user's original request. \
+The context has been condensed. If the user says "continue" or similar, resume from the latest saved progress \
+without acknowledging the compaction, restarting completed work, or saying that you will continue. \
+Use tools when action is still needed; otherwise provide the final result or deliverable.
 </resume_context>`;
   }
 

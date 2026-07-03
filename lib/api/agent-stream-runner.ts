@@ -40,6 +40,7 @@ import {
   DOOM_LOOP_FINISH_REASON,
   BUDGET_EXHAUSTION_FINISH_REASON,
   AGENT_RUN_SPEND_CAP_FINISH_REASON,
+  POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
   detectDoomLoop,
@@ -70,6 +71,10 @@ import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import {
+  isIncompletePostSummarizationStop,
+  POST_SUMMARIZATION_CONTINUATION_PROMPT,
+} from "@/lib/chat/post-summarization-continuation";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   extractOpenRouterMetadata,
@@ -121,6 +126,10 @@ export type AgentStreamState = {
   assistantContentLoopDetection: AssistantContentLoopDetection | undefined;
   stoppedDueToBudgetExhaustion: boolean;
   stoppedDueToAgentRunSpendCap: boolean;
+  stoppedDueToPostSummarizationIncomplete: boolean;
+  postSummarizationContinuationActive: boolean;
+  postSummarizationToolCallCount: number;
+  postSummarizationText: string;
   budgetAbortDetails: BudgetAbortDetails | undefined;
 };
 
@@ -144,6 +153,10 @@ export function initAgentStreamState(
     assistantContentLoopDetection: undefined,
     stoppedDueToBudgetExhaustion: false,
     stoppedDueToAgentRunSpendCap: false,
+    stoppedDueToPostSummarizationIncomplete: false,
+    postSummarizationContinuationActive: false,
+    postSummarizationToolCallCount: 0,
+    postSummarizationText: "",
     budgetAbortDetails: undefined,
   };
 }
@@ -279,8 +292,7 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -671,12 +683,16 @@ export async function createAgentStream(
                 tools: createPromptSerializationTools(ctx.tools),
               },
             );
-            if (loopRecovery.nudge) {
-              summarizedModelMessages = [
-                ...summarizedModelMessages,
-                { role: "user", content: loopRecovery.nudge },
-              ];
-            }
+            state.postSummarizationContinuationActive = true;
+            state.postSummarizationToolCallCount = 0;
+            state.postSummarizationText = "";
+            const continuationPrompt = loopRecovery.nudge
+              ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
+              : POST_SUMMARIZATION_CONTINUATION_PROMPT;
+            summarizedModelMessages = [
+              ...summarizedModelMessages,
+              { role: "user", content: continuationPrompt },
+            ];
             const preparedMessages = prepareProviderMessages(
               summarizedModelMessages,
             );
@@ -776,6 +792,10 @@ export async function createAgentStream(
 
     onChunk: async (chunk) => {
       if (chunk.chunk.type === "text-delta") {
+        if (state.postSummarizationContinuationActive) {
+          state.postSummarizationText += chunk.chunk.text;
+        }
+
         const loopDetection = assistantContentLoopMonitor.appendDelta(
           chunk.chunk.text,
         );
@@ -804,6 +824,9 @@ export async function createAgentStream(
       }
 
       if (chunk.chunk.type === "tool-call") {
+        if (state.postSummarizationContinuationActive) {
+          state.postSummarizationToolCallCount++;
+        }
         ctx.chatLogger?.recordToolCall(
           chunk.chunk.toolName,
           ctx.sandboxManager.getSandboxType(chunk.chunk.toolName),
@@ -851,6 +874,27 @@ export async function createAgentStream(
     onFinish: async (finishResult) => {
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
+      if (
+        hardReason === null &&
+        state.postSummarizationContinuationActive &&
+        isIncompletePostSummarizationStop({
+          finishReason,
+          text: state.postSummarizationText,
+          toolCallCount: state.postSummarizationToolCallCount,
+        })
+      ) {
+        state.stoppedDueToPostSummarizationIncomplete = true;
+        console.warn("[agent-stream] post-summarization continuation stalled", {
+          event: "post_summarization_continuation_incomplete",
+          chatId: ctx.chatId,
+          endpoint: ctx.endpoint,
+          mode: ctx.mode,
+          modelName,
+          requestedModel: requestedSlug,
+          textChars: state.postSummarizationText.length,
+          toolCallCount: state.postSummarizationToolCallCount,
+        });
+      }
       if (hardReason !== null) {
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
@@ -865,6 +909,8 @@ export async function createAgentStream(
         state.streamFinishReason = AGENT_RUN_SPEND_CAP_FINISH_REASON;
       } else if (state.stoppedDueToBudgetExhaustion) {
         state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
+      } else if (state.stoppedDueToPostSummarizationIncomplete) {
+        state.streamFinishReason = POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON;
       } else {
         state.streamFinishReason = finishReason;
       }
