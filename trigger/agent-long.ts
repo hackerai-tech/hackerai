@@ -131,7 +131,10 @@ import {
   BUDGET_EXHAUSTION_FINISH_REASON,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
-import { shouldRetryAgentLongWithFallback } from "@/lib/chat/agent-long-provider-retry";
+import {
+  detectAssistantContentLoopFromParts,
+  shouldRetryAgentLongWithFallback,
+} from "@/lib/chat/agent-long-provider-retry";
 import {
   omitImageViewToolResultsForProviderRetry,
   omitTrailingStepStartAssistantMessage,
@@ -1728,6 +1731,8 @@ export const agentLongTask = task({
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
                 state.stoppedDueToDoomLoop = false;
+                state.stoppedDueToAssistantContentLoop = false;
+                state.assistantContentLoopDetection = undefined;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
                 state.stoppedDueToPostSummarizationIncomplete = false;
@@ -1783,12 +1788,25 @@ export const agentLongTask = task({
                         stripAgentLongHeartbeatParts(
                           lastAssistantMessage ?? { parts: [] },
                         ).parts ?? [];
+                      const assistantContentLoopDetection =
+                        state.assistantContentLoopDetection ??
+                        (isAborted
+                          ? { detected: false as const }
+                          : detectAssistantContentLoopFromParts(
+                              lastAssistantMessageParts,
+                            ));
+                      const stoppedDueToAssistantContentLoop =
+                        state.stoppedDueToAssistantContentLoop ||
+                        (!isAborted && assistantContentLoopDetection.detected);
                       const shouldRetryWithFallback =
                         shouldRetryAgentLongWithFallback(
                           lastAssistantMessageParts,
                           {
                             hasTerminalProviderStreamError:
                               isTerminalProviderStreamError(state),
+                            stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
+                            stoppedDueToAssistantContentLoop,
+                            detectAssistantContentLoop: !isAborted,
                           },
                         );
                       const imageRecovery =
@@ -1804,9 +1822,40 @@ export const agentLongTask = task({
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults) &&
                         !isRetryWithFallback &&
-                        !isAborted &&
-                        (isAutoModel || shouldRetryWithoutImageToolResults)
+                        (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        (isAutoModel ||
+                          shouldRetryWithoutImageToolResults ||
+                          stoppedDueToAssistantContentLoop ||
+                          state.stoppedDueToDoomLoop)
                       ) {
+                        const retryReason = shouldRetryWithoutImageToolResults
+                          ? "image_tool_result_rejection"
+                          : stoppedDueToAssistantContentLoop
+                            ? "assistant_content_loop"
+                            : state.stoppedDueToDoomLoop
+                              ? "doom_loop"
+                              : "incomplete_stream";
+                        phLogger.warn(
+                          "[agent-long] Provider output triggered fallback retry",
+                          {
+                            chatId,
+                            mode,
+                            originalModel: selectedModel,
+                            requestedModelSlug: configuredModelId,
+                            fallbackModel,
+                            fallbackModelSlug: fallbackModelId,
+                            userId,
+                            subscription,
+                            retryReason,
+                            isAborted,
+                            stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
+                            assistantContentLoop:
+                              assistantContentLoopDetection.detected
+                                ? assistantContentLoopDetection
+                                : undefined,
+                            imageToolResultsOmitted: imageRecovery.omittedCount,
+                          },
+                        );
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
                         state.streamFinishReason = undefined;
@@ -1815,6 +1864,8 @@ export const agentLongTask = task({
                         state.stoppedDueToTokenExhaustion = false;
                         state.stoppedDueToElapsedTimeout = false;
                         state.stoppedDueToDoomLoop = false;
+                        state.stoppedDueToAssistantContentLoop = false;
+                        state.assistantContentLoopDetection = undefined;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
                         state.stoppedDueToPostSummarizationIncomplete = false;
