@@ -11,11 +11,35 @@ interface StepUsage {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
-  raw?: { cost?: number };
+  raw?: {
+    cost?: number;
+    cost_details?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+    costDetails?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+  };
 }
 
 const isPositiveFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
+
+const getRawModelCost = (usage: StepUsage): number | undefined => {
+  const upstreamInferenceCost =
+    usage.raw?.cost_details?.upstream_inference_cost ??
+    usage.raw?.cost_details?.upstreamInferenceCost ??
+    usage.raw?.costDetails?.upstream_inference_cost ??
+    usage.raw?.costDetails?.upstreamInferenceCost;
+
+  if (isPositiveFiniteNumber(upstreamInferenceCost)) {
+    return upstreamInferenceCost;
+  }
+
+  return usage.raw?.cost;
+};
 
 type ModelStepCost = {
   rawCost: number;
@@ -73,10 +97,10 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
-  /** Model-only cost from usage.raw.cost or authoritative provider metadata
-   * (excludes tool/sandbox spend). Used to decide whether the provider reported
-   * an authoritative model cost; if zero, fall back to token-based model cost
-   * calculation. */
+  /** Model-only cost from usage.raw.cost, OpenRouter upstream cost details, or
+   * authoritative provider metadata (excludes tool/sandbox spend). Used to
+   * decide whether the provider reported an authoritative model cost; if zero,
+   * fall back to token-based model cost calculation. */
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
@@ -112,7 +136,7 @@ export class UsageTracker {
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
-    const stepCost = usage.raw?.cost;
+    const stepCost = getRawModelCost(usage);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex = this.modelStepCosts.push({ rawCost }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
@@ -176,7 +200,8 @@ export class UsageTracker {
     accountingModel?: string,
   ): number {
     // Use authoritative provider cost only when the model itself reported one
-    // via raw.cost or OpenRouter metadata (tracked in modelProviderCost).
+    // via raw.cost, OpenRouter upstream cost details, or OpenRouter metadata
+    // (tracked in modelProviderCost).
     // providerCost also includes sandbox/tool spend and summarization cost, so
     // subtract nonModelCost to isolate the model portion.
     if (this.hasAuthoritativeModelCost) {

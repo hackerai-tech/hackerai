@@ -191,6 +191,75 @@ describe("UsageTracker", () => {
       expect(tracker.computeCostDollars("model-default")).toBe(0.05);
     });
 
+    it("should use OpenRouter upstream inference cost from raw cost details when raw cost is zero", () => {
+      tracker.accumulateStep({
+        inputTokens: 5264,
+        outputTokens: 18,
+        raw: {
+          cost: 0,
+          cost_details: {
+            upstream_inference_cost: 0.0030955,
+          },
+        },
+      });
+
+      expect(tracker.hasAuthoritativeModelCost).toBe(true);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0030955);
+      expect(tracker.computeModelCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+      expect(tracker.computeCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+    });
+
+    it("should prefer OpenRouter upstream inference cost over raw provider cost", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0.003,
+          },
+        },
+      });
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.003);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+    });
+
+    it("should fall back to raw provider cost when OpenRouter upstream inference cost is not positive", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0,
+            upstreamInferenceCost: Number.NaN,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.001);
+    });
+
+    it("should accept camelCase OpenRouter upstream inference cost from raw cost details", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0,
+          costDetails: {
+            upstreamInferenceCost: 0.002,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.002);
+    });
+
     it("should use authoritative model cost from provider metadata when raw cost is missing", () => {
       const stepCostIndex = tracker.accumulateStep({
         inputTokens: 12,

@@ -1181,6 +1181,61 @@ describe("createChatLogger OpenRouter metadata", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("uses OpenRouter upstream inference cost from raw usage cost details in wide events", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_usage_cost_details",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({
+        mode: "ask",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          notesEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        {
+          inputTokens: 5264,
+          outputTokens: 18,
+          raw: {
+            cost: 0,
+            cost_details: {
+              upstream_inference_cost: 0.0030955,
+            },
+          },
+        },
+        {
+          provider_name: "Google",
+          openrouter_generation_id: "gen-123",
+          openrouter_is_byok: true,
+        },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.usage.total_cost).toBeCloseTo(0.0030955);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger provider stream timeout", () => {
