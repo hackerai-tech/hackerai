@@ -107,6 +107,13 @@ describe("shouldRetryAgentLongWithFallback", () => {
     expect(
       shouldRetryAgentLongWithFallback(
         [{ type: "step-start" }, { type: "text", text: repeatedLoop }],
+        { hasTerminalProviderStreamError: false },
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [{ type: "step-start" }, { type: "text", text: repeatedLoop }],
         {
           hasTerminalProviderStreamError: false,
           detectAssistantContentLoop: false,
