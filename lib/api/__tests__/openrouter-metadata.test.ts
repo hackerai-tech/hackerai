@@ -72,6 +72,7 @@ describe("OpenRouter metadata extraction", () => {
             is_byok: true,
             router: "openrouter/auto",
             upstream_id: "chatcmpl-upstream",
+            upstream_inference_cost: 0.00016,
           },
         }),
       } as Response;
@@ -90,6 +91,7 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_is_byok: true,
       openrouter_router: "openrouter/auto",
       openrouter_upstream_id: "chatcmpl-upstream",
+      openrouter_upstream_inference_cost: 0.00016,
     });
 
     const [url, init] = fetchImpl.mock.calls[0];
@@ -107,6 +109,7 @@ describe("OpenRouter metadata extraction", () => {
       providerMetadata: {
         openrouter: {
           provider: "Google Vertex",
+          upstreamInferenceCost: 0.00016,
           usage: {
             promptTokens: 10,
             completionTokens: 1,
@@ -119,6 +122,25 @@ describe("OpenRouter metadata extraction", () => {
     expect(metadata).toEqual({
       provider_name: "Google Vertex",
       openrouter_generation_id: "gen-sdk-provider",
+      openrouter_upstream_inference_cost: 0.00016,
+    });
+  });
+
+  it("extracts camelCase upstream cost from direct OpenRouter SDK metadata", () => {
+    const metadata = extractOpenRouterMetadata({
+      response: {
+        id: "gen-sdk-cost-only",
+      },
+      providerMetadata: {
+        openrouter: {
+          upstreamInferenceCost: 0.00016,
+        },
+      },
+    });
+
+    expect(metadata).toEqual({
+      openrouter_generation_id: "gen-sdk-cost-only",
+      openrouter_upstream_inference_cost: 0.00016,
     });
   });
 
@@ -134,6 +156,7 @@ describe("OpenRouter metadata extraction", () => {
         provider_name: "Google",
         openrouter_request_id: "req-123",
         openrouter_router: "openrouter/auto",
+        openrouter_upstream_inference_cost: 0.00016,
       },
     );
 
@@ -143,6 +166,32 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_strategy: "direct",
       openrouter_request_id: "req-123",
       openrouter_router: "openrouter/auto",
+      openrouter_upstream_inference_cost: 0.00016,
+    });
+  });
+
+  it("ignores non-positive upstream inference costs", async () => {
+    const fetchImpl = jest.fn(async () => {
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            provider_name: "Anthropic",
+            upstream_inference_cost: 0,
+          },
+        }),
+      } as Response;
+    });
+
+    const metadata = await fetchOpenRouterGenerationMetadata("gen-zero-cost", {
+      apiKey: "sk-test",
+      fetchImpl,
+      timeoutMs: 100,
+    });
+
+    expect(metadata).toEqual({
+      provider_name: "Anthropic",
+      openrouter_generation_id: "gen-zero-cost",
     });
   });
 

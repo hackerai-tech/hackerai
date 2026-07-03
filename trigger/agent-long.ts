@@ -1471,10 +1471,9 @@ export const agentLongTask = task({
                 };
                 let usageCostRecord =
                   usageTracker.createUsageCostRecord(usageRecordArgs);
-                const providerCost =
-                  usageTracker.modelProviderCost > 0
-                    ? usageTracker.providerCost
-                    : undefined;
+                const providerCost = usageTracker.hasAuthoritativeModelCost
+                  ? usageTracker.providerCost
+                  : undefined;
                 if (subscription === "free") {
                   await recordFreeMonthlyCost(
                     freeUsageSubject,

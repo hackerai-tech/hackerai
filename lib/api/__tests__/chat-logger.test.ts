@@ -1156,6 +1156,7 @@ describe("createChatLogger OpenRouter metadata", () => {
           openrouter_generation_id: "gen-123",
           openrouter_request_id: "req-123",
           openrouter_strategy: "direct",
+          openrouter_upstream_inference_cost: 0.00016,
         },
       );
       chatLogger.emitSuccess({
@@ -1173,6 +1174,7 @@ describe("createChatLogger OpenRouter metadata", () => {
         openrouter_generation_id: "gen-123",
         openrouter_request_id: "req-123",
         openrouter_strategy: "direct",
+        openrouter_upstream_inference_cost: 0.00016,
       });
       expect(wideEvent.model).not.toHaveProperty("provider_gateway");
     } finally {

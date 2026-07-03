@@ -71,6 +71,7 @@ import {
   extractOpenRouterMetadata,
   fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
 } from "@/lib/api/openrouter-metadata";
 import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
 import type { UsageTracker } from "@/lib/usage-tracker";
@@ -245,8 +246,7 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -355,6 +355,38 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const stepUsageCostIndexes: Array<number | undefined> = [];
+  const generationMetadataById = new Map<
+    string,
+    Promise<OpenRouterModelMetadata | undefined>
+  >();
+  const fetchGenerationMetadataOnce = (
+    generationId: string,
+  ): Promise<OpenRouterModelMetadata | undefined> => {
+    const existing = generationMetadataById.get(generationId);
+    if (existing) return existing;
+
+    const pending = fetchOpenRouterGenerationMetadata(generationId);
+    generationMetadataById.set(generationId, pending);
+    return pending;
+  };
+  const hydrateOpenRouterMetadata = async (
+    metadata: OpenRouterModelMetadata,
+  ): Promise<OpenRouterModelMetadata> => {
+    if (
+      !metadata.openrouter_generation_id ||
+      (metadata.provider_name &&
+        metadata.openrouter_upstream_inference_cost !== undefined)
+    ) {
+      return metadata;
+    }
+
+    return mergeOpenRouterMetadata(
+      metadata,
+      await fetchGenerationMetadataOnce(metadata.openrouter_generation_id),
+    );
+  };
+
   const getActiveToolsWithExclusions = async (
     excludedToolNames: ReadonlySet<string> = new Set(),
   ): Promise<Array<keyof typeof ctx.tools> | undefined> => {
@@ -710,13 +742,24 @@ export async function createAgentStream(
       }
     },
 
-    onStepFinish: async ({ usage }) => {
+    onStepFinish: async ({ usage, response, providerMetadata }) => {
+      let stepUsageCostIndex: number | undefined;
       if (usage) {
-        ctx.usageTracker.accumulateStep(
+        stepUsageCostIndex = ctx.usageTracker.accumulateStep(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
       }
+      stepUsageCostIndexes.push(stepUsageCostIndex);
+
+      const stepOpenRouterMetadata = extractOpenRouterMetadata({
+        response,
+        providerMetadata,
+      });
+      ctx.usageTracker.setAuthoritativeModelCostForStep(
+        stepUsageCostIndex,
+        stepOpenRouterMetadata.openrouter_upstream_inference_cost,
+      );
 
       const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
         ctx.usageTracker.computeCostDollars(modelName),
@@ -759,34 +802,44 @@ export async function createAgentStream(
 
       const finishMetadata = finishResult as {
         providerMetadata?: unknown;
-        steps?: Array<{ providerMetadata?: unknown }>;
+        steps?: Array<{
+          response?: typeof response;
+          providerMetadata?: unknown;
+        }>;
       };
-      const stepProviderMetadata = Array.isArray(finishMetadata.steps)
-        ? finishMetadata.steps.at(-1)?.providerMetadata
-        : undefined;
+      const stepOpenRouterMetadatas = Array.isArray(finishMetadata.steps)
+        ? await Promise.all(
+            finishMetadata.steps.map((step) =>
+              hydrateOpenRouterMetadata(
+                extractOpenRouterMetadata({
+                  response: step.response,
+                  providerMetadata: step.providerMetadata,
+                }),
+              ),
+            ),
+          )
+        : [];
+      for (const [index, metadata] of stepOpenRouterMetadatas.entries()) {
+        ctx.usageTracker.setAuthoritativeModelCostForStep(
+          stepUsageCostIndexes[index],
+          metadata.openrouter_upstream_inference_cost,
+        );
+      }
       const finishOpenRouterMetadata = extractOpenRouterMetadata({
         response,
         providerMetadata: finishMetadata.providerMetadata,
       });
-      const stepOpenRouterMetadata = extractOpenRouterMetadata({
-        providerMetadata: stepProviderMetadata,
-      });
-      let openRouterMetadata = mergeOpenRouterMetadata(
-        finishOpenRouterMetadata,
-        stepOpenRouterMetadata,
+      const openRouterMetadata = await hydrateOpenRouterMetadata(
+        mergeOpenRouterMetadata(
+          finishOpenRouterMetadata,
+          stepOpenRouterMetadatas.at(-1),
+        ),
       );
-      if (
-        ctx.chatLogger &&
-        !openRouterMetadata.provider_name &&
-        openRouterMetadata.openrouter_generation_id
-      ) {
-        openRouterMetadata = mergeOpenRouterMetadata(
-          openRouterMetadata,
-          await fetchOpenRouterGenerationMetadata(
-            openRouterMetadata.openrouter_generation_id,
-          ),
-        );
-      }
+
+      ctx.usageTracker.setAuthoritativeModelCostForStep(
+        stepUsageCostIndexes.at(-1),
+        openRouterMetadata.openrouter_upstream_inference_cost,
+      );
 
       const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,

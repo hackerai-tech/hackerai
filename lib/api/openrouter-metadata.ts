@@ -15,6 +15,7 @@ export type OpenRouterModelMetadata = {
   openrouter_region?: string;
   openrouter_attempt?: number;
   openrouter_upstream_id?: string;
+  openrouter_upstream_inference_cost?: number;
   openrouter_selected_model?: string;
   openrouter_attempts?: OpenRouterAttemptMetadata[];
 };
@@ -37,8 +38,19 @@ const pickString = (value: unknown): string | undefined =>
 const pickNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
+const pickPositiveNumber = (value: unknown): number | undefined => {
+  const number = pickNumber(value);
+  return number !== undefined && number > 0 ? number : undefined;
+};
+
 const pickBoolean = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
+
+const pickUpstreamInferenceCost = (
+  metadata: Record<string, unknown>,
+): number | undefined =>
+  pickPositiveNumber(metadata.upstream_inference_cost) ??
+  pickPositiveNumber(metadata.upstreamInferenceCost);
 
 const normalizeHeaders = (headers: unknown): Record<string, string> => {
   if (!headers) return {};
@@ -106,6 +118,7 @@ const findOpenRouterMetadata = (source: unknown): Record<string, unknown> => {
     typeof openrouter.provider === "string" ||
     typeof openrouter.requested === "string" ||
     typeof openrouter.strategy === "string" ||
+    pickUpstreamInferenceCost(openrouter) !== undefined ||
     isRecord(openrouter.endpoints) ||
     Array.isArray(openrouter.attempts)
   ) {
@@ -177,6 +190,7 @@ const metadataFromRouterPayload = (
     openrouter_strategy: pickString(metadata.strategy),
     openrouter_region: pickString(metadata.region),
     openrouter_attempt: pickNumber(metadata.attempt),
+    openrouter_upstream_inference_cost: pickUpstreamInferenceCost(metadata),
     openrouter_selected_model:
       pickString(selectedEndpoint?.model) ??
       pickString(successfulAttempt?.model),
@@ -192,6 +206,7 @@ const metadataFromGenerationPayload = (
   openrouter_is_byok: pickBoolean(data.is_byok),
   openrouter_router: pickString(data.router),
   openrouter_upstream_id: pickString(data.upstream_id),
+  openrouter_upstream_inference_cost: pickUpstreamInferenceCost(data),
 });
 
 export function extractOpenRouterMetadata(args: {
@@ -223,6 +238,9 @@ export function mergeOpenRouterMetadata(
     openrouter_router: primary.openrouter_router ?? secondary.openrouter_router,
     openrouter_upstream_id:
       primary.openrouter_upstream_id ?? secondary.openrouter_upstream_id,
+    openrouter_upstream_inference_cost:
+      primary.openrouter_upstream_inference_cost ??
+      secondary.openrouter_upstream_inference_cost,
   });
 }
 
