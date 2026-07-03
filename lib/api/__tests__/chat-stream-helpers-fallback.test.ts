@@ -441,6 +441,13 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "agent",
       }),
     ).toBe("model-opus-4.6");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-opus-4.6",
+        responseModel: "anthropic/claude-4.6-opus-20261231",
+        mode: "agent",
+      }),
+    ).toBe("model-opus-4.6");
   });
 
   it("maps dated Sonnet provider response slugs back to the local cost key", () => {
@@ -448,6 +455,13 @@ describe("resolveServedModelForCostAccounting", () => {
       resolveServedModelForCostAccounting({
         modelName: "model-sonnet-4.6",
         responseModel: "anthropic/claude-4.6-sonnet-20260217",
+        mode: "ask",
+      }),
+    ).toBe("model-sonnet-4.6");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-sonnet-4.6",
+        responseModel: "anthropic/claude-4.6-sonnet-20261231",
         mode: "ask",
       }),
     ).toBe("model-sonnet-4.6");
