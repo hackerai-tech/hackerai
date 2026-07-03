@@ -46,6 +46,10 @@ import {
   generateDoomLoopNudge,
 } from "@/lib/chat/doom-loop-detection";
 import {
+  createAssistantContentLoopMonitor,
+  type AssistantContentLoopDetection,
+} from "@/lib/chat/agent-long-provider-retry";
+import {
   filterEmptyAssistantMessages,
   repairAnthropicModelMessagesWithTelemetry,
   pruneToolOutputs,
@@ -113,6 +117,8 @@ export type AgentStreamState = {
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
   stoppedDueToElapsedTimeout: boolean;
   stoppedDueToDoomLoop: boolean;
+  stoppedDueToAssistantContentLoop: boolean;
+  assistantContentLoopDetection: AssistantContentLoopDetection | undefined;
   stoppedDueToBudgetExhaustion: boolean;
   stoppedDueToAgentRunSpendCap: boolean;
   budgetAbortDetails: BudgetAbortDetails | undefined;
@@ -134,6 +140,8 @@ export function initAgentStreamState(
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
+    stoppedDueToAssistantContentLoop: false,
+    assistantContentLoopDetection: undefined,
     stoppedDueToBudgetExhaustion: false,
     stoppedDueToAgentRunSpendCap: false,
     budgetAbortDetails: undefined,
@@ -183,6 +191,32 @@ const addContentPartCounts = (
 const contentHasToolCall = (content: unknown): boolean =>
   Array.isArray(content) &&
   content.some((part) => isRecord(part) && part.type === "tool-call");
+
+const combineAbortSignals = (signals: AbortSignal[]): AbortSignal => {
+  const abortSignalAny = (
+    AbortSignal as typeof AbortSignal & {
+      any?: (signals: AbortSignal[]) => AbortSignal;
+    }
+  ).any;
+  if (typeof abortSignalAny === "function") {
+    return abortSignalAny(signals);
+  }
+
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+
+  for (const signal of signals) {
+    if (signal.aborted) {
+      abort();
+      break;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+  }
+
+  return controller.signal;
+};
 
 const summarizeProviderOptions = (
   providerOptions: unknown,
@@ -245,7 +279,8 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -391,6 +426,44 @@ export async function createAgentStream(
   > => getActiveToolsWithExclusions();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
+  const assistantContentLoopAbortController = new AbortController();
+  const abortSignal = combineAbortSignals([
+    ctx.abortController.signal,
+    assistantContentLoopAbortController.signal,
+  ]);
+  type AbortStepLike = {
+    usage?: unknown;
+    response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
+      modelId?: string;
+    };
+    providerMetadata?: unknown;
+  };
+  const recordAssistantContentLoopAbortState = (
+    steps?: readonly AbortStepLike[],
+  ) => {
+    if (!state.stoppedDueToAssistantContentLoop) return;
+
+    const lastStep = steps?.at(-1);
+    state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
+    if (lastStep?.usage) {
+      state.streamUsage = lastStep.usage as Record<string, unknown>;
+    }
+    state.responseModel = lastStep?.response?.modelId ?? state.responseModel;
+    state.responseModel ??= requestedSlug;
+
+    const openRouterMetadata = lastStep
+      ? extractOpenRouterMetadata({
+          response: lastStep.response,
+          providerMetadata: lastStep.providerMetadata,
+        })
+      : undefined;
+    ctx.chatLogger?.setStreamResponse(
+      state.responseModel,
+      state.streamUsage,
+      openRouterMetadata,
+    );
+  };
 
   type DoomLoopRecovery = {
     nudge?: string;
@@ -534,7 +607,7 @@ export async function createAgentStream(
     messages: initialModelMessages,
     tools: ctx.tools,
     activeTools: initialActiveTools,
-    abortSignal: ctx.abortController.signal,
+    abortSignal,
     providerOptions: initialProviderOptions,
 
     prepareStep: async ({ steps, messages }) => {
@@ -702,6 +775,34 @@ export async function createAgentStream(
     ],
 
     onChunk: async (chunk) => {
+      if (chunk.chunk.type === "text-delta") {
+        const loopDetection = assistantContentLoopMonitor.appendDelta(
+          chunk.chunk.text,
+        );
+        if (
+          loopDetection.detected &&
+          !state.stoppedDueToAssistantContentLoop &&
+          !ctx.abortController.signal.aborted
+        ) {
+          state.stoppedDueToAssistantContentLoop = true;
+          state.assistantContentLoopDetection = loopDetection;
+          console.warn("[agent-stream] assistant content loop detected", {
+            event: "assistant_content_loop_detected",
+            chatId: ctx.chatId,
+            endpoint: ctx.endpoint,
+            mode: ctx.mode,
+            modelName,
+            requestedModel: requestedSlug,
+            responseModel: state.responseModel,
+            reason: loopDetection.reason,
+            repeatedText: loopDetection.repeatedText,
+            repeatCount: loopDetection.repeatCount,
+          });
+          recordAssistantContentLoopAbortState();
+          assistantContentLoopAbortController.abort();
+        }
+      }
+
       if (chunk.chunk.type === "tool-call") {
         ctx.chatLogger?.recordToolCall(
           chunk.chunk.toolName,
@@ -757,6 +858,8 @@ export async function createAgentStream(
       } else if (state.stoppedDueToTokenExhaustion) {
         state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
       } else if (state.stoppedDueToDoomLoop) {
+        state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
+      } else if (state.stoppedDueToAssistantContentLoop) {
         state.streamFinishReason = DOOM_LOOP_FINISH_REASON;
       } else if (state.stoppedDueToAgentRunSpendCap) {
         state.streamFinishReason = AGENT_RUN_SPEND_CAP_FINISH_REASON;
@@ -879,7 +982,8 @@ export async function createAgentStream(
         );
     },
 
-    onAbort: async () => {
+    onAbort: async ({ steps }) => {
+      recordAssistantContentLoopAbortState(steps);
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>
