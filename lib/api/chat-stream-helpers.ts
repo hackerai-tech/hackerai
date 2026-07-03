@@ -625,6 +625,13 @@ export function getFallbackSlugs(
   );
 }
 
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+  "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "anthropic/claude-4.6-opus-20260205": "model-opus-4.6",
+  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
+  "anthropic/claude-4.6-sonnet-20260217": "model-sonnet-4.6",
+};
+
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
@@ -646,7 +653,11 @@ export function resolveServedModelForCostAccounting({
     (key) => resolveSlug(key) === responseModel,
   );
 
-  return matchedKey ?? responseModel;
+  return (
+    matchedKey ??
+    OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel] ??
+    responseModel
+  );
 }
 
 /**

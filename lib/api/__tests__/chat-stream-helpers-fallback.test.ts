@@ -433,6 +433,26 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe("fallback-grok-4.3");
   });
 
+  it("maps dated Opus provider response slugs back to the local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-opus-4.6",
+        responseModel: "anthropic/claude-4.6-opus-20260205",
+        mode: "agent",
+      }),
+    ).toBe("model-opus-4.6");
+  });
+
+  it("maps dated Sonnet provider response slugs back to the local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-sonnet-4.6",
+        responseModel: "anthropic/claude-4.6-sonnet-20260217",
+        mode: "ask",
+      }),
+    ).toBe("model-sonnet-4.6");
+  });
+
   it("falls back to the active model key when provider metadata is absent", () => {
     expect(
       resolveServedModelForCostAccounting({
