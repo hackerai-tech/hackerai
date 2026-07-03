@@ -30,7 +30,5 @@ export const getProviderUsageRawModelCost = (
   if (upstreamInferenceCost !== undefined) return upstreamInferenceCost;
 
   if (!isRecord(raw)) return undefined;
-  return typeof raw.cost === "number" && Number.isFinite(raw.cost)
-    ? raw.cost
-    : undefined;
+  return isPositiveFiniteNumber(raw.cost) ? raw.cost : undefined;
 };
