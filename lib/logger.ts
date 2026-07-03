@@ -9,6 +9,7 @@
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -108,6 +109,7 @@ export interface ChatWideEvent {
     openrouter_region?: string;
     openrouter_attempt?: number;
     openrouter_upstream_id?: string;
+    openrouter_upstream_inference_cost?: number;
     openrouter_selected_model?: string;
     openrouter_attempts?: OpenRouterModelMetadata["openrouter_attempts"];
     fallback_triggered?: boolean;
@@ -119,9 +121,7 @@ export interface ChatWideEvent {
       count: number;
       last_action: "appended_continue" | "trimmed";
       last_reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
+        "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
       last_content_types?: string[];
     };
   };
@@ -398,9 +398,7 @@ export class WideEventBuilder {
   recordAnthropicPromptRepair(repair: {
     action: "appended_continue" | "trimmed";
     reason:
-      | "useful_assistant_tail"
-      | "no_useful_content"
-      | "dangling_tool_call";
+      "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
     trailingAssistantContentTypes?: string[];
   }): this {
     this.anthropicPromptRepairCount += 1;
@@ -492,8 +490,7 @@ export class WideEventBuilder {
    */
   setUsage(usage: Record<string, unknown> | undefined): this {
     if (usage) {
-      // Extract provider cost if available (e.g., from OpenRouter)
-      const rawCost = (usage as { raw?: { cost?: number } }).raw?.cost;
+      const providerCost = getProviderUsageRawModelCost(usage.raw);
 
       this.event.usage = {
         input_tokens: usage.inputTokens as number | undefined,
@@ -504,9 +501,8 @@ export class WideEventBuilder {
         reasoning_tokens: (usage.reasoningTokens as number) || undefined,
         cache_read_tokens: usage.cacheReadInputTokens as number | undefined,
         cache_write_tokens: usage.cacheCreationInputTokens as
-          | number
-          | undefined,
-        total_cost: rawCost,
+          number | undefined,
+        total_cost: providerCost,
       };
     }
     return this;

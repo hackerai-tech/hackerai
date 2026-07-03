@@ -1,4 +1,8 @@
 import { logUsageRecord } from "@/lib/db/actions";
+import {
+  getProviderUsageRawModelCost,
+  isPositiveFiniteNumber,
+} from "@/lib/provider-usage-cost";
 import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
@@ -11,8 +15,23 @@ interface StepUsage {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
-  raw?: { cost?: number };
+  raw?: {
+    cost?: number;
+    cost_details?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+    costDetails?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+  };
 }
+
+type ModelStepCost = {
+  rawCost: number;
+  authoritativeCost?: number;
+};
 
 export type UsageBillingType = "included" | "extra" | "mixed";
 
@@ -65,10 +84,12 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
-  /** Model-only cost from per-step usage.raw.cost (excludes tool/sandbox spend). Used to
-   * decide whether the provider reported an authoritative model cost; if zero, fall back
-   * to token-based model cost calculation. */
+  /** Model-only cost from usage.raw.cost, OpenRouter upstream cost details, or
+   * authoritative provider metadata (excludes tool/sandbox spend). Used to
+   * decide whether the provider reported an authoritative model cost; if zero,
+   * fall back to token-based model cost calculation. */
   modelProviderCost = 0;
+  private modelStepCosts: ModelStepCost[] = [];
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
@@ -92,20 +113,50 @@ export class UsageTracker {
     this.lastStepInputTokens = 0;
     this.cacheReadTokens = 0;
     this.cacheWriteTokens = 0;
+    this.modelStepCosts = [];
   }
 
-  accumulateStep(usage: StepUsage) {
+  accumulateStep(usage: StepUsage): number {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
     this.totalTokens += usage.totalTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
-    const stepCost = usage.raw?.cost;
-    if (stepCost) {
+    const stepCost = getProviderUsageRawModelCost(usage.raw);
+    const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
+    const stepCostIndex = this.modelStepCosts.push({ rawCost }) - 1;
+    if (isPositiveFiniteNumber(stepCost)) {
       this.providerCost += stepCost;
       this.modelProviderCost += stepCost;
     }
+    return stepCostIndex;
+  }
+
+  setAuthoritativeModelCostForStep(
+    stepCostIndex: number | undefined,
+    costDollars: number | undefined,
+  ) {
+    if (!isPositiveFiniteNumber(costDollars) || stepCostIndex === undefined) {
+      return;
+    }
+
+    const stepCost = this.modelStepCosts[stepCostIndex];
+    if (!stepCost) return;
+
+    const previousCost = stepCost.authoritativeCost ?? stepCost.rawCost;
+    stepCost.authoritativeCost = costDollars;
+    this.providerCost += costDollars - previousCost;
+    this.modelProviderCost += costDollars - previousCost;
+  }
+
+  get hasAuthoritativeModelCost(): boolean {
+    return (
+      this.modelStepCosts.length > 0 &&
+      this.modelStepCosts.every((stepCost) =>
+        isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
+      )
+    );
   }
 
   /** Output tokens from the streamed response only (excludes summarization) */
@@ -135,11 +186,12 @@ export class UsageTracker {
     selectedModel: string,
     accountingModel?: string,
   ): number {
-    // Use authoritative per-step provider cost only when the model itself
-    // reported one via raw.cost (tracked in modelProviderCost). providerCost
-    // also includes sandbox/tool spend and summarization cost, so subtract
-    // nonModelCost to isolate the model portion.
-    if (this.modelProviderCost > 0) {
+    // Use authoritative provider cost only when the model itself reported one
+    // via raw.cost, OpenRouter upstream cost details, or OpenRouter metadata
+    // (tracked in modelProviderCost).
+    // providerCost also includes sandbox/tool spend and summarization cost, so
+    // subtract nonModelCost to isolate the model portion.
+    if (this.hasAuthoritativeModelCost) {
       return this.providerCost - this.nonModelCost;
     }
     const modelForEstimate = accountingModel ?? selectedModel;
@@ -152,10 +204,11 @@ export class UsageTracker {
 
   computeCostDollars(selectedModel: string, accountingModel?: string): number {
     // Mirror deductUsage's gate: providerCost is only authoritative for the
-    // total when modelProviderCost > 0. After resetModelLeg() (fallback retry)
-    // providerCost can be positive from nonModelCost alone, which would
-    // underreport the fallback's model tokens if we used it directly.
-    if (this.modelProviderCost > 0) return this.providerCost;
+    // total when every model step has authoritative cost. After resetModelLeg()
+    // (fallback retry), providerCost can be positive from nonModelCost alone,
+    // which would underreport the fallback's model tokens if we used it
+    // directly.
+    if (this.hasAuthoritativeModelCost) return this.providerCost;
     return (
       this.computeModelCostDollars(selectedModel, accountingModel) +
       this.nonModelCost
@@ -326,8 +379,9 @@ export class UsageTracker {
       costDollars,
       modelCostDollars,
       nonModelCostDollars: this.nonModelCost,
-      costSource:
-        this.modelProviderCost > 0 ? "provider" : "raw_token_estimate",
+      costSource: this.hasAuthoritativeModelCost
+        ? "provider"
+        : "raw_token_estimate",
     };
   }
 

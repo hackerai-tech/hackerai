@@ -245,7 +245,7 @@ describe("selectModel", () => {
     });
   });
 
-  // Agent mode — Standard resolves to MiniMax instead of Gemini
+  // Agent mode — Standard resolves to MiniMax.
   describe("tier override in agent mode", () => {
     it("should map HackerAI Standard to MiniMax M3 in agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
@@ -300,11 +300,11 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image -> Gemini", () => {
+    it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
-    it("should treat 'auto' as no override in ask mode with PDF -> Gemini", () => {
+    it("should treat 'auto' as no override in ask mode with PDF -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe("ask-model");
     });
   });
@@ -541,7 +541,7 @@ describe("fixIncompleteMessageParts", () => {
     expect(result[0].errorText).toBe("Something went wrong");
   });
 
-  // Trailing incomplete step trimming (Gemini "must include at least one parts field" fix)
+  // Trailing incomplete step trimming ("must include at least one parts field" fix)
   it("should trim trailing step with only reasoning (no text/tool content)", () => {
     const parts = [
       { type: "step-start" },

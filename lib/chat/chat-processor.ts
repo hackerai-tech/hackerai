@@ -357,8 +357,8 @@ export function fixIncompleteMessageParts(
   // When a stream is interrupted mid-reasoning (before producing text or tool calls),
   // the message ends with [step-start, reasoning, ...] but no text/tool content for that step.
   // convertToModelMessages() splits by step boundaries, creating an assistant model message
-  // with only reasoning content — which Gemini rejects with
-  // "must include at least one parts field" error.
+  // with only reasoning content, which providers can reject as an empty
+  // assistant message.
   let lastStepStartIdx = -1;
   for (let i = filteredParts.length - 1; i >= 0; i--) {
     if (filteredParts[i].type === "step-start") {
@@ -375,7 +375,7 @@ export function fixIncompleteMessageParts(
         if (part.type?.startsWith("tool-") || part.type === "dynamic-tool")
           return true;
         if (part.type === "file") return true;
-        // reasoning and step-start alone are not content for Gemini
+        // reasoning and step-start alone are not provider-visible content
         return false;
       });
 
@@ -591,8 +591,8 @@ export function limitImageParts(
  * Anthropic models require valid signatures on thinking blocks, and signatures
  * from other models (or different Anthropic models) cause "Invalid signature in
  * thinking block" 400 errors. Stripping providerMetadata removes these signatures.
- * Only applied for Anthropic models — other providers (e.g., Gemini) need
- * providerMetadata/thought_signature for tool calling to work.
+ * Only applied for Anthropic models; other providers may need providerMetadata
+ * for tool calling to work.
  */
 function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => {
@@ -662,12 +662,12 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   allowLocalDesktopFiles?: boolean;
 }) {
-  const messagesWithoutOpenRouterReasoning =
+  const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
 
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts =
-    messagesWithoutOpenRouterReasoning.map(filterUIOnlyParts);
+    messagesWithoutOpenRouterReasoningMetadata.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
@@ -693,12 +693,11 @@ export async function processChatMessages({
   const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithUrls);
 
   // Filter out messages with empty parts or parts without meaningful content
-  // This prevents "must include at least one parts field" errors from providers like Gemini
+  // This prevents provider errors for assistant messages with no visible content.
   const messagesWithContent = messagesWithFixedTools.filter((msg) => {
     if (!msg.parts || msg.parts.length === 0) return false;
 
-    // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start
-    // Gemini specifically requires text or tool content, reasoning alone causes errors
+    // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start.
     if (msg.role === "assistant") {
       return msg.parts.some((part: any) => {
         // Text parts need actual text content
@@ -743,7 +742,7 @@ export async function processChatMessages({
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
   // Anthropic requires valid signatures on thinking blocks, and signatures from other
   // models (or different Anthropic models) cause "Invalid signature in thinking block"
-  // 400 errors. Other providers (e.g., Gemini) need providerMetadata for tool calling,
+  // 400 errors. Other providers may need providerMetadata for tool calling,
   // so we only strip it when targeting Anthropic.
   const sanitizedMessages = isAnthropicModel(selectedModel)
     ? stripProviderMetadata(messagesWithoutDuplicates)

@@ -274,7 +274,7 @@ export function isXaiSafetyError(error: unknown): boolean {
 
 /**
  * Check if an error is a provider API error that should trigger fallback
- * Specifically targets Google/Gemini INVALID_ARGUMENT errors
+ * Specifically targets provider-side invalid argument errors before streaming.
  */
 export function isProviderApiError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -489,6 +489,8 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-kimi-k2.7-code": ["fallback-grok-4.3"],
   "model-kimi-k2.6": ["fallback-grok-4.3"],
 };
@@ -625,6 +627,28 @@ export function getFallbackSlugs(
   );
 }
 
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+  "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
+  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+};
+
+function resolveOpenRouterResponseModelCostKey(
+  responseModel: string,
+): ModelName | undefined {
+  const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
+  if (exactKey) return exactKey;
+  // Scope Claude response aliases to the priced generation. Families like
+  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
+    return "model-opus-4.6";
+  }
+  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
+    return "model-sonnet-4.6";
+  }
+  return undefined;
+}
+
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
@@ -646,7 +670,11 @@ export function resolveServedModelForCostAccounting({
     (key) => resolveSlug(key) === responseModel,
   );
 
-  return matchedKey ?? responseModel;
+  return (
+    matchedKey ??
+    resolveOpenRouterResponseModelCostKey(responseModel) ??
+    responseModel
+  );
 }
 
 /**

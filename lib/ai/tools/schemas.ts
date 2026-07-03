@@ -265,6 +265,35 @@ ${instructionsDescription}`,
   });
 };
 
+export const todoWriteToolInputSchema = z.object({
+  merge: z
+    .boolean()
+    .describe(
+      "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, the new todos will replace the existing todos.",
+    ),
+  todos: z
+    .array(
+      z.object({
+        id: z.string().describe("Unique identifier for the todo item"),
+        content: z
+          .string()
+          .refine((value) => value.trim().length > 0, {
+            message: "Todo content cannot be blank",
+          })
+          .optional()
+          .describe("The description/content of the todo item"),
+        status: z
+          .enum(["pending", "in_progress", "completed", "cancelled"])
+          .optional()
+          .describe("The current status of the todo item"),
+      }),
+    )
+    .min(1)
+    .describe(
+      "Array of todo items to write to the workspace. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status.",
+    ),
+});
+
 export const todoWriteTool = tool({
   description: `Use this tool to create and manage a structured task list for your penetration testing session. This helps track progress, organize complex security assessments, and ensure thorough coverage.
 
@@ -390,35 +419,10 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Batch todo updates with other tool calls for efficiency
 
 When in doubt, use this tool. Systematic task management ensures comprehensive security coverage and prevents missed vulnerabilities.`,
-  inputSchema: z.object({
-    merge: z
-      .boolean()
-      .describe(
-        "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, the new todos will replace the existing todos.",
-      ),
-    todos: z
-      .array(
-        z.object({
-          id: z.string().describe("Unique identifier for the todo item"),
-          content: z
-            .string()
-            .refine((value) => value.trim().length > 0, {
-              message: "Todo content cannot be blank",
-            })
-            .optional()
-            .describe("The description/content of the todo item"),
-          status: z
-            .enum(["pending", "in_progress", "completed", "cancelled"])
-            .optional()
-            .describe("The current status of the todo item"),
-        }),
-      )
-      .min(1)
-      .describe(
-        "Array of todo items to write to the workspace. For merge=false, every item must include content and status and replaces the assistant-generated plan while preserving manually created todos. For merge=true, existing items may be patched with partial updates, but new items must include content and status.",
-      ),
-  }),
+  inputSchema: todoWriteToolInputSchema,
 });
+
+export type TodoWriteToolInput = z.infer<typeof todoWriteToolInputSchema>;
 
 export const PERPLEXITY_QUERY_MAX_LENGTH = 8192;
 const webSearchQuerySchema = z
@@ -426,6 +430,21 @@ const webSearchQuerySchema = z
   .trim()
   .min(1)
   .max(PERPLEXITY_QUERY_MAX_LENGTH);
+
+export const webSearchToolInputSchema = z.object({
+  queries: z
+    .array(webSearchQuerySchema)
+    .min(1)
+    .max(3)
+    .describe(
+      "MAXIMUM 3 non-empty query variants (1-3 items only). Express the same search intent with different wording.",
+    ),
+  time: z
+    .enum(["all", "past_day", "past_week", "past_month", "past_year"])
+    .optional()
+    .describe("Optional time filter to limit results to a recent time range"),
+  brief: toolBriefSchema,
+});
 
 export const webSearchTool = tool({
   description: `Search for information across various sources.
@@ -442,20 +461,14 @@ export const webSearchTool = tool({
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
 - For commands/installations, prioritize Kali Linux compatibility using apt or pre-installed tools
 </instructions>`,
-  inputSchema: z.object({
-    queries: z
-      .array(webSearchQuerySchema)
-      .min(1)
-      .max(3)
-      .describe(
-        "MAXIMUM 3 non-empty query variants (1-3 items only). Express the same search intent with different wording.",
-      ),
-    time: z
-      .enum(["all", "past_day", "past_week", "past_month", "past_year"])
-      .optional()
-      .describe("Optional time filter to limit results to a recent time range"),
-    brief: toolBriefSchema,
-  }),
+  inputSchema: webSearchToolInputSchema,
+});
+
+export type WebSearchToolInput = z.infer<typeof webSearchToolInputSchema>;
+
+export const openUrlToolInputSchema = z.object({
+  url: z.string().describe("The URL to open and retrieve content from"),
+  brief: toolBriefSchema,
 });
 
 export const openUrlTool = tool({
@@ -467,11 +480,10 @@ export const openUrlTool = tool({
 - Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
 </instructions>`,
-  inputSchema: z.object({
-    url: z.string().describe("The URL to open and retrieve content from"),
-    brief: toolBriefSchema,
-  }),
+  inputSchema: openUrlToolInputSchema,
 });
+
+export type OpenUrlToolInput = z.infer<typeof openUrlToolInputSchema>;
 
 export const NOTE_CATEGORIES = [
   "general",
@@ -482,6 +494,22 @@ export const NOTE_CATEGORIES = [
 ] as const;
 export type ToolNoteCategory = (typeof NOTE_CATEGORIES)[number];
 const noteCategorySchema = z.enum(NOTE_CATEGORIES);
+
+export const createNoteToolInputSchema = z.object({
+  title: z.string().describe("A concise, descriptive title for the note"),
+  content: z.string().describe("The note body; supports markdown formatting"),
+  category: noteCategorySchema
+    .optional()
+    .describe(
+      'The note category for organization. Valid values: "general", "findings", "methodology", "questions", "plan". Defaults to "general" if not specified.',
+    ),
+  tags: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Optional tags for filtering and cross-referencing notes (e.g., "xss", "api", "critical")',
+    ),
+});
 
 export const createNoteTool = tool({
   description: `Create a new personal note to record observations, findings, or research during security assessments. Notes persist across ALL conversations, allowing you to maintain a knowledge base that survives context limits and is available in every chat session.
@@ -526,21 +554,25 @@ Use with category "plan" to outline attack strategies before execution
 Use with category "questions" to note areas requiring further investigation
 Use tags like "critical", "confirmed", "needs-verification" to track finding status
 </recommended_usage>`,
-  inputSchema: z.object({
-    title: z.string().describe("A concise, descriptive title for the note"),
-    content: z.string().describe("The note body; supports markdown formatting"),
-    category: noteCategorySchema
-      .optional()
-      .describe(
-        'The note category for organization. Valid values: "general", "findings", "methodology", "questions", "plan". Defaults to "general" if not specified.',
-      ),
-    tags: z
-      .array(z.string())
-      .optional()
-      .describe(
-        'Optional tags for filtering and cross-referencing notes (e.g., "xss", "api", "critical")',
-      ),
-  }),
+  inputSchema: createNoteToolInputSchema,
+});
+
+export type CreateNoteToolInput = z.infer<typeof createNoteToolInputSchema>;
+
+export const listNotesToolInputSchema = z.object({
+  category: noteCategorySchema
+    .optional()
+    .describe(
+      'Filter notes by category. Valid values: "general", "findings", "methodology", "questions", "plan". Omit to include all categories.',
+    ),
+  tags: z
+    .array(z.string())
+    .optional()
+    .describe("Filter notes that have any of the specified tags (OR logic)"),
+  search: z
+    .string()
+    .optional()
+    .describe("Full-text search query to filter notes by title or content"),
 });
 
 export const listNotesTool = tool({
@@ -567,21 +599,29 @@ Use with search query to find notes mentioning specific endpoints, parameters, o
 Use with tags filter to find all notes tagged with "critical" or "confirmed"
 Use before creating a new note to check if a similar observation already exists
 </recommended_usage>`,
-  inputSchema: z.object({
-    category: noteCategorySchema
-      .optional()
-      .describe(
-        'Filter notes by category. Valid values: "general", "findings", "methodology", "questions", "plan". Omit to include all categories.',
-      ),
-    tags: z
-      .array(z.string())
-      .optional()
-      .describe("Filter notes that have any of the specified tags (OR logic)"),
-    search: z
-      .string()
-      .optional()
-      .describe("Full-text search query to filter notes by title or content"),
-  }),
+  inputSchema: listNotesToolInputSchema,
+});
+
+export type ListNotesToolInput = z.infer<typeof listNotesToolInputSchema>;
+
+export const updateNoteToolInputSchema = z.object({
+  note_id: z
+    .string()
+    .describe("The ID of the note to update, obtained from list_notes"),
+  title: z
+    .string()
+    .optional()
+    .describe("New title for the note. Omit to keep existing title."),
+  content: z
+    .string()
+    .optional()
+    .describe("New content for the note. Omit to keep existing content."),
+  tags: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "New tags array, replaces existing tags entirely. Omit to keep existing tags.",
+    ),
 });
 
 export const updateNoteTool = tool({
@@ -605,25 +645,15 @@ Use to refine plan notes as the assessment progresses
 Use to correct mistakes in previously recorded observations
 Use to add technical details or evidence to a finding
 </recommended_usage>`,
-  inputSchema: z.object({
-    note_id: z
-      .string()
-      .describe("The ID of the note to update, obtained from list_notes"),
-    title: z
-      .string()
-      .optional()
-      .describe("New title for the note. Omit to keep existing title."),
-    content: z
-      .string()
-      .optional()
-      .describe("New content for the note. Omit to keep existing content."),
-    tags: z
-      .array(z.string())
-      .optional()
-      .describe(
-        "New tags array, replaces existing tags entirely. Omit to keep existing tags.",
-      ),
-  }),
+  inputSchema: updateNoteToolInputSchema,
+});
+
+export type UpdateNoteToolInput = z.infer<typeof updateNoteToolInputSchema>;
+
+export const deleteNoteToolInputSchema = z.object({
+  note_id: z
+    .string()
+    .describe("The ID of the note to delete, obtained from list_notes"),
 });
 
 export const deleteNoteTool = tool({
@@ -645,12 +675,10 @@ Use to clean up duplicate notes after merging their content
 Use to remove outdated plan notes after strategy changes
 Use to delete test or scratch notes created during experimentation
 </recommended_usage>`,
-  inputSchema: z.object({
-    note_id: z
-      .string()
-      .describe("The ID of the note to delete, obtained from list_notes"),
-  }),
+  inputSchema: deleteNoteToolInputSchema,
 });
+
+export type DeleteNoteToolInput = z.infer<typeof deleteNoteToolInputSchema>;
 
 export type AgentToolSchemaMode = "agent" | "ask";
 

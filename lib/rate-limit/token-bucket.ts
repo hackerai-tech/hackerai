@@ -34,7 +34,6 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-grok-4.3": { input: 1.25, output: 2.5 },
   "model-gemini-3-flash": { input: 1.25, output: 2.5 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
-  "fallback-gemini-3.5-flash": { input: 1.25, output: 2.5 },
   "fallback-grok-4.3": { input: 1.25, output: 2.5 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // These keys route to minimax/minimax-m3 via lib/ai/providers.ts.
@@ -572,8 +571,9 @@ export const checkTokenBucketLimit = async (
  * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
  * If we over-estimated input cost, refunds the difference back to the bucket.
  *
- * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation.
- *   On clean completions this includes model + sandbox + tool costs.
+ * @param providerCostDollars - If provided (from authoritative provider cost),
+ *   uses this instead of token calculation. On clean completions this includes
+ *   model + sandbox + tool costs.
  *   On non-clean completions this is undefined; nonModelCostDollars covers sandbox/tool costs.
  * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When providerCostDollars
  *   is undefined (non-clean streams), this is added on top of token-based model cost.

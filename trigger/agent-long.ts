@@ -108,6 +108,7 @@ import type {
   SelectedModel,
   RateLimitInfo,
   SandboxBootInfo,
+  ToolFailureLogEvent,
 } from "@/types";
 import {
   createAgentStream,
@@ -155,6 +156,22 @@ const getAgentLongMaxDurationMs = (subscription: SubscriptionTier) =>
   );
 
 type AgentLongUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
+
+const createAgentLongHeartbeatPart = (
+  phase: "setup" | "model_stream",
+): AgentLongUiStreamPart =>
+  ({
+    type: AGENT_LONG_HEARTBEAT_PART_TYPE,
+    data: { at: Date.now(), phase },
+    transient: true,
+  }) as AgentLongUiStreamPart;
+
+const writeAgentLongFastStart = (
+  writer: UIMessageStreamWriter,
+  phase: "setup" | "model_stream",
+): void => {
+  writer.write(createAgentLongHeartbeatPart(phase));
+};
 
 const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
 const TRIGGER_TAG_MAX_LENGTH = 64;
@@ -754,6 +771,46 @@ const recordAgentLongHandledRateLimitForDashboard = async (
   await metadata.flush();
 };
 
+const recordAgentLongHandledToolFailureForDashboard = async (
+  failure: ToolFailureLogEvent,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+    handledToolFailureCount: number;
+  },
+) => {
+  const failedAt = new Date().toISOString();
+  metadata
+    .set("handledToolFailureCount", context.handledToolFailureCount)
+    .set("lastHandledToolFailure", failure.tool_name)
+    .set("lastHandledToolFailureProvider", failure.provider)
+    .set("lastHandledToolFailureEvent", failure.event)
+    .set("lastHandledToolFailureAt", failedAt);
+  if (failure.status != null) {
+    metadata.set("lastHandledToolFailureStatus", failure.status);
+  }
+
+  await tags.add([
+    "handled_tool_failure",
+    buildTriggerTag("tool_", failure.tool_name),
+    buildTriggerTag("tool_provider_", failure.provider),
+    ...(failure.status != null
+      ? [buildTriggerTag("tool_status_", String(failure.status))]
+      : []),
+  ]);
+
+  triggerLogger.warn("[agent-long] handled tool failure", {
+    chatId: context.chatId,
+    userId: context.userId,
+    runId: context.runId,
+    handled_tool_failure_count: context.handledToolFailureCount,
+    ...failure,
+  });
+
+  await metadata.flush();
+};
+
 const withAgentLongStreamHeartbeat = (
   source: ReadableStream<AgentLongUiStreamPart>,
   signal: AbortSignal,
@@ -801,14 +858,14 @@ const withAgentLongStreamHeartbeat = (
           return;
         }
 
-        safeEnqueue({
-          type: AGENT_LONG_HEARTBEAT_PART_TYPE,
-          data: { at: Date.now() },
-        } as AgentLongUiStreamPart);
+        safeEnqueue(createAgentLongHeartbeatPart("model_stream"));
       }, AGENT_LONG_HEARTBEAT_INTERVAL_MS);
 
       signal.addEventListener("abort", stop, { once: true });
       if (signal.aborted) stop();
+      if (!stopped) {
+        safeEnqueue(createAgentLongHeartbeatPart("model_stream"));
+      }
 
       void (async () => {
         try {
@@ -1130,6 +1187,7 @@ export const agentLongTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            writeAgentLongFastStart(writer, "setup");
             await assertUserCanMakeCostIncurringRequest(userId);
             if (subscription === "free") {
               const lock = await acquireFreeRunConcurrencyLock(
@@ -1183,6 +1241,31 @@ export const agentLongTask = task({
             });
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
+            let handledToolFailureCount = 0;
+            const onToolFailure = (failure: ToolFailureLogEvent) => {
+              handledToolFailureCount += 1;
+              void recordAgentLongHandledToolFailureForDashboard(failure, {
+                chatId,
+                userId,
+                runId: ctx.run.id,
+                handledToolFailureCount,
+              }).catch((error) => {
+                triggerLogger.warn(
+                  "[agent-long] handled tool failure dashboard update failed",
+                  {
+                    chatId,
+                    userId,
+                    runId: ctx.run.id,
+                    tool_name: failure.tool_name,
+                    provider: failure.provider,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                    error_message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                );
+              });
+            };
             const {
               tools,
               ensureSandbox,
@@ -1216,6 +1299,7 @@ export const agentLongTask = task({
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
+              onToolFailure,
             );
 
             const sendFileMetadataToStream = (
@@ -1471,10 +1555,9 @@ export const agentLongTask = task({
                 };
                 let usageCostRecord =
                   usageTracker.createUsageCostRecord(usageRecordArgs);
-                const providerCost =
-                  usageTracker.modelProviderCost > 0
-                    ? usageTracker.providerCost
-                    : undefined;
+                const providerCost = usageTracker.hasAuthoritativeModelCost
+                  ? usageTracker.providerCost
+                  : undefined;
                 if (subscription === "free") {
                   await recordFreeMonthlyCost(
                     freeUsageSubject,

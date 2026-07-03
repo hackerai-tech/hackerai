@@ -1,17 +1,201 @@
 ---
 name: trigger-agents
-description: AI agent patterns with Trigger.dev - orchestration, parallelization, routing, evaluator-optimizer, and human-in-the-loop. Use when building LLM-powered tasks that need parallel workers, approval gates, tool calling, or multi-step agent workflows.
+description: AI agent patterns with Trigger.dev - chat.agent, Sessions, AI Prompts, Trigger Agent Skills, orchestration, parallelization, routing, evaluator-optimizer, and human-in-the-loop. Use when building LLM-powered tasks that need durable AI chat, parallel workers, approval gates, tool calling, or multi-step agent workflows.
 ---
 
 # AI Agent Patterns with Trigger.dev
 
 Build production-ready AI agents using Trigger.dev's durable execution.
 
+## Trigger.dev 4.5 Agent Surfaces
+
+Use the new 4.5 agent primitives when they match the shape of the work:
+
+```text
+Need to...                              → Use
+────────────────────────────────────────────────────────────
+Build a durable AI SDK chat UI          → chat.agent
+Resume one stream across run swaps      → Sessions
+Version and dashboard-override prompts  → AI Prompts
+Bundle procedural instructions/scripts  → Trigger Agent Skills
+Run parallel local agent worktrees      → Dev branches
+```
+
+### Durable chat agents
+
+For AI chat surfaces backed by the Vercel AI SDK, prefer `chat.agent` over a
+hand-rolled API route. A chat agent is one long-lived Trigger.dev task per
+conversation, keyed by chat id, with durable session streams for refresh,
+redeploy, crash, idle, and reconnect behavior.
+
+```typescript
+import { chat } from "@trigger.dev/sdk/ai";
+import { streamText, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+
+export const myChat = chat.agent({
+  id: "my-chat",
+  run: async ({ messages, signal }) => {
+    return streamText({
+      // Spread first: this wires prompt, compaction, steering, skills,
+      // background injection, and telemetry into the AI SDK call.
+      ...chat.toStreamTextOptions(),
+      model: anthropic("claude-sonnet-4-5"),
+      messages,
+      abortSignal: signal,
+      stopWhen: stepCountIs(15),
+    });
+  },
+});
+```
+
+Frontend integration uses `useTriggerChatTransport` from
+`@trigger.dev/sdk/chat/react` and passes that transport to `useChat`. Do not
+build a parallel streaming protocol unless `useTriggerChatTransport` cannot fit
+the product surface.
+
+```tsx
+import { useChat } from "@ai-sdk/react";
+import { useTriggerChatTransport } from "@trigger.dev/sdk/chat/react";
+import type { myChat } from "@/trigger/chat";
+
+export function Chat() {
+  const transport = useTriggerChatTransport<typeof myChat>({
+    task: "my-chat",
+    accessToken: ({ chatId }) => mintChatAccessToken(chatId),
+    startSession: ({ chatId, clientData }) =>
+      startChatSession({ chatId, clientData }),
+  });
+
+  const { messages, sendMessage, stop, status } = useChat({ transport });
+}
+```
+
+### Sessions
+
+Use the raw `sessions` API when the interaction is not quite chat-shaped but
+still needs durable bidirectional streaming across runs. A Session is the stable
+identity; runs can suspend, crash, upgrade, or be replaced while `.in` and `.out`
+continue under the same external id.
+
+```typescript
+import { sessions, task } from "@trigger.dev/sdk";
+
+export const inboxAgent = task({
+  id: "inbox-agent",
+  run: async (payload: { sessionId: string }) => {
+    const session = sessions.open(payload.sessionId);
+
+    while (true) {
+      const next = await session.in.wait<{ text: string }>({ timeout: "1h" });
+      if (!next.ok) return;
+      await session.out.append({ type: "reply", text: `echo: ${next.output.text}` });
+    }
+  },
+});
+```
+
+### AI Prompts
+
+Use `prompts.define()` when prompt text or model choice should be versioned on
+deploy and optionally overridden from the Trigger.dev dashboard. Resolve the
+prompt in a lifecycle hook, store it with `chat.prompt.set()`, then let
+`chat.toStreamTextOptions()` apply the system prompt, model/config, and
+telemetry.
+
+```typescript
+import { prompts } from "@trigger.dev/sdk";
+import { chat } from "@trigger.dev/sdk/ai";
+import { createProviderRegistry, streamText, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const registry = createProviderRegistry({ anthropic });
+
+const systemPrompt = prompts.define({
+  id: "my-chat-system",
+  model: "anthropic:claude-sonnet-4-5",
+  variables: z.object({ name: z.string() }),
+  content: "You are a helpful assistant for {{name}}.",
+});
+
+export const myChat = chat.agent({
+  id: "my-chat",
+  onChatStart: async ({ clientData }) => {
+    chat.prompt.set(await systemPrompt.resolve({ name: clientData.name }));
+  },
+  run: async ({ messages, signal }) => {
+    return streamText({
+      ...chat.toStreamTextOptions({ registry }),
+      messages,
+      abortSignal: signal,
+      stopWhen: stepCountIs(15),
+    });
+  },
+});
+```
+
+### Trigger Agent Skills
+
+Use Trigger Agent Skills for reusable folders of instructions plus optional
+scripts/references/assets that a `chat.agent` loads on demand. Skills are
+developer-authored code bundled into the deploy image; never accept skill paths
+from untrusted input.
+
+```typescript
+import { skills } from "@trigger.dev/sdk";
+import { chat } from "@trigger.dev/sdk/ai";
+import { streamText } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const pdfSkill = skills.define({
+  id: "pdf-processing",
+  path: "./skills/pdf-processing",
+});
+
+export const docsChat = chat.agent({
+  id: "docs-chat",
+  onChatStart: async () => {
+    chat.skills.set([await pdfSkill.local()]);
+  },
+  run: async ({ messages, signal }) => {
+    return streamText({
+      ...chat.toStreamTextOptions(),
+      model: anthropic("claude-sonnet-4-5"),
+      messages,
+      abortSignal: signal,
+    });
+  },
+});
+```
+
+`chat.toStreamTextOptions()` injects a short available-skills list plus scoped
+`loadSkill`, `readFile`, and `bash` tools. The model should call `loadSkill`
+before using a skill, then use the scoped tools against that skill's folder.
+
+### Dev branches
+
+Trigger.dev 4.5 supports isolated local dev branches. Use
+`trigger dev --branch <name>` or set `TRIGGER_DEV_BRANCH`. In this repo,
+`pnpm dev:trigger` derives a branch name from git and passes it through so
+parallel worktrees or coding agents do not collide in the default dev
+environment.
+
+### HackerAI migration note
+
+For HackerAI Agent mode, treat `chat.agent` as migration input, not a drop-in
+replacement. A live migration must preserve auth/suspension, sandbox setup,
+billing/refunds, budget monitoring, fallback models, todos, Convex persistence,
+and browser reconnect/resume behavior before swapping the current Agent stack.
+
 ## Pattern Selection
 
-```
+```text
 Need to...                              → Use
 ─────────────────────────────────────────────────────
+Build a durable Vercel AI SDK chat      → chat.agent
+Stream a non-chat agent inbox           → Sessions
+Bundle agent instructions/scripts       → Trigger Agent Skills
 Process items in parallel               → Parallelization
 Route to different models/handlers      → Routing
 Chain steps with validation gates       → Prompt Chaining
@@ -231,6 +415,11 @@ export const refineTranslation = task({
 
 | Feature | What it enables | Reference |
 |---------|-----------------|-----------|
+| **chat.agent** | Durable AI SDK chat, reconnect/resume, lifecycle hooks | Trigger.dev AI Chat docs |
+| **Sessions** | Durable bidirectional streams across run boundaries | Trigger.dev Sessions docs |
+| **AI Prompts** | Versioned prompts with dashboard overrides | Trigger.dev Prompts docs |
+| **Agent Skills** | On-demand instructions/scripts bundled into chat agents | Trigger.dev Agent Skills docs |
+| **Dev branches** | Isolated local Trigger.dev sessions for worktrees/agents | `trigger dev --branch <name>` |
 | **Waitpoints** | Human approval gates, external callbacks | `references/waitpoints.md` |
 | **Streams** | Real-time progress to frontend | `references/streaming.md` |
 | **ai.tool** | Let LLMs call your tasks as tools | `references/ai-tool.md` |

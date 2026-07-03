@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import { type ToolContext, type NoteCategory } from "@/types";
+import type { ToolContext } from "@/types";
 import {
   createNote,
   listNotes,
@@ -8,9 +8,13 @@ import {
 } from "@/lib/db/actions";
 import {
   createNoteTool,
+  type CreateNoteToolInput,
   deleteNoteTool,
+  type DeleteNoteToolInput,
   listNotesTool,
+  type ListNotesToolInput,
   updateNoteTool,
+  type UpdateNoteToolInput,
 } from "./schemas";
 
 /**
@@ -24,12 +28,7 @@ export const createCreateNote = (context: ToolContext) => {
       content,
       category,
       tags,
-    }: {
-      title: string;
-      content: string;
-      category?: NoteCategory;
-      tags?: string[];
-    }) => {
+    }: CreateNoteToolInput) => {
       try {
         const result = await createNote({
           userId: context.userID,
@@ -68,15 +67,7 @@ export const createCreateNote = (context: ToolContext) => {
 export const createListNotes = (context: ToolContext) => {
   return tool({
     ...listNotesTool,
-    execute: async ({
-      category,
-      tags,
-      search,
-    }: {
-      category?: NoteCategory;
-      tags?: string[];
-      search?: string;
-    }) => {
+    execute: async ({ category, tags, search }: ListNotesToolInput) => {
       try {
         const result = await listNotes({
           userId: context.userID,
@@ -114,17 +105,7 @@ export const createListNotes = (context: ToolContext) => {
 export const createUpdateNote = (context: ToolContext) => {
   return tool({
     ...updateNoteTool,
-    execute: async ({
-      note_id,
-      title,
-      content,
-      tags,
-    }: {
-      note_id: string;
-      title?: string;
-      content?: string;
-      tags?: string[];
-    }) => {
+    execute: async ({ note_id, title, content, tags }: UpdateNoteToolInput) => {
       try {
         const result = await updateNote({
           userId: context.userID,
@@ -182,7 +163,7 @@ export const createUpdateNote = (context: ToolContext) => {
 export const createDeleteNote = (context: ToolContext) => {
   return tool({
     ...deleteNoteTool,
-    execute: async ({ note_id }: { note_id: string }) => {
+    execute: async ({ note_id }: DeleteNoteToolInput) => {
       try {
         const result = await deleteNote({
           userId: context.userID,

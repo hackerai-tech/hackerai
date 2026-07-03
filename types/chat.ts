@@ -12,10 +12,7 @@ export function isChatMode(value: string | null): value is ChatMode {
 }
 
 export type SelectedModel =
-  | "auto"
-  | "hackerai-standard"
-  | "hackerai-pro"
-  | "hackerai-max";
+  "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
@@ -37,8 +34,8 @@ export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   "opus-4.6": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",
   "kimi-k2.6": "hackerai-standard",
-  // Grok was removed from the picker before the tier rebrand. Both variants
-  // were entry-level alternatives to the auto router (Gemini/Kimi territory),
+  // Grok was removed from the picker before the tier rebrand. These variants
+  // were entry-level alternatives to the auto router,
   // so map them to Standard rather than dropping the user's preference.
   "grok-4.1": "hackerai-standard",
   "grok-4.3": "hackerai-standard",

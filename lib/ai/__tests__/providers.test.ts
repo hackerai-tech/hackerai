@@ -1,7 +1,6 @@
 import {
   getModelDisplayName,
   myProvider,
-  sanitizeOpenRouterRequestForGeminiFunctionResponses,
   sanitizeOpenRouterRequestForXai,
   supportsMultimodalToolResults,
 } from "@/lib/ai/providers";
@@ -40,16 +39,29 @@ describe("provider registry", () => {
         }
       ).modelId,
     ).toBe("moonshotai/kimi-k2.7-code:exacto");
+    expect(
+      (myProvider.languageModel("fallback-agent-model") as { modelId: string })
+        .modelId,
+    ).toBe("minimax/minimax-m3");
+    expect(
+      (myProvider.languageModel("fallback-ask-model") as { modelId: string })
+        .modelId,
+    ).toBe("minimax/minimax-m3");
+    expect(
+      (myProvider.languageModel("title-generator-model") as { modelId: string })
+        .modelId,
+    ).toBe("x-ai/grok-4.3");
     expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
     expect(getModelDisplayName("model-grok-4.3")).toBe("xAI Grok 4.3");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.3");
+    expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.3");
   });
 });
 
 describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
-      model: "google/gemini-3-flash-preview",
+      model: "minimax/minimax-m3",
       models: ["x-ai/grok-4.3"],
       messages: [
         {
@@ -59,7 +71,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
             { type: "text", text: "plain reasoning detail" },
             {
               type: "encrypted",
-              encrypted_content: "provider-private-gemini-blob",
+              encrypted_content: "provider-private-reasoning-blob",
             },
           ],
         },
@@ -113,13 +125,13 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
   it("leaves non-xAI routes unchanged", () => {
     const body = {
-      model: "google/gemini-3-flash-preview",
+      model: "minimax/minimax-m3",
       messages: [
         {
           role: "assistant",
           content: "Here is the answer.",
           reasoning_details: [
-            { type: "encrypted", encrypted_content: "gemini-blob" },
+            { type: "encrypted", encrypted_content: "provider-blob" },
           ],
         },
       ],
@@ -175,92 +187,6 @@ describe("sanitizeOpenRouterRequestForXai", () => {
   });
 });
 
-describe("sanitizeOpenRouterRequestForGeminiFunctionResponses", () => {
-  it("wraps JSON tool responses with OpenAPI $ref keys when a fallback can route to Gemini", () => {
-    const openApiResponse = JSON.stringify({
-      openapi: "3.0.0",
-      paths: {
-        "/auth": {
-          post: {
-            requestBody: {
-              content: {
-                "application/json": {
-                  schema: { $ref: "#/components/schemas/AuthRequest" },
-                },
-              },
-            },
-            responses: {
-              "200": {
-                content: {
-                  "application/json": {
-                    schema: {
-                      $ref: "#/components/schemas/CoreAuthenticationResult",
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-    const body = {
-      model: "deepseek/deepseek-v4-flash",
-      models: ["google/gemini-3-flash-preview"],
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "open_url",
-          content: openApiResponse,
-        },
-      ],
-    };
-
-    const result = sanitizeOpenRouterRequestForGeminiFunctionResponses(body);
-
-    expect(result.changed).toBe(true);
-    expect((result.body as any).messages[0].content).toBe(
-      JSON.stringify({ result: openApiResponse }),
-    );
-    expect(JSON.parse((result.body as any).messages[0].content)).toEqual({
-      result: openApiResponse,
-    });
-  });
-
-  it("leaves non-Gemini routes and non-ref JSON tool responses unchanged", () => {
-    const nonGeminiBody = {
-      model: "deepseek/deepseek-v4-flash",
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "open_url",
-          content: JSON.stringify({ $ref: "#/components/schemas/AuthRequest" }),
-        },
-      ],
-    };
-    const geminiBodyWithoutRef = {
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "tool",
-          tool_call_id: "call_1",
-          name: "web_search",
-          content: JSON.stringify({ result: "ok" }),
-        },
-      ],
-    };
-
-    expect(
-      sanitizeOpenRouterRequestForGeminiFunctionResponses(nonGeminiBody),
-    ).toEqual({ body: nonGeminiBody, changed: false });
-    expect(
-      sanitizeOpenRouterRequestForGeminiFunctionResponses(geminiBodyWithoutRef),
-    ).toEqual({ body: geminiBodyWithoutRef, changed: false });
-  });
-});
-
 describe("supportsMultimodalToolResults", () => {
   it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
@@ -275,10 +201,7 @@ describe("supportsMultimodalToolResults", () => {
 
   it("allows multimodal fallback keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("model-grok-4.3")).toBe(true);
-    expect(supportsMultimodalToolResults("fallback-gemini-3.5-flash")).toBe(
-      true,
-    );
-    expect(supportsMultimodalToolResults("google/gemini-3.5-flash")).toBe(true);
+    expect(supportsMultimodalToolResults("model-gemini-3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
   });

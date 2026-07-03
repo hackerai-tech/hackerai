@@ -87,64 +87,69 @@ const toolSchemasSrc = fs.readFileSync(
   "utf8",
 );
 
-const toolExecutionSources = {
-  run_terminal_cmd: {
+const toolExecutionSources = [
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/run-terminal-cmd.ts"),
       "utf8",
     ),
-    schemaName: "runTerminalCmdTool",
+    schemaNames: ["runTerminalCmdTool"],
   },
-  interact_terminal_session: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/interact-terminal-session.ts"),
       "utf8",
     ),
-    schemaName: "interactTerminalSessionTool",
+    schemaNames: ["interactTerminalSessionTool"],
   },
-  get_terminal_files: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/get-terminal-files.ts"),
       "utf8",
     ),
-    schemaName: "getTerminalFilesTool",
+    schemaNames: ["getTerminalFilesTool"],
   },
-  file: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/file.ts"),
       "utf8",
     ),
-    schemaName: "fileToolSchema",
+    schemaNames: ["fileToolSchema"],
   },
-  todo_write: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/todo-write.ts"),
       "utf8",
     ),
-    schemaName: "todoWriteTool",
+    schemaNames: ["todoWriteTool"],
   },
-  web_search: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/web-search.ts"),
       "utf8",
     ),
-    schemaName: "webSearchTool",
+    schemaNames: ["webSearchTool"],
   },
-  open_url: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/open-url.ts"),
       "utf8",
     ),
-    schemaName: "openUrlTool",
+    schemaNames: ["openUrlTool"],
   },
-  notes: {
+  {
     src: fs.readFileSync(
       path.resolve(__dirname, "../../ai/tools/notes.ts"),
       "utf8",
     ),
-    schemaName: "createNoteTool|listNotesTool|updateNoteTool|deleteNoteTool",
+    schemaNames: [
+      "createNoteTool",
+      "listNotesTool",
+      "updateNoteTool",
+      "deleteNoteTool",
+    ],
   },
-};
+];
 
 describe("agent tool schemas — Head Start bundle boundary", () => {
   test("schema-only tool catalog imports only ai and zod", () => {
@@ -178,8 +183,10 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
   });
 
   test("execution factories layer execute implementations onto shared schemas", () => {
-    for (const { src, schemaName } of Object.values(toolExecutionSources)) {
-      expect(src).toMatch(new RegExp(`\\.\\.\\.(${schemaName})`));
+    for (const { src, schemaNames } of toolExecutionSources) {
+      for (const schemaName of schemaNames) {
+        expect(src).toMatch(new RegExp(`\\.\\.\\.${schemaName}`));
+      }
       expect(src).toMatch(/\bexecute\s*:/);
     }
   });
@@ -494,6 +501,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
 
+  test("handled tool failures are visible in Trigger logs and metadata", () => {
+    expect(taskSrc).toMatch(/recordAgentLongHandledToolFailureForDashboard/);
+    expect(taskSrc).toMatch(/lastHandledToolFailureStatus/);
+    expect(taskSrc).toMatch(/handled_tool_failure/);
+    expect(taskSrc).toMatch(/buildTriggerTag\("tool_status_"/);
+    expect(taskSrc).toMatch(
+      /triggerLogger\.warn\("\[agent-long\] handled tool failure"/,
+    );
+    expect(taskSrc).toMatch(/const onToolFailure\s*=/);
+    expect(taskSrc).toMatch(
+      /void\s+recordAgentLongHandledToolFailureForDashboard/,
+    );
+    expect(taskSrc).not.toMatch(
+      /await\s+recordAgentLongHandledToolFailureForDashboard/,
+    );
+    expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
+    expect(taskSrc).toMatch(/onToolFailure,\s*\)/);
+  });
+
   test("runs use small subscription-aware Trigger.dev priority offsets", () => {
     expect(routeSrc).toMatch(
       /AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
@@ -530,6 +556,42 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(
       /NextResponse\.json\(\{\s*runId:\s*handle\.id,\s*publicAccessToken,\s*chatId,/,
     );
+  });
+
+  test("emits hidden fast-start heartbeats before setup and model streaming can go quiet", () => {
+    expect(taskSrc).toMatch(/createAgentLongHeartbeatPart/);
+    expect(taskSrc).toMatch(/phase:\s*"setup"\s*\|\s*"model_stream"/);
+    expect(taskSrc).toMatch(/transient:\s*true/);
+
+    const executeIdx = taskSrc.indexOf("execute: async ({ writer })");
+    const fastStartIdx = taskSrc.indexOf(
+      'writeAgentLongFastStart(writer, "setup")',
+      executeIdx,
+    );
+    const costCheckIdx = taskSrc.indexOf(
+      "await assertUserCanMakeCostIncurringRequest(userId)",
+      executeIdx,
+    );
+
+    expect(executeIdx).toBeGreaterThan(-1);
+    expect(fastStartIdx).toBeGreaterThan(executeIdx);
+    expect(costCheckIdx).toBeGreaterThan(fastStartIdx);
+
+    const heartbeatWrapperIdx = taskSrc.indexOf(
+      "const withAgentLongStreamHeartbeat",
+    );
+    const immediateModelHeartbeatIdx = taskSrc.indexOf(
+      'safeEnqueue(createAgentLongHeartbeatPart("model_stream"))',
+      heartbeatWrapperIdx,
+    );
+    const readerLoopIdx = taskSrc.indexOf(
+      "void (async () =>",
+      heartbeatWrapperIdx,
+    );
+
+    expect(heartbeatWrapperIdx).toBeGreaterThan(-1);
+    expect(immediateModelHeartbeatIdx).toBeGreaterThan(heartbeatWrapperIdx);
+    expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
