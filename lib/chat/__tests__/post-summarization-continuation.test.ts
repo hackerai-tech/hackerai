@@ -38,6 +38,14 @@ describe("post-summarization continuation", () => {
     ).toBe(false);
   });
 
+  it("does not match bare continuation words inside short completions", () => {
+    expect(
+      isPostSummarizationFillerText(
+        "Done - the script will continue running in the background now.",
+      ),
+    ).toBe(false);
+  });
+
   it("does not flag long responses that merely mention continuing", () => {
     const text = `${"The task is complete. ".repeat(30)} I will include the details below.`;
 
