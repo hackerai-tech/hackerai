@@ -400,6 +400,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /triggerLogger\.warn\("\[agent-long\] handled tool failure"/,
     );
     expect(taskSrc).toMatch(/const onToolFailure\s*=/);
+    expect(taskSrc).toMatch(
+      /void\s+recordAgentLongHandledToolFailureForDashboard/,
+    );
+    expect(taskSrc).not.toMatch(
+      /await\s+recordAgentLongHandledToolFailureForDashboard/,
+    );
+    expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(/onToolFailure,\s*\)/);
   });
 

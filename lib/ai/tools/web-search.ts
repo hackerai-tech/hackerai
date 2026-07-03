@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext, ToolFailureLogEvent } from "@/types";
+import type { ToolContext } from "@/types";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import {
   PerplexityApiError,
@@ -13,6 +13,7 @@ import {
   summarizePerplexityErrorBody,
 } from "./utils/perplexity";
 import { toolBriefSchema } from "./tool-brief";
+import { reportToolFailure } from "./tool-failure";
 
 /**
  * Web search tool using Perplexity Search API
@@ -184,17 +185,6 @@ const normalizeSearchQueries = (
   return { queries: queries.slice(0, 3) };
 };
 
-const reportToolFailure = async (
-  context: ToolContext,
-  event: ToolFailureLogEvent,
-) => {
-  try {
-    await context.onToolFailure?.(event);
-  } catch {
-    // Tool failure observability must not change the tool result.
-  }
-};
-
 export const createWebSearch = (context: ToolContext) => {
   const { userLocation, onToolCost } = context;
 
@@ -291,7 +281,7 @@ export const createWebSearch = (context: ToolContext) => {
             retryable: error.retryable,
             bodySummary: error.bodySummary,
           };
-          await reportToolFailure(context, {
+          reportToolFailure(context.onToolFailure, {
             event: "web_search_provider_failed",
             tool_name: "web_search",
             provider: "perplexity",
@@ -307,7 +297,7 @@ export const createWebSearch = (context: ToolContext) => {
         }
 
         const errorMessage = stringifyRedactedError(error);
-        await reportToolFailure(context, {
+        reportToolFailure(context.onToolFailure, {
           event: "web_search_tool_failed",
           tool_name: "web_search",
           provider: "perplexity",

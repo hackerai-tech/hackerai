@@ -1225,13 +1225,28 @@ export const agentLongTask = task({
 
             let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             let handledToolFailureCount = 0;
-            const onToolFailure = async (failure: ToolFailureLogEvent) => {
+            const onToolFailure = (failure: ToolFailureLogEvent) => {
               handledToolFailureCount += 1;
-              await recordAgentLongHandledToolFailureForDashboard(failure, {
+              void recordAgentLongHandledToolFailureForDashboard(failure, {
                 chatId,
                 userId,
                 runId: ctx.run.id,
                 handledToolFailureCount,
+              }).catch((error) => {
+                triggerLogger.warn(
+                  "[agent-long] handled tool failure dashboard update failed",
+                  {
+                    chatId,
+                    userId,
+                    runId: ctx.run.id,
+                    tool_name: failure.tool_name,
+                    provider: failure.provider,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                    error_message:
+                      error instanceof Error ? error.message : String(error),
+                  },
+                );
               });
             };
             const {

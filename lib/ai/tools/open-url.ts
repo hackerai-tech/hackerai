@@ -3,8 +3,9 @@ import { z } from "zod";
 import { phLogger } from "@/lib/posthog/server";
 import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
-import type { ToolContext, ToolFailureLogEvent } from "@/types";
+import type { ToolContext } from "@/types";
 import { toolBriefSchema } from "./tool-brief";
+import { reportToolFailure } from "./tool-failure";
 
 const NETWORK_ERROR_CODES = new Set([
   "ECONNREFUSED",
@@ -72,17 +73,6 @@ const isOpenUrlNetworkError = (error: unknown): boolean => {
   );
 };
 
-const reportToolFailure = async (
-  context: OpenUrlLogContext | undefined,
-  event: ToolFailureLogEvent,
-) => {
-  try {
-    await context?.onToolFailure?.(event);
-  } catch {
-    // Tool failure observability must not change the tool result.
-  }
-};
-
 /**
  * Open URL tool using Jina AI for content retrieval
  * Retrieves and returns the full contents of a webpage
@@ -122,7 +112,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
 
         if (!response.ok) {
           const errorBody = await response.text();
-          await reportToolFailure(context, {
+          reportToolFailure(context?.onToolFailure, {
             event: "open_url_provider_failed",
             tool_name: "open_url",
             provider: "jina",
@@ -161,7 +151,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
-        await reportToolFailure(context, {
+        reportToolFailure(context?.onToolFailure, {
           event: logFields.event,
           tool_name: "open_url",
           provider: "jina",
