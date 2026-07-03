@@ -1157,6 +1157,10 @@ export const createChatHandler = () => {
                 state.stoppedDueToDoomLoop = false;
                 state.stoppedDueToBudgetExhaustion = false;
                 state.stoppedDueToAgentRunSpendCap = false;
+                state.stoppedDueToPostSummarizationIncomplete = false;
+                state.postSummarizationContinuationActive = false;
+                state.postSummarizationToolCallCount = 0;
+                state.postSummarizationText = "";
                 state.budgetAbortDetails = undefined;
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
@@ -1260,6 +1264,10 @@ export const createChatHandler = () => {
                         state.stoppedDueToDoomLoop = false;
                         state.stoppedDueToBudgetExhaustion = false;
                         state.stoppedDueToAgentRunSpendCap = false;
+                        state.stoppedDueToPostSummarizationIncomplete = false;
+                        state.postSummarizationContinuationActive = false;
+                        state.postSummarizationToolCallCount = 0;
+                        state.postSummarizationText = "";
                         state.budgetAbortDetails = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
@@ -1879,6 +1887,7 @@ export const createChatHandler = () => {
                     if (
                       (state.stoppedDueToTokenExhaustion ||
                         state.stoppedDueToElapsedTimeout ||
+                        state.stoppedDueToPostSummarizationIncomplete ||
                         state.streamFinishReason === "tool-calls") &&
                       isAgentMode(mode) &&
                       !temporary

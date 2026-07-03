@@ -9,7 +9,10 @@ import {
   AGENT_RUN_SPEND_CAP_REASON,
   AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
 } from "@/lib/chat/agent-run-spend-cap";
-import { BUDGET_EXHAUSTION_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import {
+  BUDGET_EXHAUSTION_FINISH_REASON,
+  POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 import type { SelectedModel } from "@/types/chat";
 
 interface FinishReasonNoticeProps {
@@ -38,7 +41,8 @@ export const FinishReasonNotice = ({
     (finishReason === "context-limit" ||
       finishReason === "length" ||
       finishReason === "preemptive-timeout" ||
-      finishReason === "tool-calls")
+      finishReason === "tool-calls" ||
+      finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON)
   ) {
     return null;
   }
@@ -60,6 +64,10 @@ export const FinishReasonNotice = ({
 
     if (finishReason === "context-limit") {
       return <>Reached the context limit for this conversation.</>;
+    }
+
+    if (finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON) {
+      return <>Paused after compacting the conversation.</>;
     }
 
     if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {

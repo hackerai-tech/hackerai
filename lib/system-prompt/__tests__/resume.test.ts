@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
 
+import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { getResumeSection } from "../resume";
 
 describe("getResumeSection", () => {
@@ -17,5 +18,17 @@ describe("getResumeSection", () => {
     expect(section).toContain("user cost-control pause");
     expect(section).toContain("resume the task exactly where you left off");
     expect(section).toContain("without repeating completed work");
+  });
+
+  it("instructs compaction-incomplete continuations to act instead of acknowledging", () => {
+    const section = getResumeSection(
+      POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+    );
+
+    expect(section).toContain(
+      "stopped immediately after conversation compaction",
+    );
+    expect(section).toContain("without acknowledging the compaction");
+    expect(section).toContain("Use tools when action is still needed");
   });
 });
