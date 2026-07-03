@@ -636,6 +636,8 @@ function resolveOpenRouterResponseModelCostKey(
 ): ModelName | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
+  // Scope Claude response aliases to the priced generation. Families like
+  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
     return "model-opus-4.6";
   }
