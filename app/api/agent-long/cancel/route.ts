@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as triggerSdk from "@trigger.dev/sdk";
-import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import {
@@ -19,6 +18,17 @@ type TriggerSessionsApi = {
 const triggerSessions = (
   triggerSdk as unknown as { sessions?: TriggerSessionsApi }
 ).sessions;
+
+async function closeApprovalSession(approvalSessionId: string | undefined) {
+  if (!approvalSessionId || !triggerSessions) return;
+  try {
+    await triggerSessions.close(approvalSessionId, {
+      reason: "agent-run-canceled",
+    });
+  } catch {
+    // Ignore: session may already be closed.
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -42,7 +52,15 @@ export async function POST(req: NextRequest) {
 
     const approvalSessionId = chat.active_agent_approval_session_id;
     const runId = await getActiveTriggerRun({ chatId });
+    await closeApprovalSession(approvalSessionId);
     if (!runId) {
+      if (approvalSessionId) {
+        await setActiveTriggerRun({
+          chatId,
+          triggerRunId: null,
+          approvalSessionId: null,
+        });
+      }
       // No active run — treat as already-stopped (idempotent).
       return NextResponse.json({ canceled: false, reason: "no_active_run" });
     }
@@ -50,18 +68,9 @@ export async function POST(req: NextRequest) {
     // Best-effort cancel — the run may have already failed/completed.
     // Either way we want to clear the stored id so the UI unblocks.
     try {
-      await runs.cancel(runId);
+      await triggerSdk.runs.cancel(runId);
     } catch {
       // Ignore: run is already in a terminal state.
-    }
-    if (approvalSessionId && triggerSessions) {
-      try {
-        await triggerSessions.close(approvalSessionId, {
-          reason: "agent-run-canceled",
-        });
-      } catch {
-        // Ignore: session may already be closed.
-      }
     }
     await setActiveTriggerRun({
       chatId,
