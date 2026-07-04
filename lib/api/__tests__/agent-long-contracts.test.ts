@@ -82,6 +82,116 @@ const agentStreamRunnerSrc = fs.readFileSync(
   "utf8",
 );
 
+const toolSchemasSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../ai/tools/schemas.ts"),
+  "utf8",
+);
+
+const toolExecutionSources = [
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/run-terminal-cmd.ts"),
+      "utf8",
+    ),
+    schemaNames: ["runTerminalCmdTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/interact-terminal-session.ts"),
+      "utf8",
+    ),
+    schemaNames: ["interactTerminalSessionTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/get-terminal-files.ts"),
+      "utf8",
+    ),
+    schemaNames: ["getTerminalFilesTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/file.ts"),
+      "utf8",
+    ),
+    schemaNames: ["fileToolSchema"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/todo-write.ts"),
+      "utf8",
+    ),
+    schemaNames: ["todoWriteTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/web-search.ts"),
+      "utf8",
+    ),
+    schemaNames: ["webSearchTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/open-url.ts"),
+      "utf8",
+    ),
+    schemaNames: ["openUrlTool"],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/notes.ts"),
+      "utf8",
+    ),
+    schemaNames: [
+      "createNoteTool",
+      "listNotesTool",
+      "updateNoteTool",
+      "deleteNoteTool",
+    ],
+  },
+];
+
+describe("agent tool schemas — Head Start bundle boundary", () => {
+  test("schema-only tool catalog imports only ai and zod", () => {
+    const importSources = Array.from(
+      toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
+    ).map((match) => match[1]);
+
+    expect(importSources).toEqual(["ai", "zod"]);
+    expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
+    expect(toolSchemasSrc).not.toMatch(/from\s+"\.\.?\/[^"]+"/);
+    expect(toolSchemasSrc).not.toMatch(/\bexecute\s*:/);
+  });
+
+  test("schema-only catalog covers current agent and ask tool gating", () => {
+    expect(toolSchemasSrc).toMatch(/createAgentToolSchemaSet/);
+    expect(toolSchemasSrc).toMatch(/run_terminal_cmd:\s*runTerminalCmdTool/);
+    expect(toolSchemasSrc).toMatch(
+      /interact_terminal_session:\s*interactTerminalSessionTool/,
+    );
+    expect(toolSchemasSrc).toMatch(
+      /get_terminal_files:\s*getTerminalFilesTool/,
+    );
+    expect(toolSchemasSrc).toMatch(
+      /file:\s*createFileToolSchema\(\{\s*supportsView:\s*supportsFileView/,
+    );
+    expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
+    expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
+    expect(toolSchemasSrc).toMatch(/web_search:\s*webSearchTool/);
+    expect(toolSchemasSrc).toMatch(/open_url:\s*openUrlTool/);
+    expect(toolSchemasSrc).toMatch(/if\s*\(\s*mode\s*===\s*"ask"\s*\)/);
+  });
+
+  test("execution factories layer execute implementations onto shared schemas", () => {
+    for (const { src, schemaNames } of toolExecutionSources) {
+      for (const schemaName of schemaNames) {
+        expect(src).toMatch(new RegExp(`\\.\\.\\.${schemaName}`));
+      }
+      expect(src).toMatch(/\bexecute\s*:/);
+    }
+  });
+});
+
 describe("agent-long-transport — direct UI stream reader", () => {
   test("reads the Trigger.dev ui stream directly through the browser realtime helper", () => {
     expect(transportSrc).toMatch(/readTriggerRunStream<unknown>\(/);

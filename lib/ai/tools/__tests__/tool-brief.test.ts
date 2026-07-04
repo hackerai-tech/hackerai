@@ -10,24 +10,19 @@ describe("tool brief metadata", () => {
     );
   });
 
-  test("all brief-bearing tools use the shared optional schema", () => {
+  test("schema catalog brief-bearing tools use the shared optional schema", () => {
     const toolsDir = path.resolve(__dirname, "..");
-    const filesWithBrief = [
-      "file.ts",
-      "get-terminal-files.ts",
-      "interact-terminal-session.ts",
-      "open-url.ts",
-      "run-terminal-cmd.ts",
-      "web-search.ts",
-    ];
+    const schemaSource = fs.readFileSync(
+      path.join(toolsDir, "schemas.ts"),
+      "utf8",
+    );
 
-    for (const file of filesWithBrief) {
-      const source = fs.readFileSync(path.join(toolsDir, file), "utf8");
-      expect(source).toContain("toolBriefSchema");
-      expect(source).toMatch(/brief:\s*toolBriefSchema/);
-      expect(source).not.toMatch(
-        /brief:\s*z(?:\s*\.\s*string\(\)|\s*\n\s*\.string\(\))/,
-      );
-    }
+    expect(schemaSource).toContain("export const toolBriefSchema");
+    expect(
+      schemaSource.match(/brief:\s*toolBriefSchema/g)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(6);
+    expect(schemaSource).not.toMatch(
+      /brief:\s*z(?:\s*\.\s*string\(\)|\s*\n\s*\.string\(\))/,
+    );
   });
 });
