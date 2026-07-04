@@ -12,8 +12,12 @@ import {
   GlobalStateProvider,
   useGlobalState,
 } from "../../contexts/GlobalState";
+import {
+  AgentApprovalProvider,
+  useAgentApproval,
+} from "../../contexts/AgentApprovalContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 
@@ -45,7 +49,9 @@ jest.mock("../../hooks/useFileUpload", () => ({
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <TooltipProvider>{children}</TooltipProvider>
+      <AgentApprovalProvider>
+        <TooltipProvider>{children}</TooltipProvider>
+      </AgentApprovalProvider>
     </GlobalStateProvider>
   );
 };
@@ -64,6 +70,30 @@ const UploadedFilesSetter = ({
       {label}
     </button>
   );
+};
+
+const AgentApprovalSetter = () => {
+  const { setChatMode } = useGlobalState();
+  const { setAgentApprovalSession, setActiveToolApprovalRequest } =
+    useAgentApproval();
+
+  useEffect(() => {
+    setChatMode("agent");
+    setAgentApprovalSession({
+      chatId: "approval-chat",
+      sessionId: "agent-approval-session",
+      publicAccessToken: "public-token",
+    });
+    setActiveToolApprovalRequest({
+      approvalId: "approval-1",
+      toolCallId: "tool-1",
+      title: "The agent wants full access to run this terminal command.",
+      target: "ping -c 4 hackerone.com",
+      detail: "Approve to continue, or deny to stop this command.",
+    });
+  }, [setActiveToolApprovalRequest, setAgentApprovalSession, setChatMode]);
+
+  return null;
 };
 
 describe("ChatInput - Integration Tests", () => {
@@ -159,6 +189,28 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
+    it("replaces the composer with an approval selector while awaiting approval", async () => {
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="approval-chat"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("agent-approval-prompt"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Approve full access")).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+    });
+
     it("should allow switching to agent mode via global state", async () => {
       // Note: Mode switching UI test removed due to flakiness with dropdown interactions
       // Mode switching is tested at the GlobalState level in GlobalState.messageQueue.test.tsx

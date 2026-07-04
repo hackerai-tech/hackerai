@@ -14,10 +14,20 @@ import type {
   AgentToolApprovalInputRecord,
 } from "@/types";
 
+export type AgentApprovalSendState = "idle" | "sending" | "approved" | "denied";
+
 export type AgentApprovalSession = {
   chatId?: string;
   sessionId: string;
   publicAccessToken: string;
+};
+
+export type ActiveAgentToolApprovalRequest = {
+  approvalId: string;
+  toolCallId: string;
+  title: string;
+  target?: string;
+  detail?: string;
 };
 
 type SendAgentToolApprovalArgs = {
@@ -28,8 +38,17 @@ type SendAgentToolApprovalArgs = {
 
 type AgentApprovalContextValue = {
   session: AgentApprovalSession | null;
+  activeToolApprovalRequest: ActiveAgentToolApprovalRequest | null;
+  toolApprovalSendStates: Record<string, AgentApprovalSendState>;
   setAgentApprovalSession: (session: AgentApprovalSession | null) => void;
   clearAgentApprovalSession: () => void;
+  setActiveToolApprovalRequest: (
+    request: ActiveAgentToolApprovalRequest | null,
+  ) => void;
+  clearActiveToolApprovalRequest: (request: {
+    approvalId?: string;
+    toolCallId?: string;
+  }) => void;
   sendToolApproval: (args: SendAgentToolApprovalArgs) => Promise<void>;
 };
 
@@ -40,15 +59,48 @@ const AgentApprovalContext = createContext<AgentApprovalContextValue | null>(
 export function AgentApprovalProvider({ children }: { children: ReactNode }) {
   const [session, setAgentApprovalSession] =
     useState<AgentApprovalSession | null>(null);
+  const [activeToolApprovalRequest, setActiveToolApprovalRequest] =
+    useState<ActiveAgentToolApprovalRequest | null>(null);
+  const [toolApprovalSendStates, setToolApprovalSendStates] = useState<
+    Record<string, AgentApprovalSendState>
+  >({});
 
   const clearAgentApprovalSession = useCallback(() => {
     setAgentApprovalSession(null);
+    setActiveToolApprovalRequest(null);
+    setToolApprovalSendStates({});
   }, []);
+
+  const clearActiveToolApprovalRequest = useCallback(
+    ({
+      approvalId,
+      toolCallId,
+    }: {
+      approvalId?: string;
+      toolCallId?: string;
+    }) => {
+      setActiveToolApprovalRequest((current) => {
+        if (!current) return null;
+        if (approvalId && current.approvalId !== approvalId) return current;
+        if (toolCallId && current.toolCallId !== toolCallId) return current;
+        return null;
+      });
+    },
+    [],
+  );
 
   const sendToolApproval = useCallback(
     async ({ approvalId, toolCallId, decision }: SendAgentToolApprovalArgs) => {
       if (!session) {
         throw new Error("No active Agent approval session.");
+      }
+      const currentState = toolApprovalSendStates[approvalId];
+      if (
+        currentState === "sending" ||
+        currentState === "approved" ||
+        currentState === "denied"
+      ) {
+        return;
       }
 
       const record: AgentToolApprovalInputRecord = {
@@ -60,24 +112,52 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
         at: Date.now(),
       };
 
-      await sendTriggerSessionInput({
-        sessionId: session.sessionId,
-        accessToken: session.publicAccessToken,
-        partId: `agent-tool-approval:${approvalId}:${decision}`,
-        value: record,
-      });
+      setToolApprovalSendStates((states) => ({
+        ...states,
+        [approvalId]: "sending",
+      }));
+
+      try {
+        await sendTriggerSessionInput({
+          sessionId: session.sessionId,
+          accessToken: session.publicAccessToken,
+          partId: `agent-tool-approval:${approvalId}:${decision}`,
+          value: record,
+        });
+        setToolApprovalSendStates((states) => ({
+          ...states,
+          [approvalId]: decision === "approve" ? "approved" : "denied",
+        }));
+      } catch (error) {
+        setToolApprovalSendStates((states) => ({
+          ...states,
+          [approvalId]: "idle",
+        }));
+        throw error;
+      }
     },
-    [session],
+    [session, toolApprovalSendStates],
   );
 
   const value = useMemo<AgentApprovalContextValue>(
     () => ({
       session,
+      activeToolApprovalRequest,
+      toolApprovalSendStates,
       setAgentApprovalSession,
       clearAgentApprovalSession,
+      setActiveToolApprovalRequest,
+      clearActiveToolApprovalRequest,
       sendToolApproval,
     }),
-    [clearAgentApprovalSession, sendToolApproval, session],
+    [
+      activeToolApprovalRequest,
+      clearActiveToolApprovalRequest,
+      clearAgentApprovalSession,
+      sendToolApproval,
+      session,
+      toolApprovalSendStates,
+    ],
   );
 
   return (

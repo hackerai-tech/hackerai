@@ -1,41 +1,78 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAgentApproval } from "@/app/contexts/AgentApprovalContext";
 import type { AgentToolApprovalDecision } from "@/types";
 import { toast } from "sonner";
 
-type ApprovalSendState = "idle" | "sending" | "approved" | "denied";
-
 type ToolApprovalControlsProps = {
   approvalId?: string;
   toolCallId: string;
+  title: string;
+  target?: string;
+  detail?: string;
 };
 
 export function ToolApprovalControls({
   approvalId,
   toolCallId,
+  title,
+  target,
+  detail,
 }: ToolApprovalControlsProps) {
-  const { session, sendToolApproval } = useAgentApproval();
-  const [sendState, setSendState] = useState<ApprovalSendState>("idle");
+  const {
+    session,
+    sendToolApproval,
+    setActiveToolApprovalRequest,
+    clearActiveToolApprovalRequest,
+    toolApprovalSendStates,
+  } = useAgentApproval();
+  const sendState = approvalId
+    ? (toolApprovalSendStates[approvalId] ?? "idle")
+    : "idle";
   const isBusy = sendState === "sending";
   const isSettled = sendState === "approved" || sendState === "denied";
   const canRespond = !!approvalId && !!session && !isBusy && !isSettled;
 
+  useEffect(() => {
+    if (!approvalId || isSettled) {
+      clearActiveToolApprovalRequest({ approvalId, toolCallId });
+      return;
+    }
+
+    setActiveToolApprovalRequest({
+      approvalId,
+      toolCallId,
+      title,
+      target,
+      detail,
+    });
+
+    return () => {
+      clearActiveToolApprovalRequest({ approvalId, toolCallId });
+    };
+  }, [
+    approvalId,
+    clearActiveToolApprovalRequest,
+    detail,
+    isSettled,
+    setActiveToolApprovalRequest,
+    target,
+    title,
+    toolCallId,
+  ]);
+
   const submitDecision = async (decision: AgentToolApprovalDecision) => {
     if (!approvalId || !session || isBusy || isSettled) return;
-    setSendState("sending");
     try {
       await sendToolApproval({
         approvalId,
         toolCallId,
         decision,
       });
-      setSendState(decision === "approve" ? "approved" : "denied");
     } catch (error) {
-      setSendState("idle");
       toast.error(
         error instanceof Error
           ? error.message

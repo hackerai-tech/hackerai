@@ -25,8 +25,10 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
+import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { UploadedFileState } from "@/types/file";
+import { useAgentApproval } from "@/app/contexts/AgentApprovalContext";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -153,9 +155,11 @@ export const ChatInput = ({
     handleRemoveFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
+  const { activeToolApprovalRequest } = useAgentApproval();
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const showAgentApprovalPrompt = !!activeToolApprovalRequest;
 
   const draftId =
     isNewChat && (!hasMessages || temporaryChatsEnabled)
@@ -324,14 +328,18 @@ export const ChatInput = ({
             Once the first message is sent, switches to below-input placement immediately
             (isNewChat doesn't flip until the stream finishes, so we also check hasMessages).
             On desktop, it's shown below the input (order-3). */}
-        {isMobile && isNewChat && !hasMessages && isAgentMode(chatMode) && (
-          <div className="flex px-1 pb-2 min-h-9">
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-          </div>
-        )}
+        {isMobile &&
+          isNewChat &&
+          !hasMessages &&
+          isAgentMode(chatMode) &&
+          !showAgentApprovalPrompt && (
+            <div className="flex px-1 pb-2 min-h-9">
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+          )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
@@ -350,46 +358,55 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
-        <div
-          className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
-        >
-          <ChatInputTextarea
-            draftId={draftId}
-            chatMode={chatMode}
-            onEnterSubmit={handleSubmit}
-            minRows={isCentered ? 3 : 1}
-            placeholder={placeholder}
-            autoFocus={autoFocus}
+        {showAgentApprovalPrompt ? (
+          <AgentApprovalPrompt
+            key={activeToolApprovalRequest.approvalId}
+            request={activeToolApprovalRequest}
           />
-          <ChatInputToolbar
-            onAttachClick={handleAttachClick}
-            isGenerating={isGenerating}
-            hideStop={hideStop}
-            onStop={onStop}
-            onSubmit={handleSubmit}
-            status={status}
-            isUploadingFiles={isUploadingFiles}
-            input={input}
-            uploadedFiles={uploadedFiles}
-            chatMode={chatMode}
-          />
-        </div>
+        ) : (
+          <div
+            className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          >
+            <ChatInputTextarea
+              draftId={draftId}
+              chatMode={chatMode}
+              onEnterSubmit={handleSubmit}
+              minRows={isCentered ? 3 : 1}
+              placeholder={placeholder}
+              autoFocus={autoFocus}
+            />
+            <ChatInputToolbar
+              onAttachClick={handleAttachClick}
+              isGenerating={isGenerating}
+              hideStop={hideStop}
+              onStop={onStop}
+              onSubmit={handleSubmit}
+              status={status}
+              isUploadingFiles={isUploadingFiles}
+              input={input}
+              uploadedFiles={uploadedFiles}
+              chatMode={chatMode}
+            />
+          </div>
+        )}
 
         {/* Sandbox selector below input.
             Desktop centered new chats (no messages yet): absolutely positioned to avoid
             shifting the centered layout.
             Existing chats / after first message sent (all screens): normal flow.
             Mobile new chats with no messages: hidden (uses above-input placement). */}
-        {isAgent && (!isMobile || !isNewChat || hasMessages) && (
-          <div
-            className={`order-3 flex items-center px-1 pt-2 ${isNewChat && !hasMessages ? "absolute left-4 right-4 top-full" : ""}`}
-          >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-          </div>
-        )}
+        {isAgent &&
+          !showAgentApprovalPrompt &&
+          (!isMobile || !isNewChat || hasMessages) && (
+            <div
+              className={`order-3 flex items-center px-1 pt-2 ${isNewChat && !hasMessages ? "absolute left-4 right-4 top-full" : ""}`}
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+          )}
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">

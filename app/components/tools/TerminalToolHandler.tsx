@@ -170,6 +170,9 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           <ToolApprovalControls
             approvalId={part.approval?.id}
             toolCallId={toolCallId}
+            title="The agent wants full access to run this terminal command."
+            target={blockTarget}
+            detail="Approve to continue, or deny to stop this command."
           />
         </div>
       );
