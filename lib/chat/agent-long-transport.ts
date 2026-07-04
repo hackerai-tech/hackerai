@@ -1,5 +1,6 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
+import { AGENT_API_ENDPOINT } from "@/lib/api/agent-endpoints";
 import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
 import {
   readTriggerRunStream,
@@ -7,9 +8,9 @@ import {
 } from "./trigger-browser-realtime";
 
 /**
- * `fetch` adapter for "agent-long" mode used by the chat transport.
+ * `fetch` adapter for Trigger-backed Agent mode used by the chat transport.
  *
- *   1. POST the request body to /api/agent-long, which triggers a durable
+ *   1. POST the request body to /api/agent, which triggers a durable
  *      trigger.dev task and returns { runId, publicAccessToken }.
  *   2. Subscribe to the task's "ui" metadata stream (Vercel AI SDK
  *      UIMessage chunks the task emitted).
@@ -19,7 +20,7 @@ import {
  * On reconnect (page reload while a run is still executing), useChat fires
  * a GET against the configured reconnect URL; we route that through
  * `resumeAgentLongStream`, which fetches the active runId from
- * /api/agent-long/resume and pipes the same trigger.dev stream. Trigger.dev
+ * /api/agent/resume and pipes the same trigger.dev stream. Trigger.dev
  * streams are durable for 28 days, so a fresh subscription replays every
  * chunk from the beginning — useChat reconstructs the in-progress
  * assistant turn without needing a client-side cursor.
@@ -618,7 +619,7 @@ export const fetchAgentLongStream = async (
   });
 
   try {
-    const startResponse = await fetchWithErrorHandlers("/api/agent-long", {
+    const startResponse = await fetchWithErrorHandlers(AGENT_API_ENDPOINT, {
       ...init,
       signal: linkedAbort.controller.signal,
     });
@@ -645,7 +646,7 @@ export const resumeAgentLongStream = async (
   });
 
   // useChat's reconnectToStream signals "nothing to resume" by treating a
-  // 204 as null. /api/agent-long/resume returns 204 when the chat has no
+  // 204 as null. /api/agent/resume returns 204 when the chat has no
   // active run (or the stored run hit a terminal state); pass that through.
   try {
     const response = await fetchWithErrorHandlers(url, {

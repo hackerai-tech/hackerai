@@ -1193,7 +1193,7 @@ export const deleteAllChatsBatch = internalMutation({
 });
 
 /**
- * Set the active trigger.dev run id for a chat (used by /api/agent-long when
+ * Set the active trigger.dev run id for a chat (used by /api/agent when
  * kicking off a long-running task). Stored on the chat row so the cancel
  * endpoint and reconnect flow can find the in-flight run by chatId.
  */

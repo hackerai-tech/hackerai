@@ -44,6 +44,10 @@ import {
   isLegacyDesktopAgentClient,
   shouldUseAgentLongForAgent,
 } from "@/lib/chat/agent-routing";
+import {
+  AGENT_RESUME_ENDPOINT,
+  LEGACY_AGENT_RESUME_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
@@ -537,14 +541,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
           return fetchAgentLongStream(init);
         }
-        // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
-        // load — prepareReconnectToStreamRequest already pointed at the resume
-        // URL, so route based on the URL (not on ref state) to be resilient to
-        // stale refs.
+        // Reconnect for legacy "agent-long" chats normalised to "agent" mode
+        // on load — route based on the URL (not on ref state) to be resilient
+        // to stale refs.
         if (
           init?.method === "GET" &&
-          (typeof input === "string" ? input : input.toString()).includes(
-            "/api/agent-long/resume",
+          [AGENT_RESUME_ENDPOINT, LEGACY_AGENT_RESUME_ENDPOINT].some(
+            (resumeEndpoint) =>
+              (typeof input === "string" ? input : input.toString()).includes(
+                resumeEndpoint,
+              ),
           )
         ) {
           return resumeAgentLongStream(
@@ -555,9 +561,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return fetchWithErrorHandlers(input, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
-        // Use the agent-long resume endpoint when there is a stored trigger run
-        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
-        // when the current run is using Trigger.dev for agent mode.
+        // Use the Trigger-backed Agent resume endpoint when there is a stored
+        // trigger run (covers legacy "agent-long" chats normalised to "agent")
+        // or when the current run is using Trigger.dev for agent mode.
         const useTriggerAgent = shouldUseAgentLongForAgent({
           mode: chatModeRef.current,
           subscription: subscriptionRef.current,
@@ -565,7 +571,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         });
         if (useTriggerAgent || !!activeTriggerRunRef.current) {
           return {
-            api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
+            api: `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(id)}`,
           };
         }
         return { api: `${api}/${id}/stream` };
@@ -961,7 +967,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       try {
         const response = await fetch(
-          `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
           { method: "GET", signal: abortController.signal },
         );
         if (response.status === 204) {

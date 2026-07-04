@@ -93,6 +93,7 @@ import type {
   SummarizationTracker,
 } from "@/lib/api/chat-stream-helpers";
 import type { ChatLogger } from "@/lib/api/chat-logger";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
@@ -343,7 +344,7 @@ export type AgentStreamContext = {
   currentSystemPrompt: string;
   tools: ToolSet;
   mode: ChatMode;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   userId: string;
   subscription: SubscriptionTier;
   chatId: string;
