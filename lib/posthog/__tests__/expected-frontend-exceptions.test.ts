@@ -72,14 +72,19 @@ describe("shouldDropExpectedFrontendException", () => {
   });
 
   it("drops exact manual chat stop aborts", () => {
-    expect(
-      shouldDropExpectedFrontendException({
-        event: "$exception",
-        properties: {
-          $exception_values: ["AbortError: Fetch is aborted"],
-        },
-      }),
-    ).toBe(true);
+    for (const value of [
+      "AbortError: Fetch is aborted",
+      "AbortError: signal is aborted without reason",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: [value],
+          },
+        }),
+      ).toBe(true);
+    }
 
     expect(
       shouldDropExpectedFrontendException({
@@ -95,6 +100,7 @@ describe("shouldDropExpectedFrontendException", () => {
     for (const value of [
       "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
       "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+      "NotFoundError: The object can not be found here.",
     ]) {
       expect(
         shouldDropExpectedFrontendException({

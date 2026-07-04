@@ -1,4 +1,4 @@
-import type { Todo } from "@/types";
+import { TODO_STATUS_VALUES, type Todo } from "@/types";
 
 export class TodoUpdateError extends Error {
   constructor(message: string) {
@@ -57,6 +57,24 @@ const hasTodoPatch = (candidate: TodoLike): boolean => {
 const hasBlankContent = (candidate: TodoLike): boolean => {
   return candidate.content !== undefined && candidate.content.trim() === "";
 };
+
+const TODO_STATUSES = new Set<Todo["status"]>(TODO_STATUS_VALUES);
+
+const isTodoForDisplay = (candidate: unknown): candidate is Todo => {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+
+  const todo = candidate as Partial<Todo>;
+  return (
+    typeof todo.id === "string" &&
+    typeof todo.content === "string" &&
+    TODO_STATUSES.has(todo.status as Todo["status"])
+  );
+};
+
+const normalizeTodosForDisplay = (todos: unknown): Todo[] =>
+  Array.isArray(todos) ? todos.filter(isTodoForDisplay) : [];
 
 export const dedupeTodosById = <T extends { id: string }>(
   todos: ReadonlyArray<T>,
@@ -292,8 +310,8 @@ export const getTodoStats = (todos: Todo[]) => {
   };
 };
 
-export const getTodoDisplayData = (todos: Todo[]) => {
-  const uniqueTodos = dedupeTodosById(todos);
+export const getTodoDisplayData = (todos: unknown) => {
+  const uniqueTodos = dedupeTodosById(normalizeTodosForDisplay(todos));
   const byStatus = {
     completed: uniqueTodos.filter((t) => t.status === "completed"),
     inProgress: uniqueTodos.filter((t) => t.status === "in_progress"),
@@ -334,13 +352,14 @@ export const getVisibleTodoBlockItems = ({
   inputTodos,
   showAllTodos = false,
 }: {
-  todos: Todo[];
+  todos: unknown;
   inputTodos?: ReadonlyArray<TodoLike>;
   showAllTodos?: boolean;
 }): Todo[] => {
   const todoData = getTodoDisplayData(todos);
   const { stats, currentInProgress, lastDone } = todoData;
   const uniqueTodos = todoData.todos;
+  const inputTodoList = Array.isArray(inputTodos) ? inputTodos : [];
 
   if (stats.done === 0 || showAllTodos) {
     return uniqueTodos;
@@ -348,8 +367,8 @@ export const getVisibleTodoBlockItems = ({
 
   const visibleTodos: Todo[] = [];
 
-  if (inputTodos && inputTodos.length > 0) {
-    const inputTodoIds = new Set(inputTodos.map((t) => t.id));
+  if (inputTodoList.length > 0) {
+    const inputTodoIds = new Set(inputTodoList.map((t) => t.id));
     visibleTodos.push(
       ...uniqueTodos.filter((todo) => inputTodoIds.has(todo.id)),
     );

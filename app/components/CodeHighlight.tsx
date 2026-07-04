@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 import { memo, useState, useMemo } from "react";
 import ShikiHighlighter, { isInlineCode, type Element } from "react-shiki";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
-import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
+import {
+  shouldUseShikiHighlighter,
+  ShikiErrorBoundary,
+} from "@/lib/utils/shiki";
 
 interface CodeHighlightProps {
   className?: string | undefined;
@@ -28,7 +31,7 @@ const CodeHighlightImpl = ({
 
   // Check if language is supported by Shiki
   const shouldUsePlainText = useMemo(() => {
-    return !isLanguageSupported(language);
+    return !shouldUseShikiHighlighter(language);
   }, [language]);
 
   const handleToggleWrap = () => {

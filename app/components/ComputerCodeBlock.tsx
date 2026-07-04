@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 import { useState, useMemo } from "react";
 import { Download, Copy, Check, WrapText } from "lucide-react";
 import ShikiHighlighter from "react-shiki";
-import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
+import {
+  shouldUseShikiHighlighter,
+  ShikiErrorBoundary,
+} from "@/lib/utils/shiki";
 import {
   Tooltip,
   TooltipTrigger,
@@ -29,7 +32,7 @@ export const ComputerCodeBlock = ({
 
   // Check if language is supported by Shiki
   const shouldUsePlainText = useMemo(() => {
-    return !isLanguageSupported(language);
+    return !shouldUseShikiHighlighter(language);
   }, [language]);
 
   const handleCopy = async () => {
