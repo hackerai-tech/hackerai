@@ -308,10 +308,19 @@ export const isSidebarSharedFiles = (
   return "requestedPaths" in content;
 };
 
+export const TODO_STATUS_VALUES = [
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+] as const;
+
+export type TodoStatus = (typeof TODO_STATUS_VALUES)[number];
+
 export interface Todo {
   id: string;
   content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
+  status: TodoStatus;
   sourceMessageId?: string;
 }
 

@@ -1,4 +1,4 @@
-import type { Todo } from "@/types";
+import { TODO_STATUS_VALUES, type Todo } from "@/types";
 
 export class TodoUpdateError extends Error {
   constructor(message: string) {
@@ -58,12 +58,7 @@ const hasBlankContent = (candidate: TodoLike): boolean => {
   return candidate.content !== undefined && candidate.content.trim() === "";
 };
 
-const TODO_STATUSES = new Set<Todo["status"]>([
-  "pending",
-  "in_progress",
-  "completed",
-  "cancelled",
-]);
+const TODO_STATUSES = new Set<Todo["status"]>(TODO_STATUS_VALUES);
 
 const isTodoForDisplay = (candidate: unknown): candidate is Todo => {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
