@@ -57,6 +57,11 @@ const agentEndpointsSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentRouteErrorsSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-route-errors.ts"),
+  "utf8",
+);
+
 const chatComponentSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/components/chat.tsx"),
   "utf8",
@@ -397,6 +402,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /payloadEndpoint\s*\?\?\s*LEGACY_AGENT_API_ENDPOINT/,
     );
+    expect(agentRouteErrorsSrc).toMatch(/handleAgentRouteError/);
   });
 
   test("uses a paid two-hour task cap with a separate free-plan runtime cap", () => {
@@ -423,6 +429,31 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/metadata:\s*{/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+  });
+
+  test("validates agent trigger request bodies before auth and Trigger work", () => {
+    expect(routeSrc).toMatch(/parseAgentTriggerRequestBody/);
+    expect(routeSrc).toMatch(/Invalid JSON body/);
+    expect(routeSrc).toMatch(/chatId required/);
+    expect(routeSrc).toMatch(/messages must be an array/);
+
+    const parseIdx = routeSrc.indexOf("parseAgentTriggerRequestBody(req)");
+    const authIdx = routeSrc.indexOf("await getUserIDAndPro(req)");
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", authIdx);
+
+    expect(parseIdx).toBeGreaterThan(-1);
+    expect(authIdx).toBeGreaterThan(parseIdx);
+    expect(triggerIdx).toBeGreaterThan(authIdx);
+  });
+
+  test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
+    expect(routeSrc).toMatch(/idempotencyKeys/);
+    expect(routeSrc).toMatch(/buildAgentRunIdempotencyKey/);
+    expect(routeSrc).toMatch(/getLastRequestMessageId/);
+    expect(routeSrc).toMatch(/scope:\s*"global"/);
+    expect(routeSrc).toMatch(/idempotencyKey:\s*triggerIdempotencyKey/);
+    expect(routeSrc).toMatch(/idempotencyKeyTTL:\s*"6h"/);
+    expect(routeSrc).toMatch(/existingChat\?\.update_time/);
   });
 
   test("handled tool failures are visible in Trigger logs and metadata", () => {

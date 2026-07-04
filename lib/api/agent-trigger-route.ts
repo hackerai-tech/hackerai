@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { tasks, auth } from "@trigger.dev/sdk";
+import { tasks, auth, idempotencyKeys } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
 import { geolocation } from "@vercel/functions";
 import type { UIMessage } from "ai";
@@ -20,6 +20,7 @@ import {
   AGENT_TRIGGER_TASK_ID,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
+import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceSelectedModel,
@@ -59,11 +60,124 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
+type AgentTriggerRequestBody = {
+  messages: UIMessage[];
+  chatId: string;
+  todos?: Todo[];
+  regenerate?: boolean;
+  temporary?: boolean;
+  sandboxPreference?: SandboxPreference;
+  selectedModel?: string;
+  isAutoContinue?: boolean;
+};
+
+type AgentTriggerRequestParseResult =
+  | { ok: true; body: AgentTriggerRequestBody }
+  | { ok: false; response: NextResponse };
+
+const parseAgentTriggerRequestBody = async (
+  req: NextRequest,
+): Promise<AgentTriggerRequestParseResult> => {
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid JSON body", { status: 400 }),
+    };
+  }
+
+  if (typeof rawBody !== "object" || rawBody === null) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid JSON body", { status: 400 }),
+    };
+  }
+
+  const body = rawBody as Record<string, unknown>;
+  if (typeof body.chatId !== "string" || body.chatId.length === 0) {
+    return {
+      ok: false,
+      response: new NextResponse("chatId required", { status: 400 }),
+    };
+  }
+  if (!Array.isArray(body.messages)) {
+    return {
+      ok: false,
+      response: new NextResponse("messages must be an array", { status: 400 }),
+    };
+  }
+
+  return {
+    ok: true,
+    body: {
+      messages: body.messages as UIMessage[],
+      chatId: body.chatId,
+      todos: Array.isArray(body.todos) ? (body.todos as Todo[]) : undefined,
+      regenerate: body.regenerate === true,
+      temporary: body.temporary === true,
+      sandboxPreference:
+        typeof body.sandboxPreference === "string"
+          ? (body.sandboxPreference as SandboxPreference)
+          : undefined,
+      selectedModel:
+        typeof body.selectedModel === "string" ? body.selectedModel : undefined,
+      isAutoContinue: body.isAutoContinue === true,
+    },
+  };
+};
+
+const getLastRequestMessageId = (messages: UIMessage[]): string | undefined => {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const id = messages[index]?.id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return undefined;
+};
+
+const buildAgentRunIdempotencyKey = async ({
+  userId,
+  chatId,
+  requestMessages,
+  regenerate,
+  isAutoContinue,
+  existingChatUpdateTime,
+  triggerRequestedAt,
+}: {
+  userId: string;
+  chatId: string;
+  requestMessages: UIMessage[];
+  regenerate?: boolean;
+  isAutoContinue?: boolean;
+  existingChatUpdateTime?: number;
+  triggerRequestedAt: number;
+}) => {
+  const operation = regenerate
+    ? "regenerate"
+    : isAutoContinue
+      ? "auto-continue"
+      : "send";
+  const turnKey =
+    getLastRequestMessageId(requestMessages) ??
+    (existingChatUpdateTime !== undefined
+      ? `chat-update:${existingChatUpdateTime}`
+      : `request:${triggerRequestedAt}`);
+
+  return idempotencyKeys.create(
+    ["agent-run", userId, chatId, operation, turnKey],
+    { scope: "global" },
+  );
+};
+
 export const createAgentTriggerPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
     try {
+      const parsedBody = await parseAgentTriggerRequestBody(req);
+      if (!parsedBody.ok) return parsedBody.response;
+
       const {
         messages,
         chatId,
@@ -73,16 +187,7 @@ export const createAgentTriggerPost =
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
-      }: {
-        messages: UIMessage[];
-        chatId: string;
-        todos?: Todo[];
-        regenerate?: boolean;
-        temporary?: boolean;
-        sandboxPreference?: SandboxPreference;
-        selectedModel?: string;
-        isAutoContinue?: boolean;
-      } = await req.json();
+      } = parsedBody.body;
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
@@ -235,6 +340,15 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
+      const triggerIdempotencyKey = await buildAgentRunIdempotencyKey({
+        userId,
+        chatId,
+        requestMessages,
+        regenerate,
+        isAutoContinue,
+        existingChatUpdateTime: existingChat?.update_time,
+        triggerRequestedAt,
+      });
       const handle = await tasks.trigger<typeof agentLongTask>(
         AGENT_TRIGGER_TASK_ID,
         {
@@ -264,6 +378,8 @@ export const createAgentTriggerPost =
           ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
           tags: triggerTags,
           ...(triggerRegion ? { region: triggerRegion } : {}),
+          idempotencyKey: triggerIdempotencyKey,
+          idempotencyKeyTTL: "6h",
           metadata: {
             status: "queued",
             chatId,
@@ -313,10 +429,11 @@ export const createAgentTriggerPost =
         chatId,
       });
     } catch (error) {
-      if (error instanceof ChatSDKError) {
-        return error.toResponse();
-      }
-      console.error(`[${endpoint}] failed to trigger task:`, error);
-      return new NextResponse("Failed to start agent run", { status: 500 });
+      return handleAgentRouteError({
+        error,
+        endpoint,
+        action: "start",
+        fallbackMessage: "Failed to start agent run",
+      });
     }
   };

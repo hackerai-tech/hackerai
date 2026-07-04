@@ -7,7 +7,7 @@ import {
   getActiveTriggerRun,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
-import { ChatSDKError } from "@/lib/errors";
+import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 
 export const createAgentCancelPost =
@@ -53,8 +53,11 @@ export const createAgentCancelPost =
 
       return NextResponse.json({ canceled: true, runId });
     } catch (error) {
-      if (error instanceof ChatSDKError) return error.toResponse();
-      console.error(`[${endpoint}/cancel] failed:`, error);
-      return new NextResponse("Failed to cancel run", { status: 500 });
+      return handleAgentRouteError({
+        error,
+        endpoint,
+        action: "cancel",
+        fallbackMessage: "Failed to cancel run",
+      });
     }
   };

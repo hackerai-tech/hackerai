@@ -7,7 +7,7 @@ import {
   getActiveTriggerRun,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
-import { ChatSDKError } from "@/lib/errors";
+import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 
 const TERMINAL_STATUSES = new Set([
@@ -71,8 +71,11 @@ export const createAgentResumeGet =
 
       return NextResponse.json({ runId, publicAccessToken, chatId });
     } catch (error) {
-      if (error instanceof ChatSDKError) return error.toResponse();
-      console.error(`[${endpoint}/resume] failed:`, error);
-      return new NextResponse("Failed to resume run", { status: 500 });
+      return handleAgentRouteError({
+        error,
+        endpoint,
+        action: "resume",
+        fallbackMessage: "Failed to resume run",
+      });
     }
   };
