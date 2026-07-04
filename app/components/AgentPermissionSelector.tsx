@@ -18,6 +18,7 @@ type AgentPermissionSelectorProps = {
 type PermissionOption = {
   id: AgentPermissionMode;
   label: string;
+  description: string;
   shortLabel: string;
   icon: typeof ShieldCheck;
 };
@@ -26,13 +27,16 @@ const options: PermissionOption[] = [
   {
     id: "full_access",
     label: "Full access",
-    shortLabel: "Full",
+    description: "Run commands and edit files without approval prompts.",
+    shortLabel: "Full access",
     icon: ShieldCheck,
   },
   {
     id: "ask_approval",
-    label: "Ask approval",
-    shortLabel: "Approval",
+    label: "Ask for approval",
+    description:
+      "Pause before commands and file edits so you can approve or deny.",
+    shortLabel: "Ask for approval",
     icon: ShieldQuestion,
   },
 ];
@@ -70,7 +74,7 @@ export function AgentPermissionSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[220px] p-1" align="start">
+      <PopoverContent className="w-[280px] p-1" align="start">
         <div className="space-y-0.5">
           {options.map((option) => {
             const OptionIcon = option.icon;
@@ -84,19 +88,28 @@ export function AgentPermissionSelector({
                   setAgentPermissionMode(option.id);
                   setOpen(false);
                 }}
-                className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
+                className={`w-full flex items-start gap-2.5 p-2 rounded-md text-left transition-colors ${
                   selected
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-muted"
                 }`}
               >
-                <OptionIcon className="h-4 w-4 shrink-0" />
+                <OptionIcon className="h-4 w-4 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">
                     {option.label}
                   </div>
+                  <div
+                    className={`text-xs leading-snug mt-0.5 ${
+                      selected
+                        ? "text-accent-foreground/70"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {option.description}
+                  </div>
                 </div>
-                {selected && <Check className="h-4 w-4 shrink-0" />}
+                {selected && <Check className="h-4 w-4 shrink-0 mt-0.5" />}
               </button>
             );
           })}
