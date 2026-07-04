@@ -11,6 +11,7 @@ const mockSetMessages = jest.fn();
 const mockStop = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
+let mockRouteParams: Record<string, string> = {};
 
 jest.mock("@ai-sdk/react", () => ({
   useChat: jest.fn(() => ({
@@ -26,7 +27,7 @@ jest.mock("@ai-sdk/react", () => ({
 }));
 
 jest.mock("next/navigation", () => ({
-  useParams: jest.fn(() => ({})),
+  useParams: jest.fn(() => mockRouteParams),
   useRouter: jest.fn(() => ({
     push: jest.fn(),
     replace: jest.fn(),
@@ -172,7 +173,7 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 
 // ===== NOW import components =====
-import { Chat } from "../chat";
+import { Chat, getExistingChatLoadState } from "../chat";
 import { ChatLayout } from "../ChatLayout";
 import { TestWrapper } from "../testUtils";
 
@@ -181,8 +182,10 @@ describe("Chat Component Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    const { useParams } = require("next/navigation");
-    useParams.mockReturnValue({});
+    const convexReact = require("convex/react");
+    convexReact.resetMockConvexAuth?.();
+    convexReact.resetMockConvexQueries?.();
+    mockRouteParams = {};
     const { useChat } = require("@ai-sdk/react");
     mockUseChat = useChat as jest.Mock;
 
@@ -210,8 +213,7 @@ describe("Chat Component Integration", () => {
     });
 
     it("should render with provided chatId", () => {
-      const { useParams } = require("next/navigation");
-      useParams.mockReturnValue({ id: "test-chat-123" });
+      mockRouteParams = { id: "test-chat-123" };
 
       const { container } = render(
         <TestWrapper>
@@ -222,6 +224,82 @@ describe("Chat Component Integration", () => {
       expect(
         container.querySelector(".flex.bg-background"),
       ).toBeInTheDocument();
+    });
+
+    it("keeps an existing chat loading while Convex auth is still loading", () => {
+      expect(
+        getExistingChatLoadState({
+          isExistingChat: true,
+          hasMessages: false,
+          isConvexAuthLoading: true,
+          isConvexAuthenticated: false,
+          shouldFetchMessages: false,
+          chatData: null,
+          paginationStatus: "Exhausted",
+          hasPaginatedMessageResults: false,
+          awaitingServerChat: false,
+        }),
+      ).toEqual({
+        isInitialExistingChatLoad: true,
+        isChatNotFound: false,
+      });
+    });
+
+    it("keeps an existing chat loading while the first message page is loading", () => {
+      expect(
+        getExistingChatLoadState({
+          isExistingChat: true,
+          hasMessages: false,
+          isConvexAuthLoading: false,
+          isConvexAuthenticated: true,
+          shouldFetchMessages: true,
+          chatData: null,
+          paginationStatus: "LoadingFirstPage",
+          hasPaginatedMessageResults: false,
+          awaitingServerChat: false,
+        }),
+      ).toEqual({
+        isInitialExistingChatLoad: true,
+        isChatNotFound: false,
+      });
+    });
+
+    it("does not show not found when messages resolved before chat metadata recovers", () => {
+      expect(
+        getExistingChatLoadState({
+          isExistingChat: true,
+          hasMessages: false,
+          isConvexAuthLoading: false,
+          isConvexAuthenticated: true,
+          shouldFetchMessages: true,
+          chatData: null,
+          paginationStatus: "Exhausted",
+          hasPaginatedMessageResults: true,
+          awaitingServerChat: false,
+        }),
+      ).toEqual({
+        isInitialExistingChatLoad: false,
+        isChatNotFound: false,
+      });
+    });
+
+    it("shows chat not found after auth and messages resolve empty", () => {
+      expect(
+        getExistingChatLoadState({
+          isExistingChat: true,
+          hasMessages: false,
+          isConvexAuthLoading: false,
+          isConvexAuthenticated: true,
+          shouldFetchMessages: true,
+          chatData: null,
+          paginationStatus: "Exhausted",
+          hasPaginatedMessageResults: false,
+          awaitingServerChat: false,
+        }),
+      ).toEqual({
+        isInitialExistingChatLoad: false,
+        isChatNotFound: true,
+      });
     });
   });
 
