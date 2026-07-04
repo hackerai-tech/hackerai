@@ -11,6 +11,12 @@ export const isLanguageSupported = (lang: string | undefined): boolean => {
   return SUPPORTED_LANGUAGES.has(lang.toLowerCase());
 };
 
+export const isWebAssemblyAvailable = (): boolean =>
+  typeof globalThis.WebAssembly !== "undefined";
+
+export const shouldUseShikiHighlighter = (lang: string | undefined): boolean =>
+  isWebAssemblyAvailable() && isLanguageSupported(lang);
+
 interface ShikiBoundaryProps {
   fallback: ReactNode;
   children: ReactNode;

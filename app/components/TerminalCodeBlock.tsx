@@ -6,6 +6,7 @@ import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
+import { isWebAssemblyAvailable } from "@/lib/utils/shiki";
 
 const XtermRenderer = dynamic(
   () => import("./XtermRenderer").then((m) => m.XtermRenderer),
@@ -48,6 +49,20 @@ const cleanCache = () => {
       ansiCache.delete(entries[i][0]);
     }
   }
+};
+
+const createPlainTextHtml = (codeToRender: string): string => {
+  const escapedCode = codeToRender.replace(/[&<>"']/g, (char) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[char];
+  });
+  return `<pre><code>${escapedCode}</code></pre>`;
 };
 
 /**
@@ -108,6 +123,17 @@ const AnsiCodeBlock = ({
         setIsRendering(true);
 
         try {
+          if (!isWebAssemblyAvailable()) {
+            const fallbackHtml = createPlainTextHtml(codeToRender);
+            if (cacheKeyRef.current === cacheKey) {
+              setHtmlContent(fallbackHtml);
+              cleanCache();
+              ansiCache.set(cacheKey, fallbackHtml);
+              lastRenderedCodeRef.current = codeToRender;
+            }
+            return;
+          }
+
           const html = await codeToHtml(codeToRender, {
             lang: "ansi",
             theme: theme,
@@ -122,18 +148,7 @@ const AnsiCodeBlock = ({
           }
         } catch (error) {
           console.error("Failed to render ANSI code:", error);
-          // Fallback to plain text with proper escaping
-          const escapedCode = codeToRender.replace(/[&<>"']/g, (char) => {
-            const entities: Record<string, string> = {
-              "&": "&amp;",
-              "<": "&lt;",
-              ">": "&gt;",
-              '"': "&quot;",
-              "'": "&#39;",
-            };
-            return entities[char];
-          });
-          const fallbackHtml = `<pre><code>${escapedCode}</code></pre>`;
+          const fallbackHtml = createPlainTextHtml(codeToRender);
 
           if (cacheKeyRef.current === cacheKey) {
             setHtmlContent(fallbackHtml);
