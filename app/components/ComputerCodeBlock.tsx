@@ -12,6 +12,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { downloadFile } from "@/lib/utils/file-download";
+import { getCodeDownloadFilename } from "@/lib/utils/code-download-filename";
 
 interface ComputerCodeBlockProps {
   children: ReactNode;
@@ -47,7 +48,7 @@ export const ComputerCodeBlock = ({
 
   const handleDownload = () => {
     downloadFile({
-      filename: `code.${language || "txt"}`,
+      filename: getCodeDownloadFilename(language),
       content: codeContent,
     });
   };
