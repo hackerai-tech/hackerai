@@ -129,11 +129,7 @@ const projectPartToBudget = (
   }
 
   let projectedTokens = estimatePartTokens(projected, fileTokens);
-  if (
-    projectedTokens > maxTokens &&
-    projected.type === "text" &&
-    "text" in projected
-  ) {
+  if (projectedTokens > maxTokens) {
     projected = {
       ...projected,
       text: truncateContent(
