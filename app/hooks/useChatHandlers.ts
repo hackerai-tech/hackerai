@@ -90,6 +90,7 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
+    agentPermissionMode,
     selectedModel,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
@@ -109,6 +110,7 @@ export const useChatHandlers = ({
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
 
   const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
@@ -375,6 +377,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
             },
@@ -393,6 +396,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
             },
@@ -478,6 +482,7 @@ export const useChatHandlers = ({
               shouldSendClientMessagesForRegenerate,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
           },
         }),
@@ -492,6 +497,7 @@ export const useChatHandlers = ({
             regenerate: true,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
           },
         }),
@@ -539,6 +545,7 @@ export const useChatHandlers = ({
               shouldSendClientMessagesForRegenerate,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
@@ -554,6 +561,7 @@ export const useChatHandlers = ({
             regenerate: true,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
@@ -672,6 +680,7 @@ export const useChatHandlers = ({
             regenerate: true,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },
@@ -711,6 +720,7 @@ export const useChatHandlers = ({
             regenerate: true,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },
@@ -737,6 +747,7 @@ export const useChatHandlers = ({
             todos,
             temporary: temporaryChatsEnabled,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: continuationSelectedModel,
           },
         },
@@ -785,6 +796,7 @@ export const useChatHandlers = ({
             todos,
             temporary: temporaryChatsEnabled,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },

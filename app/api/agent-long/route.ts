@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "crypto";
+import * as triggerSdk from "@trigger.dev/sdk";
 import { tasks, auth } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
 import { geolocation } from "@vercel/functions";
@@ -19,6 +21,7 @@ import {
 import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceSelectedModel,
+  coerceAgentPermissionMode,
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
@@ -27,6 +30,7 @@ import type {
   SandboxPreference,
   SelectedModel,
   SubscriptionTier,
+  AgentPermissionMode,
 } from "@/types";
 import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
@@ -59,6 +63,17 @@ const AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<
 const getAgentLongTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
+type TriggerSessionsApi = {
+  start(body: Record<string, unknown>): Promise<{
+    runId: string;
+    publicAccessToken?: string;
+  }>;
+};
+
+const triggerSessions = (
+  triggerSdk as unknown as { sessions?: TriggerSessionsApi }
+).sessions;
+
 export async function POST(req: NextRequest) {
   const routeStartedAt = Date.now();
   try {
@@ -69,6 +84,7 @@ export async function POST(req: NextRequest) {
       regenerate,
       temporary,
       sandboxPreference,
+      agentPermissionMode: rawAgentPermissionMode,
       selectedModel: rawSelectedModel,
       isAutoContinue,
     }: {
@@ -78,9 +94,13 @@ export async function POST(req: NextRequest) {
       regenerate?: boolean;
       temporary?: boolean;
       sandboxPreference?: SandboxPreference;
+      agentPermissionMode?: AgentPermissionMode;
       selectedModel?: string;
       isAutoContinue?: boolean;
     } = await req.json();
+    const agentPermissionMode = coerceAgentPermissionMode(
+      rawAgentPermissionMode,
+    );
 
     const { userId, subscription, organizationId, freeQuotaSubject } =
       await getUserIDAndPro(req);
@@ -231,47 +251,91 @@ export async function POST(req: NextRequest) {
 
     const triggerRequestedAt = Date.now();
     const triggerPriority = getAgentLongTriggerPriority(subscription);
-    const handle = await tasks.trigger<typeof agentLongTask>(
-      "agent-long",
-      {
-        chatId,
-        userId,
-        subscription,
-        organizationId,
-        freeQuotaSubject,
-        messages: messagesForPayload,
-        localDesktopAttachmentsPrepared,
-        baseTodos: Array.isArray(todos) ? todos : [],
-        sandboxPreference,
-        selectedModel: selectedModelOverride,
-        userLocation,
-        temporary,
-        isAutoContinue,
-        regenerate,
-        isNewChat,
-        convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
-        requestTiming: {
-          routeStartedAt,
-          triggerRequestedAt,
-        },
+    const approvalSessionId =
+      agentPermissionMode === "ask_approval"
+        ? `agent-approval:${chatId}:${randomUUID()}`
+        : undefined;
+    const agentPayload = {
+      chatId,
+      userId,
+      subscription,
+      organizationId,
+      freeQuotaSubject,
+      messages: messagesForPayload,
+      localDesktopAttachmentsPrepared,
+      baseTodos: Array.isArray(todos) ? todos : [],
+      sandboxPreference,
+      agentPermissionMode,
+      approvalSessionId,
+      selectedModel: selectedModelOverride,
+      userLocation,
+      temporary,
+      isAutoContinue,
+      regenerate,
+      isNewChat,
+      convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
+      requestTiming: {
+        routeStartedAt,
+        triggerRequestedAt,
       },
-      {
-        ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
+    };
+    const triggerMetadata = {
+      status: "queued",
+      chatId,
+      userId,
+      subscription,
+      loginRequired: false,
+      routeStartedAt,
+      triggerRequestedAt,
+      triggerPriority,
+      triggerPayloadMessageCount: messagesForPayload.length,
+      agentPermissionMode,
+      ...(approvalSessionId ? { approvalSessionId } : {}),
+    };
+    const triggerOptions = {
+      ...(triggerPriority > 0 ? { priority: triggerPriority } : {}),
+      tags: triggerTags,
+      ...(triggerRegion ? { region: triggerRegion } : {}),
+      metadata: triggerMetadata,
+    };
+
+    let runId: string;
+    let approvalSessionPublicAccessToken: string | undefined;
+
+    if (approvalSessionId) {
+      if (!triggerSessions) {
+        throw new Error("Trigger.dev Sessions API is unavailable.");
+      }
+
+      const session = await triggerSessions.start({
+        type: "agent-long-approval",
+        externalId: approvalSessionId,
+        taskIdentifier: "agent-long",
         tags: triggerTags,
-        ...(triggerRegion ? { region: triggerRegion } : {}),
-        metadata: {
-          status: "queued",
-          chatId,
-          userId,
-          subscription,
-          loginRequired: false,
-          routeStartedAt,
-          triggerRequestedAt,
-          triggerPriority,
-          triggerPayloadMessageCount: messagesForPayload.length,
+        metadata: triggerMetadata,
+        triggerConfig: {
+          basePayload: agentPayload,
+          tags: triggerTags,
         },
-      },
-    );
+      });
+      runId = session.runId;
+      approvalSessionPublicAccessToken =
+        session.publicAccessToken ??
+        (await auth.createPublicToken({
+          scopes: {
+            read: { sessions: approvalSessionId },
+            write: { sessions: approvalSessionId },
+          } as any,
+          expirationTime: "6h",
+        }));
+    } else {
+      const handle = await tasks.trigger<typeof agentLongTask>(
+        "agent-long",
+        agentPayload,
+        triggerOptions,
+      );
+      runId = handle.id;
+    }
 
     const triggerCompletedAt = Date.now();
 
@@ -281,30 +345,41 @@ export async function POST(req: NextRequest) {
     // network calls before returning the handle to the browser.
     const [publicAccessToken] = await Promise.all([
       auth.createPublicToken({
-        scopes: { read: { runs: [handle.id] } },
+        scopes: { read: { runs: [runId] } },
         // 6h is enough to cover the max task duration plus reconnect grace.
         expirationTime: "6h",
       }),
       temporary
         ? Promise.resolve(null)
-        : setActiveTriggerRun({ chatId, triggerRunId: handle.id }),
+        : setActiveTriggerRun({
+            chatId,
+            triggerRunId: runId,
+            approvalSessionId: approvalSessionId ?? null,
+          }),
     ]);
 
     console.info("[/api/agent-long] started trigger run", {
       chatId,
-      runId: handle.id,
+      runId,
       routeDurationMs: Date.now() - routeStartedAt,
       triggerDurationMs: triggerCompletedAt - triggerRequestedAt,
       triggerPayloadMessageCount: messagesForPayload.length,
       persistedMessageCount: messagesForPersistence.length,
       temporary: !!temporary,
       localDesktopAttachmentsPrepared,
+      agentPermissionMode,
     });
 
     return NextResponse.json({
-      runId: handle.id,
+      runId,
       publicAccessToken,
       chatId,
+      ...(approvalSessionId && approvalSessionPublicAccessToken
+        ? {
+            approvalSessionId,
+            approvalSessionPublicAccessToken,
+          }
+        : {}),
     });
   } catch (error) {
     if (error instanceof ChatSDKError) {

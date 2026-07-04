@@ -11,8 +11,33 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
+export type AgentPermissionMode = "full_access" | "ask_approval";
+
+export const AGENT_PERMISSION_MODES: readonly AgentPermissionMode[] = [
+  "full_access",
+  "ask_approval",
+];
+
+export const DEFAULT_AGENT_PERMISSION_MODE: AgentPermissionMode = "full_access";
+
+export function isAgentPermissionMode(
+  value: unknown,
+): value is AgentPermissionMode {
+  return (
+    typeof value === "string" &&
+    (AGENT_PERMISSION_MODES as readonly string[]).includes(value)
+  );
+}
+
+export function coerceAgentPermissionMode(value: unknown): AgentPermissionMode {
+  return isAgentPermissionMode(value) ? value : DEFAULT_AGENT_PERMISSION_MODE;
+}
+
 export type SelectedModel =
-  "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
+  | "auto"
+  | "hackerai-standard"
+  | "hackerai-pro"
+  | "hackerai-max";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",

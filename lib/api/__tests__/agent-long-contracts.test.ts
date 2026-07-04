@@ -469,8 +469,9 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{\s*runId,\s*publicAccessToken,\s*chatId\s*\}\)/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,/,
     );
+    expect(resumeSrc).toMatch(/approvalSessionPublicAccessToken/);
   });
 });
 
@@ -496,7 +497,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
-    expect(routeSrc).toMatch(/metadata:\s*{/);
+    expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
+    expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
@@ -517,7 +519,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /await\s+recordAgentLongHandledToolFailureForDashboard/,
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
-    expect(taskSrc).toMatch(/onToolFailure,\s*\)/);
+    expect(taskSrc).toMatch(/onToolFailure,\s*requestToolApproval,\s*\)/);
   });
 
   test("runs use small subscription-aware Trigger.dev priority offsets", () => {
@@ -554,7 +556,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("start route returns chat id with the public run handle", () => {
     expect(routeSrc).toMatch(
-      /NextResponse\.json\(\{\s*runId:\s*handle\.id,\s*publicAccessToken,\s*chatId,/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,/,
     );
   });
 
@@ -854,22 +856,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const routingIdx = routeSrc.indexOf(
       "getTriggerRegionForVercelRequest(req)",
     );
-    const triggerIdx = routeSrc.indexOf("tasks.trigger", routingIdx);
     const regionOptionIdx = routeSrc.indexOf(
       "...(triggerRegion ? { region: triggerRegion } : {})",
-      triggerIdx,
+      routingIdx,
     );
+    const triggerIdx = routeSrc.indexOf("tasks.trigger", regionOptionIdx);
 
     expect(routingIdx).toBeGreaterThan(-1);
-    expect(triggerIdx).toBeGreaterThan(routingIdx);
-    expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
+    expect(regionOptionIdx).toBeGreaterThan(routingIdx);
+    expect(triggerIdx).toBeGreaterThan(regionOptionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
   });
 
   test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
     expect(routeSrc).toMatch(/freeQuotaSubject/);
-    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*freeQuotaSubject/);
+    expect(routeSrc).toMatch(
+      /const agentPayload\s*=\s*{[\s\S]*freeQuotaSubject/,
+    );
+    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*agentPayload/);
     expect(taskSrc).toMatch(/freeQuotaSubject\?:\s*string/);
     expect(taskSrc).toMatch(
       /const freeUsageSubject\s*=\s*freeQuotaSubject\s*\?\?\s*userId/,

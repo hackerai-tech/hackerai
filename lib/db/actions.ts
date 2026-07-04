@@ -51,7 +51,9 @@ const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
-  "token_threshold" | "provider_input_threshold" | "provider_pressure";
+  | "token_threshold"
+  | "provider_input_threshold"
+  | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -692,7 +694,8 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
     const usageForSave = sanitizeForConvexValue(usage) as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1056,7 +1059,8 @@ export async function getMessagesByChatId({
             );
             const budgetForMessages = maxTokens - summaryTokens;
             const retainedTail = latestSummary.retained_tail as
-              RetainedTailMetadata | undefined;
+              | RetainedTailMetadata
+              | undefined;
             let truncatedAfterCutoff: UIMessage[] = [];
 
             if (budgetForMessages > 0 && retainedTail) {
@@ -1262,10 +1266,12 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
+  approvalSessionId,
   expectedRunId,
 }: {
   chatId: string;
   triggerRunId: string | null;
+  approvalSessionId?: string | null;
   expectedRunId?: string;
 }) {
   try {
@@ -1273,6 +1279,7 @@ export async function setActiveTriggerRun({
       serviceKey,
       chatId,
       triggerRunId,
+      ...(approvalSessionId !== undefined ? { approvalSessionId } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
     });
   } catch (error) {

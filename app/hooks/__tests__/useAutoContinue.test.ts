@@ -38,6 +38,7 @@ function buildParams(
     todos: [],
     temporaryChatsEnabled: false,
     sandboxPreference: "e2b",
+    agentPermissionMode: "full_access",
     selectedModel: "auto",
     ...overrides,
   };
@@ -140,6 +141,7 @@ describe("useAutoContinue", () => {
           todos,
           temporary: true,
           sandboxPreference: "local-123",
+          agentPermissionMode: "full_access",
           selectedModel: "sonnet-4.6",
         },
       },

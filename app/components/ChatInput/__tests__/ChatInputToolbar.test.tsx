@@ -15,6 +15,12 @@ jest.mock("@/app/components/ModelSelector", () => ({
   ModelSelector: () => <div data-testid="model-selector" />,
 }));
 
+jest.mock("@/app/components/AgentPermissionSelector", () => ({
+  AgentPermissionSelector: () => (
+    <div data-testid="agent-permission-selector" />
+  ),
+}));
+
 jest.mock("../SubmitStopButton", () => ({
   SubmitStopButton: () => <button type="button">Send</button>,
 }));
@@ -71,5 +77,19 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} />);
 
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
+  });
+
+  it("shows the permission selector only in agent mode", () => {
+    mockAuthUser({ id: "user_123" });
+
+    const { rerender } = render(
+      <ChatInputToolbar {...defaultProps} chatMode="ask" />,
+    );
+    expect(
+      screen.queryByTestId("agent-permission-selector"),
+    ).not.toBeInTheDocument();
+
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
   });
 });

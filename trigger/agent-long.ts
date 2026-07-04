@@ -4,6 +4,7 @@ import {
   metadata,
   logger as triggerLogger,
 } from "@trigger.dev/sdk";
+import * as triggerSdk from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
 import {
   createUIMessageStream,
@@ -106,6 +107,10 @@ import type {
   Todo,
   SandboxPreference,
   SelectedModel,
+  AgentPermissionMode,
+  AgentToolApprovalInputRecord,
+  AgentToolApprovalRequest,
+  AgentToolApprovalRequester,
   RateLimitInfo,
   SandboxBootInfo,
   ToolFailureLogEvent,
@@ -146,6 +151,25 @@ const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
   AGENT_LONG_PAID_MAX_DURATION_SECONDS;
+const AGENT_APPROVAL_TIMEOUT = "6h";
+
+type TriggerSessionWaitResult<T> =
+  | { ok: true; output: T }
+  | { ok: false; error?: unknown };
+
+type TriggerSessionsApi = {
+  open(idOrExternalId: string): {
+    in: {
+      wait<T>(options: {
+        timeout: string;
+      }): Promise<TriggerSessionWaitResult<T>>;
+    };
+  };
+};
+
+const triggerSessions = (
+  triggerSdk as unknown as { sessions?: TriggerSessionsApi }
+).sessions;
 
 const getAgentLongPlanDurationMs = (subscription: SubscriptionTier) =>
   (subscription === "free"
@@ -174,6 +198,145 @@ const writeAgentLongFastStart = (
   phase: "setup" | "model_stream",
 ): void => {
   writer.write(createAgentLongHeartbeatPart(phase));
+};
+
+const isAgentToolApprovalInputRecord = (
+  value: unknown,
+): value is AgentToolApprovalInputRecord => {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<AgentToolApprovalInputRecord>;
+  return (
+    record.type === "agent-tool-approval" &&
+    typeof record.approvalId === "string" &&
+    typeof record.toolCallId === "string" &&
+    (record.decision === "approve" || record.decision === "deny") &&
+    record.grant === "full_access"
+  );
+};
+
+const buildAgentToolApprovalRequester = ({
+  agentPermissionMode,
+  approvalSessionId,
+  writer,
+  chatId,
+  userId,
+  runId,
+  signal,
+}: {
+  agentPermissionMode: AgentPermissionMode;
+  approvalSessionId?: string;
+  writer: UIMessageStreamWriter;
+  chatId: string;
+  userId: string;
+  runId: string;
+  signal: AbortSignal;
+}): AgentToolApprovalRequester | undefined => {
+  if (agentPermissionMode !== "ask_approval") return undefined;
+
+  return async (request: AgentToolApprovalRequest) => {
+    const approvalId = generateId();
+
+    if (!approvalSessionId) {
+      return {
+        approved: false,
+        approvalId,
+        reason: "Approval session is unavailable. Please retry the Agent run.",
+      };
+    }
+
+    writer.write({
+      type: "tool-approval-request",
+      toolCallId: request.toolCallId,
+      approvalId,
+    } as AgentLongUiStreamPart);
+
+    metadata
+      .set("approvalStatus", "pending")
+      .set("approvalId", approvalId)
+      .set("approvalToolName", request.toolName)
+      .set("approvalOperation", request.operation);
+
+    triggerLogger.info("[agent-long] waiting for tool approval", {
+      chatId,
+      userId,
+      runId,
+      approvalId,
+      tool_name: request.toolName,
+      operation: request.operation,
+      target: request.target.slice(0, 200),
+    });
+
+    if (!triggerSessions) {
+      metadata.set("approvalStatus", "sessions_unavailable");
+      return {
+        approved: false,
+        approvalId,
+        reason:
+          "Approval sessions are unavailable. Please retry the Agent run.",
+      };
+    }
+
+    const session = triggerSessions.open(approvalSessionId);
+    while (!signal.aborted) {
+      const next = await session.in.wait<AgentToolApprovalInputRecord>({
+        timeout: AGENT_APPROVAL_TIMEOUT,
+      });
+
+      if (!next.ok) {
+        metadata.set("approvalStatus", "timed_out");
+        return {
+          approved: false,
+          approvalId,
+          reason: "Approval timed out before the tool could run.",
+        };
+      }
+
+      if (!isAgentToolApprovalInputRecord(next.output)) continue;
+      if (
+        next.output.approvalId !== approvalId ||
+        next.output.toolCallId !== request.toolCallId
+      ) {
+        continue;
+      }
+
+      metadata
+        .set("approvalStatus", next.output.decision)
+        .set("approvalResolvedAt", Date.now());
+
+      if (next.output.decision === "approve") {
+        triggerLogger.info("[agent-long] tool approval granted", {
+          chatId,
+          userId,
+          runId,
+          approvalId,
+          tool_name: request.toolName,
+          operation: request.operation,
+        });
+        return { approved: true, approvalId };
+      }
+
+      triggerLogger.info("[agent-long] tool approval denied", {
+        chatId,
+        userId,
+        runId,
+        approvalId,
+        tool_name: request.toolName,
+        operation: request.operation,
+      });
+      return {
+        approved: false,
+        approvalId,
+        reason: "The user denied approval for this operation.",
+      };
+    }
+
+    metadata.set("approvalStatus", "aborted");
+    return {
+      approved: false,
+      approvalId,
+      reason: "The Agent run was stopped before approval was received.",
+    };
+  };
 };
 
 const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
@@ -570,7 +733,8 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -587,7 +751,8 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -914,6 +1079,8 @@ export type AgentLongPayload = {
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
   sandboxPreference?: SandboxPreference;
+  agentPermissionMode?: AgentPermissionMode;
+  approvalSessionId?: string;
   selectedModel?: SelectedModel;
   userLocation: Geo;
   temporary?: boolean;
@@ -975,6 +1142,8 @@ export const agentLongTask = task({
       messages,
       localDesktopAttachmentsPrepared,
       sandboxPreference,
+      agentPermissionMode = "full_access",
+      approvalSessionId,
       selectedModel: selectedModelOverride,
       userLocation,
       temporary,
@@ -1269,6 +1438,15 @@ export const agentLongTask = task({
                 );
               });
             };
+            const requestToolApproval = buildAgentToolApprovalRequester({
+              agentPermissionMode,
+              approvalSessionId,
+              writer,
+              chatId,
+              userId,
+              runId: ctx.run.id,
+              signal: userStopSignal.signal,
+            });
             const {
               tools,
               ensureSandbox,
@@ -1303,6 +1481,7 @@ export const agentLongTask = task({
               },
               selectedModel,
               onToolFailure,
+              requestToolApproval,
             );
 
             const sendFileMetadataToStream = (
@@ -2494,6 +2673,7 @@ export const agentLongTask = task({
           await setActiveTriggerRun({
             chatId,
             triggerRunId: null,
+            approvalSessionId: null,
             expectedRunId: ctx.run.id,
           });
         } catch (error) {

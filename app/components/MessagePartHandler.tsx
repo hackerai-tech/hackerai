@@ -100,6 +100,7 @@ function arePropsEqual(
       prevProps.part.state === nextProps.part.state &&
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
       prevProps.part.output === nextProps.part.output &&
+      deepEqual(prevProps.part.approval, nextProps.part.approval) &&
       // Tool input is an object — reference check first (fast path), then
       // shallow comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||

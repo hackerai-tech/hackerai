@@ -347,6 +347,7 @@ export const getChatByIdFromClient = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_agent_approval_session_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -442,6 +443,7 @@ export const getChatById = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_agent_approval_session_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -1202,6 +1204,7 @@ export const setActiveTriggerRun = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     triggerRunId: v.union(v.string(), v.null()),
+    approvalSessionId: v.optional(v.union(v.string(), v.null())),
     expectedRunId: v.optional(v.string()),
   },
   returns: v.null(),
@@ -1220,6 +1223,12 @@ export const setActiveTriggerRun = mutation({
     }
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(args.approvalSessionId !== undefined
+        ? {
+            active_agent_approval_session_id:
+              args.approvalSessionId ?? undefined,
+          }
+        : {}),
     });
     return null;
   },

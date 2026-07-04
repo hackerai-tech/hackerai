@@ -47,6 +47,7 @@ export async function POST(req: NextRequest) {
     await setActiveTriggerRun({
       chatId,
       triggerRunId: null,
+      approvalSessionId: null,
       expectedRunId: runId,
     });
 

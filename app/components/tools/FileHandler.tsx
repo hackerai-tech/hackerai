@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
@@ -7,6 +7,7 @@ import { isSidebarFile } from "@/types/chat";
 import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { ToolApprovalControls } from "./ToolApprovalControls";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
@@ -47,6 +48,7 @@ function areFilePropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.approval?.id !== next.part.approval?.id) return false;
   if (prev.part.errorText !== next.part.errorText) return false;
   if (prev.part.input !== next.part.input) return false;
   return true;
@@ -269,6 +271,29 @@ export const FileHandler = memo(function FileHandler({
   });
 
   const isClickable = !!sidebarContent;
+  const renderApprovalRequest = ({
+    icon,
+    target,
+  }: {
+    icon: ReactNode;
+    target?: string;
+  }) => (
+    <div key={part.toolCallId}>
+      <ToolBlock
+        icon={icon}
+        action="Approval required"
+        target={target}
+        isShimmer={status === "streaming"}
+        isClickable={isClickable}
+        onClick={isClickable ? handleOpenInSidebar : undefined}
+        onKeyDown={isClickable ? handleKeyDown : undefined}
+      />
+      <ToolApprovalControls
+        approvalId={part.approval?.id}
+        toolCallId={part.toolCallId}
+      />
+    </div>
+  );
 
   const renderViewAction = () => {
     const { toolCallId, state } = part;
@@ -449,6 +474,11 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FilePlus />,
+          target: input?.path,
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;
@@ -537,6 +567,11 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FileOutput />,
+          target: input?.path,
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;
@@ -609,6 +644,11 @@ export const FileHandler = memo(function FileHandler({
             isShimmer={true}
           />
         ) : null;
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FilePen />,
+          target: input?.path,
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;

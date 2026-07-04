@@ -25,6 +25,14 @@ type ReadTriggerRunStreamOptions = {
   timeoutInSeconds?: number;
 };
 
+type SendTriggerSessionInputOptions = {
+  sessionId: string;
+  accessToken: string;
+  partId: string;
+  value: unknown;
+  signal?: AbortSignal;
+};
+
 const TRIGGER_API_BASE_URL = "https://api.trigger.dev";
 const TRIGGER_VERSION = "4.5.0";
 const TRIGGER_API_VERSION = "2025-07-16";
@@ -240,6 +248,33 @@ export async function retrieveTriggerRunStatus(
 
   const run = (await response.json()) as TriggerRunStatusResponse;
   return run.status;
+}
+
+export async function sendTriggerSessionInput({
+  sessionId,
+  accessToken,
+  partId,
+  value,
+  signal,
+}: SendTriggerSessionInputOptions): Promise<void> {
+  const response = await fetch(
+    `${TRIGGER_API_BASE_URL}/realtime/v1/sessions/${encodeURIComponent(
+      sessionId,
+    )}/in/append`,
+    {
+      method: "POST",
+      headers: {
+        ...getTriggerJsonHeaders(accessToken),
+        "X-Part-Id": partId,
+      },
+      body: JSON.stringify(value),
+      signal,
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Trigger session append failed: ${response.status}`);
+  }
 }
 
 export async function* readTriggerRunStream<T>(

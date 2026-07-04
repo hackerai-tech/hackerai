@@ -71,11 +71,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     execute: async (
       {
         command,
+        brief,
         is_background,
         timeout,
         interactive,
       }: {
         command: string;
+        brief?: string;
         is_background: boolean;
         timeout?: number;
         interactive: boolean;
@@ -134,6 +136,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
+
+      const approval = await context.requestToolApproval?.({
+        toolCallId,
+        toolName: "run_terminal_cmd",
+        operation: "terminal_execute",
+        target: command,
+        brief,
+      });
+      if (approval && !approval.approved) {
+        return {
+          result: {
+            output: "",
+            exitCode: 1,
+            error: approval.reason,
+            approvalDenied: true,
+          },
+        };
+      }
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {

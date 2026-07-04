@@ -28,6 +28,7 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useAgentApproval } from "../contexts/AgentApprovalContext";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
@@ -73,7 +74,10 @@ const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
-  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+  | "LoadingFirstPage"
+  | "CanLoadMore"
+  | "LoadingMore"
+  | "Exhausted";
 
 export function getExistingChatLoadState({
   isExistingChat,
@@ -271,6 +275,7 @@ function StreamEffects({
   todos,
   temporaryChatsEnabled,
   sandboxPreference,
+  agentPermissionMode,
   selectedModel,
   resetRef,
   hasActiveStream,
@@ -290,6 +295,7 @@ function StreamEffects({
   todos: Todo[];
   temporaryChatsEnabled: boolean;
   sandboxPreference: string;
+  agentPermissionMode: string;
   selectedModel: string;
   resetRef: RefObject<(() => void) | null>;
   hasActiveStream: boolean | undefined;
@@ -312,6 +318,7 @@ function StreamEffects({
     todos,
     temporaryChatsEnabled,
     sandboxPreference,
+    agentPermissionMode,
     selectedModel,
   });
 
@@ -360,16 +367,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    agentPermissionMode,
     selectedModel,
     setSelectedModel,
     subscription,
     localConnections,
   } = useGlobalState();
+  const { setAgentApprovalSession, clearAgentApprovalSession } =
+    useAgentApproval();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
+
+  useEffect(() => {
+    clearAgentApprovalSession();
+  }, [chatId, clearAgentApprovalSession]);
 
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
@@ -402,6 +416,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
     subscription,
@@ -468,7 +483,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
-    string | undefined;
+    | string
+    | undefined;
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise
@@ -476,7 +492,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunRef = useLatestRef(
     (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      string | undefined,
+      | string
+      | undefined,
   );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
@@ -641,6 +658,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
+        case "data-agent-approval-session": {
+          const approvalData = dataPart.data as {
+            chatId?: unknown;
+            sessionId?: unknown;
+            publicAccessToken?: unknown;
+          };
+          if (
+            typeof approvalData.sessionId === "string" &&
+            typeof approvalData.publicAccessToken === "string" &&
+            (approvalData.chatId === undefined ||
+              approvalData.chatId === chatId)
+          ) {
+            setAgentApprovalSession({
+              chatId,
+              sessionId: approvalData.sessionId,
+              publicAccessToken: approvalData.publicAccessToken,
+            });
+          }
+          break;
+        }
         case "data-upload-status": {
           const uploadData = dataPart.data as {
             message: string;
@@ -1184,7 +1221,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (persistedPrefsRef.current === null) {
       const savedModel = (chatData as any).selected_model as string | undefined;
       const savedMode = (chatData as any).default_model_slug as
-        string | undefined;
+        | string
+        | undefined;
       persistedPrefsRef.current = {
         model: savedModel ?? selectedModel,
         mode: savedMode ?? chatMode,
@@ -1399,6 +1437,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 todos: todosRef.current,
                 temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
+                agentPermissionMode: agentPermissionModeRef.current,
                 selectedModel: requestSelectedModelRef.current,
               },
             },
@@ -1425,6 +1464,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
+    agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
 
@@ -1549,6 +1589,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         todos={todos}
         temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
+        agentPermissionMode={agentPermissionMode}
         selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={

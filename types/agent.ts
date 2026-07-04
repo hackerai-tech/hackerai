@@ -89,6 +89,49 @@ export type ToolFailureLogger = (
   event: ToolFailureLogEvent,
 ) => void | Promise<void>;
 
+export type AgentToolApprovalGrant = "full_access";
+
+export type AgentToolApprovalDecision = "approve" | "deny";
+
+export type AgentToolApprovalOperation =
+  | "terminal_execute"
+  | "terminal_interact"
+  | "file_write"
+  | "file_append"
+  | "file_edit";
+
+export type AgentToolApprovalRequest = {
+  toolCallId: string;
+  toolName: string;
+  operation: AgentToolApprovalOperation;
+  target: string;
+  brief?: string;
+};
+
+export type AgentToolApprovalResult =
+  | {
+      approved: true;
+      approvalId: string;
+    }
+  | {
+      approved: false;
+      approvalId?: string;
+      reason: string;
+    };
+
+export type AgentToolApprovalRequester = (
+  request: AgentToolApprovalRequest,
+) => Promise<AgentToolApprovalResult>;
+
+export type AgentToolApprovalInputRecord = {
+  type: "agent-tool-approval";
+  approvalId: string;
+  toolCallId: string;
+  decision: AgentToolApprovalDecision;
+  grant: AgentToolApprovalGrant;
+  at?: number;
+};
+
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
@@ -114,4 +157,6 @@ export interface ToolContext {
   onToolCost?: (costDollars: number) => void;
   /** Callback to report handled provider/tool failures to the request's host runtime. */
   onToolFailure?: ToolFailureLogger;
+  /** Optional approval gate for mutating or command-executing agent tools. */
+  requestToolApproval?: AgentToolApprovalRequester;
 }

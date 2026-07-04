@@ -14,6 +14,7 @@ import {
   type ShellToolOutput,
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { ToolApprovalControls } from "./ToolApprovalControls";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -32,6 +33,7 @@ function areTerminalPropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.approval?.id !== next.part.approval?.id) return false;
   // Compare message.parts length for streaming output updates
   if (prev.message.parts.length !== next.message.parts.length) return false;
   if (prev.precomputedStreamingOutput !== next.precomputedStreamingOutput)
@@ -153,6 +155,24 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
+      );
+    case "approval-requested":
+      return (
+        <div key={toolCallId}>
+          <ToolBlock
+            icon={<Terminal />}
+            action="Approval required"
+            target={blockTarget}
+            isShimmer={status === "streaming"}
+            isClickable={!!sidebarContent}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
+          />
+          <ToolApprovalControls
+            approvalId={part.approval?.id}
+            toolCallId={toolCallId}
+          />
+        </div>
       );
     case "output-available":
       return (

@@ -28,6 +28,8 @@ type RunHandle = {
   runId: string;
   publicAccessToken: string;
   chatId?: string;
+  approvalSessionId?: string;
+  approvalSessionPublicAccessToken?: string;
 };
 
 type AgentLongRealtimeCancel = () => Promise<void> | void;
@@ -175,6 +177,29 @@ const buildSSEResponseFromRun = (
       let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
       const isControllerErrored = () => controller.desiredSize === null;
+      const enqueueAgentApprovalSessionPart = () => {
+        if (
+          !handle.approvalSessionId ||
+          !handle.approvalSessionPublicAccessToken ||
+          closed
+        ) {
+          return;
+        }
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: "data-agent-approval-session",
+              id: `agent-approval-session-${runId}`,
+              transient: true,
+              data: {
+                chatId,
+                sessionId: handle.approvalSessionId,
+                publicAccessToken: handle.approvalSessionPublicAccessToken,
+              },
+            })}\n\n`,
+          ),
+        );
+      };
 
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
@@ -250,10 +275,13 @@ const buildSSEResponseFromRun = (
           return;
         }
 
+        enqueueAgentApprovalSessionPart();
+
         const completedRunDrainTimeout = Symbol("completed-run-drain-timeout");
         let completedRunDrainTimer: ReturnType<typeof setTimeout> | undefined;
         let resolveCompletedRunDrain:
-          ((value: typeof completedRunDrainTimeout) => void) | undefined;
+          | ((value: typeof completedRunDrainTimeout) => void)
+          | undefined;
         const completedRunDrainPromise = new Promise<
           typeof completedRunDrainTimeout
         >((resolve) => {

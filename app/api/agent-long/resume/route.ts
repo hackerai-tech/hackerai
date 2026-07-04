@@ -64,17 +64,41 @@ export async function GET(req: NextRequest) {
       await setActiveTriggerRun({
         chatId,
         triggerRunId: null,
+        approvalSessionId: null,
         expectedRunId: runId,
       });
       return new NextResponse(null, { status: 204 });
     }
 
-    const publicAccessToken = await auth.createPublicToken({
-      scopes: { read: { runs: [runId] } },
-      expirationTime: "6h",
-    });
+    const [publicAccessToken, approvalSessionPublicAccessToken] =
+      await Promise.all([
+        auth.createPublicToken({
+          scopes: { read: { runs: [runId] } },
+          expirationTime: "6h",
+        }),
+        chat.active_agent_approval_session_id
+          ? auth.createPublicToken({
+              scopes: {
+                read: { sessions: chat.active_agent_approval_session_id },
+                write: { sessions: chat.active_agent_approval_session_id },
+              } as any,
+              expirationTime: "6h",
+            })
+          : Promise.resolve(undefined),
+      ]);
 
-    return NextResponse.json({ runId, publicAccessToken, chatId });
+    return NextResponse.json({
+      runId,
+      publicAccessToken,
+      chatId,
+      ...(chat.active_agent_approval_session_id &&
+      approvalSessionPublicAccessToken
+        ? {
+            approvalSessionId: chat.active_agent_approval_session_id,
+            approvalSessionPublicAccessToken,
+          }
+        : {}),
+    });
   } catch (error) {
     if (error instanceof ChatSDKError) return error.toResponse();
     console.error("[/api/agent-long/resume] failed:", error);

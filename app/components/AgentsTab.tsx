@@ -10,6 +10,7 @@ import {
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
+import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
 
 const AgentsTab = () => {
   const {
@@ -52,6 +53,20 @@ const AgentsTab = () => {
               disabled={false}
               size="md"
             />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
+          <div className="flex-1">
+            <div className="font-medium">Default agent permissions</div>
+            <div className="text-sm text-muted-foreground">
+              Commands and file edits
+            </div>
+          </div>
+          <div className="w-full sm:w-auto">
+            <AgentPermissionSelector size="md" />
           </div>
         </div>
       </div>
