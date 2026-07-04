@@ -5,9 +5,12 @@ import type SidebarHistoryType from "../SidebarHistory";
 
 jest.mock("../ChatItem", () => ({
   __esModule: true,
-  default: ({ id, title, isStreaming }: any) => (
+  default: ({ id, title, isStreaming, isAwaitingApproval }: any) => (
     <div data-testid={`chat-item-${id}`}>
       <span>{title}</span>
+      {isAwaitingApproval ? (
+        <span data-testid={`awaiting-approval-${id}`}>Awaiting approval</span>
+      ) : null}
       {isStreaming ? (
         <span data-testid={`streaming-${id}`}>loading</span>
       ) : null}
@@ -57,5 +60,25 @@ describe("SidebarHistory", () => {
     );
 
     expect(screen.queryByTestId("streaming-idle-chat")).not.toBeInTheDocument();
+  });
+
+  it("marks chats with pending agent approval", () => {
+    render(
+      <SidebarHistory
+        chats={[
+          chat({
+            id: "approval-chat",
+            active_trigger_run_id: "run-1",
+            active_agent_approval_pending: true,
+          }),
+        ]}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    expect(
+      screen.getByTestId("awaiting-approval-approval-chat"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("streaming-approval-chat")).toBeInTheDocument();
   });
 });

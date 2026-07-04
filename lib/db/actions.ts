@@ -1290,6 +1290,35 @@ export async function setActiveTriggerRun({
   }
 }
 
+export async function setActiveAgentApprovalPending({
+  chatId,
+  pending,
+  expectedRunId,
+  expectedApprovalSessionId,
+}: {
+  chatId: string;
+  pending: boolean;
+  expectedRunId?: string;
+  expectedApprovalSessionId?: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.setActiveAgentApprovalPending, {
+      serviceKey,
+      chatId,
+      pending,
+      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active agent approval state",
+    );
+  }
+}
+
 export async function getActiveTriggerRun({ chatId }: { chatId: string }) {
   try {
     return await getConvexClient().query(api.chats.getActiveTriggerRun, {

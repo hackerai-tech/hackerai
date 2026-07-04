@@ -107,6 +107,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           shareDate={chat.share_date}
           isPinned={chat.pinned_at != null}
           isStreaming={!!chat.active_stream_id || !!chat.active_trigger_run_id}
+          isAwaitingApproval={!!chat.active_agent_approval_pending}
         />
       ))}
 

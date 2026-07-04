@@ -62,6 +62,7 @@ import {
   updateChat,
   getUserCustomization,
   setActiveTriggerRun,
+  setActiveAgentApprovalPending,
   getMessagesByChatId,
   prepareForNewStream,
   setConvexUrl,
@@ -270,6 +271,22 @@ const buildAgentToolApprovalRequester = ({
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
+  const setApprovalPending = async (pending: boolean) => {
+    if (!approvalSessionId) return;
+    try {
+      await setActiveAgentApprovalPending({
+        chatId,
+        pending,
+        expectedRunId: runId,
+        expectedApprovalSessionId: approvalSessionId,
+      });
+    } catch (error) {
+      console.error("[agent-long] failed to update approval pending state:", {
+        pending,
+        error,
+      });
+    }
+  };
 
   return async (request: AgentToolApprovalRequest) => {
     const previousApproval = approvalQueue.catch(() => {});
@@ -282,6 +299,7 @@ const buildAgentToolApprovalRequester = ({
     );
 
     await previousApproval;
+    let approvalPendingMarked = false;
     try {
       const approvalId = generateId();
 
@@ -302,6 +320,19 @@ const buildAgentToolApprovalRequester = ({
           reason: "The Agent run was stopped before approval was requested.",
         };
       }
+
+      if (!triggerSessions) {
+        metadata.set("approvalStatus", "sessions_unavailable");
+        return {
+          approved: false,
+          approvalId,
+          reason:
+            "Approval sessions are unavailable. Please retry the Agent run.",
+        };
+      }
+
+      await setApprovalPending(true);
+      approvalPendingMarked = true;
 
       writer.write({
         type: "tool-approval-request",
@@ -324,16 +355,6 @@ const buildAgentToolApprovalRequester = ({
         operation: request.operation,
         target: request.target.slice(0, 200),
       });
-
-      if (!triggerSessions) {
-        metadata.set("approvalStatus", "sessions_unavailable");
-        return {
-          approved: false,
-          approvalId,
-          reason:
-            "Approval sessions are unavailable. Please retry the Agent run.",
-        };
-      }
 
       const session = triggerSessions.open(approvalSessionId);
       while (!signal.aborted) {
@@ -396,6 +417,9 @@ const buildAgentToolApprovalRequester = ({
         reason: "The Agent run was stopped before approval was received.",
       };
     } finally {
+      if (approvalPendingMarked) {
+        await setApprovalPending(false);
+      }
       releaseApproval();
     }
   };

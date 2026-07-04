@@ -142,6 +142,7 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
   if (
     chat.active_stream_id === undefined &&
     chat.active_trigger_run_id === undefined &&
+    chat.active_agent_approval_pending === undefined &&
     chat.canceled_at !== undefined
   ) {
     return;
@@ -154,6 +155,8 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
   await ctx.db.patch(chat._id, {
     active_stream_id: undefined,
     active_trigger_run_id: undefined,
+    active_agent_approval_session_id: undefined,
+    active_agent_approval_pending: undefined,
     canceled_at: Date.now(),
     finish_reason: undefined,
   });
@@ -348,6 +351,7 @@ export const getChatByIdFromClient = query({
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
       active_agent_approval_session_id: v.optional(v.string()),
+      active_agent_approval_pending: v.optional(v.boolean()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -444,6 +448,7 @@ export const getChatById = query({
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
       active_agent_approval_session_id: v.optional(v.string()),
+      active_agent_approval_pending: v.optional(v.boolean()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -1227,8 +1232,47 @@ export const setActiveTriggerRun = mutation({
         ? {
             active_agent_approval_session_id:
               args.approvalSessionId ?? undefined,
+            active_agent_approval_pending: undefined,
           }
         : {}),
+      ...(args.triggerRunId === null
+        ? { active_agent_approval_pending: undefined }
+        : {}),
+    });
+    return null;
+  },
+});
+
+export const setActiveAgentApprovalPending = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    pending: v.boolean(),
+    expectedRunId: v.optional(v.string()),
+    expectedApprovalSessionId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) return null;
+    if (
+      args.expectedRunId !== undefined &&
+      chat.active_trigger_run_id !== args.expectedRunId
+    ) {
+      return null;
+    }
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
+    ) {
+      return null;
+    }
+    await ctx.db.patch(chat._id, {
+      active_agent_approval_pending: args.pending ? true : undefined,
     });
     return null;
   },

@@ -281,9 +281,8 @@ export const FileHandler = memo(function FileHandler({
     <div key={part.toolCallId}>
       <ToolBlock
         icon={icon}
-        action="Approval required"
+        action="Awaiting approval"
         target={target}
-        isShimmer={status === "streaming"}
         isClickable={isClickable}
         onClick={isClickable ? handleOpenInSidebar : undefined}
         onKeyDown={isClickable ? handleKeyDown : undefined}

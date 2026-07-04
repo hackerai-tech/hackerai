@@ -65,6 +65,7 @@ interface ChatItemProps {
   shareDate?: number;
   isPinned?: boolean;
   isStreaming?: boolean;
+  isAwaitingApproval?: boolean;
 }
 
 const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
@@ -87,6 +88,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   shareDate,
   isPinned = false,
   isStreaming = false,
+  isAwaitingApproval = false,
 }) => {
   const router = useRouter();
   const pathname = usePathname();
@@ -333,7 +335,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
       title={title}
       role="button"
       tabIndex={0}
-      aria-label={`Open chat: ${title}`}
+      aria-label={`Open chat: ${title}${
+        isAwaitingApproval ? " awaiting approval" : ""
+      }`}
       data-testid={`chat-item-${id}`}
     >
       <div
@@ -344,13 +348,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
         }`}
         dir="auto"
       >
-        <span className="flex items-center gap-1.5">
-          {isStreaming && (
-            <LoaderCircle
-              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
-              data-testid="chat-item-streaming-icon"
-            />
-          )}
+        <span className="flex min-w-0 items-center gap-1.5">
           {isPinned && !isStreaming && (
             <Pin
               className="size-3 flex-shrink-0 text-muted-foreground"
@@ -369,7 +367,21 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          {title}
+          <span className="min-w-0 truncate">{title}</span>
+          {isAwaitingApproval && (
+            <span
+              className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400"
+              data-testid="chat-item-awaiting-approval"
+            >
+              Awaiting approval
+            </span>
+          )}
+          {isStreaming && (
+            <LoaderCircle
+              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
+              data-testid="chat-item-streaming-icon"
+            />
+          )}
         </span>
       </div>
 

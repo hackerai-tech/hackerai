@@ -161,9 +161,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <div key={toolCallId}>
           <ToolBlock
             icon={<Terminal />}
-            action="Approval required"
+            action="Awaiting approval"
             target={blockTarget}
-            isShimmer={status === "streaming"}
             isClickable={!!sidebarContent}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
