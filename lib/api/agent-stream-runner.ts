@@ -383,6 +383,10 @@ export type AgentStreamContext = {
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
+  settleUsageAfterStep?: (args: {
+    currentCostDollars: number;
+    force: boolean;
+  }) => Promise<void>;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -853,9 +857,15 @@ export async function createAgentStream(
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
-        ctx.usageTracker.computeCostDollars(modelName),
-      );
+      const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName);
+      const budgetDecision =
+        ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
+      await ctx.settleUsageAfterStep?.({
+        currentCostDollars,
+        force:
+          budgetDecision?.type === "abort" ||
+          budgetDecision?.type === "abort-agent-run-spend-cap",
+      });
       if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
         ctx.abortController.abort();
