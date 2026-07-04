@@ -441,8 +441,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(serializedSummaryInput).not.toContain("[msg-4]");
   });
 
-  it("should not summarize the original payload for a tail-only projected oversized part", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Projected-only summary" });
+  it("should not retain a placeholder for a tail-only oversized tool part", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Oversized tool summary" });
 
     const hugeOutput = Array.from(
       { length: 20_000 },
@@ -492,24 +492,25 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.cutoffMessageId).toBe("assistant-huge");
-    expect(result.summarizedMessages).toHaveLength(2);
-    expect(result.summarizedMessages[1].id).toBe("assistant-huge");
+    expect(result.summarizedMessages).toHaveLength(1);
 
     const serializedSummaryInput = JSON.stringify(
       mockGenerateText.mock.calls[0][0].messages,
     );
-    expect(serializedSummaryInput).not.toContain("unique-projected-tail-line");
+    expect(serializedSummaryInput).toContain(
+      "[run_terminal_cmd output preview:",
+    );
+    expect(serializedSummaryInput).not.toContain("retained tail");
     expect(JSON.stringify(result.summarizedMessages)).not.toContain(hugeOutput);
+    expect(JSON.stringify(result.summarizedMessages)).not.toContain(
+      "retained tail",
+    );
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: "chat-tail-only",
         summaryUpToMessageId: "assistant-huge",
-        metadata: expect.objectContaining({
-          retainedTail: expect.objectContaining({
-            start_message_id: "assistant-huge",
-            start_part_index: 0,
-            projected_part_count: 1,
-          }),
+        metadata: expect.not.objectContaining({
+          retainedTail: expect.anything(),
         }),
       }),
     );
@@ -758,7 +759,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     const saveSummaryCall =
       mockSaveChatSummary.mock.calls[mockSaveChatSummary.mock.calls.length - 1];
     const persistedMetadata = saveSummaryCall?.[0].metadata as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     expect(persistedMetadata?.inputTokens).toBeUndefined();
     expect(persistedMetadata?.outputTokens).toBeUndefined();
     expect(persistedMetadata?.cacheReadTokens).toBeUndefined();
