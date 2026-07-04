@@ -95,6 +95,10 @@ import {
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
+import {
+  LEGACY_AGENT_API_ENDPOINT,
+  type AgentApiEndpoint,
+} from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import {
   extractErrorDetails,
@@ -155,8 +159,7 @@ const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
 const AGENT_APPROVAL_TIMEOUT = "6h";
 
 type TriggerSessionWaitResult<T> =
-  | { ok: true; output: T }
-  | { ok: false; error?: unknown };
+  { ok: true; output: T } | { ok: false; error?: unknown };
 
 type TriggerSessionsApi = {
   open(idOrExternalId: string): {
@@ -819,8 +822,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -837,8 +839,7 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -1173,6 +1174,7 @@ export type AgentLongPayload = {
   isAutoContinue?: boolean;
   regenerate?: boolean;
   isNewChat?: boolean;
+  endpoint?: AgentApiEndpoint;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -1236,7 +1238,9 @@ export const agentLongTask = task({
       isAutoContinue,
       regenerate,
       isNewChat,
+      endpoint: payloadEndpoint,
     } = payload;
+    const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
     // Stable across retries so a failed-then-retried run upserts the same
@@ -1259,6 +1263,7 @@ export const agentLongTask = task({
     metadata
       .set("status", "setup")
       .set("chatId", chatId)
+      .set("endpoint", endpoint)
       .set("triggerPayloadMessageCount", messages.length);
     if (payload.requestTiming) {
       metadata
@@ -1282,7 +1287,7 @@ export const agentLongTask = task({
 
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
-      endpoint: "/api/agent-long",
+      endpoint,
     });
     chatLogger.setRequestDetails({
       mode,
@@ -1769,7 +1774,7 @@ export const agentLongTask = task({
                         subscription,
                         mode,
                         chatId,
-                        endpoint: "/api/agent-long",
+                        endpoint,
                         selectedModel,
                         selectedModelOverride,
                         configuredModelSlug: configuredModelId,
@@ -1854,7 +1859,7 @@ export const agentLongTask = task({
                     }
                     phLogger.warn("Usage deduction left uncovered cost", {
                       chatId,
-                      endpoint: "/api/agent-long",
+                      endpoint,
                       mode,
                       userId,
                       organizationId,
@@ -1881,7 +1886,7 @@ export const agentLongTask = task({
                     userId,
                     organizationId,
                     chatId,
-                    endpoint: "/api/agent-long",
+                    endpoint,
                     mode,
                     subscription,
                     selectedModel,
@@ -1899,7 +1904,7 @@ export const agentLongTask = task({
                   subscription,
                   organizationId,
                   chatId,
-                  endpoint: "/api/agent-long",
+                  endpoint,
                   mode,
                   usage: usageCostRecord,
                 });
@@ -1914,7 +1919,7 @@ export const agentLongTask = task({
               currentSystemPrompt,
               tools,
               mode,
-              endpoint: "/api/agent-long",
+              endpoint,
               userId,
               subscription,
               chatId,
@@ -1944,7 +1949,7 @@ export const agentLongTask = task({
                   userId,
                   subscription,
                   chatId,
-                  endpoint: "/api/agent-long",
+                  endpoint,
                   mode,
                   selectedModel,
                   selectedModelOverride,
@@ -2233,7 +2238,7 @@ export const agentLongTask = task({
                                     posthog,
                                     userId,
                                     chatId,
-                                    endpoint: "/api/agent-long",
+                                    endpoint,
                                     mode,
                                     subscription,
                                     sandboxInfo,
@@ -2364,7 +2369,7 @@ export const agentLongTask = task({
                         posthog,
                         userId,
                         chatId,
-                        endpoint: "/api/agent-long",
+                        endpoint,
                         mode,
                         subscription,
                         sandboxInfo,

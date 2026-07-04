@@ -96,7 +96,11 @@ export class ChatComponent {
           if (method !== "POST") return false;
 
           const pathname = new URL(response.url()).pathname;
-          return pathname === "/api/chat" || pathname === "/api/agent-long";
+          return (
+            pathname === "/api/chat" ||
+            pathname === "/api/agent" ||
+            pathname === "/api/agent-long"
+          );
         },
         { timeout },
       )

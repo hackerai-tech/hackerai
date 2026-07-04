@@ -35,6 +35,7 @@ import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import { phLogger } from "@/lib/posthog/server";
 import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -51,9 +52,7 @@ const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
-  | "token_threshold"
-  | "provider_input_threshold"
-  | "provider_pressure";
+  "token_threshold" | "provider_input_threshold" | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -694,8 +693,7 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
     const usageForSave = sanitizeForConvexValue(usage) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1059,8 +1057,7 @@ export async function getMessagesByChatId({
             );
             const budgetForMessages = maxTokens - summaryTokens;
             const retainedTail = latestSummary.retained_tail as
-              | RetainedTailMetadata
-              | undefined;
+              RetainedTailMetadata | undefined;
             let truncatedAfterCutoff: UIMessage[] = [];
 
             if (budgetForMessages > 0 && retainedTail) {
@@ -1683,7 +1680,7 @@ export async function logUsageRecord({
   userId: string;
   organizationId?: string;
   chatId?: string;
-  endpoint?: "/api/chat" | "/api/agent-long";
+  endpoint?: ChatApiEndpoint;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
   model: string;

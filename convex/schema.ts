@@ -597,7 +597,11 @@ export default defineSchema({
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
     endpoint: v.optional(
-      v.union(v.literal("/api/chat"), v.literal("/api/agent-long")),
+      v.union(
+        v.literal("/api/chat"),
+        v.literal("/api/agent"),
+        v.literal("/api/agent-long"),
+      ),
     ),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     subscription: v.optional(v.string()),

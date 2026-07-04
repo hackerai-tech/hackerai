@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { downloadFile } from "@/lib/utils/file-download";
+import { getCodeDownloadFilename } from "@/lib/utils/code-download-filename";
 
 interface CodeActionButtonsProps {
   content: string;
@@ -51,7 +52,7 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
 
   const handleDownload = () => {
     downloadFile({
-      filename: filename || `code.${language || "txt"}`,
+      filename: filename || getCodeDownloadFilename(language),
       content,
     });
   };

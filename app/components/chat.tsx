@@ -45,6 +45,10 @@ import {
   isLegacyDesktopAgentClient,
   shouldUseAgentLongForAgent,
 } from "@/lib/chat/agent-routing";
+import {
+  AGENT_RESUME_ENDPOINT,
+  LEGACY_AGENT_RESUME_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
@@ -74,10 +78,7 @@ const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
-  | "LoadingFirstPage"
-  | "CanLoadMore"
-  | "LoadingMore"
-  | "Exhausted";
+  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
 export function getExistingChatLoadState({
   isExistingChat,
@@ -483,8 +484,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
-    | string
-    | undefined;
+    string | undefined;
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise
@@ -492,8 +492,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunRef = useLatestRef(
     (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      | string
-      | undefined,
+      string | undefined,
   );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
@@ -554,14 +553,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
           return fetchAgentLongStream(init);
         }
-        // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
-        // load — prepareReconnectToStreamRequest already pointed at the resume
-        // URL, so route based on the URL (not on ref state) to be resilient to
-        // stale refs.
+        // Reconnect for legacy "agent-long" chats normalised to "agent" mode
+        // on load — route based on the URL (not on ref state) to be resilient
+        // to stale refs.
         if (
           init?.method === "GET" &&
-          (typeof input === "string" ? input : input.toString()).includes(
-            "/api/agent-long/resume",
+          [AGENT_RESUME_ENDPOINT, LEGACY_AGENT_RESUME_ENDPOINT].some(
+            (resumeEndpoint) =>
+              (typeof input === "string" ? input : input.toString()).includes(
+                resumeEndpoint,
+              ),
           )
         ) {
           return resumeAgentLongStream(
@@ -572,9 +573,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return fetchWithErrorHandlers(input, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
-        // Use the agent-long resume endpoint when there is a stored trigger run
-        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
-        // when the current run is using Trigger.dev for agent mode.
+        // Use the Trigger-backed Agent resume endpoint when there is a stored
+        // trigger run (covers legacy "agent-long" chats normalised to "agent")
+        // or when the current run is using Trigger.dev for agent mode.
         const useTriggerAgent = shouldUseAgentLongForAgent({
           mode: chatModeRef.current,
           subscription: subscriptionRef.current,
@@ -582,7 +583,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         });
         if (useTriggerAgent || !!activeTriggerRunRef.current) {
           return {
-            api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
+            api: `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(id)}`,
           };
         }
         return { api: `${api}/${id}/stream` };
@@ -998,7 +999,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       try {
         const response = await fetch(
-          `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
           { method: "GET", signal: abortController.signal },
         );
         if (response.status === 204) {
@@ -1221,8 +1222,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (persistedPrefsRef.current === null) {
       const savedModel = (chatData as any).selected_model as string | undefined;
       const savedMode = (chatData as any).default_model_slug as
-        | string
-        | undefined;
+        string | undefined;
       persistedPrefsRef.current = {
         model: savedModel ?? selectedModel,
         mode: savedMode ?? chatMode,
