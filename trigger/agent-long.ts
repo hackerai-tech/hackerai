@@ -52,7 +52,14 @@ import {
   checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
+  deductUsageDelta,
+  addUsageDeductionDelta,
+  createUsageSettlementState,
+  getUsageSettlementInitialDeduction,
+  getUnsettledUsagePoints,
   recordFreeMonthlyCost,
+  replaceUsageSettlementState,
+  shouldSettleUsageMidRun,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
@@ -1540,6 +1547,10 @@ export const agentLongTask = task({
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
+            const usageSettlementState =
+              subscription === "free"
+                ? null
+                : createUsageSettlementState(rateLimitInfo, extraUsageConfig);
 
             const deductAccumulatedUsage = async () => {
               try {
@@ -1586,9 +1597,23 @@ export const agentLongTask = task({
                     selectedModel,
                     usageTracker.nonModelCost,
                     organizationId,
-                    rateLimitInfo,
+                    usageSettlementState
+                      ? getUsageSettlementInitialDeduction(usageSettlementState)
+                      : rateLimitInfo,
                     usageRecordArgs.accountingModel,
                   );
+                  if (usageSettlementState) {
+                    usageRefundTracker.recordDeductions({
+                      ...rateLimitInfo,
+                      pointsDeducted: deductionResult.includedPointsDeducted,
+                      extraUsagePointsDeducted:
+                        deductionResult.extraUsagePointsDeducted,
+                    });
+                    replaceUsageSettlementState(
+                      usageSettlementState,
+                      deductionResult,
+                    );
+                  }
                   if (deductionResult.uncoveredPoints > 0) {
                     state.stoppedDueToBudgetExhaustion = true;
                     if (state.streamFinishReason !== "error") {
@@ -1651,6 +1676,95 @@ export const agentLongTask = task({
               }
             };
 
+            const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
+              async ({ currentCostDollars, force }) => {
+                if (!usageSettlementState || hasRecordedUsage) return;
+                if (
+                  !shouldSettleUsageMidRun({
+                    state: usageSettlementState,
+                    currentCostDollars,
+                    force,
+                  })
+                ) {
+                  return;
+                }
+
+                const additionalCostPoints = getUnsettledUsagePoints(
+                  usageSettlementState,
+                  currentCostDollars,
+                );
+                if (additionalCostPoints <= 0) return;
+
+                let deductionResult: Awaited<
+                  ReturnType<typeof deductUsageDelta>
+                >;
+                try {
+                  deductionResult = await deductUsageDelta(
+                    userId,
+                    subscription,
+                    additionalCostPoints,
+                    extraUsageConfig,
+                    organizationId,
+                  );
+                } catch (error) {
+                  phLogger.warn("Mid-run usage settlement failed", {
+                    event: "mid_run_usage_settlement_failed",
+                    chat_id: chatId,
+                    endpoint: "/api/agent-long",
+                    mode,
+                    user_id: userId,
+                    organization_id: organizationId,
+                    subscription,
+                    selected_model: selectedModel,
+                    additional_cost_points: additionalCostPoints,
+                    current_cost_dollars: currentCostDollars,
+                    force,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  });
+                  deductionResult = {
+                    includedPointsDeducted: 0,
+                    extraUsagePointsDeducted: 0,
+                    uncoveredPoints: additionalCostPoints,
+                    usageDeductionFailed: true,
+                    usageDeductionFailureReason: "deduction_failed",
+                  };
+                }
+
+                usageRefundTracker.addDeductions(deductionResult);
+                const cumulativeDeduction = addUsageDeductionDelta(
+                  usageSettlementState,
+                  deductionResult,
+                );
+                if (cumulativeDeduction.uncoveredPoints <= 0) return;
+
+                state.stoppedDueToBudgetExhaustion = true;
+                if (state.streamFinishReason !== "error") {
+                  state.streamFinishReason = BUDGET_EXHAUSTION_FINISH_REASON;
+                }
+                phLogger.warn("Mid-run usage settlement left uncovered cost", {
+                  event: "mid_run_usage_settlement_uncovered",
+                  chat_id: chatId,
+                  endpoint: "/api/agent-long",
+                  mode,
+                  user_id: userId,
+                  organization_id: organizationId,
+                  subscription,
+                  selected_model: selectedModel,
+                  additional_cost_points: additionalCostPoints,
+                  current_cost_dollars: currentCostDollars,
+                  included_points_deducted:
+                    cumulativeDeduction.includedPointsDeducted,
+                  extra_usage_points_deducted:
+                    cumulativeDeduction.extraUsagePointsDeducted,
+                  uncovered_points: cumulativeDeduction.uncoveredPoints,
+                  usage_deduction_failure_reason:
+                    cumulativeDeduction.usageDeductionFailureReason,
+                  force,
+                });
+                userStopSignal.abort();
+              };
+
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               trackedProvider,
@@ -1681,6 +1795,7 @@ export const agentLongTask = task({
               ensureSandbox,
               chatLogger,
               usageRefundTracker,
+              settleUsageAfterStep,
               onBudgetAbort: (details) =>
                 captureAgentBudgetAbort({
                   posthog,

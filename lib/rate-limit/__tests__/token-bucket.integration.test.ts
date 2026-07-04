@@ -1119,6 +1119,185 @@ describe("token-bucket async functions", () => {
     });
   });
 
+  describe("deductUsageDelta", () => {
+    it("deducts a mid-run delta from included bucket first and extra usage second", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+      });
+
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 0 }),
+      );
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 10 }),
+      );
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(result).toEqual({
+        includedPointsDeducted: 10,
+        extraUsagePointsDeducted: 33,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
+    it("reports uncovered mid-run delta when extra usage cannot cover overflow", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+      mockDeductFromBalance.mockResolvedValueOnce({
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+      });
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+      });
+
+      expect(result).toEqual({
+        includedPointsDeducted: 10,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 33,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "insufficient_funds",
+      });
+    });
+
+    it("falls back to extra usage when included bucket debit fails after peek", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+      });
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 43);
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 43,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
+    it("preserves included mid-run deduction when extra usage charge throws", async () => {
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      try {
+        const { deductUsageDelta } = getIsolatedModule();
+
+        mockLimitFn
+          .mockResolvedValueOnce({
+            success: true,
+            remaining: 10,
+            reset: Date.now() + 3600000,
+            limit: 250000,
+          })
+          .mockResolvedValueOnce({
+            success: true,
+            remaining: 0,
+            reset: Date.now() + 3600000,
+            limit: 250000,
+          });
+        mockDeductFromBalance.mockRejectedValueOnce(new Error("stripe down"));
+
+        const result = await deductUsageDelta("user-123", "pro", 43, {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+        });
+
+        expect(result).toEqual({
+          includedPointsDeducted: 10,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 33,
+          usageDeductionFailed: true,
+          usageDeductionFailureReason: "deduction_failed",
+        });
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it("does not re-charge mid-run deductions during final reconciliation", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+        undefined,
+        0,
+        undefined,
+        { pointsDeducted: 17, extraUsagePointsDeducted: 33 },
+      );
+
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromBalance).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        includedPointsDeducted: 17,
+        extraUsagePointsDeducted: 33,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+  });
+
   describe("concurrent deduction safety", () => {
     it("should reject a concurrent check when its final deduction fails", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();

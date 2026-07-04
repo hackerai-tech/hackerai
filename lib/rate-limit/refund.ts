@@ -1,5 +1,5 @@
 import type { RateLimitInfo, SubscriptionTier } from "@/types";
-import { refundUsage } from "./token-bucket";
+import { refundUsage, type UsageDeductionResult } from "./token-bucket";
 
 /**
  * Tracks usage deductions and handles refunds on error.
@@ -32,6 +32,19 @@ export class UsageRefundTracker {
   recordDeductions(rateLimitInfo: RateLimitInfo): void {
     this.pointsDeducted = rateLimitInfo.pointsDeducted ?? 0;
     this.extraUsagePointsDeducted = rateLimitInfo.extraUsagePointsDeducted ?? 0;
+  }
+
+  /**
+   * Add deductions performed after the initial rate-limit check.
+   */
+  addDeductions(
+    deductions: Pick<
+      UsageDeductionResult,
+      "includedPointsDeducted" | "extraUsagePointsDeducted"
+    >,
+  ): void {
+    this.pointsDeducted += deductions.includedPointsDeducted ?? 0;
+    this.extraUsagePointsDeducted += deductions.extraUsagePointsDeducted ?? 0;
   }
 
   /**

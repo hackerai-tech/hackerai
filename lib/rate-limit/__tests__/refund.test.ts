@@ -75,6 +75,36 @@ describe("UsageRefundTracker", () => {
     });
   });
 
+  describe("addDeductions", () => {
+    it("adds mid-run deductions to existing refund totals", async () => {
+      const { UsageRefundTracker } = getIsolatedModule();
+      const tracker = new UsageRefundTracker();
+
+      tracker.setUser("user-123", "pro");
+      tracker.recordDeductions({
+        remaining: 5000,
+        resetTime: new Date(),
+        limit: 10000,
+        pointsDeducted: 100,
+        extraUsagePointsDeducted: 50,
+      });
+      tracker.addDeductions({
+        includedPointsDeducted: 25,
+        extraUsagePointsDeducted: 75,
+      });
+
+      await tracker.refund();
+
+      expect(mockRefundUsage).toHaveBeenCalledWith(
+        "user-123",
+        "pro",
+        125,
+        125,
+        undefined,
+      );
+    });
+  });
+
   describe("hasDeductions", () => {
     it("should return false when no deductions recorded", () => {
       const { UsageRefundTracker } = getIsolatedModule();
