@@ -559,12 +559,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
     expect(routeSrc).toMatch(/idempotencyKeys/);
+    expect(routeSrc).toMatch(/buildAgentRunDedupeKeyParts/);
     expect(routeSrc).toMatch(/buildAgentRunIdempotencyKey/);
     expect(routeSrc).toMatch(/getLastRequestMessageId/);
     expect(routeSrc).toMatch(/scope:\s*"global"/);
     expect(routeSrc).toMatch(/idempotencyKey:\s*triggerIdempotencyKey/);
     expect(routeSrc).toMatch(/idempotencyKeyTTL:\s*"6h"/);
     expect(routeSrc).toMatch(/existingChat\?\.update_time/);
+  });
+
+  test("uses the turn dedupe key for approval session external IDs", () => {
+    expect(routeSrc).toMatch(/buildAgentApprovalSessionId/);
+    expect(routeSrc).toMatch(/createHash\("sha256"\)/);
+    expect(routeSrc).toMatch(/keyParts:\s*triggerDedupeKeyParts/);
+    expect(routeSrc).not.toMatch(/randomUUID/);
   });
 
   test("handled tool failures are visible in Trigger logs and metadata", () => {

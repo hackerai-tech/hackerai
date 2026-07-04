@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
 import { geolocation } from "@vercel/functions";
@@ -145,7 +145,7 @@ const getLastRequestMessageId = (messages: UIMessage[]): string | undefined => {
   return undefined;
 };
 
-const buildAgentRunIdempotencyKey = async ({
+const buildAgentRunDedupeKeyParts = ({
   userId,
   chatId,
   requestMessages,
@@ -173,10 +173,25 @@ const buildAgentRunIdempotencyKey = async ({
       ? `chat-update:${existingChatUpdateTime}`
       : `request:${triggerRequestedAt}`);
 
-  return idempotencyKeys.create(
-    ["agent-run", userId, chatId, operation, turnKey],
-    { scope: "global" },
-  );
+  return ["agent-run", userId, chatId, operation, turnKey];
+};
+
+const buildAgentRunIdempotencyKey = async (
+  keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>,
+) => idempotencyKeys.create(keyParts, { scope: "global" });
+
+const buildAgentApprovalSessionId = ({
+  chatId,
+  keyParts,
+}: {
+  chatId: string;
+  keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>;
+}) => {
+  const digest = createHash("sha256")
+    .update(keyParts.join("\0"))
+    .digest("base64url")
+    .slice(0, 32);
+  return `agent-approval:${chatId}:${digest}`;
 };
 
 export const createAgentTriggerPost =
@@ -350,7 +365,7 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
-      const triggerIdempotencyKey = await buildAgentRunIdempotencyKey({
+      const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
         requestMessages,
@@ -359,9 +374,15 @@ export const createAgentTriggerPost =
         existingChatUpdateTime: existingChat?.update_time,
         triggerRequestedAt,
       });
+      const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
+        triggerDedupeKeyParts,
+      );
       const approvalSessionId =
         agentPermissionMode === "ask_approval"
-          ? `agent-approval:${chatId}:${randomUUID()}`
+          ? buildAgentApprovalSessionId({
+              chatId,
+              keyParts: triggerDedupeKeyParts,
+            })
           : undefined;
       const agentPayload = {
         chatId,
