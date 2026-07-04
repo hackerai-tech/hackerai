@@ -234,10 +234,10 @@ export const modelCutoffDates: Record<ModelName, string> &
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "Auto, an intelligent model router built by HackerAI",
-  "ask-model-free": "Auto, an intelligent model router built by HackerAI",
-  "agent-model": "Auto, an intelligent model router built by HackerAI",
-  "agent-model-free": "Auto, an intelligent model router built by HackerAI",
+  "ask-model": "Auto, an intelligent model router built by ZHACKER",
+  "ask-model-free": "Auto, an intelligent model router built by ZHACKER",
+  "agent-model": "Auto, an intelligent model router built by ZHACKER",
+  "agent-model-free": "Auto, an intelligent model router built by ZHACKER",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.3": "xAI Grok 4.3",
   "model-gemini-3-flash": "xAI Grok 4.3",
@@ -247,9 +247,9 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-minimax-m3": "MiniMax M3",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
-  "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
+  "fallback-agent-model": "Auto, an intelligent model router built by ZHACKER",
+  "fallback-ask-model": "Auto, an intelligent model router built by ZHACKER",
+  "fallback-grok-4.3": "Auto, an intelligent model router built by ZHACKER",
   "title-generator-model": "xAI Grok 4.3",
 };
 
@@ -317,7 +317,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 }
 
 /**
- * Map a HackerAI tier id to the underlying provider key for a given mode.
+ * Map a ZHACKER tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
  * key instead). Standard and Pro are mode-aware; Max maps to Opus in both
  * modes.
@@ -328,11 +328,11 @@ export function resolveTierToProviderKey(
 ): ModelName | null {
   if (tier === "auto") return null;
   switch (tier) {
-    case "hackerai-standard":
+    case "zhacker-standard":
       return isAgentMode(mode) ? "model-minimax-m3" : "model-deepseek-v4-pro";
-    case "hackerai-pro":
+    case "zhacker-pro":
       return "model-sonnet-4.6";
-    case "hackerai-max":
+    case "zhacker-max":
       return "model-opus-4.6";
   }
 }

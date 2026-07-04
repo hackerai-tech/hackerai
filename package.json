@@ -1,5 +1,5 @@
 {
-  "name": "hackerai",
+  "name": "zhacker",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.33.2",
@@ -47,8 +47,8 @@
     "local-sandbox:build": "cd packages/local && pnpm build",
     "desktop:dev": "cd packages/desktop && pnpm dev",
     "desktop:build": "cd packages/desktop && pnpm build",
-    "docker:build": "docker buildx build --load -t hackerai/sandbox:latest -f docker/Dockerfile docker/",
-    "docker:build:push": "docker buildx build --platform linux/amd64,linux/arm64 --push -t hackerai/sandbox:latest -f docker/Dockerfile docker/",
+    "docker:build": "docker buildx build --load -t zhacker/sandbox:latest -f docker/Dockerfile docker/",
+    "docker:build:push": "docker buildx build --platform linux/amd64,linux/arm64 --push -t zhacker/sandbox:latest -f docker/Dockerfile docker/",
     "sandbox:deploy:dev": "pnpm docker:build:push && pnpm e2b:build:dev",
     "sandbox:deploy:prod": "pnpm docker:build:push && pnpm e2b:build:prod",
     "sandbox:deploy": "pnpm docker:build:push && pnpm e2b:build:dev && pnpm e2b:build:prod"

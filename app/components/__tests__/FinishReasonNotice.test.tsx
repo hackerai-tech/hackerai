@@ -260,7 +260,7 @@ describe("FinishReasonNotice", () => {
         screen.getByRole("button", { name: /continue with standard/i }),
       );
 
-      expect(onContinue).toHaveBeenCalledWith("hackerai-standard");
+      expect(onContinue).toHaveBeenCalledWith("zhacker-standard");
     });
 
     it("keeps the current selected model when spend-cap continuation eligibility is unknown", () => {

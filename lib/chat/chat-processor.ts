@@ -79,13 +79,13 @@ export function selectModel(
   // Paid ASK Standard mirrors the auto-route split, but uses explicit keys so
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
-  if (selectedModel === "hackerai-standard" && !isAgent) {
+  if (selectedModel === "zhacker-standard" && !isAgent) {
     return hasAskImage || hasAskPdf
       ? "model-grok-4.3"
       : "model-deepseek-v4-pro";
   }
 
-  if (selectedModel === "hackerai-pro" && !isAgent) {
+  if (selectedModel === "zhacker-pro" && !isAgent) {
     return "model-sonnet-4.6";
   }
 

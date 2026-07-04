@@ -10,7 +10,7 @@ describe("pro-max-notice-cookie", () => {
     it("returns true when the ack cookie appears first", () => {
       expect(
         isProMaxUsageNoticeDismissedFromCookieHeader(
-          "hackerai_pro_max_usage_ack=1",
+          "zhacker_pro_max_usage_ack=1",
         ),
       ).toBe(true);
     });
@@ -18,7 +18,7 @@ describe("pro-max-notice-cookie", () => {
     it("returns true when the ack cookie follows another cookie", () => {
       expect(
         isProMaxUsageNoticeDismissedFromCookieHeader(
-          "sidebar=open; hackerai_pro_max_usage_ack=1",
+          "sidebar=open; zhacker_pro_max_usage_ack=1",
         ),
       ).toBe(true);
     });
@@ -26,7 +26,7 @@ describe("pro-max-notice-cookie", () => {
     it("does not match a prefixed cookie name substring", () => {
       expect(
         isProMaxUsageNoticeDismissedFromCookieHeader(
-          "evil_hackerai_pro_max_usage_ack=1",
+          "evil_zhacker_pro_max_usage_ack=1",
         ),
       ).toBe(false);
     });
@@ -34,7 +34,7 @@ describe("pro-max-notice-cookie", () => {
     it("requires value 1", () => {
       expect(
         isProMaxUsageNoticeDismissedFromCookieHeader(
-          "hackerai_pro_max_usage_ack=0",
+          "zhacker_pro_max_usage_ack=0",
         ),
       ).toBe(false);
     });

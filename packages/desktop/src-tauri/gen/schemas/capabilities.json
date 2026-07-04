@@ -1,8 +1,8 @@
 {
   "default": {
     "identifier": "default",
-    "description": "Default capabilities for HackerAI Desktop",
-    "remote": { "urls": ["http://localhost:*", "https://hackerai.co/*"] },
+    "description": "Default capabilities for ZHACKER Desktop",
+    "remote": { "urls": ["http://localhost:*", "https://zhacker.ai/*"] },
     "local": true,
     "windows": ["main"],
     "permissions": [

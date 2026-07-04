@@ -5,16 +5,16 @@ const authConfig = {
     ? [
         {
           type: "customJwt" as const,
-          issuer: `https://auth.hackerai.co/`,
+          issuer: `https://auth.zhacker.ai/`,
           algorithm: "RS256" as const,
           applicationID: clientId,
-          jwks: `https://auth.hackerai.co/sso/jwks/${clientId}`,
+          jwks: `https://auth.zhacker.ai/sso/jwks/${clientId}`,
         },
         {
           type: "customJwt" as const,
-          issuer: `https://auth.hackerai.co/user_management/${clientId}`,
+          issuer: `https://auth.zhacker.ai/user_management/${clientId}`,
           algorithm: "RS256" as const,
-          jwks: `https://auth.hackerai.co/sso/jwks/${clientId}`,
+          jwks: `https://auth.zhacker.ai/sso/jwks/${clientId}`,
           applicationID: clientId,
         },
       ]

@@ -48,9 +48,9 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
-  process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+  process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.zhacker.ai/en/";
 
-const STATUS_PAGE_URL = "https://status.hackerai.co/";
+const STATUS_PAGE_URL = "https://status.zhacker.ai/";
 
 const REFERRAL_CARD_DISMISSED_COOKIE = "referral_sidebar_dismissed";
 
@@ -341,7 +341,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   const handleGitHub = () => {
     const newWindow = window.open(
-      "https://github.com/hackerai-tech/hackerai",
+      "https://github.com/zhacker-tech/hackerai",
       "_blank",
       "noopener,noreferrer",
     );

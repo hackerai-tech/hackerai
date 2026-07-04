@@ -1,5 +1,5 @@
-export const REFERRAL_COOKIE_NAME = "hackerai_ref";
-export const REFERRAL_COOKIE_CREATED_AT_NAME = "hackerai_ref_at";
+export const REFERRAL_COOKIE_NAME = "zhacker_ref";
+export const REFERRAL_COOKIE_CREATED_AT_NAME = "zhacker_ref_at";
 
 export const REFERRAL_CODE_PATTERN = /^[a-zA-Z0-9_-]{6,64}$/;
 

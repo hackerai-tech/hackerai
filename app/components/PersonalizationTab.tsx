@@ -57,7 +57,7 @@ const PersonalizationTab = ({
               <div>
                 <div className="font-medium">Enable notes</div>
                 <div className="text-sm text-muted-foreground">
-                  Let HackerAI save and use notes when responding.
+                  Let ZHACKER save and use notes when responding.
                 </div>
               </div>
               <Switch

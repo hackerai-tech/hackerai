@@ -1,7 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import { getSuspensionMessage } from "../suspensionMessage";
 
-const SUPPORT_URL = "https://help.hackerai.co/";
+const SUPPORT_URL = "https://help.zhacker.ai/";
 
 describe("getSuspensionMessage", () => {
   it("uses the EFW label for early_fraud_warning reasons", () => {

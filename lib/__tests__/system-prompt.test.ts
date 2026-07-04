@@ -164,7 +164,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "Do not use host.docker.internal as a shortcut to the user's host from the cloud sandbox",
     );
     expect(prompt).toContain(
-      "use the HackerAI Desktop App, Remote Connection, or a user-provided reachable tunnel URL",
+      "use the ZHACKER Desktop App, Remote Connection, or a user-provided reachable tunnel URL",
     );
     expect(prompt).toContain(
       "Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets",

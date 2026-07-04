@@ -4,7 +4,7 @@ import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
 import type { ChatMode } from "@/types/chat";
 
 /**
- * Drift guard: every selectable HackerAI tier must resolve to a provider key
+ * Drift guard: every selectable ZHACKER tier must resolve to a provider key
  * registered with `myProvider` in *both* modes. Without this, picking the
  * tier from the UI would crash on `myProvider.languageModel()`.
  */
@@ -31,29 +31,29 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to different providers per mode", () => {
-    expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
+  it("ZHACKER Standard resolves to different providers per mode", () => {
+    expect(resolveTierToProviderKey("zhacker-standard", "ask")).toBe(
       "model-deepseek-v4-pro",
     );
-    expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
+    expect(resolveTierToProviderKey("zhacker-standard", "agent")).toBe(
       "model-minimax-m3",
     );
   });
 
-  it("HackerAI Pro resolves to Sonnet in both modes", () => {
-    expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
+  it("ZHACKER Pro resolves to Sonnet in both modes", () => {
+    expect(resolveTierToProviderKey("zhacker-pro", "ask")).toBe(
       "model-sonnet-4.6",
     );
-    expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
+    expect(resolveTierToProviderKey("zhacker-pro", "agent")).toBe(
       "model-sonnet-4.6",
     );
   });
 
-  it("HackerAI Max resolves to the same provider in both modes", () => {
-    expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
+  it("ZHACKER Max resolves to the same provider in both modes", () => {
+    expect(resolveTierToProviderKey("zhacker-max", "ask")).toBe(
       "model-opus-4.6",
     );
-    expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
+    expect(resolveTierToProviderKey("zhacker-max", "agent")).toBe(
       "model-opus-4.6",
     );
   });
@@ -63,8 +63,8 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect(resolveTierToProviderKey("auto", "agent")).toBeNull();
   });
 
-  it("hover-popup descriptions are present for every HackerAI tier", () => {
-    const tiered = allOptions.filter((o) => o.label.startsWith("HackerAI"));
+  it("hover-popup descriptions are present for every ZHACKER tier", () => {
+    const tiered = allOptions.filter((o) => o.label.startsWith("ZHACKER"));
     expect(tiered.length).toBeGreaterThan(0);
     for (const option of tiered) {
       expect(option.description).toBeTruthy();

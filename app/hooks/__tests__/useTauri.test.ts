@@ -70,7 +70,7 @@ describe("navigateToAuth", () => {
     await navigateToAuth("/login");
 
     expect(mockToastError).toHaveBeenCalledWith(
-      "Update HackerAI Desktop to sign in",
+      "Update ZHACKER Desktop to sign in",
       expect.objectContaining({
         description: expect.stringContaining("secure sign-in bridge"),
       }),

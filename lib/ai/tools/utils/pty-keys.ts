@@ -93,7 +93,7 @@ export const RAW_TO_KEY_NAME: Record<string, string> = Object.fromEntries(
  * If the input matches a known key name, return the escape sequence.
  * Otherwise, return the raw string as-is, with one ergonomic tweak: a
  * trailing real newline (LF, CR, or CRLF) is canonicalized to `\r` so
- * `"hackerai-test-project\n"` in a single call submits the line the
+ * `"zhacker-test-project\n"` in a single call submits the line the
  * same way a `"Enter"` follow-up would.
  */
 export const translateInput = (input: string): Uint8Array => {
@@ -135,8 +135,8 @@ export const translateInput = (input: string): Uint8Array => {
  * Translate a sequence of tokens (each either a key name or literal text)
  * and concatenate their byte sequences in order. Enables callers to mix
  * typing text with submitting via Enter/Tab/arrows in a single call:
- *   translateInputSequence(["hackerai-test-project", "Enter"])
- * becomes the bytes "hackerai-test-project\r".
+ *   translateInputSequence(["zhacker-test-project", "Enter"])
+ * becomes the bytes "zhacker-test-project\r".
  */
 export const translateInputSequence = (tokens: string[]): Uint8Array => {
   const parts = tokens.map((t) => translateInput(t));

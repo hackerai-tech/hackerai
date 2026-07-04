@@ -5,7 +5,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self' http://localhost:3000 https://hackerai.co https://*.hackerai.co https://*.convex.cloud https://*.convex.dev https://auth.hackerai.co https://api.workos.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:3000 https://hackerai.co https://*.hackerai.co https://*.convex.cloud; style-src 'self' 'unsafe-inline' http://localhost:3000 https://hackerai.co https://*.hackerai.co; img-src 'self' data: https: http: blob:; font-src 'self' data: https: http:; connect-src 'self' http://localhost:3000 ws://localhost:3000 https://hackerai.co https://*.hackerai.co https://*.convex.cloud wss://*.convex.cloud https://auth.hackerai.co https://api.workos.com https://*.posthog.com https://*.stripe.com https://api.trigger.dev https://*.trigger.dev wss://*.trigger.dev; frame-src 'self' https://*.stripe.com; media-src 'self' blob:;"
+      "csp": "default-src 'self' http://localhost:3000 https://zhacker.ai https://*.zhacker.ai https://*.convex.cloud https://*.convex.dev https://auth.zhacker.ai https://api.workos.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:3000 https://zhacker.ai https://*.zhacker.ai https://*.convex.cloud; style-src 'self' 'unsafe-inline' http://localhost:3000 https://zhacker.ai https://*.zhacker.ai; img-src 'self' data: https: http: blob:; font-src 'self' data: https: http:; connect-src 'self' http://localhost:3000 ws://localhost:3000 https://zhacker.ai https://*.zhacker.ai https://*.convex.cloud wss://*.convex.cloud https://auth.zhacker.ai https://api.workos.com https://*.posthog.com https://*.stripe.com https://api.trigger.dev https://*.trigger.dev wss://*.trigger.dev; frame-src 'self' https://*.stripe.com; media-src 'self' blob:;"
     }
   }
 }

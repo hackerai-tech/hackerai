@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Copy, Check, Loader2, X as XIcon } from "lucide-react";
 import { toast } from "sonner";
-import { HackerAISVG } from "@/components/icons/hackerai-svg";
+import { ZHACKERSVG } from "@/components/icons/zhacker-svg";
 import { MessagePartHandler } from "@/app/components/MessagePartHandler";
 import { FilePartRenderer } from "@/app/components/FilePartRenderer";
 
@@ -337,9 +337,9 @@ export const ShareDialog = ({
                 {/* Fade-out gradient at the bottom - starts at 66% height, more opaque */}
                 <div className="absolute bottom-0 left-0 right-0 h-[34%] bg-gradient-to-t from-muted/90 via-muted/70 via-30% via-muted/40 via-70% to-transparent pointer-events-none" />
 
-                {/* Floating HackerAI Logo - bottom left corner */}
+                {/* Floating ZHACKER Logo - bottom left corner */}
                 <div className="absolute bottom-4 right-4 z-10">
-                  <HackerAISVG theme="dark" scale={0.12} />
+                  <ZHACKERSVG theme="dark" scale={0.12} />
                 </div>
               </div>
             </div>

@@ -39,7 +39,7 @@ describe("stripe webhook logging", () => {
       expect.objectContaining({
         event: "stripe_webhook_signature_verification_failed",
         level: "warn",
-        service: "hackerai-web",
+        service: "zhacker-web",
         webhook: "extra_usage",
         route: "/api/extra-usage/webhook",
         request_id: "iad1::abc123",

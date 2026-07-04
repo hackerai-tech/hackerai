@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { hasAuthenticatedBefore } from "@/lib/utils/client-storage";
 
 export const DESKTOP_UPDATE_URL =
-  "https://github.com/hackerai-tech/hackerai/releases/latest";
+  "https://github.com/zhacker-tech/zhacker/releases/latest";
 
 declare global {
   interface Window {
@@ -43,7 +43,7 @@ export async function openInBrowser(url: string): Promise<boolean> {
 }
 
 async function promptDesktopUpdate(): Promise<void> {
-  toast.error("Update HackerAI Desktop to sign in", {
+  toast.error("Update ZHACKER Desktop to sign in", {
     description:
       "This version is missing the secure sign-in bridge. Opening the latest desktop download in your browser.",
   });

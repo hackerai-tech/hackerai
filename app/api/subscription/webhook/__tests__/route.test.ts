@@ -228,7 +228,7 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockPostHogEvent).not.toHaveBeenCalled();
   });
 
-  it("skips legacy PentestGPT invoices before resolving the old product as a HackerAI tier", async () => {
+  it("skips legacy PentestGPT invoices before resolving the old product as a ZHACKER tier", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_invoice_paid_legacy",
       type: "invoice.paid",
@@ -365,7 +365,7 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("deactivates referral paid eligibility for deleted HackerAI subscriptions resolved from product fallback", async () => {
+  it("deactivates referral paid eligibility for deleted ZHACKER subscriptions resolved from product fallback", async () => {
     mockGetReferralRewardConfig.mockReturnValue({
       enabled: true,
       referrerRewardDollars: 10,
@@ -407,7 +407,7 @@ describe("POST /api/subscription/webhook", () => {
               recurring: { interval: "month", interval_count: 1 },
               product: {
                 id: "prod_hackerai_pro_plus",
-                name: "HackerAI Pro Plus",
+                name: "ZHACKER Pro Plus",
                 metadata: {},
               },
             },
@@ -467,7 +467,7 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("skips deleted legacy PentestGPT subscriptions that do not have a HackerAI price lookup key", async () => {
+  it("skips deleted legacy PentestGPT subscriptions that do not have a ZHACKER price lookup key", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_subscription_deleted_legacy",
       type: "customer.subscription.deleted",

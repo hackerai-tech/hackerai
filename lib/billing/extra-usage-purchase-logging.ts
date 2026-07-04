@@ -77,7 +77,7 @@ export function logExtraUsagePurchase(
     timestamp: new Date().toISOString(),
     level,
     event,
-    service: "hackerai-web",
+    service: "zhacker-web",
     environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
     route: args.route,
     request_id: requestId(args.requestHeaders),

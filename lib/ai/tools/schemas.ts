@@ -5,7 +5,7 @@ export const toolBriefSchema = z
   .string()
   .optional()
   .describe(
-    "Optional display metadata. Include a concise one-sentence preamble whenever possible so the user understands the operation; if omitted, HackerAI will show a generated fallback label.",
+    "Optional display metadata. Include a concise one-sentence preamble whenever possible so the user understands the operation; if omitted, ZHACKER will show a generated fallback label.",
   );
 
 export const RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS = 60;

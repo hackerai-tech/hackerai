@@ -20,7 +20,7 @@ describe("listUserMfaFactors", () => {
             created_at: "2026-06-04T15:00:00.000Z",
             updated_at: "2026-06-04T15:01:00.000Z",
             totp: {
-              issuer: "HackerAI",
+              issuer: "ZHACKER",
               user: "user@example.com",
             },
           },
@@ -38,7 +38,7 @@ describe("listUserMfaFactors", () => {
       {
         id: "auth_factor_totp",
         type: "totp",
-        issuer: "HackerAI",
+        issuer: "ZHACKER",
         user: "user@example.com",
         createdAt: "2026-06-04T15:00:00.000Z",
         updatedAt: "2026-06-04T15:01:00.000Z",

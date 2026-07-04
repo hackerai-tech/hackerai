@@ -5,7 +5,7 @@
  * preventing redundant API calls when multiple tabs need fresh tokens.
  */
 
-export const SHARED_TOKEN_KEY = "hackerai-shared-token";
+export const SHARED_TOKEN_KEY = "zhacker-shared-token";
 export const TOKEN_FRESHNESS_MS = 60000; // Consider token "fresh" if refreshed within 60s
 
 export type SharedToken = {

@@ -137,7 +137,7 @@ export async function GET() {
       JSON.stringify({
         level: "warn",
         event: "trigger_agent_health_status_fetch_failed",
-        service: "hackerai",
+        service: "zhacker",
         timestamp: checkedAt,
         source: TRIGGER_STATUS_URL,
         error_name: error instanceof Error ? error.name : "UnknownError",

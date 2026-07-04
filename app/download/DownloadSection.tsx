@@ -213,10 +213,10 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
       <div className="rounded-md border bg-card p-8 text-center shadow-lg">
         <MobilePlatformIcon platform={detected.platform} />
         <h2 className="mt-4 text-2xl font-semibold text-card-foreground">
-          HackerAI is installed
+          ZHACKER is installed
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          You&apos;re already running HackerAI as an installed app.
+          You&apos;re already running ZHACKER as an installed app.
         </p>
       </div>
     );
@@ -230,13 +230,13 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
           Install Mobile App
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Install HackerAI on your {detected.displayName} device
+          Install ZHACKER on your {detected.displayName} device
         </p>
       </div>
 
       {installed && (
         <div className="mb-4 rounded-md border border-green-500/30 bg-green-500/10 p-4 text-center text-sm text-green-600 dark:text-green-400">
-          Installed! Open HackerAI from your home screen.
+          Installed! Open ZHACKER from your home screen.
         </div>
       )}
 
@@ -248,7 +248,7 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
             onClick={handleInstallClick}
           >
             <DownloadIcon />
-            Install HackerAI
+            Install ZHACKER
           </Button>
           <div className="mb-4 flex items-center gap-3 text-xs text-muted-foreground">
             <div className="h-px flex-1 bg-border" />

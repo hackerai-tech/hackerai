@@ -100,7 +100,7 @@ function makeRequest(
 describe("POST /api/subscribe", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.example";
+    process.env.NEXT_PUBLIC_BASE_URL = "https://zhacker.example";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     delete process.env.REFERRAL_PROGRAM_ENABLED;
 
@@ -295,7 +295,7 @@ describe("POST /api/subscribe", () => {
     const { POST } = await import("../route");
 
     const response = await POST(
-      makeRequest({ plan: "pro-monthly-plan" }, { hackerai_ref: "REF123" }),
+      makeRequest({ plan: "pro-monthly-plan" }, { zhacker_ref: "REF123" }),
     );
     const body = await response.json();
 
@@ -379,7 +379,7 @@ describe("POST /api/subscribe", () => {
     const { POST } = await import("../route");
 
     const response = await POST(
-      makeRequest({ plan: "pro-monthly-plan" }, { hackerai_ref: "REF123" }),
+      makeRequest({ plan: "pro-monthly-plan" }, { zhacker_ref: "REF123" }),
     );
     const body = await response.json();
 
@@ -389,8 +389,8 @@ describe("POST /api/subscribe", () => {
       checkoutAttemptId: expect.stringMatching(/^ca_/),
     });
     expect(mockConvexMutation).not.toHaveBeenCalled();
-    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref");
-    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref_at");
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("zhacker_ref");
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("zhacker_ref_at");
   });
 
   it("clears paid-user referral cookies when referral attribution is disabled", async () => {
@@ -414,7 +414,7 @@ describe("POST /api/subscribe", () => {
     const { POST } = await import("../route");
 
     const response = await POST(
-      makeRequest({ plan: "pro-monthly-plan" }, { hackerai_ref: "REF123" }),
+      makeRequest({ plan: "pro-monthly-plan" }, { zhacker_ref: "REF123" }),
     );
     const body = await response.json();
 
@@ -424,8 +424,8 @@ describe("POST /api/subscribe", () => {
       checkoutAttemptId: expect.stringMatching(/^ca_/),
     });
     expect(mockConvexMutation).not.toHaveBeenCalled();
-    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref");
-    expect(mockResponseCookieDelete).toHaveBeenCalledWith("hackerai_ref_at");
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("zhacker_ref");
+    expect(mockResponseCookieDelete).toHaveBeenCalledWith("zhacker_ref_at");
   });
 
   it("persists checkout attribution in Stripe metadata and analytics", async () => {

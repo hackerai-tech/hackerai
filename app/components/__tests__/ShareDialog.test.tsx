@@ -32,9 +32,9 @@ jest.mock("@/app/components/MemoizedMarkdown", () => ({
   ),
 }));
 
-// Mock HackerAISVG
-jest.mock("@/components/icons/hackerai-svg", () => ({
-  HackerAISVG: () => <div data-testid="hackerai-svg">Logo</div>,
+// Mock ZHACKERSVG
+jest.mock("@/components/icons/zhacker-svg", () => ({
+  ZHACKERSVG: () => <div data-testid="zhacker-svg">Logo</div>,
 }));
 
 // Mock Convex api

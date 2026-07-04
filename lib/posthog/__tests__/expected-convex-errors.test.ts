@@ -100,7 +100,7 @@ describe("shouldDropExpectedConvexException", () => {
         event: "$exception",
         properties: {
           $exception_message:
-            'Uncaught ConvexError: {"code":"CHAT_ACCESS_SUSPENDED","message":"Your account has been suspended due to a fraudulent payment dispute (chargeback). Please contact support via chat at https://help.hackerai.co/ if you believe this is a mistake.","suspensionCategory":"dispute_fraudulent","suspensionSource":"stripe"}',
+            'Uncaught ConvexError: {"code":"CHAT_ACCESS_SUSPENDED","message":"Your account has been suspended due to a fraudulent payment dispute (chargeback). Please contact support via chat at https://help.zhacker.ai/ if you believe this is a mistake.","suspensionCategory":"dispute_fraudulent","suspensionSource":"stripe"}',
         },
       }),
     ).toBe(true);

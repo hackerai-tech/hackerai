@@ -181,9 +181,9 @@ Trigger.dev 4.5 supports isolated local dev branches. Use
 parallel worktrees or coding agents do not collide in the default dev
 environment.
 
-### HackerAI migration note
+### ZHACKER migration note
 
-For HackerAI Agent mode, treat `chat.agent` as migration input, not a drop-in
+For ZHACKER Agent mode, treat `chat.agent` as migration input, not a drop-in
 replacement. A live migration must preserve auth/suspension, sandbox setup,
 billing/refunds, budget monitoring, fallback models, todos, Convex persistence,
 and browser reconnect/resume behavior before swapping the current Agent stack.

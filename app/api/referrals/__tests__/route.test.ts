@@ -19,7 +19,7 @@ jest.mock("@/lib/auth/get-user-id", () => ({
 describe("GET /api/referrals", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.co";
+    process.env.NEXT_PUBLIC_BASE_URL = "https://zhacker.ai";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     delete process.env.REFERRAL_REFERRED_SIGNUP_BONUS_UNITS;
 
@@ -46,7 +46,7 @@ describe("GET /api/referrals", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.referralUrl).toBe("https://hackerai.co/invite/UVVQDMV");
+    expect(body.referralUrl).toBe("https://zhacker.ai/invite/UVVQDMV");
     expect(body.referrerSubscriptionTier).toBe("pro");
     expect(body.referredSignupBonusUnits).toBe(10);
     expect(mockConvexMutation).toHaveBeenCalledWith(

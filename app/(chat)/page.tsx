@@ -20,7 +20,7 @@ import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
 
-const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
+const LOGIN_TYPING_PREFIX = "Ask ZHACKER to ";
 const LOGIN_TYPING_TAILS = [
   "find vulnerabilities in...",
   "audit the security of...",

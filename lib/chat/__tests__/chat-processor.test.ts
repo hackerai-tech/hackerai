@@ -198,69 +198,69 @@ describe("selectModel", () => {
 
   // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to Sonnet 4.6 for text-only ask mode", () => {
-      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
+    it("should map ZHACKER Pro to Sonnet 4.6 for text-only ask mode", () => {
+      expect(selectModel("ask", "ultra", "zhacker-pro")).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should map HackerAI Pro to Sonnet 4.6 for team users", () => {
-      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
+    it("should map ZHACKER Pro to Sonnet 4.6 for team users", () => {
+      expect(selectModel("ask", "team", "zhacker-pro")).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should keep HackerAI Pro on Sonnet 4.6 when an image is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
+    it("should keep ZHACKER Pro on Sonnet 4.6 when an image is attached", () => {
+      expect(selectModel("ask", "pro", "zhacker-pro", true, false)).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should map HackerAI Standard to DeepSeek V4 Pro when no image/PDF", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
+    it("should map ZHACKER Standard to DeepSeek V4 Pro when no image/PDF", () => {
+      expect(selectModel("ask", "pro", "zhacker-standard")).toBe(
         "model-deepseek-v4-pro",
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.3 when an image is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
+    it("should promote ZHACKER Standard to Grok 4.3 when an image is attached", () => {
+      expect(selectModel("ask", "pro", "zhacker-standard", true, false)).toBe(
         "model-grok-4.3",
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.3 when a PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
+    it("should promote ZHACKER Standard to Grok 4.3 when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", "zhacker-standard", false, true)).toBe(
         "model-grok-4.3",
       );
     });
 
-    it("should prefer Grok 4.3 for HackerAI Standard when image and PDF are both attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
+    it("should prefer Grok 4.3 for ZHACKER Standard when image and PDF are both attached", () => {
+      expect(selectModel("ask", "pro", "zhacker-standard", true, true)).toBe(
         "model-grok-4.3",
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6", () => {
-      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.6");
+    it("should map ZHACKER Max to Opus 4.6", () => {
+      expect(selectModel("ask", "pro", "zhacker-max")).toBe("model-opus-4.6");
     });
   });
 
   // Agent mode — Standard resolves to MiniMax.
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to MiniMax M3 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
+    it("should map ZHACKER Standard to MiniMax M3 in agent mode", () => {
+      expect(selectModel("agent", "pro", "zhacker-standard")).toBe(
         "model-minimax-m3",
       );
     });
 
-    it("should map HackerAI Pro to Sonnet 4.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
+    it("should map ZHACKER Pro to Sonnet 4.6 in agent mode", () => {
+      expect(selectModel("agent", "pro", "zhacker-pro")).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-max")).toBe(
+    it("should map ZHACKER Max to Opus 4.6 in agent mode", () => {
+      expect(selectModel("agent", "pro", "zhacker-max")).toBe(
         "model-opus-4.6",
       );
     });
@@ -274,17 +274,17 @@ describe("selectModel", () => {
   // Free user guard
   describe("free user guard", () => {
     it("should ignore tier override for free users in agent mode", () => {
-      expect(selectModel("agent", "free", "hackerai-pro")).toBe(
+      expect(selectModel("agent", "free", "zhacker-pro")).toBe(
         "agent-model-free",
       );
     });
 
     it("should ignore tier override for free users in ask mode", () => {
-      expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
+      expect(selectModel("ask", "free", "zhacker-pro")).toBe("ask-model-free");
     });
 
     it("should keep free ask Standard on the free DeepSeek route", () => {
-      expect(selectModel("ask", "free", "hackerai-standard")).toBe(
+      expect(selectModel("ask", "free", "zhacker-standard")).toBe(
         "ask-model-free",
       );
     });

@@ -62,7 +62,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: true,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-pro",
+        selectedModelOverride: "zhacker-pro",
         extraUsageConfig: undefined,
       }),
     ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
@@ -95,7 +95,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: false,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-pro",
+        selectedModelOverride: "zhacker-pro",
         extraUsageConfig: undefined,
       }),
     ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
@@ -106,7 +106,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: undefined,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-max",
+        selectedModelOverride: "zhacker-max",
         extraUsageConfig: undefined,
       }),
     ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
@@ -119,7 +119,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: true,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-max",
+        selectedModelOverride: "zhacker-max",
         extraUsageConfig: {
           enabled: true,
           hasBalance: false,
@@ -127,7 +127,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
           autoReloadEnabled: true,
         },
       }),
-    ).toBe("hackerai-max");
+    ).toBe("zhacker-max");
   });
 
   it("leaves Standard and non-spend-cap requests unchanged", () => {
@@ -137,10 +137,10 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: true,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-standard",
+        selectedModelOverride: "zhacker-standard",
         extraUsageConfig: undefined,
       }),
-    ).toBe("hackerai-standard");
+    ).toBe("zhacker-standard");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -148,9 +148,9 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         isAutoContinue: true,
         mode: "agent",
         subscription: "pro",
-        selectedModelOverride: "hackerai-pro",
+        selectedModelOverride: "zhacker-pro",
         extraUsageConfig: undefined,
       }),
-    ).toBe("hackerai-pro");
+    ).toBe("zhacker-pro");
   });
 });

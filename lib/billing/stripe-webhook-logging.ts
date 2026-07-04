@@ -17,7 +17,7 @@ type StripeWebhookLogFields = {
   event:
     | "stripe_webhook_missing_signature"
     | "stripe_webhook_signature_verification_failed";
-  service: "hackerai-web";
+  service: "zhacker-web";
   environment: string;
   webhook: string;
   route: string;
@@ -108,7 +108,7 @@ function baseFields(
     timestamp: new Date().toISOString(),
     level: "warn",
     event,
-    service: "hackerai-web",
+    service: "zhacker-web",
     environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
     webhook: args.webhook,
     route: args.route,

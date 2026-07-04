@@ -19,7 +19,7 @@ let mockConnections: MockConnection[] | undefined;
 let mockChatMode: "ask" | "agent";
 let mockSubscription: "free" | "pro";
 let mockSandboxPreference: string;
-let mockSelectedModel: "auto" | "hackerai-standard" | "hackerai-pro";
+let mockSelectedModel: "auto" | "zhacker-standard" | "zhacker-pro";
 let mockTemporaryChatsEnabled: boolean;
 
 const mockSetChatMode = jest.fn((mode: "ask" | "agent") => {
@@ -29,7 +29,7 @@ const mockSetSandboxPreference = jest.fn((preference: string) => {
   mockSandboxPreference = preference;
 });
 const mockSetSelectedModel = jest.fn(
-  (model: "auto" | "hackerai-standard" | "hackerai-pro") => {
+  (model: "auto" | "zhacker-standard" | "zhacker-pro") => {
     mockSelectedModel = model;
   },
 );
@@ -85,7 +85,7 @@ describe("RemoteControlTab", () => {
     mockChatMode = "ask";
     mockSubscription = "free";
     mockSandboxPreference = "e2b";
-    mockSelectedModel = "hackerai-pro";
+    mockSelectedModel = "zhacker-pro";
     mockTemporaryChatsEnabled = false;
   });
 

@@ -37,7 +37,7 @@ function getEnvironment(): string {
 }
 
 function getServiceName(): string {
-  return process.env.POSTHOG_LOG_SERVICE_NAME ?? "hackerai-web";
+  return process.env.POSTHOG_LOG_SERVICE_NAME ?? "zhacker-web";
 }
 
 function truncate(value: string, maxLength = TELEMETRY_STRING_MAX_LENGTH) {

@@ -319,7 +319,7 @@ export const MessageErrorState = ({
                 size="sm"
                 onClick={() =>
                   window.open(
-                    "https://help.hackerai.co/",
+                    "https://help.zhacker.ai/",
                     "_blank",
                     "noopener,noreferrer",
                   )

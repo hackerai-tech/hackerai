@@ -25,10 +25,10 @@ const escapePromptText = (value: string): string =>
     .replaceAll("'", "&#39;");
 
 const LOCAL_FALLBACK_BLOCK_MESSAGE =
-  "Local sandbox is unavailable, so HackerAI did not switch this run to Cloud. Cloud cannot access your host files, drives, localhost, private networks, or desktop apps. Reconnect Desktop or a Remote Connection, or switch the sandbox to Cloud and send the message again.";
+  "Local sandbox is unavailable, so ZHACKER did not switch this run to Cloud. Cloud cannot access your host files, drives, localhost, private networks, or desktop apps. Reconnect Desktop or a Remote Connection, or switch the sandbox to Cloud and send the message again.";
 
 const SELECTED_LOCAL_FALLBACK_BLOCK_MESSAGE =
-  "The selected local sandbox is unavailable, so HackerAI did not switch sandboxes because commands would run on the wrong host. Reconnect or select the right local sandbox, then send the message again.";
+  "The selected local sandbox is unavailable, so ZHACKER did not switch sandboxes because commands would run on the wrong host. Reconnect or select the right local sandbox, then send the message again.";
 
 const LOCAL_ATTACHMENT_BLOCK_MESSAGE =
   "Desktop-local attachments require the Desktop sandbox. Reconnect Desktop, then resend the message with the attachment.";

@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-const CHUNK_LOAD_RELOAD_STORAGE_KEY = "hackerai:chunk-load-reload-at";
+const CHUNK_LOAD_RELOAD_STORAGE_KEY = "zhacker:chunk-load-reload-at";
 const CHUNK_LOAD_RELOAD_COOLDOWN_MS = 5 * 60 * 1_000;
 
 const CHUNK_LOAD_PATTERNS = [

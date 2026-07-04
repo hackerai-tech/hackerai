@@ -94,7 +94,7 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
 
   if (error instanceof AuthenticationError) {
-    return "Sandbox authentication failed. The E2B API key may be invalid or expired. Please contact HackerAI support.";
+    return "Sandbox authentication failed. The E2B API key may be invalid or expired. Please contact ZHACKER support.";
   }
   if (error instanceof RateLimitError) {
     return "Sandbox API rate limit exceeded. Please wait a moment and try again.";
@@ -103,7 +103,7 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
     return "Sandbox disk space is full. Try removing unnecessary files or deleting the sandbox in Settings > Data Controls.";
   }
   if (error instanceof TemplateError) {
-    return "Sandbox template is incompatible. Please contact HackerAI support.";
+    return "Sandbox template is incompatible. Please contact ZHACKER support.";
   }
   if (error instanceof TimeoutError) {
     if (error.message.includes("sandbox timeout")) {
@@ -115,7 +115,7 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
     return "Sandbox was not found or has expired. A new sandbox will be created automatically.";
   }
   if (error instanceof InvalidArgumentError) {
-    return "Invalid sandbox configuration. Please contact HackerAI support.";
+    return "Invalid sandbox configuration. Please contact ZHACKER support.";
   }
 
   return null;

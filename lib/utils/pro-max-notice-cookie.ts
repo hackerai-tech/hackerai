@@ -1,4 +1,4 @@
-const COOKIE_NAME = "hackerai_pro_max_usage_ack";
+const COOKIE_NAME = "zhacker_pro_max_usage_ack";
 
 /** Long-lived dismissal for the Pro/Max high-cost notice; informational only. */
 const MAX_AGE_SEC = 60 * 60 * 24 * 365 * 5;

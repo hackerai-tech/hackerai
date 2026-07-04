@@ -64,7 +64,7 @@ describe("ChunkLoadRecovery", () => {
     ).toBe(true);
 
     expect(storage.setItem).toHaveBeenCalledWith(
-      "hackerai:chunk-load-reload-at",
+      "zhacker:chunk-load-reload-at",
       "1000",
     );
     expect(reload).toHaveBeenCalledTimes(1);
@@ -72,7 +72,7 @@ describe("ChunkLoadRecovery", () => {
 
   it("does not reload repeatedly inside the cooldown window", () => {
     const storage = createStorage({
-      "hackerai:chunk-load-reload-at": "1000",
+      "zhacker:chunk-load-reload-at": "1000",
     });
     const reload = jest.fn();
 

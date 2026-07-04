@@ -146,7 +146,7 @@ const AutoReloadDialogContent = ({
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          By turning this on, you agree that HackerAI may charge your card on
+          By turning this on, you agree that ZHACKER may charge your card on
           file when your extra usage balance is low. Auto-reload usually tops
           your balance up to the amount above; if a request costs more, it may
           charge enough to cover that request. Set a monthly spending limit to

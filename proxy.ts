@@ -44,7 +44,7 @@ function getRedirectUri(): string | undefined {
 
 function isDesktopApp(request: NextRequest): boolean {
   const userAgent = request.headers.get("user-agent") || "";
-  return userAgent.includes("HackerAI-Desktop");
+  return userAgent.includes("ZHACKER-Desktop");
 }
 
 function isUnauthenticatedPath(pathname: string): boolean {
@@ -182,7 +182,7 @@ export default async function proxy(request: NextRequest) {
               timestamp: new Date().toISOString(),
               level: "warn",
               event: "auth.session_refresh_rate_limited",
-              service: "hackerai-web",
+              service: "zhacker-web",
               environment:
                 process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
               pathname,
@@ -196,7 +196,7 @@ export default async function proxy(request: NextRequest) {
             timestamp: new Date().toISOString(),
             level: "warn",
             event: "auth.session_refresh_failed",
-            service: "hackerai-web",
+            service: "zhacker-web",
             environment:
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             pathname,

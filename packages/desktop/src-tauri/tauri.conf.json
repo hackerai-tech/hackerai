@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "HackerAI",
+  "productName": "ZHACKER",
   "version": "0.0.0",
   "identifier": "co.hackerai.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "HackerAI",
+        "title": "ZHACKER",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -23,13 +23,13 @@
         "center": true,
         "decorations": true,
         "transparent": false,
-        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15 HackerAI-Desktop/1.0",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15 ZHACKER-Desktop/1.0",
         "theme": "Dark",
         "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://localhost:* https://hackerai.co https://*.hackerai.co https://*.convex.cloud https://*.convex.dev https://auth.hackerai.co https://api.workos.com; script-src 'self' 'unsafe-inline' http://localhost:* https://hackerai.co https://*.hackerai.co https://*.convex.cloud; style-src 'self' 'unsafe-inline' http://localhost:* https://hackerai.co https://*.hackerai.co; img-src 'self' data: https: blob:; font-src 'self' data: https:; connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* https://hackerai.co https://*.hackerai.co wss://*.hackerai.co https://*.convex.cloud wss://*.convex.cloud https://auth.hackerai.co https://api.workos.com https://*.posthog.com https://*.stripe.com https://api.trigger.dev https://*.trigger.dev wss://*.trigger.dev; frame-src 'self' https://*.stripe.com; media-src 'self' blob:;"
+      "csp": "default-src 'self' http://localhost:* https://zhacker.ai https://*.zhacker.ai https://*.convex.cloud https://*.convex.dev https://auth.zhacker.ai https://api.workos.com; script-src 'self' 'unsafe-inline' http://localhost:* https://zhacker.ai https://*.zhacker.ai https://*.convex.cloud; style-src 'self' 'unsafe-inline' http://localhost:* https://zhacker.ai https://*.zhacker.ai; img-src 'self' data: https: blob:; font-src 'self' data: https:; connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* https://zhacker.ai https://*.zhacker.ai wss://*.zhacker.ai https://*.convex.cloud wss://*.convex.cloud https://auth.zhacker.ai https://api.workos.com https://*.posthog.com https://*.stripe.com https://api.trigger.dev https://*.trigger.dev wss://*.trigger.dev; frame-src 'self' https://*.stripe.com; media-src 'self' blob:;"
     }
   },
   "bundle": {
@@ -46,10 +46,10 @@
     ],
     "resources": [],
     "externalBin": [],
-    "copyright": "Copyright 2024 HackerAI",
+    "copyright": "Copyright 2024 ZHACKER",
     "category": "DeveloperTool",
     "shortDescription": "AI-powered penetration testing assistant",
-    "longDescription": "HackerAI is an AI-powered penetration testing assistant that helps security professionals identify vulnerabilities.",
+    "longDescription": "ZHACKER is an AI-powered penetration testing assistant that helps security professionals identify vulnerabilities.",
     "macOS": {
       "entitlements": "entitlements.plist",
       "exceptionDomain": "",
@@ -88,7 +88,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/hackerai-tech/hackerai/releases/latest/download/latest.json"
+        "https://github.com/zhacker-tech/hackerai/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRBMzM3QTAyMDVDQzlBMUYKUldRZm1zd0ZBbm96U3VVSmRRMjYzNnNRSTJNNFdOaUl4cGR3bGxRZGpxTU02VjZUdGh2K0RnKy8K"

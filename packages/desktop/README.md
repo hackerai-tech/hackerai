@@ -1,10 +1,10 @@
-# HackerAI Desktop
+# ZHACKER Desktop
 
-Native desktop application for HackerAI built with [Tauri](https://tauri.app/).
+Native desktop application for ZHACKER built with [Tauri](https://tauri.app/).
 
 ## Overview
 
-The desktop app wraps the HackerAI web application in a native shell, providing:
+The desktop app wraps the ZHACKER web application in a native shell, providing:
 
 - **Native window** with system integration
 - **Auto-updates** via Tauri's updater plugin
@@ -52,7 +52,7 @@ pnpm install
 pnpm dev
 ```
 
-This opens the desktop app pointing to `https://hackerai.co`.
+This opens the desktop app pointing to `https://zhacker.ai`.
 
 ### Run with local web server
 
@@ -98,7 +98,7 @@ pnpm build
 │                    Tauri Desktop App                        │
 ├─────────────────────────────────────────────────────────────┤
 │  Rust Backend (src-tauri/)     │  WebView                   │
-│  └─ main.rs/lib.rs             │  └─ Loads hackerai.co      │
+│  └─ main.rs/lib.rs             │  └─ Loads zhacker.ai      │
 │     └─ Plugin registration     │     (uses web auth flow)   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -187,4 +187,4 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 
 ## License
 
-Proprietary - HackerAI
+Proprietary - ZHACKER

@@ -30,7 +30,7 @@ const LOG_BATCH_SIZE = 50;
 const LOG_QUEUE_LIMIT = 1_000;
 const LOG_FLUSH_INTERVAL_MS = 2_000;
 const LOG_EXPORT_TIMEOUT_MS = 5_000;
-const DEFAULT_SERVICE_NAME = "hackerai-web";
+const DEFAULT_SERVICE_NAME = "zhacker-web";
 const POSTHOG_CORRELATION_KEYS = new Set(["posthogDistinctId", "sessionId"]);
 
 let pendingLogs: QueuedLogRecord[] = [];

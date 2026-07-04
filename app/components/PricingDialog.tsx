@@ -537,7 +537,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 <PlanCard
                   planName="Free"
                   price={0}
-                  description="Try HackerAI"
+                  description="Try ZHACKER"
                   features={freeFeatures}
                   buttonText={freeButtonConfig.text}
                   buttonVariant={freeButtonConfig.variant}
@@ -597,7 +597,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 price={isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly}
                 description={
                   pricingIntentCopy?.ultraDescription ??
-                  "Get the most out of HackerAI"
+                  "Get the most out of ZHACKER"
                 }
                 features={ultraFeatures}
                 buttonText={ultraButtonConfig.text}

@@ -12,7 +12,7 @@
  */
 export function getSuspensionMessage(blockedReason?: string | null): string {
   const reasonLabel = mapBlockedReasonToLabel(blockedReason);
-  return `Your account has been suspended due to ${reasonLabel}. Please contact support via chat at https://help.hackerai.co/ if you believe this is a mistake.`;
+  return `Your account has been suspended due to ${reasonLabel}. Please contact support via chat at https://help.zhacker.ai/ if you believe this is a mistake.`;
 }
 
 function mapBlockedReasonToLabel(blockedReason?: string | null): string {

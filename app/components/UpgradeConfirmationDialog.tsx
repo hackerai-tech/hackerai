@@ -247,7 +247,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
               <div className="flex items-center justify-between pb-4 border-b">
                 <div>
                   <div className="text-lg font-medium">
-                    HackerAI {planName} subscription
+                    ZHACKER {planName} subscription
                     {details?.quantity && details.quantity > 1 && (
                       <span className="text-muted-foreground font-normal">
                         {" "}

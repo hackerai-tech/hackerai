@@ -108,10 +108,10 @@ describe("get_terminal_files", () => {
     expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
     expect(result.files).toEqual([]);
     expect(result.failedFiles[0]?.reason).toContain(
-      "HackerAI did not switch this run to Cloud",
+      "ZHACKER did not switch this run to Cloud",
     );
     expect(result.result).toContain(
-      "HackerAI did not switch this run to Cloud",
+      "ZHACKER did not switch this run to Cloud",
     );
     expect(writerWrites).not.toContainEqual(
       expect.objectContaining({ type: "data-sandbox-fallback" }),

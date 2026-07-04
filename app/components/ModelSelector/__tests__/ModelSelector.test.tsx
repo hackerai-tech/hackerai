@@ -44,22 +44,22 @@ describe("ModelSelector", () => {
         "Balanced quality and speed, recommended for most tasks",
       ),
     ).toBeVisible();
-    expect(screen.getByText("HackerAI Standard")).toBeVisible();
-    expect(screen.getByText("HackerAI Pro")).toBeVisible();
-    expect(screen.getByText("HackerAI Max")).toBeVisible();
+    expect(screen.getByText("ZHACKER Standard")).toBeVisible();
+    expect(screen.getByText("ZHACKER Pro")).toBeVisible();
+    expect(screen.getByText("ZHACKER Max")).toBeVisible();
 
     expect(
-      screen.getByRole("button", { name: /HackerAI Standard/i }),
+      screen.getByRole("button", { name: /ZHACKER Standard/i }),
     ).toHaveAttribute("aria-pressed", "false");
   });
 
   it("selects Auto as a first-class option", () => {
     const onChange = jest.fn();
     render(
-      <ModelSelector value="hackerai-pro" onChange={onChange} mode="ask" />,
+      <ModelSelector value="zhacker-pro" onChange={onChange} mode="ask" />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Pro/i }));
     fireEvent.click(
       screen.getByRole("button", {
         name: /Auto Balanced quality and speed/i,
@@ -69,12 +69,12 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("warns before selecting HackerAI Pro in ask mode on paid plans", () => {
+  it("warns before selecting ZHACKER Pro in ask mode on paid plans", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Pro/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
@@ -83,18 +83,18 @@ describe("ModelSelector", () => {
       screen.getByText(/long requests can use around \$10 of usage/i),
     ).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Use ZHACKER Pro/i }));
 
     expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith("hackerai-pro");
+    expect(onChange).toHaveBeenCalledWith("zhacker-pro");
   });
 
-  it("warns before selecting HackerAI Pro in agent mode on paid plans", () => {
+  it("warns before selecting ZHACKER Pro in agent mode on paid plans", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Pro/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
@@ -103,22 +103,22 @@ describe("ModelSelector", () => {
       screen.getByText(/long requests can use around \$10 of usage/i),
     ).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Use ZHACKER Pro/i }));
 
     expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith("hackerai-pro");
+    expect(onChange).toHaveBeenCalledWith("zhacker-pro");
   });
 
-  it("warns before selecting HackerAI Max on Pro Plus", () => {
+  it("warns before selecting ZHACKER Max on Pro Plus", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Max/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
-    expect(screen.getByText(/HackerAI Max is powerful/i)).toBeVisible();
+    expect(screen.getByText(/ZHACKER Max is powerful/i)).toBeVisible();
   });
 
   it("selects high-cost models without warning for Ultra users", () => {
@@ -127,13 +127,13 @@ describe("ModelSelector", () => {
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Max/i }));
 
     expect(
       screen.queryByTestId("high-cost-model-warning"),
     ).not.toBeInTheDocument();
     expect(mockDismissHighCostModelUsageNotice).not.toHaveBeenCalled();
-    expect(onChange).toHaveBeenCalledWith("hackerai-max");
+    expect(onChange).toHaveBeenCalledWith("zhacker-max");
   });
 
   it("uses team-specific warning copy for team users", () => {
@@ -142,7 +142,7 @@ describe("ModelSelector", () => {
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /ZHACKER Pro/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText(/your team's usage/i)).toBeVisible();
@@ -155,7 +155,7 @@ describe("ModelSelector", () => {
     mockSubscription = "free";
 
     render(
-      <ModelSelector value="hackerai-pro" onChange={jest.fn()} mode="agent" />,
+      <ModelSelector value="zhacker-pro" onChange={jest.fn()} mode="agent" />,
     );
 
     expect(screen.getByRole("button", { name: /^Auto$/i })).toBeVisible();

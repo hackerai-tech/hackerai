@@ -47,7 +47,7 @@ function createRequest({
   hasSession?: boolean;
   userAgent?: string;
 }): NextRequest {
-  const url = new URL(pathname, "https://hackerai.co");
+  const url = new URL(pathname, "https://zhacker.ai");
   return {
     nextUrl: url,
     url: url.toString(),
@@ -91,7 +91,7 @@ describe("proxy", () => {
     mockAuthkit.mockResolvedValue({
       session: { user: null },
       headers: new Headers(),
-      authorizationUrl: "https://auth.hackerai.co/login",
+      authorizationUrl: "https://auth.zhacker.ai/login",
     });
     const { default: proxy } = await import("../proxy");
 
@@ -203,7 +203,7 @@ describe("proxy", () => {
     expect(response).toMatchObject({ kind: "redirect" });
     expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
     expect(mockNextResponseRedirect).toHaveBeenCalledWith(
-      new URL("/login", "https://hackerai.co/dashboard"),
+      new URL("/login", "https://zhacker.ai/dashboard"),
     );
   });
 });

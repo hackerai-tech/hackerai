@@ -25,7 +25,7 @@ import {
 import { Plus } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
 
-interface CustomizeHackerAIDialogProps {
+interface CustomizeZHACKERDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -50,10 +50,10 @@ const personalityOptions = [
   { value: "nerd", label: "Nerd", description: "Exploratory and enthusiastic" },
 ];
 
-export const CustomizeHackerAIDialog = ({
+export const CustomizeZHACKERDialog = ({
   open,
   onOpenChange,
-}: CustomizeHackerAIDialogProps) => {
+}: CustomizeZHACKERDialogProps) => {
   const [nickname, setNickname] = useState("");
   const [occupation, setOccupation] = useState("");
   const [personality, setPersonality] = useState("default");
@@ -166,7 +166,7 @@ export const CustomizeHackerAIDialog = ({
           <div className="space-y-5 pb-3">
             {/* Nickname */}
             <div className="flex flex-col gap-2 px-1">
-              <Label htmlFor="nickname">What should HackerAI call you?</Label>
+              <Label htmlFor="nickname">What should ZHACKER call you?</Label>
               <TextareaAutosize
                 id="nickname"
                 placeholder="Nickname"
@@ -204,7 +204,7 @@ export const CustomizeHackerAIDialog = ({
             <div className="flex flex-col gap-2 px-1">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <Label className="sm:flex-shrink-0">
-                  What personality should HackerAI have?
+                  What personality should ZHACKER have?
                 </Label>
                 <Select value={personality} onValueChange={setPersonality}>
                   <SelectTrigger className="w-full sm:w-auto">
@@ -240,7 +240,7 @@ export const CustomizeHackerAIDialog = ({
 
             {/* Traits */}
             <div className="flex flex-col gap-2 px-1">
-              <Label>What traits should HackerAI have?</Label>
+              <Label>What traits should ZHACKER have?</Label>
 
               <TextareaAutosize
                 placeholder="Describe or select traits"
@@ -275,7 +275,7 @@ export const CustomizeHackerAIDialog = ({
             {/* Additional Info */}
             <div className="flex flex-col gap-3 px-1">
               <Label htmlFor="additional-info">
-                Anything else HackerAI should know about you?
+                Anything else ZHACKER should know about you?
               </Label>
               <TextareaAutosize
                 id="additional-info"

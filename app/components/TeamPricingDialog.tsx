@@ -280,7 +280,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 
                         <div className="flex grow flex-col text-sm">
                           <div className="text-muted-foreground flex w-full justify-between text-sm">
-                            <div className="flex">HackerAI Team</div>
+                            <div className="flex">ZHACKER Team</div>
                             <div className="flex">
                               ${formatNumber(fullPrice)}
                             </div>
@@ -527,7 +527,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 
                   <div className="flex grow flex-col text-sm">
                     <div className="text-muted-foreground flex w-full justify-between text-sm">
-                      <div className="flex">HackerAI Team</div>
+                      <div className="flex">ZHACKER Team</div>
                       <div className="flex">${formatNumber(fullPrice)}</div>
                     </div>
                     <div className="text-muted-foreground/70 flex w-full justify-between text-xs">

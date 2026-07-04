@@ -18,7 +18,7 @@ const workos = new WorkOS(process.env.WORKOS_API_KEY, {
   clientId: process.env.WORKOS_CLIENT_ID,
 });
 
-const targetEmail = process.argv[2] || "test@hackerai.com";
+const targetEmail = process.argv[2] || "test@zhacker.aim";
 
 async function acceptInvitationForUser(email: string) {
   console.log(

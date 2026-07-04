@@ -242,7 +242,7 @@ const RemoteControlTab = () => {
           <h3 className="text-sm font-semibold">Remote Control</h3>
         </div>
         <a
-          href="https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
+          href="https://help.zhacker.ai/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"

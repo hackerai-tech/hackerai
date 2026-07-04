@@ -234,7 +234,7 @@ export function SandboxSelector({
                 </div>
                 <h4 className="text-sm font-semibold mb-1">My Computer</h4>
                 <p className="text-xs text-muted-foreground mb-3">
-                  Download the desktop app to grant HackerAI access to your
+                  Download the desktop app to grant ZHACKER access to your
                   computer.
                 </p>
                 <Button asChild size="sm" className="w-full">

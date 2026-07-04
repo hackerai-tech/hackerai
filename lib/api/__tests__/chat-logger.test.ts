@@ -39,7 +39,7 @@ describe("captureToolCalls", () => {
     expect(capture).toHaveBeenCalledTimes(2);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-tool_usage",
+      event: "zhacker-tool_usage",
       properties: {
         mode: "agent",
         toolName: "run_terminal_cmd",
@@ -49,7 +49,7 @@ describe("captureToolCalls", () => {
     });
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-tool_usage",
+      event: "zhacker-tool_usage",
       properties: {
         mode: "agent",
         toolName: "open_url",
@@ -88,7 +88,7 @@ describe("captureAgentRun", () => {
 
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-agent_run",
+      event: "zhacker-agent_run",
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -130,7 +130,7 @@ describe("captureAgentBudgetAbort", () => {
         endpoint: "/api/agent-long",
         mode: "agent",
         selectedModel: "agent-model",
-        selectedModelOverride: "hackerai-max",
+        selectedModelOverride: "zhacker-max",
         configuredModelId: "anthropic/claude-opus",
         responseModel: "anthropic/claude-opus",
         isAutoContinue: true,
@@ -197,7 +197,7 @@ describe("captureFreeAgentValueReached", () => {
 
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-free_agent_value_reached",
+      event: "zhacker-free_agent_value_reached",
       properties: expect.objectContaining({
         user_id: "user_123",
         chat_id: "chat_123",
@@ -274,7 +274,7 @@ describe("captureAgentCompletionAnalytics", () => {
     expect(capture).toHaveBeenCalledTimes(2);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-agent_run",
+      event: "zhacker-agent_run",
       properties: {
         mode: "agent",
         subscription: "free",
@@ -286,7 +286,7 @@ describe("captureAgentCompletionAnalytics", () => {
     });
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-free_agent_value_reached",
+      event: "zhacker-free_agent_value_reached",
       properties: expect.objectContaining({
         user_id: "user_123",
         chat_id: "chat_123",
@@ -316,7 +316,7 @@ describe("captureAgentCompletionAnalytics", () => {
     expect(capture).toHaveBeenCalledTimes(1);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-agent_run",
+      event: "zhacker-agent_run",
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -372,7 +372,7 @@ describe("captureUsageCost", () => {
 
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
-      event: "hackerai-usage_cost",
+      event: "zhacker-usage_cost",
       properties: expect.objectContaining({
         user_id: "user_123",
         subscription: "pro",

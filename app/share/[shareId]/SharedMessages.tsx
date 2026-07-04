@@ -45,7 +45,7 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
         className="text-center text-[12px] font-normal"
         style={{ color: "rgb(155, 155, 155)" }}
       >
-        This is a copy of a conversation between HackerAI & Anonymous.
+        This is a copy of a conversation between ZHACKER & Anonymous.
       </div>
 
       {/* Messages */}

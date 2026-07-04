@@ -6,15 +6,15 @@ import {
 
 type CostTier = "low" | "medium" | "high" | "very-high";
 
-// Cost tier per HackerAI tier id. Standard stays low cost in both modes;
+// Cost tier per ZHACKER tier id. Standard stays low cost in both modes;
 // Pro and Max intentionally surface the higher-cost model choices.
 export function getCostTier(modelId: string): CostTier {
   switch (modelId) {
-    case "hackerai-standard":
+    case "zhacker-standard":
       return "low";
-    case "hackerai-pro":
+    case "zhacker-pro":
       return "high";
-    case "hackerai-max":
+    case "zhacker-max":
       return "very-high";
     default:
       return "medium";

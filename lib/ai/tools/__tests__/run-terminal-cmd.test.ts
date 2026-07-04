@@ -581,7 +581,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(e2b.commands.run).not.toHaveBeenCalled();
     expect(result.result.exitCode).toBe(1);
     expect(result.result.error).toContain(
-      "HackerAI did not switch this run to Cloud",
+      "ZHACKER did not switch this run to Cloud",
     );
     expect(writerWrites).not.toContainEqual(
       expect.objectContaining({

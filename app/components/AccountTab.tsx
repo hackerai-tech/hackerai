@@ -193,14 +193,14 @@ const AccountTab = () => {
           <div>
             <div className="font-medium">
               {subscription === "ultra"
-                ? "HackerAI Ultra"
+                ? "ZHACKER Ultra"
                 : subscription === "team"
-                  ? "HackerAI Team"
+                  ? "ZHACKER Team"
                   : subscription === "pro-plus"
-                    ? "HackerAI Pro+"
+                    ? "ZHACKER Pro+"
                     : subscription === "pro"
-                      ? "HackerAI Pro"
-                      : "Get HackerAI Pro"}
+                      ? "ZHACKER Pro"
+                      : "Get ZHACKER Pro"}
             </div>
           </div>
           {subscription !== "free" ? (

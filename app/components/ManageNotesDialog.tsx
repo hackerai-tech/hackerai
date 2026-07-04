@@ -92,7 +92,7 @@ const ManageNotesDialogContent = () => {
           Saved notes
         </DialogTitle>
         <div className="text-xs text-muted-foreground text-left mt-1">
-          Notes are saved across all your chats and help HackerAI provide more
+          Notes are saved across all your chats and help ZHACKER provide more
           personalized assistance.
         </div>
       </DialogHeader>
@@ -115,7 +115,7 @@ const ManageNotesDialogContent = () => {
                     No notes saved yet
                   </div>
                   <div className="text-sm text-muted-foreground/70">
-                    HackerAI will save notes as you chat to remember important
+                    ZHACKER will save notes as you chat to remember important
                     information.
                   </div>
                 </div>

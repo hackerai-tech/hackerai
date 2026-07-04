@@ -29,7 +29,7 @@ describe("extra usage purchase logging", () => {
       expect.objectContaining({
         event: "extra_usage_purchase_credit_failed",
         level: "error",
-        service: "hackerai-web",
+        service: "zhacker-web",
         route: "/api/extra-usage/confirm",
         request_id: "iad1::abc123",
         user_id: "user_123",

@@ -1,7 +1,7 @@
 {
   "allowed_origins": [
-    "https://hackerai.co",
-    "https://www.hackerai.co",
+    "https://zhacker.ai",
+    "https://www.zhacker.ai",
     "http://localhost:3000",
     "tauri://localhost"
   ],

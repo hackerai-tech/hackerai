@@ -16,7 +16,7 @@ function createWorkspace({ cliExitCode }) {
   mkdirSync(binDir);
   writeFileSync(
     path.join(cwd, "package.json"),
-    JSON.stringify({ name: "hackerai-test" }),
+    JSON.stringify({ name: "zhacker-test" }),
   );
   writeFileSync(
     path.join(binDir, "posthog-cli"),

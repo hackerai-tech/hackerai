@@ -381,13 +381,13 @@ describe("isAutoModelSelectionForRetry", () => {
     expect(
       isAutoModelSelectionForRetry({
         selectedModel: "model-deepseek-v4-pro",
-        selectedModelOverride: "hackerai-standard",
+        selectedModelOverride: "zhacker-standard",
       }),
     ).toBe(false);
     expect(
       isAutoModelSelectionForRetry({
         selectedModel: "model-sonnet-4.6",
-        selectedModelOverride: "hackerai-pro",
+        selectedModelOverride: "zhacker-pro",
       }),
     ).toBe(false);
   });
@@ -396,7 +396,7 @@ describe("isAutoModelSelectionForRetry", () => {
     expect(
       isAutoModelSelectionForRetry({
         selectedModel: "ask-model-free",
-        selectedModelOverride: "hackerai-standard",
+        selectedModelOverride: "zhacker-standard",
       }),
     ).toBe(true);
   });

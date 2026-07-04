@@ -59,7 +59,7 @@ describe("GlobalStateProvider agent defaults", () => {
   });
 
   it("defaults first-time Ultra users to Agent with the auto model and cloud sandbox", async () => {
-    window.localStorage.setItem("selected_model", "hackerai-max");
+    window.localStorage.setItem("selected_model", "zhacker-max");
     mockAuthUser(["ultra-plan"]);
 
     render(
@@ -77,7 +77,7 @@ describe("GlobalStateProvider agent defaults", () => {
   });
 
   it("defaults first-time Pro Plus users to Agent with the auto model and cloud sandbox", async () => {
-    window.localStorage.setItem("selected_model", "hackerai-max");
+    window.localStorage.setItem("selected_model", "zhacker-max");
     mockAuthUser(["pro-plus-plan"]);
 
     render(

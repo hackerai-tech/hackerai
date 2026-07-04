@@ -2,20 +2,20 @@ import type { Metadata } from "next";
 import { DownloadPageContent } from "./DownloadPageContent";
 
 export const metadata: Metadata = {
-  title: "Download | HackerAI",
+  title: "Download | ZHACKER",
   description:
-    "Download HackerAI for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
+    "Download ZHACKER for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
   openGraph: {
-    title: "Download HackerAI",
+    title: "Download ZHACKER",
     description:
-      "Download HackerAI for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
+      "Download ZHACKER for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "Download HackerAI",
+    title: "Download ZHACKER",
     description:
-      "Download HackerAI for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
+      "Download ZHACKER for macOS, Windows, Linux, iOS, and Android. AI-powered penetration testing at your fingertips.",
   },
 };
 

@@ -1,9 +1,9 @@
 {
-  "name": "@hackerai/local",
+  "name": "@zhacker/local",
   "version": "0.8.3",
-  "description": "HackerAI Local Sandbox Client - Execute commands on your local machine",
+  "description": "ZHACKER Local Sandbox Client - Execute commands on your local machine",
   "bin": {
-    "hackerai-local": "./dist/index.js"
+    "zhacker-local": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,17 +16,17 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "hackerai",
+    "zhacker",
     "sandbox",
     "pentesting",
     "security",
     "cli"
   ],
-  "author": "HackerAI",
+  "author": "ZHACKER",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hackerai-tech/hackerai.git",
+    "url": "https://github.com/zhacker-tech/zhacker.git",
     "directory": "packages/local"
   },
   "engines": {

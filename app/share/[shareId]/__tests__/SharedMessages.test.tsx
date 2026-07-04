@@ -39,7 +39,7 @@ describe("SharedMessages", () => {
       );
       expect(
         screen.getByText(
-          "This is a copy of a conversation between HackerAI & Anonymous.",
+          "This is a copy of a conversation between ZHACKER & Anonymous.",
         ),
       ).toBeInTheDocument();
     });

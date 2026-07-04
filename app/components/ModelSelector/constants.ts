@@ -13,20 +13,20 @@ export interface ModelOption {
 
 export const ASK_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "hackerai-standard",
-    label: "HackerAI Standard",
+    id: "zhacker-standard",
+    label: "ZHACKER Standard",
     description: "Reliable performance for everyday tasks",
     poweredBy: "DeepSeek V4 Pro · Grok 4.3 for images and PDFs",
   },
   {
-    id: "hackerai-pro",
-    label: "HackerAI Pro",
+    id: "zhacker-pro",
+    label: "ZHACKER Pro",
     description: "Superior performance for most assignments",
     poweredBy: "Claude Sonnet 4.6",
   },
   {
-    id: "hackerai-max",
-    label: "HackerAI Max",
+    id: "zhacker-max",
+    label: "ZHACKER Max",
     description: "Maximum intelligence for complex work",
     poweredBy: "Claude Opus 4.6",
   },
@@ -34,22 +34,22 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: "hackerai-standard",
-    label: "HackerAI Standard",
+    id: "zhacker-standard",
+    label: "ZHACKER Standard",
     description: "Reliable agent for everyday automation",
     poweredBy: "MiniMax M3",
     thinking: true,
   },
   {
-    id: "hackerai-pro",
-    label: "HackerAI Pro",
+    id: "zhacker-pro",
+    label: "ZHACKER Pro",
     description: "Superior performance for most assignments",
     poweredBy: "Claude Sonnet 4.6",
     thinking: true,
   },
   {
-    id: "hackerai-max",
-    label: "HackerAI Max",
+    id: "zhacker-max",
+    label: "ZHACKER Max",
     description: "Maximum intelligence for complex work",
     poweredBy: "Claude Opus 4.6",
     thinking: true,

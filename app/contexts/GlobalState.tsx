@@ -452,7 +452,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Model selection — HackerAI tier ids (Lite/Pro/Max) are mode-agnostic;
+  // Model selection — ZHACKER tier ids (Lite/Pro/Max) are mode-agnostic;
   // the active model is resolved server-side via resolveTierToProviderKey.
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModel();

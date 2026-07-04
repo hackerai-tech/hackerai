@@ -12,34 +12,34 @@ export function isChatMode(value: string | null): value is ChatMode {
 }
 
 export type SelectedModel =
-  "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
+  "auto" | "zhacker-standard" | "zhacker-pro" | "zhacker-max";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
-  "hackerai-standard",
-  "hackerai-pro",
-  "hackerai-max",
+  "zhacker-standard",
+  "zhacker-pro",
+  "zhacker-max",
 ];
 
 /**
  * Map of legacy ids to the current `SelectedModel` union. Covers two prior
  * shapes:
- *   1. Underlying-model ids from before the HackerAI tier rebrand.
- *   2. `hackerai-lite` from the short-lived first naming of the entry tier
- *      (renamed to `hackerai-standard` because Lite mis-described the entry tier).
+ *   1. Underlying-model ids from before the ZHACKER tier rebrand.
+ *   2. `zhacker-lite` from the short-lived first naming of the entry tier
+ *      (renamed to `zhacker-standard` because Lite mis-described the entry tier).
  * Used by `coerceSelectedModel` to migrate values on read.
  */
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
-  "sonnet-4.6": "hackerai-pro",
-  "opus-4.6": "hackerai-max",
-  "gemini-3-flash": "hackerai-standard",
-  "kimi-k2.6": "hackerai-standard",
+  "sonnet-4.6": "zhacker-pro",
+  "opus-4.6": "zhacker-max",
+  "gemini-3-flash": "zhacker-standard",
+  "kimi-k2.6": "zhacker-standard",
   // Grok was removed from the picker before the tier rebrand. These variants
   // were entry-level alternatives to the auto router,
   // so map them to Standard rather than dropping the user's preference.
-  "grok-4.1": "hackerai-standard",
-  "grok-4.3": "hackerai-standard",
-  "hackerai-lite": "hackerai-standard",
+  "grok-4.1": "zhacker-standard",
+  "grok-4.3": "zhacker-standard",
+  "zhacker-lite": "zhacker-standard",
 };
 
 /**

@@ -1,17 +1,17 @@
 <p align="center">
-  <a href="https://hackerai.co/">
-    <img src="public/icon-512x512.png" width="150" alt="HackerAI Logo">
+  <a href="https://zhacker.ai/">
+    <img src="public/icon-512x512.png" width="150" alt="ZHACKER Logo">
   </a>
 </p>
 
-<h1 align="center">HackerAI</h1>
+<h1 align="center">ZHACKER</h1>
 
 <h2 align="center">Your AI-Powered Penetration Testing Assistant</h2>
 
 <div align="center">
 
 [![License](https://img.shields.io/badge/License-Apache%202.0%20with%20Commercial%20Restrictions-red.svg)](LICENSE)
-[![Website](https://img.shields.io/badge/Website-hackerai.co-2d3748.svg)](https://hackerai.co)
+[![Website](https://img.shields.io/badge/Website-zhacker.ai-2d3748.svg)](https://zhacker.ai)
 
 </div>
 
@@ -43,13 +43,13 @@ You'll need the following accounts:
 ### Clone the repo
 
 ```bash
-git clone https://github.com/hackerai-tech/hackerai.git
+git clone https://github.com/zhacker-tech/zhacker.git
 ```
 
 ### Navigate to the project directory
 
 ```bash
-cd hackerai
+cd zhacker
 ```
 
 ### Install dependencies
@@ -97,7 +97,7 @@ To use the agent locally:
    pnpm dev:trigger
    ```
 
-   This runs `trigger dev start --branch <name>` so parallel Codex worktrees
+   This runs `trigger dev start --branch <name>` so parallel ZHACKER worktrees
    and local dev sessions do not collide in Trigger.dev. The branch name
    defaults to the current Git branch, sanitized for Trigger.dev. Override it
    with `TRIGGER_DEV_BRANCH=my-local-agent pnpm dev:trigger` when you need a

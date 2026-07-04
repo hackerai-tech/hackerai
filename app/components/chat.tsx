@@ -1645,7 +1645,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             </h1>
                             <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
                               This chat won&apos;t appear in history, use or
-                              update HackerAI&apos;s memory, or be used to train
+                              update ZHACKER&apos;s memory, or be used to train
                               models. This chat will be deleted when you refresh
                               the page.
                             </p>

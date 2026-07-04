@@ -9,7 +9,7 @@ export const AGENT_RUN_SPEND_CAP_REASON = "agent_run_spend_cap" as const;
 export const AGENT_RUN_SPEND_CAP_FINISH_REASON = "agent-run-spend-cap" as const;
 export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
 export const AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL =
-  "hackerai-standard" as const satisfies SelectedModel;
+  "zhacker-standard" as const satisfies SelectedModel;
 
 export const AGENT_RUN_SPEND_CAP_BASES = ["fixed_5_dollars"] as const;
 

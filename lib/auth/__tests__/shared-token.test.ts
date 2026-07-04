@@ -43,7 +43,7 @@ describe("shared-token", () => {
 
   describe("constants", () => {
     it("should have correct SHARED_TOKEN_KEY", () => {
-      expect(SHARED_TOKEN_KEY).toBe("hackerai-shared-token");
+      expect(SHARED_TOKEN_KEY).toBe("zhacker-shared-token");
     });
 
     it("should have TOKEN_FRESHNESS_MS set to 60 seconds", () => {

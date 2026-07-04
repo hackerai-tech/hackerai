@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | HackerAI",
-  description: "Terms of Service and conditions for HackerAI services.",
+  title: "Terms of Service | ZHACKER",
+  description: "Terms of Service and conditions for ZHACKER services.",
   openGraph: {
-    title: "Terms of Service | HackerAI",
-    description: "Terms of Service and conditions for HackerAI services.",
+    title: "Terms of Service | ZHACKER",
+    description: "Terms of Service and conditions for ZHACKER services.",
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "Terms of Service | HackerAI",
-    description: "Terms of Service and conditions for HackerAI services.",
+    title: "Terms of Service | ZHACKER",
+    description: "Terms of Service and conditions for ZHACKER services.",
   },
 };
 
@@ -22,20 +22,20 @@ export default function TermsOfServicePage() {
     <div className="px-4 py-8 pb-16 md:px-0">
       <div className="container mx-auto max-w-2xl space-y-6 rounded-md border bg-card px-4 py-8 shadow-lg sm:px-8">
         <h1 className="mb-5 text-center text-3xl font-semibold text-card-foreground">
-          HackerAI Terms of Service
+          ZHACKER Terms of Service
         </h1>
 
         <div className="mt-4 text-lg leading-relaxed text-card-foreground">
           <ol className="list-inside list-decimal">
             <li className="mb-3">
               <strong>Lawful Use:</strong> Users of products, services, or
-              software (&quot;Products&quot;) provided by HackerAI LLC
+              software (&quot;Products&quot;) provided by ZHACKER LLC
               (&quot;the Company&quot;) agree to use the Products only for
               lawful purposes and in accordance with all applicable laws,
               regulations, and guidelines.
             </li>
             <li className="mb-3">
-              <strong>Limitation of Liability:</strong> Neither HackerAI LLC,
+              <strong>Limitation of Liability:</strong> Neither ZHACKER LLC,
               nor its parent companies, affiliates, directors, officers,
               employees, agents, partners, or licensors shall be held
               responsible or liable, directly or indirectly, for any damages,
@@ -55,7 +55,7 @@ export default function TermsOfServicePage() {
               <strong>User Responsibility and Indemnity:</strong> The user
               assumes full responsibility for any risks associated with their
               use of the Products. The user agrees to indemnify and hold
-              harmless HackerAI LLC, its parent companies, and their respective
+              harmless ZHACKER LLC, its parent companies, and their respective
               officers, directors, employees, and agents from and against any
               claims, actions, or demands, including without limitation
               reasonable legal and accounting fees, arising or resulting from
@@ -73,7 +73,7 @@ export default function TermsOfServicePage() {
               protective measures.
             </li>
             <li className="mb-3">
-              <strong>Changes to Terms of Service:</strong> HackerAI LLC
+              <strong>Changes to Terms of Service:</strong> ZHACKER LLC
               reserves the right to update or modify these Terms of Service at
               any time without prior notice. Your use of the Products after any
               such changes constitutes your acceptance of the new terms. It is
@@ -91,7 +91,7 @@ export default function TermsOfServicePage() {
           </ol>
 
           <p className="mt-4">
-            By using the Products provided by HackerAI LLC, you indicate your
+            By using the Products provided by ZHACKER LLC, you indicate your
             understanding and agreement to abide by the terms and conditions set
             forth in these Terms of Service. If you do not agree with these
             terms, please refrain from using the Products.

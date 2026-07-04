@@ -1,7 +1,7 @@
 {
-  "short_name": "HackerAI",
-  "name": "HackerAI",
-  "description": "HackerAI - AI-Powered Penetration Testing Assistant",
+  "short_name": "ZHACKER",
+  "name": "ZHACKER",
+  "description": "ZHACKER - AI-Powered Penetration Testing Assistant",
   "icons": [
     {
       "src": "/icon-192x192.png",

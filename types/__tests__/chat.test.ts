@@ -5,17 +5,17 @@ import {
 
 describe("normalizeSelectedModelForSubscription", () => {
   it("forces free users to auto even when a paid model is stored", () => {
-    expect(normalizeSelectedModelForSubscription("hackerai-pro", "free")).toBe(
+    expect(normalizeSelectedModelForSubscription("zhacker-pro", "free")).toBe(
       "auto",
     );
-    expect(normalizeSelectedModelForSubscription("hackerai-max", "free")).toBe(
+    expect(normalizeSelectedModelForSubscription("zhacker-max", "free")).toBe(
       "auto",
     );
   });
 
   it("preserves paid users' selected model and defaults missing values to auto", () => {
-    expect(normalizeSelectedModelForSubscription("hackerai-pro", "pro")).toBe(
-      "hackerai-pro",
+    expect(normalizeSelectedModelForSubscription("zhacker-pro", "pro")).toBe(
+      "zhacker-pro",
     );
     expect(normalizeSelectedModelForSubscription(null, "ultra")).toBe("auto");
     expect(normalizeSelectedModelForSubscription(undefined, "team")).toBe(
@@ -45,7 +45,7 @@ describe("normalizeSelectedModelOverrideForSubscription", () => {
 
   it("preserves explicit paid overrides", () => {
     expect(
-      normalizeSelectedModelOverrideForSubscription("hackerai-max", "team"),
-    ).toBe("hackerai-max");
+      normalizeSelectedModelOverrideForSubscription("zhacker-max", "team"),
+    ).toBe("zhacker-max");
   });
 });

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move HackerAI Agent mode toward Trigger.dev `chat.agent` and Head Start without treating it as a drop-in transport swap. The current `agent-long` path stays as the rollback path until parity is proven for solo-user Agent activation: fast first token, reliable resume, clear limits, desktop/local sandbox support, file uploads, and cost accounting.
+Move ZHACKER Agent mode toward Trigger.dev `chat.agent` and Head Start without treating it as a drop-in transport swap. The current `agent-long` path stays as the rollback path until parity is proven for solo-user Agent activation: fast first token, reliable resume, clear limits, desktop/local sandbox support, file uploads, and cost accounting.
 
 Trigger.dev's AI chat docs frame `chat.agent` as a session-based task surface. Head Start only pays off when the warm route-handler bundle imports schema-only tools; heavy execute implementations must live in the agent/task bundle.
 
@@ -116,5 +116,5 @@ Phase 4: parity shadow and limited rollout
 - Different session identity model from today's `active_trigger_run_id`.
 - Step 1 Head Start may bypass current persistence/accounting hooks unless wired explicitly.
 - Current desktop-local attachment staging happens in the start route; a light Head Start route cannot import that staging path unchanged.
-- `chat.toStreamTextOptions()` may own prepare-step behavior that overlaps with HackerAI's existing summarization and prompt-reminder logic.
+- `chat.toStreamTextOptions()` may own prepare-step behavior that overlaps with ZHACKER's existing summarization and prompt-reminder logic.
 - Handoff needs careful validation for tool calls, custom `data-*` parts, and file metadata parts.

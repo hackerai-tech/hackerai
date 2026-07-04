@@ -12,7 +12,7 @@ import { isCrossTabTokenSharingEnabled } from "@/lib/auth/feature-flags";
 
 // Singleton mutex shared across all hook instances in this tab
 const refreshMutex = new CrossTabMutex({
-  lockKey: "hackerai-token-refresh",
+  lockKey: "zhacker-token-refresh",
   lockTimeoutMs: 15000,
   onLog: (msg) => console.log(`[Convex Auth] ${msg}`),
 });

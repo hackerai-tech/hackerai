@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * HackerAI Local Sandbox Client
+ * ZHACKER Local Sandbox Client
  *
- * Connects to HackerAI backend via Convex for connection lifecycle
+ * Connects to ZHACKER backend via Convex for connection lifecycle
  * and uses Centrifugo for real-time command relay and streaming output.
  *
  * Runs commands directly on the host OS (no Docker isolation).
@@ -438,7 +438,7 @@ class LocalSandboxClient {
   }
 
   async start(): Promise<void> {
-    console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
+    console.log(chalk.blue("🚀 Starting ZHACKER local sandbox..."));
     console.log(
       chalk.yellow(
         "⚠️  Commands run directly on your OS without any isolation.",
@@ -464,7 +464,7 @@ class LocalSandboxClient {
   }
 
   private async connect(): Promise<void> {
-    console.log(chalk.blue("Connecting to HackerAI..."));
+    console.log(chalk.blue("Connecting to ZHACKER..."));
 
     try {
       const result = (await this.convexHttp.mutation(
@@ -1156,7 +1156,7 @@ const hasFlag = (flag: string): boolean => {
 // Show help
 if (hasFlag("--help") || hasFlag("-h")) {
   console.log(`
-${chalk.bold("HackerAI Local Sandbox Client")}
+${chalk.bold("ZHACKER Local Sandbox Client")}
 
 ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
@@ -1191,7 +1191,7 @@ const config: Config = {
 if (!config.token) {
   console.error(chalk.red("❌ No authentication token provided"));
   console.error(chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"));
-  console.error(chalk.yellow("Get your token from HackerAI Settings > Agents"));
+  console.error(chalk.yellow("Get your token from ZHACKER Settings > Agents"));
   process.exit(1);
 }
 

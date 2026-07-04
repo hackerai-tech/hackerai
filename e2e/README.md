@@ -1,6 +1,6 @@
 # E2E Testing Setup
 
-This directory contains end-to-end tests for HackerAI using Playwright.
+This directory contains end-to-end tests for ZHACKER using Playwright.
 
 ## Test Suites
 
@@ -142,9 +142,9 @@ Three test users are configured for different subscription tiers:
 
 | Tier  | Email              | Test ID Prefix |
 | ----- | ------------------ | -------------- |
-| Free  | free@hackerai.com  | TEST*FREE*     |
-| Pro   | pro@hackerai.com   | TEST*PRO*      |
-| Ultra | ultra@hackerai.com | TEST*ULTRA*    |
+| Free  | free@zhacker.aim  | TEST*FREE*     |
+| Pro   | pro@zhacker.aim   | TEST*PRO*      |
+| Ultra | ultra@zhacker.aim | TEST*ULTRA*    |
 
 ### Setup
 

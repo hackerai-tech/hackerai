@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
-import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
+import { CustomizeZHACKERDialog } from "@/app/components/CustomizeZHACKERDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
 import { AccountTab } from "@/app/components/AccountTab";
@@ -268,8 +268,8 @@ const SettingsDialog = ({
         onOpenChange={setShowNotesDialog}
       />
 
-      {/* Customize HackerAI Dialog */}
-      <CustomizeHackerAIDialog
+      {/* Customize ZHACKER Dialog */}
+      <CustomizeZHACKERDialog
         open={showCustomizeDialog}
         onOpenChange={setShowCustomizeDialog}
       />
