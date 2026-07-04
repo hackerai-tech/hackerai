@@ -75,7 +75,7 @@ describe("retained tail selection", () => {
     expect(result.tailMessages[0].parts).toHaveLength(2);
   });
 
-  it("projects an oversized latest tool part without storing payload in metadata", () => {
+  it("omits an oversized latest tool part from the retained tail", () => {
     const hugeOutput = "secret-output ".repeat(10_000);
     const messages: UIMessage[] = [
       {
@@ -97,11 +97,60 @@ describe("retained tail selection", () => {
     });
 
     expect(result.cutoffMessageId).toBe("assistant-1");
-    expect(result.headMessages).toEqual([]);
+    expect(result.headMessages).toEqual(messages);
+    expect(result.retainedTail).toBeUndefined();
+    expect(result.tailMessages).toEqual([]);
+  });
+
+  it("keeps later text without converting oversized tool output to text", () => {
+    const hugeOutput = "secret-output ".repeat(10_000);
+    const messages: UIMessage[] = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            input: { command: "cat large.log" },
+            state: "output-available",
+            output: hugeOutput,
+          } as any,
+          { type: "text", text: "latest result" },
+        ],
+      },
+    ];
+
+    const result = selectRetainedTailForSummarization(messages, {
+      budgetTokens: safeCountTokens("latest result"),
+    });
+
+    expect(result.retainedTail).toMatchObject({
+      start_message_id: "assistant-1",
+      start_part_index: 1,
+      projected_part_count: 0,
+    });
+    expect(result.headMessages[0].parts).toEqual(messages[0].parts.slice(0, 1));
+    expect(result.tailMessages[0].parts).toEqual([
+      { type: "text", text: "latest result" },
+    ]);
+    expect(JSON.stringify(result.tailMessages)).not.toContain("secret-output");
+    expect(JSON.stringify(result.tailMessages)).not.toContain("retained tail");
+  });
+
+  it("uses neutral wording when shortening oversized text", () => {
+    const messages = [
+      textMessage("assistant-1", "assistant", "important detail ".repeat(500)),
+    ];
+
+    const result = selectRetainedTailForSummarization(messages, {
+      budgetTokens: 64,
+    });
+    const retainedText = (result.tailMessages[0].parts[0] as { text: string })
+      .text;
+
     expect(result.retainedTail?.projected_part_count).toBe(1);
-    expect(JSON.stringify(result.retainedTail)).not.toContain("secret-output");
-    expect(JSON.stringify(result.tailMessages)).not.toContain(hugeOutput);
-    expect(JSON.stringify(result.tailMessages)).toContain("retained tail");
+    expect(retainedText).toContain("Earlier text shortened");
+    expect(retainedText).not.toContain("retained tail");
   });
 
   it("omits reasoning and status-only parts from the retained tail", () => {
