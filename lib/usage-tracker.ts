@@ -5,6 +5,7 @@ import {
 } from "@/lib/provider-usage-cost";
 import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 
 interface StepUsage {
@@ -389,7 +390,7 @@ export class UsageTracker {
     userId: string;
     organizationId?: string;
     chatId?: string;
-    endpoint?: "/api/chat" | "/api/agent-long";
+    endpoint?: ChatApiEndpoint;
     mode?: ChatMode;
     subscription?: SubscriptionTier;
     selectedModel: string;

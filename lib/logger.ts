@@ -8,6 +8,7 @@
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
@@ -52,7 +53,7 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler";
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   version: string;
   region?: string;
 
@@ -229,11 +230,7 @@ export class WideEventBuilder {
   private streamStartTime?: number;
   private anthropicPromptRepairCount = 0;
 
-  constructor(
-    requestId: string,
-    chatId: string,
-    endpoint: "/api/chat" | "/api/agent-long",
-  ) {
+  constructor(requestId: string, chatId: string, endpoint: ChatApiEndpoint) {
     this.event = {
       timestamp: new Date().toISOString(),
       request_id: requestId,
@@ -745,7 +742,7 @@ export const logger = {
  */
 export function createWideEventBuilder(
   chatId: string,
-  endpoint: "/api/chat" | "/api/agent-long",
+  endpoint: ChatApiEndpoint,
 ): WideEventBuilder {
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return new WideEventBuilder(requestId, chatId, endpoint);

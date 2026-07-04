@@ -5,6 +5,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
+import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -160,7 +161,7 @@ export const useChatHandlers = ({
 
   const cancelTriggerRun = () => {
     if (!shouldCancelTriggerRun()) return;
-    fetch("/api/agent-long/cancel", {
+    fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId }),
@@ -313,7 +314,7 @@ export const useChatHandlers = ({
         clearUploadedFiles();
         return true;
       } else if (queueBehavior === "stop-and-send") {
-        // Cancel the trigger.dev run for agent-long streams so the prior
+        // Cancel the trigger.dev run for Agent streams so the prior
         // run stops burning compute instead of finishing in the background.
         cancelTriggerRun();
 

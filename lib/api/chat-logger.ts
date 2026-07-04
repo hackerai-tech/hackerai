@@ -12,6 +12,7 @@ import {
   type ProviderRequestDiagnostics,
   type WideEventBuilder,
 } from "@/lib/logger";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type {
   ChatMode,
   ExtraUsageConfig,
@@ -46,7 +47,7 @@ import {
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
 }
 
 export interface RequestDetails {
@@ -1046,7 +1047,7 @@ export function captureAgentBudgetAbort({
   userId: string;
   subscription: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   selectedModel: string;
   selectedModelOverride?: string;
@@ -1165,7 +1166,7 @@ type AgentCompletionAnalyticsArgs = {
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -1231,7 +1232,7 @@ export function captureFreeAgentValueReached({
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -1307,7 +1308,7 @@ export function captureUsageCost({
   subscription: string;
   organizationId?: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   usage: UsageCostRecord;
   paidDailyFreeAllowance?: {

@@ -28,17 +28,32 @@ const triggerBrowserRealtimeSrc = fs.readFileSync(
 );
 
 const cancelSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../../app/api/agent-long/cancel/route.ts"),
+  path.resolve(__dirname, "../agent-cancel-route.ts"),
   "utf8",
 );
 
 const resumeSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../../app/api/agent-long/resume/route.ts"),
+  path.resolve(__dirname, "../agent-resume-route.ts"),
   "utf8",
 );
 
 const routeSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-trigger-route.ts"),
+  "utf8",
+);
+
+const agentRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/api/agent/route.ts"),
+  "utf8",
+);
+
+const legacyAgentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent-long/route.ts"),
+  "utf8",
+);
+
+const agentEndpointsSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-endpoints.ts"),
   "utf8",
 );
 
@@ -242,7 +257,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
     expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
-    expect(chatComponentSrc).toMatch(/\/api\/agent-long\/resume\?chatId=/);
+    expect(chatComponentSrc).toMatch(/AGENT_RESUME_ENDPOINT/);
     expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
     expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
@@ -365,6 +380,25 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 });
 
 describe("agent-long task — Trigger.dev dashboard error visibility", () => {
+  test("uses /api/agent as the canonical route while keeping /api/agent-long as a compatibility alias", () => {
+    expect(agentEndpointsSrc).toMatch(
+      /AGENT_API_ENDPOINT\s*=\s*"\/api\/agent"/,
+    );
+    expect(agentEndpointsSrc).toMatch(
+      /LEGACY_AGENT_API_ENDPOINT\s*=\s*"\/api\/agent-long"/,
+    );
+    expect(agentEndpointsSrc).toMatch(
+      /AGENT_TRIGGER_TASK_ID\s*=\s*"agent-long"/,
+    );
+    expect(agentRouteSrc).toMatch(/AGENT_API_ENDPOINT/);
+    expect(legacyAgentRouteSrc).toMatch(/LEGACY_AGENT_API_ENDPOINT/);
+    expect(transportSrc).toMatch(/fetchWithErrorHandlers\(AGENT_API_ENDPOINT/);
+    expect(routeSrc).toMatch(/endpoint,/);
+    expect(taskSrc).toMatch(
+      /payloadEndpoint\s*\?\?\s*LEGACY_AGENT_API_ENDPOINT/,
+    );
+  });
+
   test("uses a paid two-hour task cap with a separate free-plan runtime cap", () => {
     expect(taskSrc).toMatch(
       /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*60\s*\*\s*60/,
@@ -412,7 +446,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("runs use small subscription-aware Trigger.dev priority offsets", () => {
     expect(routeSrc).toMatch(
-      /AGENT_LONG_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
+      /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
     expect(routeSrc).toMatch(/free:\s*0/);
     expect(routeSrc).toMatch(/pro:\s*5/);
@@ -704,10 +738,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(rethrowIdx).toBeGreaterThan(zeroNewMessagesIdx);
   });
 
-  test("normal agent-long sends reject empty message payloads before triggering", () => {
+  test("normal agent sends reject empty message payloads before triggering", () => {
     const guardIdx = routeSrc.indexOf("requestMessages.length === 0");
     const emptyPayloadIdx = routeSrc.indexOf(
-      "agent_long_empty_message_payload_rejected",
+      "agent_empty_message_payload_rejected",
     );
     const triggerIdx = routeSrc.indexOf("tasks.trigger", emptyPayloadIdx);
 
