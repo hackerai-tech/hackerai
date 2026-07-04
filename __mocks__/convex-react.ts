@@ -4,7 +4,13 @@ const mockAction = jest.fn();
 
 export const useMutation = () => mockMutation;
 
-export const useQuery = () => undefined;
+let mockQueryResult: unknown = undefined;
+
+export const setMockQueryResult = (next: unknown): void => {
+  mockQueryResult = next;
+};
+
+export const useQuery = () => mockQueryResult;
 
 export const useAction = () => mockAction;
 
@@ -38,7 +44,18 @@ const stablePaginatedResult = {
   isLoading: false,
 };
 
-export const usePaginatedQuery = () => stablePaginatedResult;
+let mockPaginatedResult: unknown = stablePaginatedResult;
+
+export const setMockPaginatedQueryResult = (next: unknown): void => {
+  mockPaginatedResult = next;
+};
+
+export const resetMockConvexQueries = (): void => {
+  mockQueryResult = undefined;
+  mockPaginatedResult = stablePaginatedResult;
+};
+
+export const usePaginatedQuery = () => mockPaginatedResult;
 
 // Create stable convex client mock
 const convexClientMock = {

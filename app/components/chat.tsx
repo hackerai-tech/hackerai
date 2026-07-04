@@ -12,7 +12,12 @@ import {
   useMemo,
   type RefObject,
 } from "react";
-import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
+import {
+  useQuery,
+  usePaginatedQuery,
+  useMutation,
+  useConvexAuth,
+} from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
@@ -67,6 +72,48 @@ const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
+type MessagePaginationStatus =
+  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
+export function getExistingChatLoadState({
+  isExistingChat,
+  hasMessages,
+  isConvexAuthLoading,
+  isConvexAuthenticated,
+  shouldFetchMessages,
+  chatData,
+  paginationStatus,
+  hasPaginatedMessageResults,
+  awaitingServerChat,
+}: {
+  isExistingChat: boolean;
+  hasMessages: boolean;
+  isConvexAuthLoading: boolean;
+  isConvexAuthenticated: boolean;
+  shouldFetchMessages: boolean;
+  chatData: unknown;
+  paginationStatus?: MessagePaginationStatus;
+  hasPaginatedMessageResults: boolean;
+  awaitingServerChat: boolean;
+}) {
+  const isInitialExistingChatLoad =
+    isExistingChat &&
+    !hasMessages &&
+    (isConvexAuthLoading ||
+      !isConvexAuthenticated ||
+      (shouldFetchMessages &&
+        (chatData === undefined || paginationStatus === "LoadingFirstPage")));
+
+  const isChatNotFound =
+    isExistingChat &&
+    chatData === null &&
+    shouldFetchMessages &&
+    !awaitingServerChat &&
+    paginationStatus !== "LoadingFirstPage" &&
+    !hasPaginatedMessageResults;
+
+  return { isInitialExistingChatLoad, isChatNotFound };
+}
 
 const getAgentLongPartFingerprint = (part: unknown): string => {
   if (typeof part !== "object" || part === null) return String(part);
@@ -282,6 +329,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const router = useRouter();
   const isMobile = useIsMobile();
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
+  const {
+    isLoading: isConvexAuthLoading,
+    isAuthenticated: isConvexAuthenticated,
+  } = useConvexAuth();
   const [streamingState, dispatchStreaming] = useReducer(
     streamingReducer,
     initialStreamingState,
@@ -323,7 +374,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
   const wasNewChatRef = useRef(!routeChatId);
-  const shouldFetchMessages = isExistingChat;
+  const shouldFetchMessages =
+    isExistingChat && !isConvexAuthLoading && isConvexAuthenticated;
 
   // Refs to avoid stale closures in callbacks
   const isExistingChatRef = useLatestRef(isExistingChat);
@@ -416,8 +468,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
-    | string
-    | undefined;
+    string | undefined;
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise
@@ -425,8 +476,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
   const activeTriggerRunRef = useLatestRef(
     (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      | string
-      | undefined,
+      string | undefined,
   );
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
@@ -1134,8 +1184,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (persistedPrefsRef.current === null) {
       const savedModel = (chatData as any).selected_model as string | undefined;
       const savedMode = (chatData as any).default_model_slug as
-        | string
-        | undefined;
+        string | undefined;
       persistedPrefsRef.current = {
         model: savedModel ?? selectedModel,
         mode: savedMode ?? chatMode,
@@ -1459,6 +1508,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
+  const { isInitialExistingChatLoad, isChatNotFound } =
+    getExistingChatLoadState({
+      isExistingChat,
+      hasMessages,
+      isConvexAuthLoading,
+      isConvexAuthenticated,
+      shouldFetchMessages,
+      chatData,
+      paginationStatus: paginatedMessages.status,
+      hasPaginatedMessageResults: !!paginatedMessageResults,
+      awaitingServerChat,
+    });
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1471,13 +1532,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-
-  // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
-  const isChatNotFound =
-    isExistingChat &&
-    chatData === null &&
-    shouldFetchMessages &&
-    !awaitingServerChat;
 
   return (
     <ConvexErrorBoundary>
@@ -1524,7 +1578,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             {/* Chat interface */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0">
               {/* Messages area */}
-              {isChatNotFound ? (
+              {isInitialExistingChatLoad ? (
+                <div className="flex-1 flex items-center justify-center min-h-0">
+                  <Loading />
+                </div>
+              ) : isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
                   <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                     <div className="text-center">
@@ -1626,6 +1684,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
               {(hasMessages || isExistingChat || isMobile) &&
+                !isInitialExistingChatLoad &&
                 !isChatNotFound && (
                   <ChatInput
                     onSubmit={handleSubmit}
