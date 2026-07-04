@@ -18,7 +18,7 @@ export const useChats = (shouldFetch = true) => {
     },
   );
 
-  if (shouldFetch && (isLoading || !isAuthenticated)) {
+  if (shouldFetch && !shouldRunQuery) {
     return {
       ...query,
       results: [],
