@@ -257,23 +257,32 @@ export async function sendTriggerSessionInput({
   value,
   signal,
 }: SendTriggerSessionInputOptions): Promise<void> {
-  const response = await fetch(
-    `${TRIGGER_API_BASE_URL}/realtime/v1/sessions/${encodeURIComponent(
-      sessionId,
-    )}/in/append`,
-    {
-      method: "POST",
-      headers: {
-        ...getTriggerJsonHeaders(accessToken),
-        "X-Part-Id": partId,
-      },
-      body: JSON.stringify(value),
-      signal,
-    },
-  );
+  const abortController = new AbortController();
+  const unlinkAbort = linkAbort(signal, abortController);
+  const timeoutId = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
 
-  if (!response.ok) {
-    throw new Error(`Trigger session append failed: ${response.status}`);
+  try {
+    const response = await fetch(
+      `${TRIGGER_API_BASE_URL}/realtime/v1/sessions/${encodeURIComponent(
+        sessionId,
+      )}/in/append`,
+      {
+        method: "POST",
+        headers: {
+          ...getTriggerJsonHeaders(accessToken),
+          "X-Part-Id": partId,
+        },
+        body: JSON.stringify(value),
+        signal: abortController.signal,
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Trigger session append failed: ${response.status}`);
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    unlinkAbort();
   }
 }
 

@@ -469,9 +469,8 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
-    expect(resumeSrc).toMatch(/approvalSessionPublicAccessToken/);
   });
 });
 
@@ -556,7 +555,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("start route returns chat id with the public run handle", () => {
     expect(routeSrc).toMatch(
-      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 

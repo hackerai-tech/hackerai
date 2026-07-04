@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as triggerSdk from "@trigger.dev/sdk";
 import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -10,6 +11,14 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 
 export const maxDuration = 30;
+
+type TriggerSessionsApi = {
+  close(idOrExternalId: string, body?: { reason?: string }): Promise<unknown>;
+};
+
+const triggerSessions = (
+  triggerSdk as unknown as { sessions?: TriggerSessionsApi }
+).sessions;
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,6 +40,7 @@ export async function POST(req: NextRequest) {
       return new NextResponse("Forbidden", { status: 403 });
     }
 
+    const approvalSessionId = chat.active_agent_approval_session_id;
     const runId = await getActiveTriggerRun({ chatId });
     if (!runId) {
       // No active run — treat as already-stopped (idempotent).
@@ -43,6 +53,15 @@ export async function POST(req: NextRequest) {
       await runs.cancel(runId);
     } catch {
       // Ignore: run is already in a terminal state.
+    }
+    if (approvalSessionId && triggerSessions) {
+      try {
+        await triggerSessions.close(approvalSessionId, {
+          reason: "agent-run-canceled",
+        });
+      } catch {
+        // Ignore: session may already be closed.
+      }
     }
     await setActiveTriggerRun({
       chatId,

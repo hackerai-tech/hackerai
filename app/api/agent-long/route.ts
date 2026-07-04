@@ -316,6 +316,7 @@ export async function POST(req: NextRequest) {
         triggerConfig: {
           basePayload: agentPayload,
           tags: triggerTags,
+          ...(triggerRegion ? { region: triggerRegion } : {}),
         },
       });
       runId = session.runId;

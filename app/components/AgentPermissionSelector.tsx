@@ -79,6 +79,7 @@ export function AgentPermissionSelector({
               <button
                 key={option.id}
                 type="button"
+                aria-pressed={selected}
                 onClick={() => {
                   setAgentPermissionMode(option.id);
                   setOpen(false);

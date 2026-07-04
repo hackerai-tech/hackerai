@@ -165,6 +165,7 @@ type TriggerSessionsApi = {
       }): Promise<TriggerSessionWaitResult<T>>;
     };
   };
+  close(idOrExternalId: string, body?: { reason?: string }): Promise<unknown>;
 };
 
 const triggerSessions = (
@@ -214,6 +215,42 @@ const isAgentToolApprovalInputRecord = (
   );
 };
 
+type TriggerSessionInputWaitOutcome =
+  | {
+      status: "input";
+      result: TriggerSessionWaitResult<AgentToolApprovalInputRecord>;
+    }
+  | { status: "aborted" };
+
+const waitForApprovalInput = async (
+  session: ReturnType<TriggerSessionsApi["open"]>,
+  signal: AbortSignal,
+): Promise<TriggerSessionInputWaitOutcome> => {
+  if (signal.aborted) return { status: "aborted" };
+
+  let removeAbortListener = () => {};
+  const abortPromise = new Promise<TriggerSessionInputWaitOutcome>(
+    (resolve) => {
+      const abort = () => resolve({ status: "aborted" });
+      signal.addEventListener("abort", abort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", abort);
+    },
+  );
+
+  try {
+    return await Promise.race([
+      session.in
+        .wait<AgentToolApprovalInputRecord>({
+          timeout: AGENT_APPROVAL_TIMEOUT,
+        })
+        .then((result) => ({ status: "input", result }) as const),
+      abortPromise,
+    ]);
+  } finally {
+    removeAbortListener();
+  }
+};
+
 const buildAgentToolApprovalRequester = ({
   agentPermissionMode,
   approvalSessionId,
@@ -232,79 +269,112 @@ const buildAgentToolApprovalRequester = ({
   signal: AbortSignal;
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
+  let approvalQueue: Promise<void> = Promise.resolve();
 
   return async (request: AgentToolApprovalRequest) => {
-    const approvalId = generateId();
+    const previousApproval = approvalQueue.catch(() => {});
+    let releaseApproval!: () => void;
+    approvalQueue = previousApproval.then(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseApproval = resolve;
+        }),
+    );
 
-    if (!approvalSessionId) {
-      return {
-        approved: false,
-        approvalId,
-        reason: "Approval session is unavailable. Please retry the Agent run.",
-      };
-    }
+    await previousApproval;
+    try {
+      const approvalId = generateId();
 
-    writer.write({
-      type: "tool-approval-request",
-      toolCallId: request.toolCallId,
-      approvalId,
-    } as AgentLongUiStreamPart);
-
-    metadata
-      .set("approvalStatus", "pending")
-      .set("approvalId", approvalId)
-      .set("approvalToolName", request.toolName)
-      .set("approvalOperation", request.operation);
-
-    triggerLogger.info("[agent-long] waiting for tool approval", {
-      chatId,
-      userId,
-      runId,
-      approvalId,
-      tool_name: request.toolName,
-      operation: request.operation,
-      target: request.target.slice(0, 200),
-    });
-
-    if (!triggerSessions) {
-      metadata.set("approvalStatus", "sessions_unavailable");
-      return {
-        approved: false,
-        approvalId,
-        reason:
-          "Approval sessions are unavailable. Please retry the Agent run.",
-      };
-    }
-
-    const session = triggerSessions.open(approvalSessionId);
-    while (!signal.aborted) {
-      const next = await session.in.wait<AgentToolApprovalInputRecord>({
-        timeout: AGENT_APPROVAL_TIMEOUT,
-      });
-
-      if (!next.ok) {
-        metadata.set("approvalStatus", "timed_out");
+      if (!approvalSessionId) {
         return {
           approved: false,
           approvalId,
-          reason: "Approval timed out before the tool could run.",
+          reason:
+            "Approval session is unavailable. Please retry the Agent run.",
         };
       }
 
-      if (!isAgentToolApprovalInputRecord(next.output)) continue;
-      if (
-        next.output.approvalId !== approvalId ||
-        next.output.toolCallId !== request.toolCallId
-      ) {
-        continue;
+      if (signal.aborted) {
+        metadata.set("approvalStatus", "aborted");
+        return {
+          approved: false,
+          approvalId,
+          reason: "The Agent run was stopped before approval was requested.",
+        };
       }
 
-      metadata
-        .set("approvalStatus", next.output.decision)
-        .set("approvalResolvedAt", Date.now());
+      writer.write({
+        type: "tool-approval-request",
+        toolCallId: request.toolCallId,
+        approvalId,
+      } as AgentLongUiStreamPart);
 
-      if (next.output.decision === "approve") {
-        triggerLogger.info("[agent-long] tool approval granted", {
+      metadata
+        .set("approvalStatus", "pending")
+        .set("approvalId", approvalId)
+        .set("approvalToolName", request.toolName)
+        .set("approvalOperation", request.operation);
+
+      triggerLogger.info("[agent-long] waiting for tool approval", {
+        chatId,
+        userId,
+        runId,
+        approvalId,
+        tool_name: request.toolName,
+        operation: request.operation,
+        target: request.target.slice(0, 200),
+      });
+
+      if (!triggerSessions) {
+        metadata.set("approvalStatus", "sessions_unavailable");
+        return {
+          approved: false,
+          approvalId,
+          reason:
+            "Approval sessions are unavailable. Please retry the Agent run.",
+        };
+      }
+
+      const session = triggerSessions.open(approvalSessionId);
+      while (!signal.aborted) {
+        const waitOutcome = await waitForApprovalInput(session, signal);
+        if (waitOutcome.status === "aborted") break;
+
+        const next = waitOutcome.result;
+        if (!next.ok) {
+          metadata.set("approvalStatus", "timed_out");
+          return {
+            approved: false,
+            approvalId,
+            reason: "Approval timed out before the tool could run.",
+          };
+        }
+
+        if (!isAgentToolApprovalInputRecord(next.output)) continue;
+        if (
+          next.output.approvalId !== approvalId ||
+          next.output.toolCallId !== request.toolCallId
+        ) {
+          continue;
+        }
+
+        metadata
+          .set("approvalStatus", next.output.decision)
+          .set("approvalResolvedAt", Date.now());
+
+        if (next.output.decision === "approve") {
+          triggerLogger.info("[agent-long] tool approval granted", {
+            chatId,
+            userId,
+            runId,
+            approvalId,
+            tool_name: request.toolName,
+            operation: request.operation,
+          });
+          return { approved: true, approvalId };
+        }
+
+        triggerLogger.info("[agent-long] tool approval denied", {
           chatId,
           userId,
           runId,
@@ -312,30 +382,22 @@ const buildAgentToolApprovalRequester = ({
           tool_name: request.toolName,
           operation: request.operation,
         });
-        return { approved: true, approvalId };
+        return {
+          approved: false,
+          approvalId,
+          reason: "The user denied approval for this operation.",
+        };
       }
 
-      triggerLogger.info("[agent-long] tool approval denied", {
-        chatId,
-        userId,
-        runId,
-        approvalId,
-        tool_name: request.toolName,
-        operation: request.operation,
-      });
+      metadata.set("approvalStatus", "aborted");
       return {
         approved: false,
         approvalId,
-        reason: "The user denied approval for this operation.",
+        reason: "The Agent run was stopped before approval was received.",
       };
+    } finally {
+      releaseApproval();
     }
-
-    metadata.set("approvalStatus", "aborted");
-    return {
-      approved: false,
-      approvalId,
-      reason: "The Agent run was stopped before approval was received.",
-    };
   };
 };
 
@@ -2668,6 +2730,18 @@ export const agentLongTask = task({
     } finally {
       if (agentLongTimeout) clearTimeout(agentLongTimeout);
       runCleanupMap.delete(ctx.run.id);
+      if (payload.approvalSessionId && triggerSessions) {
+        try {
+          await triggerSessions.close(payload.approvalSessionId, {
+            reason: "agent-run-ended",
+          });
+        } catch (error) {
+          console.error(
+            "[agent-long] failed to close approval session:",
+            error,
+          );
+        }
+      }
       if (!payload.temporary) {
         try {
           await setActiveTriggerRun({
