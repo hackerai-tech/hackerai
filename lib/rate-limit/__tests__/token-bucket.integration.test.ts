@@ -1198,6 +1198,38 @@ describe("token-bucket async functions", () => {
       });
     });
 
+    it("falls back to extra usage when included bucket debit fails after peek", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      const result = await deductUsageDelta("user-123", "pro", 43, {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+      });
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 43);
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 43,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
     it("preserves included mid-run deduction when extra usage charge throws", async () => {
       const consoleErrorSpy = jest
         .spyOn(console, "error")

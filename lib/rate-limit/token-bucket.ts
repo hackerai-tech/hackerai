@@ -168,12 +168,18 @@ const deductAdditionalUsagePoints = async ({
   const peekResult = await monthly.limiter.limit(monthly.key, { rate: 0 });
   const available = Math.max(0, peekResult.remaining);
   const fromBucket = Math.min(normalizedAdditionalCost, available);
-  const fromExtraUsage = normalizedAdditionalCost - fromBucket;
+  let includedDeducted = 0;
 
   if (fromBucket > 0) {
-    await monthly.limiter.limit(monthly.key, { rate: fromBucket });
+    const bucketResult = await monthly.limiter.limit(monthly.key, {
+      rate: fromBucket,
+    });
+    if (bucketResult.success !== false) {
+      includedDeducted = fromBucket;
+    }
   }
 
+  const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
 
@@ -212,7 +218,7 @@ const deductAdditionalUsagePoints = async ({
     }
   }
 
-  return buildDeltaResult(fromBucket, extraUsageDeducted, failureReason);
+  return buildDeltaResult(includedDeducted, extraUsageDeducted, failureReason);
 };
 
 const scanRedisKeys = async (

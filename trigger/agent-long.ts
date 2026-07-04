@@ -1714,7 +1714,13 @@ export const agentLongTask = task({
                     error:
                       error instanceof Error ? error.message : String(error),
                   });
-                  return;
+                  deductionResult = {
+                    includedPointsDeducted: 0,
+                    extraUsagePointsDeducted: 0,
+                    uncoveredPoints: additionalCostPoints,
+                    usageDeductionFailed: true,
+                    usageDeductionFailureReason: "deduction_failed",
+                  };
                 }
 
                 usageRefundTracker.addDeductions(deductionResult);
