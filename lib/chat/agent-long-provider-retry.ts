@@ -67,8 +67,13 @@ const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
   hasReasoningPart(parts) &&
   parts.every(isFallbackSafeProviderPart);
 
-const normalizeAssistantLoopText = (text: string): string =>
+const stripFencedCodeBlocks = (text: string): string =>
   text
+    .replace(/```[\s\S]*?(?:```|$)/g, " ")
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, " ");
+
+const normalizeAssistantLoopText = (text: string): string =>
+  stripFencedCodeBlocks(text)
     .toLowerCase()
     .replace(/\[[^\]]*tool[^\]]*\]/gi, " ")
     .replace(/\s+/g, " ")

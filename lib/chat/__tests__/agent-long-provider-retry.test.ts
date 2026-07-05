@@ -184,4 +184,49 @@ describe("assistant content loop detection", () => {
 
     expect(detection.detected).toBe(false);
   });
+
+  it("does not flag repeated structural code inside fenced blocks", () => {
+    const xamlAnswer = [
+      "Here is the fixed SettingsPanel.xaml:",
+      "```xml",
+      "<Grid.RowDefinitions>",
+      '  <RowDefinition Height="Auto"/>',
+      '  <RowDefinition Height="Auto"/>',
+      '  <RowDefinition Height="Auto"/>',
+      '  <RowDefinition Height="Auto"/>',
+      '  <RowDefinition Height="Auto"/>',
+      '  <RowDefinition Height="Auto"/>',
+      "</Grid.RowDefinitions>",
+      "```",
+    ].join("\n");
+
+    const detection = detectAssistantContentLoopFromText(xamlAnswer);
+
+    expect(detection.detected).toBe(false);
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [{ type: "step-start" }, { type: "text", text: xamlAnswer }],
+        { hasTerminalProviderStreamError: false },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not flag repeated structural code in an open fenced block while streaming", () => {
+    const monitor = createAssistantContentLoopMonitor();
+    let detected = false;
+
+    for (const delta of [
+      "```xml\n<Grid.RowDefinitions>\n",
+      '  <RowDefinition Height="Auto"/>\n',
+      '  <RowDefinition Height="Auto"/>\n',
+      '  <RowDefinition Height="Auto"/>\n',
+      '  <RowDefinition Height="Auto"/>\n',
+      '  <RowDefinition Height="Auto"/>\n',
+      '  <RowDefinition Height="Auto"/>\n',
+    ]) {
+      detected = monitor.appendDelta(delta).detected || detected;
+    }
+
+    expect(detected).toBe(false);
+  });
 });
