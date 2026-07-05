@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 
 import {
+  billableCostDollarsToPoints,
   calculateTokenCost,
   calculateRawTokenCost,
   calculateProratedCredits,
@@ -187,6 +188,19 @@ describe("token-bucket", () => {
   describe("POINTS_PER_DOLLAR", () => {
     it("should be 10000 (1 point = $0.0001)", () => {
       expect(POINTS_PER_DOLLAR).toBe(10_000);
+    });
+  });
+
+  describe("billableCostDollarsToPoints", () => {
+    it("applies the normal usage multiplier to raw provider and tool cost", () => {
+      expect(billableCostDollarsToPoints(1)).toBe(13_000);
+      expect(billableCostDollarsToPoints(0.005)).toBe(65);
+    });
+
+    it("returns 0 for non-positive or invalid cost", () => {
+      expect(billableCostDollarsToPoints(0)).toBe(0);
+      expect(billableCostDollarsToPoints(-1)).toBe(0);
+      expect(billableCostDollarsToPoints(Number.NaN)).toBe(0);
     });
   });
 

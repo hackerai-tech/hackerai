@@ -1,5 +1,6 @@
 import type { ExtraUsageConfig, RateLimitInfo } from "@/types";
 import {
+  billableCostDollarsToPoints,
   POINTS_PER_DOLLAR,
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
@@ -122,7 +123,8 @@ export const getUnsettledUsagePoints = (
 ): number =>
   Math.max(
     0,
-    costDollarsToPoints(currentCostDollars) - getSettledUsagePoints(state),
+    billableCostDollarsToPoints(currentCostDollars) -
+      getSettledUsagePoints(state),
   );
 
 export const shouldSettleUsageMidRun = ({

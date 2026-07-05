@@ -61,6 +61,18 @@ export const POINTS_PER_DOLLAR = 10_000;
  */
 export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
+/** Convert raw provider/tool spend into billable user-balance points. */
+export const billableCostDollarsToPoints = (costDollars: number): number =>
+  Number.isFinite(costDollars) && costDollars > 0
+    ? Math.ceil(
+        Number(
+          (costDollars * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER).toFixed(
+            6,
+          ),
+        ),
+      )
+    : 0;
+
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 const REDIS_SCAN_COUNT = 500;
@@ -815,11 +827,12 @@ export const deductUsage = async (
     });
     lastKnownDeductionResult = buildDeductionResult();
 
-    // Calculate actual cost - prefer provider cost if available.
+    // Calculate actual billable cost - prefer provider cost if available.
     // Provider cost already includes non-model costs (sandbox/tools) when present.
-    // When absent (non-clean streams), add non-model costs on top of token-based estimate.
+    // When absent (non-clean streams), add billable non-model costs on top of
+    // token-based model pricing.
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
-      actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
+      actualCostPoints = billableCostDollarsToPoints(providerCostDollars);
     } else {
       const modelForActualCost = actualModelName ?? modelName;
       const actualInputCost = calculateTokenCost(
@@ -834,7 +847,7 @@ export const deductUsage = async (
       );
       const nonModelCostPoints =
         nonModelCostDollars > 0
-          ? Math.ceil(nonModelCostDollars * POINTS_PER_DOLLAR)
+          ? billableCostDollarsToPoints(nonModelCostDollars)
           : 0;
       actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
