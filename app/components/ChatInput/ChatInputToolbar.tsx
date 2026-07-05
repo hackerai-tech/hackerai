@@ -37,7 +37,11 @@ export function ChatInputToolbar({
           mode={chatMode}
         />
       ) : null}
-      {isAgentMode(chatMode) ? <AgentPermissionSelector /> : null}
+      {isAgentMode(chatMode) ? (
+        <div className="hidden md:block">
+          <AgentPermissionSelector />
+        </div>
+      ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
         <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>

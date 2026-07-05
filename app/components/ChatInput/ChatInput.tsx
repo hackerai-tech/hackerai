@@ -23,10 +23,10 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
+import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
-import { useIsMobile } from "@/hooks/use-mobile";
 import type { UploadedFileState } from "@/types/file";
 import { useAgentApproval } from "@/app/contexts/AgentApprovalContext";
 
@@ -148,7 +148,6 @@ export const ChatInput = ({
     hasLocalSandbox,
     defaultLocalSandboxPreference,
   } = useGlobalState();
-  const isMobile = useIsMobile();
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -324,23 +323,6 @@ export const ChatInput = ({
           />
         )}
 
-        {/* Sandbox selector for new chats on mobile: shown above input & file upload.
-            Once the first message is sent, switches to below-input placement immediately
-            (isNewChat doesn't flip until the stream finishes, so we also check hasMessages).
-            On desktop, it's shown below the input (order-3). */}
-        {isMobile &&
-          isNewChat &&
-          !hasMessages &&
-          isAgentMode(chatMode) &&
-          !showAgentApprovalPrompt && (
-            <div className="flex px-1 pb-2 min-h-9">
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            </div>
-          )}
-
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
@@ -390,23 +372,27 @@ export const ChatInput = ({
           </div>
         )}
 
-        {/* Sandbox selector below input.
+        {/* Agent controls below input.
             Desktop centered new chats (no messages yet): absolutely positioned to avoid
             shifting the centered layout.
-            Existing chats / after first message sent (all screens): normal flow.
-            Mobile new chats with no messages: hidden (uses above-input placement). */}
-        {isAgent &&
-          !showAgentApprovalPrompt &&
-          (!isMobile || !isNewChat || hasMessages) && (
-            <div
-              className={`order-3 flex items-center px-1 pt-2 ${isNewChat && !hasMessages ? "absolute left-4 right-4 top-full" : ""}`}
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
+            On mobile, permission approval sits beside the sandbox selector. */}
+        {isAgent && !showAgentApprovalPrompt && (
+          <div
+            className={`order-3 flex items-center gap-2 px-1 pt-2 min-w-0 ${
+              isNewChat && !hasMessages
+                ? "md:absolute md:left-4 md:right-4 md:top-full"
+                : ""
+            }`}
+          >
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
+            <div className="min-w-0 md:hidden">
+              <AgentPermissionSelector />
             </div>
-          )}
+          </div>
+        )}
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
