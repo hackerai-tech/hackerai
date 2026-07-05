@@ -40,4 +40,29 @@ describe("free Agent value nudge", () => {
       true,
     );
   });
+
+  it("falls back when browser localStorage access throws", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("storage blocked");
+      },
+    });
+
+    try {
+      const shownChatIds = new Set<string>();
+      const chatId = "chat-free-agent-value";
+
+      expect(hasShownFreeAgentValueNudge(shownChatIds, chatId)).toBe(false);
+
+      markFreeAgentValueNudgeShown(shownChatIds, chatId);
+
+      expect(hasShownFreeAgentValueNudge(shownChatIds, chatId)).toBe(true);
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(window, "localStorage", descriptor);
+      }
+    }
+  });
 });

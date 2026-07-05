@@ -9,7 +9,11 @@ export const getFreeAgentValueNudgeStorageKey = (chatId: string) =>
 
 const getBrowserStorage = () => {
   if (typeof window === "undefined") return undefined;
-  return window.localStorage;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 };
 
 export const hasShownFreeAgentValueNudge = (
