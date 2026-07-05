@@ -55,7 +55,8 @@ import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import {
   FREE_AGENT_VALUE_NUDGE_ANALYTICS,
   FREE_AGENT_VALUE_NUDGE_PART_TYPE,
-  FREE_AGENT_VALUE_NUDGE_STORAGE_PREFIX,
+  hasShownFreeAgentValueNudge,
+  markFreeAgentValueNudgeShown,
 } from "@/lib/chat/free-agent-value-nudge";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import {
@@ -83,38 +84,6 @@ const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
-const getFreeAgentValueNudgeStorageKey = (chatId: string) =>
-  `${FREE_AGENT_VALUE_NUDGE_STORAGE_PREFIX}${chatId}`;
-
-const hasShownFreeAgentValueNudge = (
-  shownChatIds: Set<string>,
-  chatId: string,
-) => {
-  if (shownChatIds.has(chatId)) return true;
-  if (typeof window === "undefined") return false;
-  try {
-    return (
-      window.localStorage.getItem(getFreeAgentValueNudgeStorageKey(chatId)) ===
-      "1"
-    );
-  } catch {
-    return false;
-  }
-};
-
-const markFreeAgentValueNudgeShown = (
-  shownChatIds: Set<string>,
-  chatId: string,
-) => {
-  shownChatIds.add(chatId);
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(getFreeAgentValueNudgeStorageKey(chatId), "1");
-  } catch {
-    // Losing localStorage only means the nudge can reappear after a reload.
-  }
-};
-
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
