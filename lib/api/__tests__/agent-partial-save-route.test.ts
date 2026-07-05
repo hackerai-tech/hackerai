@@ -93,6 +93,18 @@ const request = (
   } as any;
 };
 
+const streamingRequest = (text: string) =>
+  ({
+    headers: new Headers(),
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        controller.close();
+      },
+    }),
+    text: jest.fn().mockResolvedValue(text as never),
+  }) as any;
+
 const chat = (overrides: Record<string, unknown> = {}) => ({
   id: "chat-1",
   user_id: "user-1",
@@ -196,6 +208,24 @@ describe("createAgentPartialSavePost", () => {
     const req = request(validBody, {
       "content-length": `${4 * 1024 * 1024 + 1}`,
     });
+
+    const response = await createAgentPartialSavePost()(req);
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      code: "bad_request:api",
+      cause: "Partial save payload is too large.",
+    });
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized streamed requests without a content-length header", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    const req = streamingRequest("x".repeat(4 * 1024 * 1024 + 1));
 
     const response = await createAgentPartialSavePost()(req);
     const body = await response.json();
