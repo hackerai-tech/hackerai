@@ -36,12 +36,21 @@ describe("checkRateLimit", () => {
       }));
 
       jest.doMock("../token-bucket", () => ({
+        POINTS_PER_DOLLAR: 10_000,
+        NORMAL_USAGE_MULTIPLIER: 1.3,
         checkTokenBucketLimit: mockCheckTokenBucketLimit,
         deductUsage: jest.fn(),
         refundUsage: jest.fn(),
         calculateTokenCost: jest.fn(),
         getBudgetLimits: jest.fn(),
         getSubscriptionPrice: jest.fn(),
+        billableCostDollarsToPoints: (costDollars: number) =>
+          Number.isFinite(costDollars) && costDollars > 0
+            ? Math.max(
+                1,
+                Math.ceil(Number((costDollars * 10_000 * 1.3).toFixed(6))),
+              )
+            : 0,
       }));
 
       isolatedModule = require("../index");
