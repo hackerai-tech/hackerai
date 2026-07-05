@@ -8,6 +8,7 @@ import {
   isImageFile,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
+import { FileContentViewer } from "./FileContentViewer";
 import {
   UploadedFileState,
   FileUploadPreviewProps,
@@ -26,6 +27,11 @@ export const FileUploadPreview = ({
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
+  } | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{
+    file: File | LocalDesktopFile;
+    name: string;
+    fileId?: string;
   } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
@@ -89,6 +95,21 @@ export const FileUploadPreview = ({
     }
   }, [uploadedFiles, generateFileKey]);
 
+  // Close the content viewer when its underlying file is removed so it can't
+  // keep showing stale content for an attachment no longer in the list.
+  const handleRemoveFile = useCallback(
+    (index: number) => {
+      const removedFile = uploadedFiles[index]?.file;
+      if (removedFile) {
+        setSelectedFile((current) =>
+          current?.file === removedFile ? null : current,
+        );
+      }
+      onRemoveFile(index);
+    },
+    [uploadedFiles, onRemoveFile],
+  );
+
   if (!uploadedFiles || uploadedFiles.length === 0) {
     return null;
   }
@@ -97,6 +118,14 @@ export const FileUploadPreview = ({
 
   const handleImageClick = (preview: string, fileName: string) => {
     setSelectedImage({ src: preview, alt: fileName });
+  };
+
+  const handleFileClick = (
+    file: File | LocalDesktopFile,
+    fileName: string,
+    fileId?: string,
+  ) => {
+    setSelectedFile({ file, name: fileName, fileId });
   };
 
   return (
@@ -186,7 +215,18 @@ export const FileUploadPreview = ({
                         )}
                       </button>
                     ) : (
-                      <div className="p-2 w-80">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleFileClick(
+                            filePreview.file,
+                            filePreview.file.name,
+                            uploadedFiles[index]?.fileId,
+                          )
+                        }
+                        className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                        aria-label={`View ${filePreview.file.name}`}
+                      >
                         <div className="flex flex-row items-center gap-2">
                           <div
                             className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center ${
@@ -218,7 +258,7 @@ export const FileUploadPreview = ({
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -226,7 +266,7 @@ export const FileUploadPreview = ({
                 <div className="absolute end-1.5 top-1.5 inline-flex gap-1">
                   <Button
                     type="button"
-                    onClick={() => onRemoveFile(index)}
+                    onClick={() => handleRemoveFile(index)}
                     variant="secondary"
                     size="sm"
                     className="transition-colors flex h-6 w-6 items-center justify-center rounded-full border-[rgba(0,0,0,0.1)] bg-black text-white dark:border-[rgba(255,255,255,0.1)] dark:bg-white dark:text-black p-0"
@@ -249,6 +289,17 @@ export const FileUploadPreview = ({
           onClose={() => setSelectedImage(null)}
           imageSrc={selectedImage.src}
           imageAlt={selectedImage.alt}
+        />
+      )}
+
+      {/* File Content Viewer Modal */}
+      {selectedFile && (
+        <FileContentViewer
+          isOpen={!!selectedFile}
+          onClose={() => setSelectedFile(null)}
+          file={selectedFile.file}
+          fileName={selectedFile.name}
+          fileId={selectedFile.fileId}
         />
       )}
     </>
