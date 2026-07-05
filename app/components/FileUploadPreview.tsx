@@ -94,6 +94,21 @@ export const FileUploadPreview = ({
     }
   }, [uploadedFiles, generateFileKey]);
 
+  // Close the content viewer when its underlying file is removed so it can't
+  // keep showing stale content for an attachment no longer in the list.
+  const handleRemoveFile = useCallback(
+    (index: number) => {
+      const removedFile = uploadedFiles[index]?.file;
+      if (removedFile) {
+        setSelectedFile((current) =>
+          current?.file === removedFile ? null : current,
+        );
+      }
+      onRemoveFile(index);
+    },
+    [uploadedFiles, onRemoveFile],
+  );
+
   if (!uploadedFiles || uploadedFiles.length === 0) {
     return null;
   }
@@ -245,7 +260,7 @@ export const FileUploadPreview = ({
                 <div className="absolute end-1.5 top-1.5 inline-flex gap-1">
                   <Button
                     type="button"
-                    onClick={() => onRemoveFile(index)}
+                    onClick={() => handleRemoveFile(index)}
                     variant="secondary"
                     size="sm"
                     className="transition-colors flex h-6 w-6 items-center justify-center rounded-full border-[rgba(0,0,0,0.1)] bg-black text-white dark:border-[rgba(255,255,255,0.1)] dark:bg-white dark:text-black p-0"
