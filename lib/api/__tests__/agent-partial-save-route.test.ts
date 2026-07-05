@@ -102,12 +102,14 @@ const chat = (overrides: Record<string, unknown> = {}) => ({
 describe("createAgentPartialSavePost", () => {
   let errorSpy: jest.SpiedFunction<typeof console.error>;
   let infoSpy: jest.SpiedFunction<typeof console.info>;
+  let warnSpy: jest.SpiedFunction<typeof console.warn>;
 
   beforeEach(() => {
     installResponseShim();
     jest.clearAllMocks();
     errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
     mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
     mockCreateRedisClient.mockReturnValue(null);
@@ -119,6 +121,7 @@ describe("createAgentPartialSavePost", () => {
   afterEach(() => {
     errorSpy.mockRestore();
     infoSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it("saves a valid assistant partial snapshot for the owning user", async () => {
@@ -211,8 +214,7 @@ describe("createAgentPartialSavePost", () => {
     const { createAgentPartialSavePost } =
       await import("@/lib/api/agent-partial-save-route");
     const redis = {
-      incr: jest.fn().mockResolvedValue(61 as never),
-      expire: jest.fn(),
+      eval: jest.fn().mockResolvedValue(0 as never),
     };
     mockCreateRedisClient.mockReturnValue(redis);
     const req = request();
@@ -226,10 +228,35 @@ describe("createAgentPartialSavePost", () => {
       cause:
         "Too many partial-save requests. Please wait a moment and try again.",
     });
-    expect(redis.incr).toHaveBeenCalledWith("agent_partial_save:user-1");
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.stringContaining('redis.call("INCR", key)'),
+      ["agent_partial_save:user-1"],
+      [60, 600],
+    );
     expect(req.text).not.toHaveBeenCalled();
     expect(mockGetChatById).not.toHaveBeenCalled();
     expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  it("continues the partial save when Redis rate limiting is unavailable", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    const redis = {
+      eval: jest.fn().mockRejectedValue(new Error("redis down") as never),
+    };
+    mockCreateRedisClient.mockReturnValue(redis);
+
+    const response = await createAgentPartialSavePost()(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ saved: true });
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[agent-partial-save] rate limit unavailable, continuing partial save:",
+      expect.any(Error),
+    );
+    expect(mockSaveMessage).toHaveBeenCalled();
+    expect(mockUpdateChat).toHaveBeenCalled();
   });
 
   it("returns chat access suspension errors before rate limiting", async () => {

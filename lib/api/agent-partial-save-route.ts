@@ -12,6 +12,22 @@ const CLIENT_SAVED_FINISH_REASON = "trigger_crashed_client_saved";
 const MAX_PARTIAL_SAVE_BODY_BYTES = 4 * 1024 * 1024;
 const PARTIAL_SAVE_RATE_LIMIT_MAX_REQUESTS = 60;
 const PARTIAL_SAVE_RATE_LIMIT_WINDOW_SECONDS = 10 * 60;
+const PARTIAL_SAVE_RATE_LIMIT_SCRIPT = `
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local ttlSeconds = tonumber(ARGV[2])
+
+local count = redis.call("INCR", key)
+if count == 1 then
+  redis.call("EXPIRE", key, ttlSeconds)
+end
+
+if count > limit then
+  return 0
+end
+
+return 1
+`;
 
 type PartialSaveBody = {
   chatId: string;
@@ -78,23 +94,19 @@ const readRequestTextWithLimit = async (req: NextRequest): Promise<string> => {
 
 const assertPartialSaveRateLimit = async (userId: string) => {
   const redis = createRedisClient();
-  if (!redis) {
-    if (process.env.NODE_ENV === "production") {
-      throw new ChatSDKError(
-        "rate_limit:chat",
-        "Rate limiting service is not configured",
-      );
-    }
-    return;
-  }
+  if (!redis) return;
 
   const key = `agent_partial_save:${userId}`;
   try {
-    const count = await redis.incr(key);
-    if (count === 1) {
-      await redis.expire(key, PARTIAL_SAVE_RATE_LIMIT_WINDOW_SECONDS);
-    }
-    if (count > PARTIAL_SAVE_RATE_LIMIT_MAX_REQUESTS) {
+    const result = await redis.eval(
+      PARTIAL_SAVE_RATE_LIMIT_SCRIPT,
+      [key],
+      [
+        PARTIAL_SAVE_RATE_LIMIT_MAX_REQUESTS,
+        PARTIAL_SAVE_RATE_LIMIT_WINDOW_SECONDS,
+      ],
+    );
+    if (Number(result) !== 1) {
       throw new ChatSDKError(
         "rate_limit:chat",
         "Too many partial-save requests. Please wait a moment and try again.",
@@ -102,11 +114,9 @@ const assertPartialSaveRateLimit = async (userId: string) => {
     }
   } catch (error) {
     if (error instanceof ChatSDKError) throw error;
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      `Rate limiting service unavailable: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`,
+    console.warn(
+      "[agent-partial-save] rate limit unavailable, continuing partial save:",
+      error,
     );
   }
 };
