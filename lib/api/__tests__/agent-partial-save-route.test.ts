@@ -167,6 +167,26 @@ describe("createAgentPartialSavePost", () => {
     });
   });
 
+  it("does not overwrite an existing chat finish reason", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    mockGetChatById.mockResolvedValue(chat({ finish_reason: "stop" }) as never);
+
+    const response = await createAgentPartialSavePost()(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ saved: true });
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-1",
+        userId: "user-1",
+        finishReason: "trigger_crashed_client_saved",
+      }),
+    );
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
   it("rejects cross-user chats before writing", async () => {
     const { createAgentPartialSavePost } =
       await import("@/lib/api/agent-partial-save-route");

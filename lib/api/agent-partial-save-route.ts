@@ -214,11 +214,13 @@ export const createAgentPartialSavePost =
         wasAborted: true,
       });
 
-      await updateChat({
-        chatId: body.chatId,
-        finishReason: CLIENT_SAVED_FINISH_REASON,
-        defaultModelSlug: "agent",
-      });
+      if (!chat.finish_reason) {
+        await updateChat({
+          chatId: body.chatId,
+          finishReason: CLIENT_SAVED_FINISH_REASON,
+          defaultModelSlug: "agent",
+        });
+      }
 
       console.info(
         JSON.stringify({
