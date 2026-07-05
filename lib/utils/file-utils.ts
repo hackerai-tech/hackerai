@@ -122,6 +122,14 @@ const TEXT_VIEWABLE_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Check if a file is a PDF (by media type, with an extension fallback)
+ */
+export function isPdfFile(file: File | LocalDesktopFile): boolean {
+  if (file.type?.toLowerCase() === "application/pdf") return true;
+  return file.name.split(".").pop()?.toLowerCase() === "pdf";
+}
+
+/**
  * Check if a file's content can be previewed as plain text.
  * Uses the media type first, then falls back to the file extension for
  * files that arrive with a generic/empty type.

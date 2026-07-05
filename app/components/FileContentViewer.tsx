@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { isTextViewableFile } from "@/lib/utils/file-utils";
+import { isPdfFile, isTextViewableFile } from "@/lib/utils/file-utils";
 import { LocalDesktopFile } from "@/types/file";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 
@@ -35,6 +35,7 @@ export const FileContentViewer = ({
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
   const [content, setContent] = useState<string>("");
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState<boolean>(false);
@@ -55,16 +56,25 @@ export const FileContentViewer = ({
     if (!isOpen) return;
 
     let cancelled = false;
+    // Blob URL created for in-memory PDF previews; must be revoked on cleanup.
+    let createdBlobUrl: string | null = null;
 
     const loadContent = async () => {
       setIsLoading(true);
       setError(null);
       setTruncated(false);
+      setPdfUrl(null);
+      setContent("");
 
-      // Text-viewability is based on name/media type, so it works for both real
+      const pdf = isPdfFile(file);
+
+      // Previewability is based on name/media type, so it works for both real
       // browser Files and the metadata-only descriptor restored from a draft.
       // Without an in-memory File or an S3 file id there is nothing to read.
-      if (!isTextViewableFile(file) || (!isBrowserFile(file) && !fileId)) {
+      if (
+        (!pdf && !isTextViewableFile(file)) ||
+        (!isBrowserFile(file) && !fileId)
+      ) {
         if (!cancelled) {
           setError("Preview isn't available for this file type.");
           setIsLoading(false);
@@ -73,6 +83,28 @@ export const FileContentViewer = ({
       }
 
       try {
+        if (pdf) {
+          // Render via the browser's native PDF viewer. In-memory files use a
+          // blob URL; restored-from-draft files use a short-lived signed URL.
+          let url: string;
+          if (isBrowserFile(file)) {
+            createdBlobUrl = URL.createObjectURL(file);
+            url = createdBlobUrl;
+          } else {
+            const signedUrl = await resolveFileUrl(fileId!);
+            if (!signedUrl) throw new Error("Could not resolve file URL");
+            url = signedUrl;
+          }
+
+          if (cancelled) {
+            if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
+            return;
+          }
+
+          setPdfUrl(url);
+          return;
+        }
+
         let text: string;
 
         if (isBrowserFile(file)) {
@@ -109,6 +141,7 @@ export const FileContentViewer = ({
 
     return () => {
       cancelled = true;
+      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
     };
   }, [isOpen, file, fileId, resolveFileUrl]);
 
@@ -226,6 +259,12 @@ export const FileContentViewer = ({
                 </button>
               )}
             </div>
+          ) : pdfUrl ? (
+            <iframe
+              src={pdfUrl}
+              title={`Preview of ${fileName}`}
+              className="h-full w-full border-0"
+            />
           ) : (
             <div
               className="w-full overflow-auto px-4 py-[15px] font-mono text-xs leading-[18px] text-foreground"
