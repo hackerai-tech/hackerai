@@ -2089,6 +2089,7 @@ export const agentLongTask = task({
                                       : "success";
                                   captureAgentCompletionAnalytics({
                                     posthog,
+                                    writer,
                                     userId,
                                     chatId,
                                     endpoint,
@@ -2220,6 +2221,7 @@ export const agentLongTask = task({
                           : "success";
                       captureAgentCompletionAnalytics({
                         posthog,
+                        writer,
                         userId,
                         chatId,
                         endpoint,

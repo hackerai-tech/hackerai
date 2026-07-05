@@ -4,6 +4,7 @@ import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
+import { FREE_AGENT_VALUE_NUDGE_PART_TYPE } from "@/lib/chat/free-agent-value-nudge";
 
 // Upload status notifications
 export const writeUploadStartStatus = (
@@ -160,5 +161,15 @@ export const writeAutoContinue = (writer: UIMessageStreamWriter): void => {
   writer.write({
     type: "data-auto-continue",
     data: { shouldContinue: true },
+  });
+};
+
+export const writeFreeAgentValueNudge = (
+  writer: UIMessageStreamWriter,
+): void => {
+  writer.write({
+    type: FREE_AGENT_VALUE_NUDGE_PART_TYPE,
+    data: { reached: true },
+    transient: true,
   });
 };

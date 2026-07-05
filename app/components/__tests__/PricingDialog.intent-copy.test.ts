@@ -39,4 +39,16 @@ describe("getPricingIntentCopy", () => {
       }),
     );
   });
+
+  it("does not use custom pricing copy for free Agent success nudges", () => {
+    const copy = getPricingIntentCopy(
+      {
+        source: "free_agent_value_reached",
+        reason: "post_success_agent_run",
+      },
+      "free",
+    );
+
+    expect(copy).toBeNull();
+  });
 });

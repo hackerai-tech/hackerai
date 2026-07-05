@@ -51,6 +51,14 @@ import {
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { toast } from "sonner";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import {
+  FREE_AGENT_VALUE_NUDGE_ANALYTICS,
+  FREE_AGENT_VALUE_NUDGE_PART_TYPE,
+  hasShownFreeAgentValueNudge,
+  markFreeAgentValueNudgeShown,
+} from "@/lib/chat/free-agent-value-nudge";
+import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import {
   normalizeSelectedModelForSubscription,
   type Todo,
@@ -500,6 +508,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
+  const shownFreeAgentValueNudgeChatsRef = useRef<Set<string>>(new Set());
   activeChatIdRef.current = chatId;
 
   useEffect(() => {
@@ -647,6 +656,33 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
+        case FREE_AGENT_VALUE_NUDGE_PART_TYPE: {
+          if (
+            hasShownFreeAgentValueNudge(
+              shownFreeAgentValueNudgeChatsRef.current,
+              chatId,
+            )
+          ) {
+            break;
+          }
+
+          markFreeAgentValueNudgeShown(
+            shownFreeAgentValueNudgeChatsRef.current,
+            chatId,
+          );
+          captureUpgradeCtaImpression(FREE_AGENT_VALUE_NUDGE_ANALYTICS);
+          toast.info("Agent worked locally", {
+            description:
+              "Upgrade for cloud Agent, longer runs, stronger models, files, and higher limits.",
+            duration: 10000,
+            action: {
+              label: "Upgrade",
+              onClick: () =>
+                redirectToPricing(FREE_AGENT_VALUE_NUDGE_ANALYTICS),
+            },
+          });
+          break;
+        }
         case "data-upload-status": {
           const uploadData = dataPart.data as {
             message: string;
