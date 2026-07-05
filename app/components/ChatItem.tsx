@@ -119,9 +119,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
-  const showActions = Boolean(
-    isHovered || isCurrentlyActive || isDropdownOpen || isMobile,
-  );
+  const showActions = Boolean(isHovered || isDropdownOpen || isMobile);
 
   useEffect(() => {
     if (optimisticChatId && optimisticChatId === routeChatId) {
