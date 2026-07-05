@@ -5,7 +5,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
 /** Extra usage pricing multiplier */
-export const EXTRA_USAGE_MULTIPLIER = 1.05;
+export const EXTRA_USAGE_MULTIPLIER = 1.15;
 
 const errorName = (error: unknown) =>
   error instanceof Error ? error.name : "UnknownError";
