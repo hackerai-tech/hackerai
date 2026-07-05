@@ -71,20 +71,6 @@ export function getPricingIntentCopy(
   const limitType = context?.limitType;
   const reason = context?.reason;
 
-  if (source === "free_agent_value_reached") {
-    return {
-      title: "Keep Agent running in the cloud",
-      description:
-        "You just ran Agent locally. Upgrade for cloud Agent, longer runs, stronger models, file uploads, and higher limits.",
-      proDescription: "Cloud Agent with higher limits",
-      proPlusDescription: "More room for repeated Agent runs",
-      ultraDescription: "Maximum room for serious workloads",
-      proButtonText: "Use cloud Agent",
-      proPlusButtonText: "Get more Agent usage",
-      ultraButtonText: "Get Ultra",
-    };
-  }
-
   if (source === "agent_mode_gate") {
     return {
       title: "Unlock cloud Agent mode",

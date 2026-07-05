@@ -40,7 +40,7 @@ describe("getPricingIntentCopy", () => {
     );
   });
 
-  it("uses post-value Agent copy for free Agent success nudges", () => {
+  it("does not use custom pricing copy for free Agent success nudges", () => {
     const copy = getPricingIntentCopy(
       {
         source: "free_agent_value_reached",
@@ -49,12 +49,6 @@ describe("getPricingIntentCopy", () => {
       "free",
     );
 
-    expect(copy).toEqual(
-      expect.objectContaining({
-        title: "Keep Agent running in the cloud",
-        description: expect.stringContaining("You just ran Agent locally"),
-        proButtonText: "Use cloud Agent",
-      }),
-    );
+    expect(copy).toBeNull();
   });
 });
