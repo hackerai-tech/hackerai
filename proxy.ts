@@ -10,6 +10,8 @@ import {
 } from "@/lib/referrals/config";
 
 const AUTHKIT_BYPASS_PATHS = new Set(["/api/health/trigger-agent-mode"]);
+const ROOT_PAGE_POST_PATHS = new Set(["/", "/index"]);
+const NEXT_ACTION_HEADER = "next-action";
 
 const UNAUTHENTICATED_PATHS = new Set([
   ...AUTHKIT_BYPASS_PATHS,
@@ -62,6 +64,17 @@ function isUnauthenticatedPath(pathname: string): boolean {
 
 function shouldBypassAuthkit(pathname: string): boolean {
   return AUTHKIT_BYPASS_PATHS.has(pathname);
+}
+
+function isUnsupportedRootPagePost(
+  request: NextRequest,
+  pathname: string,
+): boolean {
+  return (
+    request.method === "POST" &&
+    ROOT_PAGE_POST_PATHS.has(pathname) &&
+    !request.headers.has(NEXT_ACTION_HEADER)
+  );
 }
 
 function isBrowserRequest(request: NextRequest): boolean {
@@ -143,6 +156,16 @@ function buildEndedSessionResponse(
 
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+
+  if (isUnsupportedRootPagePost(request, pathname)) {
+    return NextResponse.json(
+      {
+        code: "method_not_allowed",
+        message: "POST is not supported for this route.",
+      },
+      { status: 405, headers: { Allow: "GET, HEAD" } },
+    );
+  }
 
   if (shouldBypassAuthkit(pathname)) {
     return NextResponse.next();
