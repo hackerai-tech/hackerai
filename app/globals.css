@@ -99,22 +99,6 @@
   --scrollbar-track: var(--background);
   --scrollbar-thumb: rgba(0, 0, 0, 0.2);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
-
-  /* Sidebar text mask for truncation */
-  --sidebar-mask: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 95%,
-    transparent 100%,
-    transparent 100%
-  );
-  --sidebar-mask-active: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 88%,
-    transparent 93%,
-    transparent 100%
-  );
 }
 
 .dark {
@@ -165,22 +149,6 @@
   --scrollbar-track: var(--background);
   --scrollbar-thumb: rgba(255, 255, 255, 0.2);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
-
-  /* Sidebar text mask for truncation */
-  --sidebar-mask: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 95%,
-    transparent 100%,
-    transparent 100%
-  );
-  --sidebar-mask-active: linear-gradient(
-    90deg,
-    #000 0%,
-    #000 88%,
-    transparent 93%,
-    transparent 100%
-  );
 }
 
 @layer base {
