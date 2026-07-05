@@ -376,8 +376,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
       <div
         className={`absolute right-2 opacity-0 transition-opacity ${
-          showActions ? "opacity-100" : ""
+          showActions ? "opacity-100" : "pointer-events-none"
         }`}
+        aria-hidden={!showActions}
       >
         <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
           <DropdownMenuTrigger asChild>
@@ -385,6 +386,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               variant="ghost"
               size="sm"
               className="h-6 w-6 p-0 hover:bg-sidebar-accent"
+              tabIndex={showActions ? 0 : -1}
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
