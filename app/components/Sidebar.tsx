@@ -56,7 +56,7 @@ const DesktopSidebarContent: FC<{
     <Sidebar
       side="left"
       collapsible="icon"
-      className={`${isMobile ? "w-full" : "w-72"}`}
+      className={`${isMobile ? "w-full" : "w-[300px]"}`}
     >
       <SidebarHeader>
         <SidebarHeaderContent
