@@ -75,7 +75,10 @@ export function AgentPermissionSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[360px] p-3" align="start">
+      <PopoverContent
+        className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
+        align="start"
+      >
         <div className="mb-2 text-sm text-muted-foreground">
           How should Agent commands be approved?
         </div>
@@ -92,13 +95,13 @@ export function AgentPermissionSelector({
                   setAgentPermissionMode(option.id);
                   setOpen(false);
                 }}
-                className={`w-full flex items-start gap-3 rounded-md p-2 text-left transition-colors ${
+                className={`w-full flex items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors ${
                   selected
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-muted"
                 }`}
               >
-                <OptionIcon className="mt-0.5 h-5 w-5 shrink-0" />
+                <OptionIcon className="mt-0.5 h-4 w-4 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-sm font-medium">
                     {option.label}
@@ -113,7 +116,7 @@ export function AgentPermissionSelector({
                     {option.description}
                   </div>
                 </div>
-                {selected && <Check className="h-4 w-4 shrink-0 mt-0.5" />}
+                {selected && <Check className="h-4 w-4 shrink-0 mt-1" />}
               </button>
             );
           })}
