@@ -45,11 +45,16 @@ import {
   shouldUseAgentLongForAgent,
 } from "@/lib/chat/agent-routing";
 import {
+  AGENT_PARTIAL_SAVE_ENDPOINT,
   AGENT_RESUME_ENDPOINT,
   LEGACY_AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
+import {
+  stripAgentLongHeartbeatParts,
+  stripAgentLongHeartbeatPartsFromMessages,
+} from "@/lib/chat/agent-long-heartbeat";
+import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import {
@@ -126,6 +131,52 @@ export function getExistingChatLoadState({
 
   return { isInitialExistingChatLoad, isChatNotFound };
 }
+
+type AgentLongPartialSaveMessage = {
+  id: string;
+  role: "assistant";
+  parts: ChatMessage["parts"];
+  generationStartedAt?: number;
+  generationTimeMs?: number;
+};
+
+const getLatestAgentLongAssistantMessageForPartialSave = (
+  messages: ChatMessage[],
+): AgentLongPartialSaveMessage | undefined => {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+
+    const stripped = stripAgentLongHeartbeatParts(message);
+    if (!stripped.parts || stripped.parts.length === 0) continue;
+    if (!hasVisibleAssistantContent([stripped])) continue;
+
+    const metadata = (
+      stripped as ChatMessage & {
+        metadata?: {
+          generationStartedAt?: unknown;
+          generationTimeMs?: unknown;
+        };
+      }
+    ).metadata;
+
+    return {
+      id: stripped.id,
+      role: "assistant",
+      parts: stripped.parts,
+      generationStartedAt:
+        typeof metadata?.generationStartedAt === "number"
+          ? metadata.generationStartedAt
+          : undefined,
+      generationTimeMs:
+        typeof metadata?.generationTimeMs === "number"
+          ? metadata.generationTimeMs
+          : undefined,
+    };
+  }
+
+  return undefined;
+};
 
 const getAgentLongPartFingerprint = (part: unknown): string => {
   if (typeof part !== "object" || part === null) return String(part);
@@ -509,6 +560,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   const shownFreeAgentValueNudgeChatsRef = useRef<Set<string>>(new Set());
+  const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
   activeChatIdRef.current = chatId;
 
   useEffect(() => {
@@ -862,6 +914,40 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setIsAutoResuming(false);
   }, [setDataStream, setIsAutoResuming]);
 
+  const saveAgentLongPartialSnapshot = useCallback(
+    (clientReason: string) => {
+      const partialMessage = getLatestAgentLongAssistantMessageForPartialSave(
+        messagesRef.current,
+      );
+      if (!partialMessage) return;
+
+      const saveKey = `${chatId}:${partialMessage.id}`;
+      if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
+      agentLongPartialSaveKeysRef.current.add(saveKey);
+
+      void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId,
+          message: partialMessage,
+          generationStartedAt: partialMessage.generationStartedAt,
+          generationTimeMs: partialMessage.generationTimeMs,
+          clientReason,
+        }),
+      })
+        .then((response) => {
+          if (!response.ok) {
+            agentLongPartialSaveKeysRef.current.delete(saveKey);
+          }
+        })
+        .catch(() => {
+          agentLongPartialSaveKeysRef.current.delete(saveKey);
+        });
+    },
+    [chatId],
+  );
+
   useEffect(() => {
     if (
       shouldUseAgentLongForCurrentChat &&
@@ -978,6 +1064,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
+      saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the resume endpoint and can deliver a
       // synthetic finish after a terminal 204. Give it a brief chance to close
@@ -1039,6 +1126,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
+    saveAgentLongPartialSnapshot,
     shouldUseAgentLongForCurrentChat,
     status,
     stop,
