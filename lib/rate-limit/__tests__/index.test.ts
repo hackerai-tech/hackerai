@@ -11,6 +11,8 @@ describe("checkRateLimit", () => {
   const mockEvalFn = jest.fn();
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
+  const mockPointsPerDollar = 10_000;
+  const mockUsageMultiplier = 1.3;
 
   beforeEach(() => {
     jest.resetModules();
@@ -36,8 +38,8 @@ describe("checkRateLimit", () => {
       }));
 
       jest.doMock("../token-bucket", () => ({
-        POINTS_PER_DOLLAR: 10_000,
-        NORMAL_USAGE_MULTIPLIER: 1.3,
+        POINTS_PER_DOLLAR: mockPointsPerDollar,
+        NORMAL_USAGE_MULTIPLIER: mockUsageMultiplier,
         checkTokenBucketLimit: mockCheckTokenBucketLimit,
         deductUsage: jest.fn(),
         refundUsage: jest.fn(),
@@ -48,7 +50,15 @@ describe("checkRateLimit", () => {
           Number.isFinite(costDollars) && costDollars > 0
             ? Math.max(
                 1,
-                Math.ceil(Number((costDollars * 10_000 * 1.3).toFixed(6))),
+                Math.ceil(
+                  Number(
+                    (
+                      costDollars *
+                      mockPointsPerDollar *
+                      mockUsageMultiplier
+                    ).toFixed(6),
+                  ),
+                ),
               )
             : 0,
       }));
