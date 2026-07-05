@@ -1,0 +1,202 @@
+import { Download, FileText, Loader2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { isTextViewableFile } from "@/lib/utils/file-utils";
+import { LocalDesktopFile } from "@/types/file";
+
+const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
+  typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
+
+/** Guard against freezing the UI on very large text files */
+const MAX_PREVIEW_CHARS = 500_000;
+
+interface FileContentViewerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  file: File | LocalDesktopFile;
+  fileName: string;
+}
+
+export const FileContentViewer = ({
+  isOpen,
+  onClose,
+  file,
+  fileName,
+}: FileContentViewerProps) => {
+  const [content, setContent] = useState<string>("");
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let cancelled = false;
+
+    const loadContent = async () => {
+      setIsLoading(true);
+      setError(null);
+      setTruncated(false);
+
+      if (!isBrowserFile(file) || !isTextViewableFile(file)) {
+        if (!cancelled) {
+          setError("Preview isn't available for this file type.");
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        if (cancelled) return;
+
+        if (text.length > MAX_PREVIEW_CHARS) {
+          setContent(text.slice(0, MAX_PREVIEW_CHARS));
+          setTruncated(true);
+        } else {
+          setContent(text);
+        }
+      } catch {
+        if (!cancelled) setError("Failed to read file content.");
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    loadContent();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, file]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
+  const handleDownload = useCallback(async () => {
+    if (!isBrowserFile(file)) return;
+
+    const blobUrl = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(blobUrl);
+  }, [file, fileName]);
+
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  if (!isOpen) return null;
+
+  const canDownload = isBrowserFile(file);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      onClick={handleBackdropClick}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Preview of ${fileName}`}
+        className="pointer-events-auto flex h-[calc(100vh-32px)] w-[calc(100vw-32px)] max-w-[1200px] flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] md:h-[calc(100vh-80px)] md:w-[calc(100vw-80px)]"
+      >
+        <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border px-4 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
+            <div className="flex size-9 shrink-0 items-center justify-center">
+              <FileText className="size-5" aria-hidden="true" />
+            </div>
+            <span
+              className="truncate text-sm font-medium leading-5 text-foreground"
+              title={fileName}
+            >
+              {fileName}
+            </span>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1">
+            {canDownload && (
+              <button
+                type="button"
+                onClick={handleDownload}
+                aria-label="Download file"
+                className="flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-accent"
+              >
+                <Download
+                  className="size-[18px] text-muted-foreground"
+                  aria-hidden="true"
+                />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close file preview"
+              className="flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-accent"
+            >
+              <X
+                className="size-[18px] text-muted-foreground"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </header>
+
+        <div className="relative flex min-h-0 w-full flex-1">
+          {isLoading ? (
+            <div className="flex h-full w-full items-center justify-center">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : error ? (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <FileText
+                className="size-10 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <p className="text-sm text-muted-foreground">{error}</p>
+              {canDownload && (
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-accent"
+                >
+                  <Download className="size-4" aria-hidden="true" />
+                  Download
+                </button>
+              )}
+            </div>
+          ) : (
+            <div
+              className="w-full overflow-auto px-4 py-[15px] font-mono text-xs leading-[18px] text-foreground"
+              style={{
+                overflowWrap: "break-word",
+                wordBreak: "normal",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              <pre className="max-w-full whitespace-pre-wrap">{content}</pre>
+              {truncated && (
+                <p className="mt-4 text-xs italic text-muted-foreground">
+                  Preview truncated — download the file to view its full
+                  contents.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

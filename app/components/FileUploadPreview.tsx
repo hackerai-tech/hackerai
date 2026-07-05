@@ -8,6 +8,7 @@ import {
   isImageFile,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
+import { FileContentViewer } from "./FileContentViewer";
 import {
   UploadedFileState,
   FileUploadPreviewProps,
@@ -26,6 +27,10 @@ export const FileUploadPreview = ({
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
+  } | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{
+    file: File | LocalDesktopFile;
+    name: string;
   } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
@@ -97,6 +102,10 @@ export const FileUploadPreview = ({
 
   const handleImageClick = (preview: string, fileName: string) => {
     setSelectedImage({ src: preview, alt: fileName });
+  };
+
+  const handleFileClick = (file: File | LocalDesktopFile, fileName: string) => {
+    setSelectedFile({ file, name: fileName });
   };
 
   return (
@@ -186,7 +195,17 @@ export const FileUploadPreview = ({
                         )}
                       </button>
                     ) : (
-                      <div className="p-2 w-80">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleFileClick(
+                            filePreview.file,
+                            filePreview.file.name,
+                          )
+                        }
+                        className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                        aria-label={`View ${filePreview.file.name}`}
+                      >
                         <div className="flex flex-row items-center gap-2">
                           <div
                             className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center ${
@@ -218,7 +237,7 @@ export const FileUploadPreview = ({
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -249,6 +268,16 @@ export const FileUploadPreview = ({
           onClose={() => setSelectedImage(null)}
           imageSrc={selectedImage.src}
           imageAlt={selectedImage.alt}
+        />
+      )}
+
+      {/* File Content Viewer Modal */}
+      {selectedFile && (
+        <FileContentViewer
+          isOpen={!!selectedFile}
+          onClose={() => setSelectedFile(null)}
+          file={selectedFile.file}
+          fileName={selectedFile.name}
         />
       )}
     </>
