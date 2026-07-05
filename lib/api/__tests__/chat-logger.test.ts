@@ -15,6 +15,9 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+const {
+  FREE_AGENT_VALUE_NUDGE_PART_TYPE,
+} = require("../../chat/free-agent-value-nudge");
 
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
@@ -180,9 +183,11 @@ describe("captureAgentBudgetAbort", () => {
 describe("captureFreeAgentValueReached", () => {
   it("captures a free successful agent value event with user properties", () => {
     const capture = jest.fn();
+    const writer = { write: jest.fn() };
 
     captureFreeAgentValueReached({
       posthog: { capture } as any,
+      writer: writer as any,
       userId: "user_123",
       chatId: "chat_123",
       endpoint: "/api/agent-long",
@@ -217,6 +222,11 @@ describe("captureFreeAgentValueReached", () => {
           last_free_agent_value_reached_at: expect.any(String),
         }),
       }),
+    });
+    expect(writer.write).toHaveBeenCalledWith({
+      type: FREE_AGENT_VALUE_NUDGE_PART_TYPE,
+      data: { reached: true },
+      transient: true,
     });
   });
 
@@ -258,9 +268,11 @@ describe("captureFreeAgentValueReached", () => {
 describe("captureAgentCompletionAnalytics", () => {
   it("captures both agent completion and free value events for successful free agent runs", () => {
     const capture = jest.fn();
+    const writer = { write: jest.fn() };
 
     captureAgentCompletionAnalytics({
       posthog: { capture } as any,
+      writer: writer as any,
       userId: "user_123",
       chatId: "chat_123",
       endpoint: "/api/agent-long",
@@ -295,6 +307,11 @@ describe("captureAgentCompletionAnalytics", () => {
         outcome: "success",
         tool_call_count: 1,
       }),
+    });
+    expect(writer.write).toHaveBeenCalledWith({
+      type: FREE_AGENT_VALUE_NUDGE_PART_TYPE,
+      data: { reached: true },
+      transient: true,
     });
   });
 

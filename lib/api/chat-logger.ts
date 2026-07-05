@@ -30,6 +30,8 @@ import {
 } from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
+import type { UIMessageStreamWriter } from "ai";
+import { writeFreeAgentValueNudge } from "@/lib/utils/stream-writer-utils";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
@@ -1164,6 +1166,7 @@ export type AgentRunOutcome = "success" | "aborted" | "error";
 
 type AgentCompletionAnalyticsArgs = {
   posthog: PostHog | null;
+  writer?: UIMessageStreamWriter;
   userId: string;
   chatId: string;
   endpoint: ChatApiEndpoint;
@@ -1220,6 +1223,7 @@ export function captureAgentRun({
 
 export function captureFreeAgentValueReached({
   posthog,
+  writer,
   userId,
   chatId,
   endpoint,
@@ -1230,6 +1234,7 @@ export function captureFreeAgentValueReached({
   chatLogger,
 }: {
   posthog: PostHog | null;
+  writer?: UIMessageStreamWriter;
   userId: string;
   chatId: string;
   endpoint: ChatApiEndpoint;
@@ -1239,8 +1244,14 @@ export function captureFreeAgentValueReached({
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
 }) {
-  if (!posthog || mode !== "agent" || subscription !== "free") return;
+  if (mode !== "agent" || subscription !== "free") return;
   if (outcome !== "success") return;
+
+  if (writer) {
+    writeFreeAgentValueNudge(writer);
+  }
+
+  if (!posthog) return;
 
   const now = new Date().toISOString();
   const toolCallCount = chatLogger?.getToolCalls().length ?? 0;
