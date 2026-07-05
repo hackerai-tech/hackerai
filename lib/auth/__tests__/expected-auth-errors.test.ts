@@ -27,6 +27,21 @@ describe("expected auth errors", () => {
     expect(isEndedSessionRefreshError(error)).toBe(true);
   });
 
+  it("matches inactivity-ended session refresh errors", () => {
+    const error = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session ended due to inactivity.",
+        },
+      },
+    );
+
+    expect(isEndedSessionRefreshError(error)).toBe(true);
+  });
+
   it("does not match unrelated invalid_grant refresh errors as ended sessions", () => {
     const error = Object.assign(new Error("Error: invalid_grant"), {
       error: "invalid_grant",
