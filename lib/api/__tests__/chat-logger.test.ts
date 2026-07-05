@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals";
+import { FREE_AGENT_VALUE_NUDGE_PART_TYPE } from "../../chat/free-agent-value-nudge";
 
 (globalThis as any).Request = class Request {};
 (globalThis as any).Response = class Response {};
@@ -15,10 +16,6 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
-const {
-  FREE_AGENT_VALUE_NUDGE_PART_TYPE,
-} = require("../../chat/free-agent-value-nudge");
-
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
     const capture = jest.fn();
