@@ -195,6 +195,7 @@ describe("token-bucket", () => {
     it("applies the normal usage multiplier to raw provider and tool cost", () => {
       expect(billableCostDollarsToPoints(1)).toBe(13_000);
       expect(billableCostDollarsToPoints(0.005)).toBe(65);
+      expect(billableCostDollarsToPoints(0.000000000001)).toBe(1);
     });
 
     it("returns 0 for non-positive or invalid cost", () => {

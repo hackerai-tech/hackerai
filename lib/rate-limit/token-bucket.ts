@@ -64,10 +64,13 @@ export const NORMAL_USAGE_MULTIPLIER = 1.3;
 /** Convert raw provider/tool spend into billable user-balance points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>
   Number.isFinite(costDollars) && costDollars > 0
-    ? Math.ceil(
-        Number(
-          (costDollars * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER).toFixed(
-            6,
+    ? Math.max(
+        1,
+        Math.ceil(
+          Number(
+            (costDollars * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER).toFixed(
+              6,
+            ),
           ),
         ),
       )

@@ -7,8 +7,8 @@ import {
 } from "./token-bucket";
 
 export const MID_RUN_SETTLEMENT_MIN_DELTA_DOLLARS = 0.5;
-export const MID_RUN_SETTLEMENT_MIN_DELTA_POINTS = Math.ceil(
-  MID_RUN_SETTLEMENT_MIN_DELTA_DOLLARS * POINTS_PER_DOLLAR,
+export const MID_RUN_SETTLEMENT_MIN_DELTA_POINTS = billableCostDollarsToPoints(
+  MID_RUN_SETTLEMENT_MIN_DELTA_DOLLARS,
 );
 
 export type UsageSettlementState = {
