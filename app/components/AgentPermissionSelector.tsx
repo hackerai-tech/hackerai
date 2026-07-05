@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { Check, ChevronDown, Hand, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -20,24 +20,23 @@ type PermissionOption = {
   label: string;
   description: string;
   shortLabel: string;
-  icon: typeof ShieldCheck;
+  icon: typeof ShieldAlert;
 };
 
 const options: PermissionOption[] = [
   {
-    id: "full_access",
-    label: "Full access",
-    description: "Run commands and edit files without approval prompts.",
-    shortLabel: "Full access",
-    icon: ShieldCheck,
-  },
-  {
     id: "ask_approval",
     label: "Ask for approval",
-    description:
-      "Pause before commands and file edits so you can approve or deny.",
+    description: "Always ask before running commands and editing files",
     shortLabel: "Ask for approval",
-    icon: ShieldQuestion,
+    icon: Hand,
+  },
+  {
+    id: "full_access",
+    label: "Full access",
+    description: "Run commands and edit files without asking",
+    shortLabel: "Full access",
+    icon: ShieldAlert,
   },
 ];
 
@@ -74,8 +73,11 @@ export function AgentPermissionSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[280px] p-1" align="start">
-        <div className="space-y-0.5">
+      <PopoverContent className="w-[360px] p-3" align="start">
+        <div className="mb-2 text-sm text-muted-foreground">
+          How should Agent commands be approved?
+        </div>
+        <div className="space-y-1">
           {options.map((option) => {
             const OptionIcon = option.icon;
             const selected = option.id === agentPermissionMode;
@@ -88,19 +90,19 @@ export function AgentPermissionSelector({
                   setAgentPermissionMode(option.id);
                   setOpen(false);
                 }}
-                className={`w-full flex items-start gap-2.5 p-2 rounded-md text-left transition-colors ${
+                className={`w-full flex items-start gap-3 rounded-md p-2 text-left transition-colors ${
                   selected
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-muted"
                 }`}
               >
-                <OptionIcon className="h-4 w-4 shrink-0 mt-0.5" />
+                <OptionIcon className="mt-0.5 h-5 w-5 shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">
+                  <div className="truncate text-sm font-medium">
                     {option.label}
                   </div>
                   <div
-                    className={`text-xs leading-snug mt-0.5 ${
+                    className={`mt-0.5 text-sm leading-snug ${
                       selected
                         ? "text-accent-foreground/70"
                         : "text-muted-foreground"
