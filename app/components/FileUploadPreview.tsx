@@ -31,6 +31,7 @@ export const FileUploadPreview = ({
   const [selectedFile, setSelectedFile] = useState<{
     file: File | LocalDesktopFile;
     name: string;
+    fileId?: string;
   } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
@@ -119,8 +120,12 @@ export const FileUploadPreview = ({
     setSelectedImage({ src: preview, alt: fileName });
   };
 
-  const handleFileClick = (file: File | LocalDesktopFile, fileName: string) => {
-    setSelectedFile({ file, name: fileName });
+  const handleFileClick = (
+    file: File | LocalDesktopFile,
+    fileName: string,
+    fileId?: string,
+  ) => {
+    setSelectedFile({ file, name: fileName, fileId });
   };
 
   return (
@@ -216,6 +221,7 @@ export const FileUploadPreview = ({
                           handleFileClick(
                             filePreview.file,
                             filePreview.file.name,
+                            uploadedFiles[index]?.fileId,
                           )
                         }
                         className="w-80 p-2 text-left transition-colors hover:bg-accent"
@@ -293,6 +299,7 @@ export const FileUploadPreview = ({
           onClose={() => setSelectedFile(null)}
           file={selectedFile.file}
           fileName={selectedFile.name}
+          fileId={selectedFile.fileId}
         />
       )}
     </>

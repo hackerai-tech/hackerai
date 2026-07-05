@@ -1,7 +1,11 @@
 import { Download, FileText, Loader2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { isTextViewableFile } from "@/lib/utils/file-utils";
 import { LocalDesktopFile } from "@/types/file";
+import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 
 const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -14,6 +18,11 @@ interface FileContentViewerProps {
   onClose: () => void;
   file: File | LocalDesktopFile;
   fileName: string;
+  /**
+   * S3 file id for attachments restored from a draft after reload, where the
+   * in-memory File (and its content) is no longer available.
+   */
+  fileId?: string;
 }
 
 export const FileContentViewer = ({
@@ -21,11 +30,26 @@ export const FileContentViewer = ({
   onClose,
   file,
   fileName,
+  fileId,
 }: FileContentViewerProps) => {
+  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const fileUrlCache = useFileUrlCacheContext();
   const [content, setContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState<boolean>(false);
+
+  const resolveFileUrl = useCallback(
+    async (id: string): Promise<string | null> => {
+      const cachedUrl = fileUrlCache?.getCachedUrl(id);
+      if (cachedUrl) return cachedUrl;
+
+      const url = await getFileUrlAction({ fileId: id as Id<"files"> });
+      if (url) fileUrlCache?.setCachedUrl(id, url);
+      return url;
+    },
+    [fileUrlCache, getFileUrlAction],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -37,7 +61,10 @@ export const FileContentViewer = ({
       setError(null);
       setTruncated(false);
 
-      if (!isBrowserFile(file) || !isTextViewableFile(file)) {
+      // Text-viewability is based on name/media type, so it works for both real
+      // browser Files and the metadata-only descriptor restored from a draft.
+      // Without an in-memory File or an S3 file id there is nothing to read.
+      if (!isTextViewableFile(file) || (!isBrowserFile(file) && !fileId)) {
         if (!cancelled) {
           setError("Preview isn't available for this file type.");
           setIsLoading(false);
@@ -46,7 +73,23 @@ export const FileContentViewer = ({
       }
 
       try {
-        const text = await file.text();
+        let text: string;
+
+        if (isBrowserFile(file)) {
+          text = await file.text();
+        } else {
+          // Restored-from-draft attachment: fetch content from storage using a
+          // short-lived signed URL keyed by the file id.
+          const url = await resolveFileUrl(fileId!);
+          if (!url) throw new Error("Could not resolve file URL");
+
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch file (${response.status})`);
+          }
+          text = await response.text();
+        }
+
         if (cancelled) return;
 
         if (text.length > MAX_PREVIEW_CHARS) {
@@ -67,7 +110,7 @@ export const FileContentViewer = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, file]);
+  }, [isOpen, file, fileId, resolveFileUrl]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -81,17 +124,23 @@ export const FileContentViewer = ({
   }, [isOpen, onClose]);
 
   const handleDownload = useCallback(async () => {
-    if (!isBrowserFile(file)) return;
+    if (isBrowserFile(file)) {
+      const blobUrl = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
 
-    const blobUrl = URL.createObjectURL(file);
-    const link = document.createElement("a");
-    link.href = blobUrl;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(blobUrl);
-  }, [file, fileName]);
+    if (fileId) {
+      const url = await resolveFileUrl(fileId);
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, [file, fileName, fileId, resolveFileUrl]);
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) onClose();
@@ -99,7 +148,7 @@ export const FileContentViewer = ({
 
   if (!isOpen) return null;
 
-  const canDownload = isBrowserFile(file);
+  const canDownload = isBrowserFile(file) || !!fileId;
 
   return (
     <div
