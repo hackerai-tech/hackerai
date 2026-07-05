@@ -16,7 +16,7 @@ export async function getBillingActionContext(): Promise<BillingActionContext> {
     authResult = await withAuth();
   } catch (error) {
     if (isEndedSessionRefreshError(error)) {
-      throw new Error("User not authenticated");
+      throw new Error("User not authenticated", { cause: error });
     }
     throw error;
   }

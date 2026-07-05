@@ -47,4 +47,14 @@ describe("getBillingActionContext", () => {
     );
     expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
   });
+
+  it("rethrows non-ended-session auth failures unchanged", async () => {
+    const genericError = new Error("network failure");
+    mockWithAuth.mockRejectedValue(genericError as never);
+
+    const { getBillingActionContext } = await import("../billing-context");
+
+    await expect(getBillingActionContext()).rejects.toBe(genericError);
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+  });
 });

@@ -124,4 +124,25 @@ describe("handleAgentRouteError", () => {
       error_message: "cancel failed",
     });
   });
+
+  test("preserves plain object error details in structured logs", async () => {
+    const error = { code: "trigger_unavailable", detail: "API outage" };
+    const response = handleAgentRouteError({
+      error,
+      endpoint: "agent",
+      action: "resume",
+      fallbackMessage: "Failed to resume run",
+    });
+
+    expect(response.status).toBe(500);
+    const payload = JSON.parse(
+      String((console.error as jest.Mock).mock.calls[0][0]),
+    );
+    expect(payload).toMatchObject({
+      event: "agent_route_failed",
+      error_name: "object",
+      error_message: JSON.stringify(error),
+      error_code: "trigger_unavailable",
+    });
+  });
 });

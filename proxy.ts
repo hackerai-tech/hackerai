@@ -197,6 +197,17 @@ export default async function proxy(request: NextRequest) {
       onSessionRefreshError: ({ error }) => {
         if (isEndedSessionRefreshError(error)) {
           refreshEndedSession = true;
+          console.info(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "info",
+              event: "auth.session_refresh_ended",
+              service: "hackerai-web",
+              environment:
+                process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+              pathname,
+            }),
+          );
           return;
         }
 

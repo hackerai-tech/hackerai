@@ -43,7 +43,13 @@ const serializeRouteError = (error: unknown) => {
       ? error.message
       : typeof error === "string"
         ? error
-        : String(error);
+        : (() => {
+            try {
+              return JSON.stringify(error);
+            } catch {
+              return String(error);
+            }
+          })();
 
   return {
     error_name: error instanceof Error ? error.name : typeof error,
