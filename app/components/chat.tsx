@@ -143,39 +143,35 @@ type AgentLongPartialSaveMessage = {
 const getLatestAgentLongAssistantMessageForPartialSave = (
   messages: ChatMessage[],
 ): AgentLongPartialSaveMessage | undefined => {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message?.role !== "assistant") continue;
+  const message = messages.at(-1);
+  if (message?.role !== "assistant") return undefined;
 
-    const stripped = stripAgentLongHeartbeatParts(message);
-    if (!stripped.parts || stripped.parts.length === 0) continue;
-    if (!hasVisibleAssistantContent([stripped])) continue;
+  const stripped = stripAgentLongHeartbeatParts(message);
+  if (!stripped.parts || stripped.parts.length === 0) return undefined;
+  if (!hasVisibleAssistantContent([stripped])) return undefined;
 
-    const metadata = (
-      stripped as ChatMessage & {
-        metadata?: {
-          generationStartedAt?: unknown;
-          generationTimeMs?: unknown;
-        };
-      }
-    ).metadata;
+  const metadata = (
+    stripped as ChatMessage & {
+      metadata?: {
+        generationStartedAt?: unknown;
+        generationTimeMs?: unknown;
+      };
+    }
+  ).metadata;
 
-    return {
-      id: stripped.id,
-      role: "assistant",
-      parts: stripped.parts,
-      generationStartedAt:
-        typeof metadata?.generationStartedAt === "number"
-          ? metadata.generationStartedAt
-          : undefined,
-      generationTimeMs:
-        typeof metadata?.generationTimeMs === "number"
-          ? metadata.generationTimeMs
-          : undefined,
-    };
-  }
-
-  return undefined;
+  return {
+    id: stripped.id,
+    role: "assistant",
+    parts: stripped.parts,
+    generationStartedAt:
+      typeof metadata?.generationStartedAt === "number"
+        ? metadata.generationStartedAt
+        : undefined,
+    generationTimeMs:
+      typeof metadata?.generationTimeMs === "number"
+        ? metadata.generationTimeMs
+        : undefined,
+  };
 };
 
 const getAgentLongPartFingerprint = (part: unknown): string => {
