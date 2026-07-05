@@ -100,6 +100,55 @@ describe("saveChat", () => {
     }
   });
 
+  it("classifies exhausted generic Convex server errors as transient database failures", async () => {
+    const { saveChat, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error");
+    mockMutation.mockRejectedValue(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await saveChat({
+        id: "chat-1",
+        userId: "user-1",
+        title: "hello",
+      }).catch((error) => error);
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.saveChat",
+          db_error_name: "Error",
+          db_error_message: "[Request ID: abc] Server Error",
+          db_request_id: "abc",
+          db_retry_reason: "convex_server_error",
+          chat_id: "chat-1",
+          user_id: "user-1",
+          title_length: 5,
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_operation: "chats.saveChat",
+          db_retry_reason: "convex_server_error",
+          chat_id: "chat-1",
+          user_id: "user-1",
+          userId: "user-1",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("emits queryable PostHog metadata when chat creation still fails", async () => {
     const { saveChat, mockMutation, mockPhEvent } =
       await loadSaveMessageWithMocks();

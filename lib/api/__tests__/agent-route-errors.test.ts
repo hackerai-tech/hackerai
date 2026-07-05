@@ -68,14 +68,36 @@ describe("handleAgentRouteError", () => {
       endpoint: "agent",
       action: "start",
       fallbackMessage: "Failed to start agent",
+      context: {
+        requestId: "iad1::abc",
+        userId: "user_123",
+        chatId: "chat_123",
+        runId: "run_123",
+        stage: "trigger_task",
+      },
     });
 
     expect(response.status).toBe(500);
     expect(await response.text()).toBe("Failed to start agent");
-    expect(console.error).toHaveBeenCalledWith(
-      "[agent] failed to trigger task:",
-      error,
+    const payload = JSON.parse(
+      String((console.error as jest.Mock).mock.calls[0][0]),
     );
+    expect(payload).toMatchObject({
+      level: "error",
+      event: "agent_route_failed",
+      service: "hackerai-web",
+      endpoint: "agent",
+      action: "start",
+      log_message: "[agent] failed to trigger task",
+      request_id: "iad1::abc",
+      user_id: "user_123",
+      chat_id: "chat_123",
+      trigger_run_id: "run_123",
+      stage: "trigger_task",
+      error_name: "Error",
+      error_message: "queue unavailable",
+    });
+    expect(payload.timestamp).toEqual(expect.any(String));
   });
 
   test("logs non-start actions with the action-specific label", async () => {
@@ -89,9 +111,17 @@ describe("handleAgentRouteError", () => {
 
     expect(response.status).toBe(500);
     expect(await response.text()).toBe("Failed to cancel agent task");
-    expect(console.error).toHaveBeenCalledWith(
-      "[agent-long] cancel failed:",
-      error,
+    const payload = JSON.parse(
+      String((console.error as jest.Mock).mock.calls[0][0]),
     );
+    expect(payload).toMatchObject({
+      level: "error",
+      event: "agent_route_failed",
+      endpoint: "agent-long",
+      action: "cancel",
+      log_message: "[agent-long] cancel failed",
+      error_name: "Error",
+      error_message: "cancel failed",
+    });
   });
 });

@@ -135,6 +135,45 @@ describe("proxy", () => {
     expect(mockNextResponseJson).not.toHaveBeenCalled();
   });
 
+  it("treats callback-only ended-session refresh errors as logged-out requests", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+          rawData: {
+            error: "invalid_grant",
+            error_description: "Session has already ended.",
+          },
+        },
+      },
+    );
+    mockAuthkit.mockImplementation((_request, options: any) => {
+      options.onSessionRefreshError({ error: endedSessionError });
+      return Promise.resolve({
+        session: { user: { id: "stale-user" } },
+        headers: new Headers(),
+        authorizationUrl: undefined,
+      });
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/share/d87274de-f182-4a3c-a821-c0949295af2d",
+        method: "POST",
+        hasSession: true,
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "next" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
+    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
   it("still requires auth for protected API routes", async () => {
     mockAuthkit.mockResolvedValue({
       session: { user: null },

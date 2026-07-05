@@ -2,6 +2,7 @@
 
 import { workos } from "@/app/api/workos";
 import { withAuth } from "@workos-inc/authkit-nextjs";
+import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 
 export type BillingActionContext = {
   organizationId: string;
@@ -10,7 +11,17 @@ export type BillingActionContext = {
 };
 
 export async function getBillingActionContext(): Promise<BillingActionContext> {
-  const { organizationId, user } = await withAuth();
+  let authResult: Awaited<ReturnType<typeof withAuth>>;
+  try {
+    authResult = await withAuth();
+  } catch (error) {
+    if (isEndedSessionRefreshError(error)) {
+      throw new Error("User not authenticated");
+    }
+    throw error;
+  }
+
+  const { organizationId, user } = authResult;
 
   if (!user?.id) {
     throw new Error("User not authenticated");

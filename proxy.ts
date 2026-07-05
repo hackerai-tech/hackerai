@@ -186,6 +186,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   let refreshHitRateLimit = false;
+  let refreshEndedSession = false;
   const hadSessionCookie = request.cookies.has("wos-session");
 
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
@@ -195,6 +196,7 @@ export default async function proxy(request: NextRequest) {
       eagerAuth: true,
       onSessionRefreshError: ({ error }) => {
         if (isEndedSessionRefreshError(error)) {
+          refreshEndedSession = true;
           return;
         }
 
@@ -236,6 +238,10 @@ export default async function proxy(request: NextRequest) {
   }
 
   const { session, headers, authorizationUrl } = authkitResult;
+
+  if (refreshEndedSession) {
+    return buildEndedSessionResponse(request, pathname);
+  }
 
   const requestHeaders = buildRequestHeaders(request, headers);
   const responseHeaders = buildResponseHeaders(headers);

@@ -287,6 +287,16 @@ const getRetryableSaveChatErrorReason = (
   return undefined;
 };
 
+const getRetryableReasonForDatabaseOperation = (
+  operation: string,
+  error: unknown,
+): string | undefined => {
+  if (operation === "chats.saveChat") {
+    return getRetryableSaveChatErrorReason(error);
+  }
+  return getRetryableDatabaseErrorReason(error);
+};
+
 const waitForRetryDelay = (delayMs: number) =>
   new Promise((resolve) => setTimeout(resolve, delayMs));
 
@@ -354,7 +364,7 @@ const databaseError = (
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
   const isMessageTooLarge = isMessageTooLargeError(operation, dbErrorData);
-  const retryReason = getRetryableDatabaseErrorReason(error);
+  const retryReason = getRetryableReasonForDatabaseOperation(operation, error);
   const logLevel =
     isChatNotFound || isChatCanceled || isChatUnauthorized || isMessageTooLarge
       ? "warn"
