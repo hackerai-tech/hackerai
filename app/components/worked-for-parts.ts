@@ -18,6 +18,8 @@ const TRAILING_METADATA_PART_TYPES = new Set([
   "step-start",
 ]);
 
+const EXPANDABLE_WORK_PART_TYPES = new Set(["data-terminal"]);
+
 export type WorkedForParts = {
   fileParts: FilePart[];
   nonFileParts: MessagePart[];
@@ -28,6 +30,13 @@ export type WorkedForParts = {
 const isTrailingMetadataPart = (part: MessagePart) => {
   const type = (part as { type?: string }).type;
   return !!type && TRAILING_METADATA_PART_TYPES.has(type);
+};
+
+export const isExpandableWorkedForPart = (part: MessagePart) => {
+  const type = (part as { type?: string }).type;
+  return (
+    !!type && (type.startsWith("tool-") || EXPANDABLE_WORK_PART_TYPES.has(type))
+  );
 };
 
 export function splitWorkedForParts(

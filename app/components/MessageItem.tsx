@@ -6,7 +6,10 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
-import { splitWorkedForParts } from "./worked-for-parts";
+import {
+  isExpandableWorkedForPart,
+  splitWorkedForParts,
+} from "./worked-for-parts";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import {
   WorkedFor,
@@ -202,6 +205,10 @@ export const MessageItem = memo(function MessageItem({
   const { fileParts, nonFileParts, workParts, trailingTextParts } = useMemo(
     () => splitWorkedForParts(message.parts),
     [message.parts],
+  );
+  const hasExpandableWork = useMemo(
+    () => workParts.some(isExpandableWorkedForPart),
+    [workParts],
   );
 
   const shouldCollapseUserMessage =
@@ -455,7 +462,7 @@ export const MessageItem = memo(function MessageItem({
                     {workParts.length > 0 && (
                       <WorkedFor
                         key="work"
-                        hasWork
+                        hasWork={hasExpandableWork}
                         defaultOpen
                         isTiming={shouldShowWorkingTimer}
                       >
@@ -503,7 +510,7 @@ export const MessageItem = memo(function MessageItem({
                     {workParts.length > 0 && (
                       <WorkedFor
                         key="work"
-                        hasWork
+                        hasWork={hasExpandableWork}
                         isTiming={shouldShowWorkingTimer}
                       >
                         <WorkedForTrigger durationMs={generationTimeMs} />

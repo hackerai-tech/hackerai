@@ -189,6 +189,70 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
   });
 
+  it("does not show an expand icon when there are no expandable work parts", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "step-start",
+          },
+          {
+            type: "text",
+            text: "final answer",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+    });
+
+    const trigger = screen.getByRole("button", { name: /worked for 3s/i });
+
+    expect(trigger).toBeDisabled();
+    expect(trigger.querySelector("svg")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(screen.queryByTestId("part-step-start")).not.toBeInTheDocument();
+  });
+
+  it("does not show an expand icon for reasoning-only work", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "step-start",
+          },
+          {
+            type: "reasoning",
+            text: "thinking",
+          },
+          {
+            type: "text",
+            text: "final answer",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+    });
+
+    const trigger = screen.getByRole("button", { name: /worked for 3s/i });
+
+    expect(trigger).toBeDisabled();
+    expect(trigger.querySelector("svg")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+  });
+
   it("keeps saved message mode stable when the current picker mode changes", () => {
     const { rerender } = renderMessageItem({ mode: "ask" });
 
