@@ -3,7 +3,10 @@
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useEffect } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
-import { shouldDropExpectedFrontendException } from "@/lib/posthog/expected-frontend-exceptions";
+import {
+  enrichFrontendExceptionEvent,
+  shouldDropExpectedFrontendException,
+} from "@/lib/posthog/expected-frontend-exceptions";
 import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
@@ -51,7 +54,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
                 return null;
               }
 
-              return event;
+              return enrichFrontendExceptionEvent(event);
             },
           });
         }
