@@ -57,6 +57,7 @@ const CHUNK_LOAD_MESSAGE_FRAGMENTS = [
 
 const REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT = "Minified React error #185";
 const STACK_OVERFLOW_MESSAGES = new Set([
+  "Maximum call stack size exceeded",
   "Maximum call stack size exceeded.",
   "too much recursion",
 ]);

@@ -368,6 +368,7 @@ describe("shouldDropExpectedFrontendException", () => {
 
   it("classifies stack overflows across browser wording", () => {
     for (const value of [
+      "Maximum call stack size exceeded",
       "Maximum call stack size exceeded.",
       "too much recursion",
     ]) {
