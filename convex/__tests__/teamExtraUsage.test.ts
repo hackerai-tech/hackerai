@@ -8,6 +8,10 @@ import {
   afterAll,
   afterEach,
 } from "@jest/globals";
+import {
+  extraUsageDollarsToPoints,
+  extraUsagePointsToDollars,
+} from "../lib/extraUsagePricing";
 
 jest.mock("../_generated/server", () => ({
   action: jest.fn((config: any) => config),
@@ -108,8 +112,6 @@ afterAll(() => {
 const ORG_ID = "org_123";
 const USER_ID = "user_abc";
 const OTHER_USER_ID = "user_xyz";
-
-const POINTS_PER_DOLLAR = 10_000;
 
 type TeamRow = {
   _id: string;
@@ -733,7 +735,7 @@ describe("deductWithAutoReloadForTeam", () => {
     const ctx: any = {
       runQuery: jest.fn(async () => ({
         enabled: true,
-        balanceDollars: 20,
+        balanceDollars: extraUsagePointsToDollars(200_000),
         balancePoints: 200_000,
         autoReloadEnabled: true,
         autoReloadThresholdDollars: 1,
@@ -775,7 +777,7 @@ describe("deductWithAutoReloadForTeam", () => {
     const ctx: any = {
       runQuery: jest.fn(async () => ({
         enabled: true,
-        balanceDollars: 20,
+        balanceDollars: extraUsagePointsToDollars(200_000),
         balancePoints: 200_000,
         autoReloadEnabled: true,
         autoReloadThresholdDollars: 1,
@@ -785,7 +787,7 @@ describe("deductWithAutoReloadForTeam", () => {
       })),
       runMutation: jest.fn(async (_mutation: unknown, mutationArgs: any) => {
         if ("amountDollars" in mutationArgs) {
-          return { newBalance: 30 };
+          return { newBalance: 34.5 };
         }
         if ("success" in mutationArgs && !("amountPoints" in mutationArgs)) {
           return null;
@@ -822,12 +824,12 @@ describe("deductWithAutoReloadForTeam", () => {
     });
 
     expect(mockInvoiceItemsCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 1000 }),
+      expect.objectContaining({ amount: 1150 }),
     );
     expect(result).toMatchObject({
       success: true,
       autoReloadTriggered: true,
-      autoReloadResult: { success: true, chargedAmountDollars: 10 },
+      autoReloadResult: { success: true, chargedAmountDollars: 11.5 },
     });
   });
 });
@@ -928,9 +930,9 @@ describe("addTeamCredits idempotency", () => {
       amountDollars: 25,
     });
     expect(result.alreadyProcessed).toBe(false);
-    expect(result.newBalance).toBe(25);
+    expect(result.newBalance).toBeCloseTo(25, 2);
     expect(team).toHaveLength(1);
-    expect(team[0].balance_points).toBe(25 * POINTS_PER_DOLLAR);
+    expect(team[0].balance_points).toBe(extraUsageDollarsToPoints(25));
   });
 
   it("returns alreadyProcessed when the idempotency key was already seen", async () => {

@@ -1,4 +1,5 @@
 import type { ExtraUsageConfig, RateLimitInfo } from "@/types";
+import { extraUsageDollarsToPoints } from "@/convex/lib/extraUsagePricing";
 import {
   billableCostDollarsToPoints,
   POINTS_PER_DOLLAR,
@@ -60,7 +61,7 @@ export const createUsageSettlementState = (
     ),
     extraUsageBalanceAtStartPoints: Math.max(
       0,
-      costDollarsToPoints(extraUsageConfig?.balanceDollars ?? 0) -
+      extraUsageDollarsToPoints(extraUsageConfig?.balanceDollars ?? 0) -
         initialExtraUsagePointsDeducted,
     ),
     extraUsageMonthlyRemainingAtStartPoints:
@@ -68,8 +69,9 @@ export const createUsageSettlementState = (
         ? undefined
         : Math.max(
             0,
-            costDollarsToPoints(extraUsageConfig.monthlyRemainingDollars) -
-              initialExtraUsagePointsDeducted,
+            extraUsageDollarsToPoints(
+              extraUsageConfig.monthlyRemainingDollars,
+            ) - initialExtraUsagePointsDeducted,
           ),
   };
 };

@@ -8,18 +8,10 @@ import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { recordRevenueEventInternal } from "./unitEconomicsLib";
-
-// =============================================================================
-// Currency Conversion Helpers
-// Mirrors extraUsage.ts: 1 point = $0.0001, matching the rate limiting system.
-// =============================================================================
-
-const POINTS_PER_DOLLAR = 10_000;
-
-const dollarsToPoints = (dollars: number): number =>
-  Math.round(dollars * POINTS_PER_DOLLAR);
-
-const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
+import {
+  extraUsageDollarsToPoints as dollarsToPoints,
+  extraUsagePointsToDollars as pointsToDollars,
+} from "./lib/extraUsagePricing";
 
 // =============================================================================
 // Internal helpers
