@@ -22,7 +22,7 @@ describe("extra-usage", () => {
 
     it("should preserve sub-cent precision", () => {
       // 1 point = $0.0001 base, * 1.15 = $0.000115
-      expect(pointsToDollars(1)).toBeCloseTo(0.000115);
+      expect(pointsToDollars(1)).toBeCloseTo(0.000115, 6);
       // 100 points = $0.01 base, * 1.15 = $0.0115
       expect(pointsToDollars(100)).toBe(0.0115);
     });
