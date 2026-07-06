@@ -29,11 +29,12 @@ import {
 } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 import CancelSubscriptionDialog from "./CancelSubscriptionDialog";
-import redirectToBillingPortalAction from "@/lib/actions/billing-portal";
-import getSubscriptionCancellationStatusAction, {
-  type SubscriptionCancellationStatus,
-} from "@/lib/actions/subscription-status";
-import keepSubscriptionAction from "@/lib/actions/keep-subscription";
+import {
+  getSubscriptionCancellationStatus,
+  keepSubscription,
+  redirectToBillingPortal as openBillingPortal,
+} from "@/lib/billing/client";
+import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 import type { SubscriptionTier } from "@/types";
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
@@ -104,7 +105,7 @@ const AccountTab = () => {
 
     let ignore = false;
 
-    getSubscriptionCancellationStatusAction()
+    getSubscriptionCancellationStatus()
       .then((status) => {
         if (!ignore) setCancellationStatus({ ...status, subscription });
       })
@@ -129,7 +130,7 @@ const AccountTab = () => {
 
   const redirectToBillingPortal = async () => {
     try {
-      const url = await redirectToBillingPortalAction();
+      const url = await openBillingPortal();
       if (url) {
         window.location.href = url;
       }
@@ -164,7 +165,7 @@ const AccountTab = () => {
 
     setIsKeepingPlan(true);
     try {
-      const result = await keepSubscriptionAction();
+      const result = await keepSubscription();
       setCancellationStatus({
         subscription,
         hasActiveSubscription: true,

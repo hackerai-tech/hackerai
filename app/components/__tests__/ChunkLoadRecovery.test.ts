@@ -3,6 +3,7 @@ import { createElement } from "react";
 import {
   ChunkLoadRecovery,
   isChunkLoadFailure,
+  isStaleServerActionFailure,
   maybeRecoverFromChunkLoadFailure,
 } from "../ChunkLoadRecovery";
 
@@ -51,6 +52,26 @@ describe("ChunkLoadRecovery", () => {
     expect(isChunkLoadFailure(reason)).toBe(true);
   });
 
+  it("detects stale Server Action deployment failures", () => {
+    expect(
+      isStaleServerActionFailure(
+        new Error(
+          'Failed to find Server Action "008d652c1c1a320304c0f5508bce36145a66bf6c11". This request might be from an older or newer deployment.',
+        ),
+      ),
+    ).toBe(true);
+
+    expect(
+      isStaleServerActionFailure({
+        message: "This request might be from an older or newer deployment.",
+      }),
+    ).toBe(true);
+
+    expect(isStaleServerActionFailure(new Error("Failed to fetch"))).toBe(
+      false,
+    );
+  });
+
   it("reloads once for chunk load failures and records the attempt", () => {
     const storage = createStorage();
     const reload = jest.fn();
@@ -66,6 +87,28 @@ describe("ChunkLoadRecovery", () => {
     expect(storage.setItem).toHaveBeenCalledWith(
       "hackerai:chunk-load-reload-at",
       "1000",
+    );
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads once for stale Server Action failures", () => {
+    const storage = createStorage();
+    const reload = jest.fn();
+
+    expect(
+      maybeRecoverFromChunkLoadFailure(
+        new Error("Failed to find Server Action"),
+        {
+          storage,
+          reload,
+          now: 1_500,
+        },
+      ),
+    ).toBe(true);
+
+    expect(storage.setItem).toHaveBeenCalledWith(
+      "hackerai:chunk-load-reload-at",
+      "1500",
     );
     expect(reload).toHaveBeenCalledTimes(1);
   });
