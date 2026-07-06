@@ -134,21 +134,3 @@ Manual steps should say:
 - What should happen.
 
 If manual verification is not needed, say automated validation was sufficient.
-
-## HackerAI VPS Workflow
-
-For remote Codex project `hackerai-vps` on SSH host `hackerai-dev`:
-
-- `/home/hackerai/src/hackerai` is the stable base checkout for read-only
-  investigation and the default VPS dev server.
-- Start the VPS dev stack with `hackerai-dev-all`; do not use `pnpm dev:all` on
-  the VPS unless explicitly asked.
-- Preview from the Mac with `ssh -N -L 3105:127.0.0.1:3105 hackerai-dev`, then
-  open `http://localhost:3105`.
-- Use `localhost:3000` for Mac dev, `localhost:3105` for VPS base dev, and
-  `3106+` for VPS worktree dev servers.
-- For implementation or PR work on the VPS, create manual Git worktrees under
-  `/home/hackerai/src/worktrees/<slug>`.
-- Copy `.env.local` and `.env.e2e` into any VPS worktree that needs tests or a
-  dev server.
-- Never commit env files, auth files, private SSH keys, or token caches.
