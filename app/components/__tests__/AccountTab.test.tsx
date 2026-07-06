@@ -26,19 +26,10 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: jest.fn(),
 }));
 
-jest.mock("@/lib/actions/billing-portal", () => ({
-  __esModule: true,
-  default: jest.fn(),
-}));
-
-jest.mock("@/lib/actions/subscription-status", () => ({
-  __esModule: true,
-  default: mockGetSubscriptionCancellationStatus,
-}));
-
-jest.mock("@/lib/actions/keep-subscription", () => ({
-  __esModule: true,
-  default: mockKeepSubscription,
+jest.mock("@/lib/billing/client", () => ({
+  getSubscriptionCancellationStatus: mockGetSubscriptionCancellationStatus,
+  keepSubscription: mockKeepSubscription,
+  redirectToBillingPortal: jest.fn(),
 }));
 
 jest.mock("sonner", () => ({

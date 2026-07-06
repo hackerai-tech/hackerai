@@ -8,9 +8,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   }),
 }));
 
-jest.mock("@/lib/actions/cancel-subscription", () => ({
-  __esModule: true,
-  default: jest.fn(),
+jest.mock("@/lib/billing/client", () => ({
+  cancelSubscription: jest.fn(),
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
