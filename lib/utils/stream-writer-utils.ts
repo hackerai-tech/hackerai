@@ -132,7 +132,7 @@ export type RateLimitWarningData =
       midStream?: boolean;
     }
   | {
-      // Pro Agent users: per-run spend cap paused the current run.
+      // Legacy Pro Agent per-run spend-cap warning.
       warningType: "agent-run-spend-cap";
       resetTime: string;
       subscription: "pro";

@@ -198,21 +198,23 @@ describe("selectModel", () => {
 
   // Tier override — Standard is content-aware in ask mode; Max maps to Opus in both modes
   describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to Sonnet 4.6 for text-only ask mode", () => {
-      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-sonnet-4.6",
-      );
+    it("should map HackerAI Pro to GLM 5.2 for text-only ask mode", () => {
+      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe("model-glm-5.2");
     });
 
-    it("should map HackerAI Pro to Sonnet 4.6 for team users", () => {
-      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
-        "model-sonnet-4.6",
-      );
+    it("should map HackerAI Pro to GLM 5.2 for team users", () => {
+      expect(selectModel("ask", "team", "hackerai-pro")).toBe("model-glm-5.2");
     });
 
-    it("should keep HackerAI Pro on Sonnet 4.6 when an image is attached", () => {
+    it("should route HackerAI Pro to Kimi K2.7 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-sonnet-4.6",
+        "model-kimi-k2.7-code",
+      );
+    });
+
+    it("should route HackerAI Pro to Kimi K2.7 when a PDF is attached", () => {
+      expect(selectModel("ask", "pro", "hackerai-pro", false, true)).toBe(
+        "model-kimi-k2.7-code",
       );
     });
 
@@ -253,9 +255,13 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Pro to Sonnet 4.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-        "model-sonnet-4.6",
+    it("should map HackerAI Pro to GLM 5.2 in text-only agent mode", () => {
+      expect(selectModel("agent", "pro", "hackerai-pro")).toBe("model-glm-5.2");
+    });
+
+    it("should route HackerAI Pro to Kimi K2.7 in agent mode when an image is attached", () => {
+      expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
+        "model-kimi-k2.7-code",
       );
     });
 

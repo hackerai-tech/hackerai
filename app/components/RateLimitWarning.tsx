@@ -117,11 +117,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "agent-run-spend-cap") {
-    if (data.premiumContinuationAllowed) {
-      return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue to keep working with extra usage.`;
-    }
-
-    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} per-run safety cap. Continue with Standard to keep working without extra usage.`;
+    return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} legacy per-run safety cap. Continue to keep working.`;
   }
 
   // Token bucket warning — show dollar amounts when available

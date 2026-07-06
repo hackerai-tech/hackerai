@@ -7,13 +7,13 @@ import {
 type CostTier = "low" | "medium" | "high" | "very-high";
 
 // Cost tier per HackerAI tier id. Standard stays low cost in both modes;
-// Pro and Max intentionally surface the higher-cost model choices.
+// Pro reflects the GLM/Kimi route, while Max surfaces the highest-cost choice.
 export function getCostTier(modelId: string): CostTier {
   switch (modelId) {
     case "hackerai-standard":
       return "low";
     case "hackerai-pro":
-      return "high";
+      return "medium";
     case "hackerai-max":
       return "very-high";
     default:
