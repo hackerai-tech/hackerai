@@ -82,6 +82,8 @@ describe("isExpandableWorkedForPart", () => {
         }),
       ),
     ).toBe(true);
+    expect(isExpandableWorkedForPart(part("data-summarization"))).toBe(true);
+    expect(isExpandableWorkedForPart(part("reasoning"))).toBe(true);
   });
 
   it("does not treat stream metadata as expandable work", () => {
