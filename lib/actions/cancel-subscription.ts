@@ -22,12 +22,17 @@ import {
 import type { SubscriptionTier } from "@/types";
 
 type CancellationReasonInput = {
-  reasonCategory: CancellationReasonCategory;
-  reasonDetails: string;
+  reasonCategory?: unknown;
+  reasonDetails?: unknown;
 };
 
 type CancelSubscriptionInput = {
-  cancellationReason: CancellationReasonInput;
+  cancellationReason?: CancellationReasonInput;
+};
+
+type ParsedCancellationReasonInput = {
+  reasonCategory: CancellationReasonCategory;
+  reasonDetails: string;
 };
 
 type SubscriptionContext = {
@@ -41,7 +46,7 @@ type SubscriptionContext = {
 
 function parseCancellationReasonInput(
   value: CancelSubscriptionInput["cancellationReason"],
-): CancellationReasonInput {
+): ParsedCancellationReasonInput {
   const reasonCategory = value?.reasonCategory;
   const reasonDetails = normalizeCancellationReasonDetails(
     value?.reasonDetails,

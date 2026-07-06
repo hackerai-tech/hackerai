@@ -14,6 +14,11 @@ const CHUNK_LOAD_PATTERNS = [
   /Failed to fetch dynamically imported module/i,
 ];
 
+const STALE_SERVER_ACTION_PATTERNS = [
+  /Failed to find Server Action/i,
+  /older or newer deployment/i,
+];
+
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
 function collectErrorStrings(
@@ -61,7 +66,18 @@ export function isChunkLoadFailure(error: unknown): boolean {
   );
 }
 
-export function maybeRecoverFromChunkLoadFailure(
+export function isStaleServerActionFailure(error: unknown): boolean {
+  const strings = collectErrorStrings(error);
+  return strings.some((value) =>
+    STALE_SERVER_ACTION_PATTERNS.some((pattern) => pattern.test(value)),
+  );
+}
+
+export function isRecoverableClientStalenessFailure(error: unknown): boolean {
+  return isChunkLoadFailure(error) || isStaleServerActionFailure(error);
+}
+
+export function maybeRecoverFromClientStalenessFailure(
   error: unknown,
   {
     storage,
@@ -75,7 +91,7 @@ export function maybeRecoverFromChunkLoadFailure(
     cooldownMs?: number;
   },
 ): boolean {
-  if (!isChunkLoadFailure(error)) return false;
+  if (!isRecoverableClientStalenessFailure(error)) return false;
 
   try {
     const storedReloadedAt = storage.getItem(CHUNK_LOAD_RELOAD_STORAGE_KEY);
@@ -98,21 +114,27 @@ export function maybeRecoverFromChunkLoadFailure(
   return true;
 }
 
+export const maybeRecoverFromChunkLoadFailure =
+  maybeRecoverFromClientStalenessFailure;
+
 export function ChunkLoadRecovery() {
   useEffect(() => {
-    const recover = (error: unknown) => {
-      maybeRecoverFromChunkLoadFailure(error, {
+    const recover = (error: unknown) =>
+      maybeRecoverFromClientStalenessFailure(error, {
         storage: window.sessionStorage,
         reload: () => window.location.reload(),
       });
-    };
 
     const onError = (event: ErrorEvent) => {
-      recover(event.error ?? event.message);
+      if (recover(event.error ?? event.message)) {
+        event.preventDefault();
+      }
     };
 
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      recover(event.reason);
+      if (recover(event.reason)) {
+        event.preventDefault();
+      }
     };
 
     window.addEventListener("error", onError, true);

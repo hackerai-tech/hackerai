@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
 import {
-  AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
   canContinueProAgentRunWithPremium,
   resolveAgentRunSpendCapContinuationModel,
 } from "../agent-run-spend-cap";
@@ -55,7 +54,7 @@ describe("canContinueProAgentRunWithPremium", () => {
 });
 
 describe("resolveAgentRunSpendCapContinuationModel", () => {
-  it("forces Pro Agent spend-cap continuations to Standard without extra usage", () => {
+  it("preserves Pro Agent spend-cap continuations without requiring extra usage", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
@@ -65,7 +64,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-pro",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-pro");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -76,7 +75,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "auto",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("auto");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -87,7 +86,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: undefined,
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBeUndefined();
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -98,7 +97,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-pro",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-pro");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -109,10 +108,10 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-max",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-max");
   });
 
-  it("keeps the premium model when extra usage or auto-reload can cover continuation", () => {
+  it("keeps the selected model when extra usage or auto-reload can cover continuation", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",

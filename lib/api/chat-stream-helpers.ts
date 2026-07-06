@@ -488,6 +488,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
   "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
@@ -543,6 +544,7 @@ const isAskMediumReasoningModel = (modelName?: string): boolean =>
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const HIGH_REASONING_MODELS = [
+  "model-glm-5.2",
   "model-sonnet-4.6",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
@@ -638,6 +640,10 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
   "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
   "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+  "z-ai/glm-5.2": "model-glm-5.2",
+  "z-ai/glm-5.2-20260616": "model-glm-5.2",
+  "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
+  "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
 };
 
 function resolveOpenRouterResponseModelCostKey(

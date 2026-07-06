@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import cancelSubscriptionAction from "@/lib/actions/cancel-subscription";
+import { cancelSubscription } from "@/lib/billing/client";
 import { toast } from "sonner";
 import {
   CheckCircle2,
@@ -180,7 +180,7 @@ export const CancelSubscriptionDialog = ({
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     try {
-      const result = await cancelSubscriptionAction({
+      const result = await cancelSubscription({
         cancellationReason: {
           reasonCategory,
           reasonDetails: trimmedReasonDetails,

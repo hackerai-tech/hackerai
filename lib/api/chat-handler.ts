@@ -54,7 +54,6 @@ import {
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
-  getProAgentRunSpendCap,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
 import {
@@ -72,7 +71,6 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { captureAgentRunSpendCapHit } from "@/lib/chat/agent-run-spend-cap-analytics";
 import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import {
   countFileAttachments,
@@ -836,32 +834,13 @@ export const createChatHandler = () => {
             const streamStartTime = Date.now();
             const configuredModelId =
               trackedProvider.languageModel(selectedModel).modelId;
-            const agentRunSpendCap = getProAgentRunSpendCap({
-              snapshot: effectiveBudgetSnapshot,
-              subscription,
-              mode,
-            });
             const budgetMonitor = effectiveBudgetSnapshot
               ? new BudgetMonitor(
                   effectiveBudgetSnapshot,
                   writer,
                   subscription,
                   {
-                    agentRunSpendCap,
                     extraUsageConfig,
-                    onAgentRunSpendCapHit: (hit) => {
-                      captureAgentRunSpendCapHit({
-                        userId,
-                        subscription,
-                        mode,
-                        chatId,
-                        endpoint,
-                        selectedModel,
-                        selectedModelOverride,
-                        configuredModelSlug: configuredModelId,
-                        hit,
-                      });
-                    },
                   },
                 )
               : null;

@@ -36,6 +36,8 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
   "fallback-grok-4.3": { input: 1.25, output: 2.5 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
+  // Rates from OpenRouter: $0.9086 in / $2.856 out per 1M tokens.
+  "model-glm-5.2": { input: 0.9086, output: 2.856 },
   // These keys route to minimax/minimax-m3 via lib/ai/providers.ts.
   // Rates from OpenRouter: $0.30 in / $1.20 out per 1M tokens.
   "agent-model": { input: 0.3, output: 1.2 },

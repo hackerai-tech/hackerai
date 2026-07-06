@@ -40,12 +40,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
     );
   });
 
-  it("HackerAI Pro resolves to Sonnet in both modes", () => {
+  it("HackerAI Pro resolves to GLM in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-sonnet-4.6",
+      "model-glm-5.2",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-sonnet-4.6",
+      "model-glm-5.2",
     );
   });
 

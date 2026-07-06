@@ -40,9 +40,9 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
- *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek V4 Flash.
- *   Free Agent routes to MiniMax M3. Paid ASK Pro always uses Sonnet 4.6.
+ *   (text-only); prompts with images or PDFs promote to Grok 4.3 for native
+ *   media support. HackerAI Pro uses GLM 5.2 for text-only prompts and Kimi
+ *   K2.7 Code when provider-visible media is attached.
  * @returns Model name to use
  */
 export function selectModel(
@@ -55,10 +55,11 @@ export function selectModel(
   const isAgent = isAgentMode(mode);
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Sonnet or Opus.
+  // multimodal/file-capable model such as Kimi or Opus.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
+  const hasProProviderMedia = !!hasImageAttachment || hasAskPdf;
   const paidAskMediaModel: ModelName =
     hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
 
@@ -85,8 +86,8 @@ export function selectModel(
       : "model-deepseek-v4-pro";
   }
 
-  if (selectedModel === "hackerai-pro" && !isAgent) {
-    return "model-sonnet-4.6";
+  if (selectedModel === "hackerai-pro") {
+    return hasProProviderMedia ? "model-kimi-k2.7-code" : "model-glm-5.2";
   }
 
   const providerKey = resolveTierToProviderKey(selectedModel, mode);
