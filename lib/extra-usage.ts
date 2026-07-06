@@ -1,11 +1,13 @@
-import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
+import {
+  EXTRA_USAGE_MULTIPLIER,
+  extraUsagePointsToDollars,
+} from "@/convex/lib/extraUsagePricing";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
-/** Extra usage pricing multiplier */
-export const EXTRA_USAGE_MULTIPLIER = 1.15;
+export { EXTRA_USAGE_MULTIPLIER };
 
 const errorName = (error: unknown) =>
   error instanceof Error ? error.name : "UnknownError";
@@ -84,8 +86,7 @@ export interface DeductBalanceResult {
  * Points are internal units (1 point = $0.0001)
  */
 export function pointsToDollars(points: number): number {
-  const dollars = (points / POINTS_PER_DOLLAR) * EXTRA_USAGE_MULTIPLIER;
-  return Math.ceil(dollars * 100) / 100; // Round up to nearest cent
+  return extraUsagePointsToDollars(points);
 }
 
 /**

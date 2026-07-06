@@ -6,6 +6,7 @@ import {
   beforeEach,
   afterEach,
 } from "@jest/globals";
+import { extraUsageDollarsToPoints } from "../lib/extraUsagePricing";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -222,11 +223,12 @@ describe("extra usage purchase ledger", () => {
 
     const result = await callAddCredits(ctx);
 
-    expect(result).toEqual({ newBalance: 50, alreadyProcessed: false });
+    expect(result.alreadyProcessed).toBe(false);
+    expect(result.newBalance).toBeCloseTo(50, 2);
     expect(tables.extra_usage).toMatchObject([
       {
         user_id: "user_123",
-        balance_points: 500_000,
+        balance_points: extraUsageDollarsToPoints(50),
         updated_at: 1_000_000,
       },
     ]);

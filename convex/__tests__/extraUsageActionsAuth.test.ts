@@ -7,6 +7,7 @@ import {
   beforeEach,
   afterAll,
 } from "@jest/globals";
+import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
 jest.mock("../_generated/server", () => ({
   action: jest.fn((config: any) => config),
@@ -315,7 +316,7 @@ describe("deductWithAutoReload", () => {
     mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
     const ctx: any = {
       runQuery: jest.fn(async () => ({
-        balanceDollars: 20,
+        balanceDollars: extraUsagePointsToDollars(200_000),
         balancePoints: 200_000,
         enabled: true,
         autoReloadEnabled: true,
@@ -401,7 +402,7 @@ describe("deductWithAutoReload", () => {
     } as never);
     const ctx: any = {
       runQuery: jest.fn(async () => ({
-        balanceDollars: 20,
+        balanceDollars: extraUsagePointsToDollars(200_000),
         balancePoints: 200_000,
         enabled: true,
         autoReloadEnabled: true,
@@ -431,12 +432,12 @@ describe("deductWithAutoReload", () => {
     });
 
     expect(mockInvoiceItemsCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 1000 }),
+      expect.objectContaining({ amount: 1150 }),
     );
     expect(result).toMatchObject({
       success: true,
       autoReloadTriggered: true,
-      autoReloadResult: { success: true, chargedAmountDollars: 10 },
+      autoReloadResult: { success: true, chargedAmountDollars: 11.5 },
     });
   });
 
@@ -455,7 +456,7 @@ describe("deductWithAutoReload", () => {
     } as never);
     const ctx: any = {
       runQuery: jest.fn(async () => ({
-        balanceDollars: 29.5,
+        balanceDollars: extraUsagePointsToDollars(295_000),
         balancePoints: 295_000,
         enabled: true,
         autoReloadEnabled: true,

@@ -20,11 +20,11 @@ describe("extra-usage", () => {
       expect(pointsToDollars(10000)).toBe(1.15);
     });
 
-    it("should round up to nearest cent", () => {
-      // 1 point = $0.0001 base, * 1.15 = $0.000115 -> rounds up to $0.01
-      expect(pointsToDollars(1)).toBe(0.01);
-      // 100 points = $0.01 base, * 1.15 = $0.0115 -> rounds up to $0.02
-      expect(pointsToDollars(100)).toBe(0.02);
+    it("should preserve sub-cent precision", () => {
+      // 1 point = $0.0001 base, * 1.15 = $0.000115
+      expect(pointsToDollars(1)).toBeCloseTo(0.000115, 6);
+      // 100 points = $0.01 base, * 1.15 = $0.0115
+      expect(pointsToDollars(100)).toBe(0.0115);
     });
 
     it("should return 0 for 0 points", () => {
@@ -33,7 +33,7 @@ describe("extra-usage", () => {
 
     it("should handle large point values", () => {
       // 1M points = $100 base, * 1.15 = $115
-      expect(pointsToDollars(1_000_000)).toBe(115);
+      expect(pointsToDollars(1_000_000)).toBeCloseTo(115);
     });
 
     it("should apply EXTRA_USAGE_MULTIPLIER correctly", () => {

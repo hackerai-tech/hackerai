@@ -8,36 +8,16 @@ import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { recordRevenueEventInternal } from "./unitEconomicsLib";
-
-// =============================================================================
-// Currency Conversion Helpers
-// All monetary values are stored in POINTS internally for precision.
-// 1 point = $0.0001 (10,000 points = $1), matching the rate limiting system.
-// This avoids precision loss when deducting sub-cent amounts.
-// =============================================================================
-
-/** Points per dollar (1 point = $0.0001) - must match token-bucket.ts */
-const POINTS_PER_DOLLAR = 10_000;
-
-/** Convert dollars to points (for storage) */
-const dollarsToPoints = (dollars: number): number =>
-  Math.round(dollars * POINTS_PER_DOLLAR);
-
-/** Convert points to dollars (for API response) */
-const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
+import {
+  extraUsageDollarsToPoints as dollarsToPoints,
+  extraUsagePointsToDollars as pointsToDollars,
+} from "./lib/extraUsagePricing";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
 type ExtraUsagePurchaseRoute =
-  | "checkout_action"
-  | "confirm"
-  | "webhook"
-  | "repair";
+  "checkout_action" | "confirm" | "webhook" | "repair";
 type ExtraUsagePurchaseResult =
-  | "created"
-  | "paid_seen"
-  | "credited"
-  | "already_processed"
-  | "failed";
+  "created" | "paid_seen" | "credited" | "already_processed" | "failed";
 
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const PURCHASE_JSON_SECRET_PATTERN =

@@ -6,8 +6,10 @@ import { v } from "convex/values";
 import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
-
-const POINTS_PER_DOLLAR = 10_000;
+import {
+  extraUsageDollarsToPoints,
+  extraUsagePointsToDollars,
+} from "./lib/extraUsagePricing";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -617,8 +619,10 @@ export const deductWithAutoReload = action({
     const monthlyRemainingPoints =
       settings.monthlyRemainingDollars === undefined
         ? undefined
-        : Math.round(settings.monthlyRemainingDollars * POINTS_PER_DOLLAR);
-    const requestedDeductionDollars = args.amountPoints / POINTS_PER_DOLLAR;
+        : extraUsageDollarsToPoints(settings.monthlyRemainingDollars);
+    const requestedDeductionDollars = extraUsagePointsToDollars(
+      args.amountPoints,
+    );
     const requestNeedsReload = settings.balancePoints < args.amountPoints;
     let autoReloadTriggered = false;
     let autoReloadResult:
