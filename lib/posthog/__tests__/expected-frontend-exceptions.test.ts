@@ -1,4 +1,7 @@
-import { shouldDropExpectedFrontendException } from "../expected-frontend-exceptions";
+import {
+  enrichFrontendExceptionEvent,
+  shouldDropExpectedFrontendException,
+} from "../expected-frontend-exceptions";
 
 describe("shouldDropExpectedFrontendException", () => {
   it("keeps non-exception events", () => {
@@ -24,12 +27,15 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(false);
   });
 
-  it("keeps generic network and chunk-load failures", () => {
+  it("drops bare generic network and chunk-load failures", () => {
     for (const value of [
       "Failed to fetch",
       "Load failed",
       "NetworkError when attempting to fetch resource.",
       "network error",
+      "timeout",
+      "connection closed",
+      "An unexpected response was received from the server.",
       "Failed to load chunk /_next/static/chunks/example.js from module 1",
     ]) {
       expect(
@@ -39,8 +45,56 @@ describe("shouldDropExpectedFrontendException", () => {
             $exception_values: [value],
           },
         }),
-      ).toBe(false);
+      ).toBe(true);
     }
+  });
+
+  it("keeps generic network failures with app stack frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "turbopack:///[project]/app/components/chat.tsx",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("drops chunk load failures even with Next runtime frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_types: ["ChunkLoadError"],
+          $exception_values: [
+            "Failed to load chunk /_next/static/chunks/example.js from module 1",
+          ],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[turbopack]/browser/runtime/base/runtime-base.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
   });
 
   it("drops expected Convex exceptions through the shared Convex classifier", () => {
@@ -148,6 +202,27 @@ describe("shouldDropExpectedFrontendException", () => {
                   {
                     source:
                       "turbopack:///[project]/node_modules/.pnpm/@workos-inc+authkit-nextjs@4.1.4/node_modules/@workos-inc/authkit-nextjs/src/components/tokenStore.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to refresh access token"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/.pnpm/@workos-inc+authkit-nextjs@4.1.4_@workos-inc+node@10.7.0/node_modules/@workos-inc/authkit-nextjs/src/components/tokenStore.ts",
                   },
                 ],
               },
@@ -272,5 +347,22 @@ describe("shouldDropExpectedFrontendException", () => {
         }),
       ).toBe(true);
     }
+  });
+
+  it("adds structured diagnostics to retained frontend exceptions", () => {
+    const event = enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: {
+        $current_url: "https://hackerai.co/c/chat-123",
+        $exception_values: [
+          "Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+        ],
+      },
+    });
+
+    expect(event.properties).toMatchObject({
+      hackerai_exception_category: "react_max_update_depth",
+      hackerai_route_kind: "chat",
+    });
   });
 });
