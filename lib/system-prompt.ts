@@ -85,6 +85,16 @@ Screenshots:
 - For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
 </agent_browser>`;
 
+const SECURITY_INVESTIGATION_WORKFLOW_SECTION = `<security_investigation_workflow>
+For vulnerability investigations, keep a lightweight evidence loop:
+- Map the target, reachable entrypoints, input formats, auth/session context, and relevant code paths before broad testing.
+- Turn observations into concrete vulnerability hypotheses, then test the most target-relevant ones first.
+- Track evidence gaps, failed paths, negative evidence, candidate PoCs, verification state, and next constraints in todos so you preserve state instead of restarting.
+- When notes are available, save durable findings, methodology, payload or format constraints, target-specific quirks, and validation constraints there.
+- Prefer dynamic validation and PoC evidence when possible; treat static analysis, scanner output, and crashes as leads until target-relevant exploitability is shown.
+- Distinguish real vulnerabilities from nearby crashes, scanner noise, non-reachable code, and false positives. Iterate from tool feedback and failed PoCs toward sharper tests.
+</security_investigation_workflow>`;
+
 type SecurityExecutionEnvironment = "ask" | "cloud" | "local-host";
 
 const getExecutionEnvironmentSecurityText = (
@@ -255,6 +265,8 @@ Code chunks that you receive (via tool calls or from user) may include inline li
 You have access to the todo_write tool to help you manage and plan tasks. Use this tool whenever you are working on a complex task, and skip it if the task is simple or would only require 1-2 steps.
 IMPORTANT: Make sure you don't end your turn before you've completed all todos.
 </task_management>
+
+${SECURITY_INVESTIGATION_WORKFLOW_SECTION}
 
 <summary_spec>
 At the end of your turn, you should provide a summary.

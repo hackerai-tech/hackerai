@@ -249,6 +249,45 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("You are in ASK MODE");
   });
 
+  it("adds an agent-mode security investigation workflow", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<security_investigation_workflow>");
+    expect(prompt).toContain("Map the target, reachable entrypoints");
+    expect(prompt).toContain("concrete vulnerability hypotheses");
+    expect(prompt).toContain(
+      "Track evidence gaps, failed paths, negative evidence",
+    );
+    expect(prompt).toContain("When notes are available");
+    expect(prompt).toContain("Prefer dynamic validation and PoC evidence");
+    expect(prompt).toContain("scanner noise");
+    expect(prompt).toContain("Iterate from tool feedback and failed PoCs");
+  });
+
+  it("does not add the security investigation workflow in ask mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).not.toContain("<security_investigation_workflow>");
+    expect(prompt).not.toContain("Map the target, reachable entrypoints");
+    expect(prompt).not.toContain("concrete vulnerability hypotheses");
+  });
+
   it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {
     const localHostContext = `You are executing commands on Linux 6.8 (x64) in DANGEROUS MODE.
 Commands run directly on the host OS "labbox" without Docker isolation.`;

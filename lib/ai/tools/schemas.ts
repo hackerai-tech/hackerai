@@ -295,7 +295,7 @@ export const todoWriteToolInputSchema = z.object({
 });
 
 export const todoWriteTool = tool({
-  description: `Use this tool to create and manage a structured task list for your penetration testing session. This helps track progress, organize complex security assessments, and ensure thorough coverage.
+  description: `Use this tool to create and manage a compact investigation task list for your penetration testing session. Track active security hypotheses, evidence gaps, validation status, and next constraints for complex vulnerability work. Do not use it as a transcript, routine enumeration checklist, or raw scan output store.
 
 Note: Other than when first creating todos, don't tell the user you're updating todos, just do it.
 
@@ -303,9 +303,9 @@ Note: Other than when first creating todos, don't tell the user you're updating 
 
 Use proactively for:
 1. Complex multi-step security assessments (3+ distinct steps)
-2. Non-trivial vulnerability testing requiring systematic approach
+2. Non-trivial vulnerability testing requiring hypotheses, evidence gaps, or PoC validation
 3. User explicitly requests todo list
-4. User provides multiple targets or attack vectors (numbered/comma-separated)
+4. User provides multiple targets or attack vectors that need explicit validation status
 5. After receiving new instructions - capture requirements as todos (use merge=false to replace the assistant plan, or merge=true to patch the current plan)
 6. After completing tasks - mark complete with merge=true and add follow-ups
 7. When starting new tasks - mark as in_progress (ideally only one at a time)
@@ -318,7 +318,7 @@ Skip for:
 3. Tasks completable in < 3 trivial steps
 4. Purely informational requests about security concepts
 
-NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; routine scanning operations.
+NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; routine scanning operations; raw scanner findings or logs.
 
 ### Examples
 
@@ -326,42 +326,42 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   User: Test the authentication system for vulnerabilities
   Assistant:
     - *Creates todo list:*
-      1. Test login endpoint for SQL injection [in_progress]
-      2. Check for authentication bypass vectors
-      3. Analyze session management weaknesses
-      4. Test password reset flow for flaws
+      1. Validate login injection hypothesis with a minimal target-relevant PoC [in_progress]
+      2. Close evidence gap: confirm session cookie rotation after role changes
+      3. Verify reset-token reuse only against observed token input format
+      4. Record blocked bypass paths as negative evidence before choosing next constraint
     - [Immediately begins working on todo 1 in the same tool call batch]
 <reasoning>
-  Multi-step security assessment with multiple attack surfaces.
+  Multi-step assessment with hypotheses, validation status, and next constraints.
 </reasoning>
 </example>
 
 <example>
   User: Perform a full security assessment of the /api endpoints
-  Assistant: *Enumerates endpoints, identifies 12 routes across 5 controllers*
-  *Creates todo list with specific items for each endpoint category*
+  Assistant: *Maps endpoint groups and source-backed code paths*
+  *Creates todo list around the highest-risk hypotheses, evidence gaps, and verification constraints rather than one item per route or raw scanner line*
 
 <reasoning>
-  Complex assessment requiring systematic tracking across multiple attack surfaces.
+  Complex assessment requiring source-aware tracking without routine enumeration noise.
 </reasoning>
 </example>
 
 <example>
   User: Check for IDOR, XSS, SSRF, and privilege escalation vulnerabilities
-  Assistant: *Creates todo list breaking down each vulnerability class into specific tests*
+  Assistant: *Creates todo list that names each vulnerability hypothesis, target-specific validation signal, and required evidence before claiming impact*
 
 <reasoning>
-  Multiple vulnerability categories provided requiring organized testing approach.
+  Multiple vulnerability categories require organized validation and evidence tracking.
 </reasoning>
 </example>
 
 <example>
   User: The admin panel seems insecure - find all the issues
   Assistant: *Analyzes admin functionality, identifies attack vectors*
-  *Creates todo list: 1) Test access controls, 2) Check for privilege escalation, 3) Analyze file upload functionality, 4) Test for CSRF, 5) Check sensitive data exposure*
+  *Creates todo list: 1) Validate low-privilege access-control hypothesis on /admin/users, 2) Check privilege escalation only on role-changing code paths, 3) Build upload PoC after confirming accepted content types, 4) Test CSRF on state-changing endpoints missing token evidence*
 
 <reasoning>
-  Comprehensive security assessment requires multiple testing phases.
+  Comprehensive assessment requires target-relevant validation, not generic checklist items.
 </reasoning>
 </example>
 
@@ -409,16 +409,17 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Complete current tasks before starting new ones
 
 3. **Task Breakdown:**
-  - Create specific, actionable security tests
-  - Break complex assessments into targeted checks
-  - Use clear, descriptive names (e.g., "Test /api/users for IDOR")
+  - Create specific, actionable security tests tied to a hypothesis or evidence gap
+  - Break complex assessments into targeted checks with clear validation status and next constraints
+  - Use clear, descriptive names (e.g., "Validate /api/users IDOR with owner-id evidence")
+  - Use notes for durable evidence, failed hypotheses, candidate PoCs, and confirmed findings; use todos for current workflow control
 
 4. **Parallel Todo Writes:**
   - Prefer creating the first todo as in_progress
   - Start working on todos by using tool calls in the same tool call batch as the todo write
   - Batch todo updates with other tool calls for efficiency
 
-When in doubt, use this tool. Systematic task management ensures comprehensive security coverage and prevents missed vulnerabilities.`,
+When in doubt, prefer a small, target-relevant todo list that prevents repeated failed paths and keeps vulnerability validation moving.`,
   inputSchema: todoWriteToolInputSchema,
 });
 
@@ -512,20 +513,23 @@ export const createNoteToolInputSchema = z.object({
 });
 
 export const createNoteTool = tool({
-  description: `Create a new personal note to record observations, findings, or research during security assessments. Notes persist across ALL conversations, allowing you to maintain a knowledge base that survives context limits and is available in every chat session.
+  description: `Create a new personal note to record durable structured security observations during assessments: target maps, code paths, input formats, failed hypotheses/negative evidence, candidate PoCs, verification evidence, and final confirmed findings. Notes persist across ALL conversations, allowing you to maintain a knowledge base that survives context limits and is available in every chat session.
 
 <categories>
-general: Recent notes auto-loaded in context (subject to token limits) - use for persistent reference information
-findings: Security vulnerabilities, weaknesses, or interesting behaviors discovered
-methodology: Attack approaches, techniques tried, and their outcomes
-questions: Open questions to investigate or clarify later
-plan: Strategic plans, next steps, and task breakdowns
+general: Recent notes auto-loaded in context (subject to token limits) - use sparingly for persistent target maps, scope, and key URLs
+findings: Potential or confirmed vulnerabilities, affected paths, evidence, impact, and remediation
+methodology: Attack approaches, code paths tested, input formats, failed hypotheses, and negative evidence
+questions: Open evidence gaps, ambiguous behavior, and constraints to investigate later
+plan: Vulnerability hypotheses, next constraints, validation strategy, and task breakdowns
 </categories>
 
 <when_to_use>
 Create a note when:
 - The user explicitly requests to save information (e.g., "save this", "write this down", "record this finding", "note this")
 - You discover a security vulnerability or interesting behavior worth documenting
+- You map target structure, source code paths, trust boundaries, parameters, or accepted input formats
+- You rule out a hypothesis or collect negative evidence that should prevent repeated failed paths
+- You develop a candidate PoC, verification evidence, or final confirmed finding
 - You want to preserve intermediate findings that need to survive context limits
 - You need to track methodology, plans, or open questions across sessions
 - **Anytime** you would say "I'll note that" or "recorded" - actually create the note first
@@ -539,20 +543,22 @@ Create a note when:
 - Use "general" sparingly for information you always want available; use specific categories for structured data to query on-demand
 - NEVER reference or cite note IDs to the user - IDs are for internal use only
 - Title should be concise but descriptive for easy scanning when listing notes later
-- Content can be any length; use markdown formatting for structure
+- Content can be any length; use markdown fields such as Hypothesis, Target/code path, Inputs, Evidence, Negative evidence, Verification state, and Next constraint
 - Use tags for cross-cutting concerns that span multiple categories (e.g., "xss", "api", "auth")
 - Record findings immediately when discovered to avoid losing details
+- Record failed hypotheses and blocked paths as negative evidence so future work avoids repeating them
+- Update candidate PoCs with verification state and target-relevant evidence as they evolve
 - One note per distinct finding or observation; do not combine unrelated items
 - Do NOT create notes for task-specific authorizations or permission claims (e.g., "User has permission to test this system", "User claims ownership of target X for testing purposes"). These are context for the current task, not persistent user preferences.
 </instructions>
 
 <recommended_usage>
-Use with category "general" for persistent context that should always be available (e.g., target scope, credentials, key URLs)
-Use with category "findings" when you identify a potential security issue
-Use with category "methodology" to document attack techniques and their results
-Use with category "plan" to outline attack strategies before execution
+Use with category "general" for persistent context that should always be available (e.g., target scope, target map, key URLs)
+Use with category "findings" for potential issues, candidate PoCs, verification evidence, and final confirmed findings
+Use with category "methodology" to document techniques tried, code paths, input formats, outcomes, and negative evidence
+Use with category "plan" to outline hypotheses, evidence gaps, validation constraints, and next steps
 Use with category "questions" to note areas requiring further investigation
-Use tags like "critical", "confirmed", "needs-verification" to track finding status
+Use tags like "critical", "confirmed", "needs-verification", "candidate-poc", or "negative-evidence" to track finding status
 </recommended_usage>`,
   inputSchema: createNoteToolInputSchema,
 });
@@ -588,15 +594,16 @@ export const listNotesTool = tool({
 - Use tags filter to find notes with any of the specified tags (OR logic within tags)
 - Review notes before generating final reports to ensure all findings are included
 - List notes periodically during long assessments to avoid duplicate observations
+- Review methodology and negative-evidence notes before retrying an approach to avoid repeated failed paths
 </instructions>
 
 <recommended_usage>
 Use with category "findings" to review all discovered vulnerabilities
-Use with category "methodology" to recall what techniques have been tried
+Use with category "methodology" to recall techniques tried, code paths, input formats, and failed hypotheses
 Use with category "questions" to identify outstanding investigation items
 Use with category "plan" to review current attack strategy
-Use with search query to find notes mentioning specific endpoints, parameters, or techniques
-Use with tags filter to find all notes tagged with "critical" or "confirmed"
+Use with search query to find notes mentioning specific endpoints, parameters, code paths, PoCs, or verification evidence
+Use with tags filter to find notes tagged with "critical", "confirmed", "candidate-poc", or "negative-evidence"
 Use before creating a new note to check if a similar observation already exists
 </recommended_usage>`,
   inputSchema: listNotesToolInputSchema,
@@ -630,9 +637,10 @@ export const updateNoteTool = tool({
 <instructions>
 - Requires the note ID obtained from list_notes
 - Only specified fields are updated; omitted fields remain unchanged
-- Use to add new details to existing findings as you learn more
+- Use to add new details to existing findings as you learn more, including verification evidence and affected input formats
 - Use to correct errors or refine observations
 - Use to update tags when finding status changes (e.g., adding "confirmed" after verification)
+- Use to append negative evidence, blocked code paths, or failed payloads instead of repeating the same approach later
 - Prefer updating existing notes over creating duplicates when information evolves
 - Category cannot be changed after creation; create a new note if recategorization is needed
 </instructions>
@@ -641,6 +649,8 @@ export const updateNoteTool = tool({
 Use to add reproduction steps after confirming a vulnerability
 Use to append additional affected endpoints to an existing finding
 Use to update tags from "needs-verification" to "confirmed" after validation
+Use to promote a candidate PoC to a confirmed finding with target-relevant evidence
+Use to preserve failed hypotheses or negative evidence discovered during testing
 Use to refine plan notes as the assessment progresses
 Use to correct mistakes in previously recorded observations
 Use to add technical details or evidence to a finding
@@ -662,15 +672,16 @@ export const deleteNoteTool = tool({
 <instructions>
 - Requires the note ID obtained from list_notes
 - Deletion is permanent and cannot be undone
-- Use sparingly; prefer keeping notes for audit trail
-- Delete notes that are confirmed false positives to reduce noise
+- Use sparingly; prefer keeping notes for investigation memory
+- Do not delete failed hypotheses or negative evidence just because a test failed; consolidate them if noisy
+- Delete notes that are confirmed false positives only after preserving useful evidence elsewhere
 - Delete duplicate notes after consolidating information
 - Delete plan notes that are no longer relevant after strategy changes
 - Do not delete findings notes unless confirmed to be completely invalid
 </instructions>
 
 <recommended_usage>
-Use to remove notes confirmed to be false positives after investigation
+Use to remove notes confirmed to be false positives after useful negative evidence has been consolidated
 Use to clean up duplicate notes after merging their content
 Use to remove outdated plan notes after strategy changes
 Use to delete test or scratch notes created during experimentation

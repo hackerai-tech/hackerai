@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import type { ToolContext } from "@/types";
 import { createTodoWrite } from "../todo-write";
 import { TodoManager } from "../utils/todo-manager";
@@ -29,6 +31,25 @@ async function runTool(
 }
 
 describe("todo_write", () => {
+  it("keeps schema guidance focused on vulnerability investigation memory", () => {
+    const schemaSource = fs.readFileSync(
+      path.resolve(__dirname, "../schemas.ts"),
+      "utf8",
+    );
+
+    expect(schemaSource).toContain("security hypotheses");
+    expect(schemaSource).toContain("evidence gaps");
+    expect(schemaSource).toContain("validation status");
+    expect(schemaSource).toContain("next constraints");
+    expect(schemaSource).toContain("target maps");
+    expect(schemaSource).toContain("code paths");
+    expect(schemaSource).toContain("input formats");
+    expect(schemaSource).toContain("negative evidence");
+    expect(schemaSource).toContain("candidate PoCs");
+    expect(schemaSource).toContain("verification evidence");
+    expect(schemaSource).toContain("final confirmed findings");
+  });
+
   it("creates a full todo list and returns currentTodos", async () => {
     const result = await runTool(createTodoWrite(makeContext()), {
       merge: false,
