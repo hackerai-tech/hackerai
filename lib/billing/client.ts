@@ -5,6 +5,34 @@ import type {
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
 
+const BILLING_REQUEST_TIMEOUT_MS = 15_000;
+const BILLING_REQUEST_TIMEOUT_MESSAGE =
+  "Billing request timed out. Please try again.";
+
+function billingRequestSignal(
+  signal: RequestInit["signal"],
+): RequestInit["signal"] {
+  if (signal) return signal;
+  if (typeof AbortSignal === "undefined") return undefined;
+
+  const timeout = (
+    AbortSignal as typeof AbortSignal & {
+      timeout?: (milliseconds: number) => AbortSignal;
+    }
+  ).timeout;
+
+  return timeout?.(BILLING_REQUEST_TIMEOUT_MS);
+}
+
+function isAbortLikeError(error: unknown) {
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? String((error as { name?: unknown }).name)
+      : "";
+
+  return name === "AbortError" || name === "TimeoutError";
+}
+
 async function readBillingError(response: Response): Promise<string> {
   const fallback = `Billing request failed (${response.status})`;
 
@@ -24,14 +52,25 @@ async function billingFetchJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...init.headers,
-    },
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(path, {
+      ...init,
+      cache: "no-store",
+      signal: billingRequestSignal(init.signal),
+      headers: {
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    if (isAbortLikeError(error)) {
+      throw new Error(BILLING_REQUEST_TIMEOUT_MESSAGE);
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
     throw new Error(await readBillingError(response));

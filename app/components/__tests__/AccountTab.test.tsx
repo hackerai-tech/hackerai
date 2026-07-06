@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 const mockGetSubscriptionCancellationStatus = jest.fn();
 const mockKeepSubscription = jest.fn();
+const mockRedirectToBillingPortal = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
@@ -29,7 +30,7 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
 jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: mockGetSubscriptionCancellationStatus,
   keepSubscription: mockKeepSubscription,
-  redirectToBillingPortal: jest.fn(),
+  redirectToBillingPortal: mockRedirectToBillingPortal,
 }));
 
 jest.mock("sonner", () => ({
@@ -61,6 +62,7 @@ describe("AccountTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockOnCancellationScheduled = undefined;
+    window.history.replaceState(null, "", "/");
   });
 
   it("shows scheduled cancellation state instead of the cancel action", async () => {
@@ -113,6 +115,28 @@ describe("AccountTab", () => {
     expect(
       screen.queryByText("Cancellation scheduled."),
     ).not.toBeInTheDocument();
+  });
+
+  it("opens the billing portal from the payment manage action", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+    } as never);
+    mockRedirectToBillingPortal.mockResolvedValue("#billing" as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /^manage$/i })[1]);
+
+    await waitFor(() => {
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledTimes(1);
+    });
+    expect(window.location.hash).toBe("#billing");
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {

@@ -40,6 +40,14 @@ function request(body: unknown) {
   };
 }
 
+function unreadableJsonRequest() {
+  return {
+    json: async () => {
+      throw new SyntaxError("Invalid JSON");
+    },
+  };
+}
+
 describe("billing API routes", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -133,5 +141,32 @@ describe("billing API routes", () => {
         reasonDetails: "Budget changed",
       },
     });
+  });
+
+  it("returns a validation error for malformed cancellation bodies", async () => {
+    const { POST } = await import("../cancel/route");
+    const malformedBodies = [
+      null,
+      {},
+      { cancellationReason: null },
+      { cancellationReason: [] },
+    ];
+
+    for (const body of malformedBodies) {
+      const response = await POST(request(body) as never);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "Please select the main cancellation reason",
+      });
+    }
+
+    const unreadableResponse = await POST(unreadableJsonRequest() as never);
+
+    expect(unreadableResponse.status).toBe(400);
+    await expect(unreadableResponse.json()).resolves.toEqual({
+      error: "Please select the main cancellation reason",
+    });
+    expect(mockCancelSubscription).not.toHaveBeenCalled();
   });
 });

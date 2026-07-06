@@ -16,5 +16,9 @@ export function billingRouteErrorResponse(error: unknown) {
     error instanceof Error ? error.message : "Billing request failed";
   const status = BILLING_ERROR_STATUSES.get(message) ?? 500;
 
+  if (status === 500) {
+    console.error("Unhandled billing route error", error);
+  }
+
   return NextResponse.json({ error: message }, { status });
 }
