@@ -18,11 +18,7 @@ const TRAILING_METADATA_PART_TYPES = new Set([
   "step-start",
 ]);
 
-const EXPANDABLE_WORK_PART_TYPES = new Set([
-  "data-summarization",
-  "data-terminal",
-  "reasoning",
-]);
+const EXPANDABLE_WORK_PART_TYPES = new Set(["data-terminal"]);
 
 export type WorkedForParts = {
   fileParts: FilePart[];
