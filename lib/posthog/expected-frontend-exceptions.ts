@@ -6,18 +6,7 @@ type PostHogEventLike = {
 };
 
 type FrontendExceptionCategory =
-  | "browser_transport"
-  | "chunk_load"
-  | "react_max_update_depth"
-  | "stack_overflow"
-  | "auth_refresh"
-  | "posthog_transport"
-  | "monaco_cancellation"
-  | "trigger_stream_close"
-  | "react_dom_mutation"
-  | "resize_observer"
-  | "opaque_browser"
-  | "unknown";
+  "react_max_update_depth" | "stack_overflow" | "unknown";
 
 const RESIZE_OBSERVER_MESSAGES = new Set([
   "ResizeObserver loop completed with undelivered notifications.",
@@ -67,7 +56,10 @@ const CHUNK_LOAD_MESSAGE_FRAGMENTS = [
 ];
 
 const REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT = "Minified React error #185";
-const STACK_OVERFLOW_MESSAGE = "Maximum call stack size exceeded.";
+const STACK_OVERFLOW_MESSAGES = new Set([
+  "Maximum call stack size exceeded.",
+  "too much recursion",
+]);
 
 const collectStrings = (value: unknown, strings: string[] = []): string[] => {
   if (typeof value === "string") {
@@ -143,6 +135,9 @@ const hasBrowserFetchTransportMessage = (strings: string[]): boolean =>
 const hasChunkLoadMessage = (strings: string[]): boolean =>
   includesAny(strings, CHUNK_LOAD_MESSAGE_FRAGMENTS);
 
+const hasStackOverflowMessage = (strings: string[]): boolean =>
+  hasExactStringFrom(strings, STACK_OVERFLOW_MESSAGES);
+
 const hasTriggerStreamCloseMessage = (strings: string[]): boolean =>
   includesAny(strings, TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS);
 
@@ -189,44 +184,11 @@ const matchesBareBrowserTransportPattern = (
 ): boolean =>
   hasBrowserFetchTransportMessage(strings) && frameSources.length === 0;
 
-const getExceptionCategory = (
-  strings: string[],
-  frameSources: string[],
-): FrontendExceptionCategory => {
-  if (hasResizeObserverMessage(strings)) return "resize_observer";
-  if (hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES)) {
-    return "react_dom_mutation";
-  }
-  if (hasExactStringFrom(strings, OPAQUE_SYNTHETIC_MESSAGES)) {
-    return "opaque_browser";
-  }
-  if (matchesBareBrowserTransportPattern(strings, frameSources)) {
-    return "browser_transport";
-  }
-  if (hasChunkLoadMessage(strings)) return "chunk_load";
-  if (matchesTriggerStreamClosePattern(strings)) return "trigger_stream_close";
-  if (
-    hasExactString(strings, "Failed to refresh access token") &&
-    matchesExpectedFrontendPattern(strings)
-  ) {
-    return "auth_refresh";
-  }
-  if (
-    hasExactString(strings, "PostHog request timed out after 3000ms") &&
-    matchesExpectedFrontendPattern(strings)
-  ) {
-    return "posthog_transport";
-  }
-  if (
-    hasExactString(strings, "Canceled") &&
-    matchesExpectedFrontendPattern(strings)
-  ) {
-    return "monaco_cancellation";
-  }
+const getExceptionCategory = (strings: string[]): FrontendExceptionCategory => {
   if (includesAny(strings, [REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT])) {
     return "react_max_update_depth";
   }
-  if (hasExactString(strings, STACK_OVERFLOW_MESSAGE)) return "stack_overflow";
+  if (hasStackOverflowMessage(strings)) return "stack_overflow";
   return "unknown";
 };
 
@@ -300,15 +262,13 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
 
   const properties = event.properties ?? {};
   const strings = collectStrings(properties);
-  const frameSources = collectStackFrameSources(properties);
-  const category = getExceptionCategory(strings, frameSources);
+  const category = getExceptionCategory(strings);
+  const routeKind = getRouteKind(properties.$current_url);
 
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
-    ...(getRouteKind(properties.$current_url)
-      ? { hackerai_route_kind: getRouteKind(properties.$current_url) }
-      : {}),
+    ...(routeKind ? { hackerai_route_kind: routeKind } : {}),
     ...(typeof document !== "undefined"
       ? { hackerai_visibility_state: document.visibilityState }
       : {}),

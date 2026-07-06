@@ -365,4 +365,22 @@ describe("shouldDropExpectedFrontendException", () => {
       hackerai_route_kind: "chat",
     });
   });
+
+  it("classifies stack overflows across browser wording", () => {
+    for (const value of [
+      "Maximum call stack size exceeded.",
+      "too much recursion",
+    ]) {
+      const event = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: {
+          $exception_values: [value],
+        },
+      });
+
+      expect(event.properties).toMatchObject({
+        hackerai_exception_category: "stack_overflow",
+      });
+    }
+  });
 });
