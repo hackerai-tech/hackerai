@@ -72,7 +72,7 @@ const shouldWarnForPaidHighCostModel = (
 ): boolean =>
   subscription !== "free" &&
   subscription !== "ultra" &&
-  (model === "hackerai-max" || model === "hackerai-pro");
+  model === "hackerai-max";
 
 const AutoOptionButton = ({
   isSelected,

@@ -241,7 +241,7 @@ describe("FinishReasonNotice", () => {
       ).toBeInTheDocument();
     });
 
-    it("renders the Pro Agent run cap notice and continues with Standard when premium continuation is unavailable", () => {
+    it("renders the legacy Pro Agent run cap notice and keeps the current model when premium continuation is unavailable", () => {
       const onContinue = jest.fn();
       renderNotice(
         {
@@ -254,13 +254,11 @@ describe("FinishReasonNotice", () => {
       );
 
       expect(
-        screen.getByText(/Paused at the Pro Agent per-run safety cap/i),
+        screen.getByText(/Paused at a legacy Pro Agent per-run safety cap/i),
       ).toBeInTheDocument();
-      fireEvent.click(
-        screen.getByRole("button", { name: /continue with standard/i }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
-      expect(onContinue).toHaveBeenCalledWith("hackerai-standard");
+      expect(onContinue).toHaveBeenCalledWith(undefined);
     });
 
     it("keeps the current selected model when spend-cap continuation eligibility is unknown", () => {

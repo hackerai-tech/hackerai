@@ -424,6 +424,15 @@ describe("token-bucket", () => {
       ).toBe(11310);
     });
 
+    it("should use GLM 5.2 pricing ($0.9086/$2.856)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
+        11812,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
+        37128,
+      );
+    });
+
     it.each(["agent-model", "agent-model-free", "model-minimax-m3"])(
       "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
       (modelName) => {

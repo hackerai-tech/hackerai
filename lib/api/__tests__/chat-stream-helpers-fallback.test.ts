@@ -26,6 +26,7 @@ jest.mock("@/lib/logger", () => ({
 const GROK_SLUG = "x-ai/grok-4.3";
 const MINIMAX_SLUG = "minimax/minimax-m3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+const GLM_SLUG = "z-ai/glm-5.2";
 
 describe("buildProviderOptions fallback chain", () => {
   it("resolves Opus 4.6 ask chain to Grok", () => {
@@ -96,6 +97,19 @@ describe("buildProviderOptions fallback chain", () => {
       "model-sonnet-4.6",
       "agent",
       { hasMultimodalToolResults: true },
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("resolves GLM 5.2 to Kimi 2.7 Code then Grok", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-glm-5.2",
+      "agent",
     );
     expect(opts.openrouter).toMatchObject({
       models: [KIMI_SLUG, GROK_SLUG],
@@ -300,7 +314,7 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it.each(["model-sonnet-4.6", "model-opus-4.6"])(
+  it.each(["model-glm-5.2", "model-sonnet-4.6", "model-opus-4.6"])(
     "enables high reasoning for ask mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(false, "user-1", modelName, "ask");
@@ -311,7 +325,7 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it.each(["model-sonnet-4.6", "model-opus-4.6"])(
+  it.each(["model-glm-5.2", "model-sonnet-4.6", "model-opus-4.6"])(
     "enables high reasoning for agent mode model %s",
     (modelName) => {
       const opts = buildProviderOptions(true, "user-1", modelName, "agent");
@@ -386,7 +400,7 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(false);
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-sonnet-4.6",
+        selectedModel: "model-glm-5.2",
         selectedModelOverride: "hackerai-pro",
       }),
     ).toBe(false);
@@ -485,6 +499,23 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "ask",
       }),
     ).toBe("model-sonnet-4.6");
+  });
+
+  it("maps GLM provider response slugs back to the local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-glm-5.2",
+        responseModel: GLM_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-glm-5.2");
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-glm-5.2",
+        responseModel: "z-ai/glm-5.2-20260616",
+        mode: "ask",
+      }),
+    ).toBe("model-glm-5.2");
   });
 
   it("falls back to the active model key when provider metadata is absent", () => {
