@@ -1,4 +1,7 @@
-import { splitWorkedForParts } from "../worked-for-parts";
+import {
+  isExpandableWorkedForPart,
+  splitWorkedForParts,
+} from "../worked-for-parts";
 import type { ChatMessage } from "@/types";
 
 const part = (
@@ -66,5 +69,23 @@ describe("splitWorkedForParts", () => {
     expect(result.nonFileParts).toEqual([tool, text]);
     expect(result.workParts).toEqual([tool]);
     expect(result.trailingTextParts).toEqual([text]);
+  });
+});
+
+describe("isExpandableWorkedForPart", () => {
+  it("treats tool parts and rendered tool output as expandable work", () => {
+    expect(isExpandableWorkedForPart(part("tool-shell"))).toBe(true);
+    expect(
+      isExpandableWorkedForPart(
+        part("data-terminal", {
+          data: { terminal: "output", toolCallId: "tool-1" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat stream metadata as expandable work", () => {
+    expect(isExpandableWorkedForPart(part("step-start"))).toBe(false);
+    expect(isExpandableWorkedForPart(part("data-context-usage"))).toBe(false);
   });
 });
