@@ -121,6 +121,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
+  const showActions = Boolean(isHovered || isDropdownOpen || isMobile);
 
   useEffect(() => {
     if (optimisticChatId && optimisticChatId === routeChatId) {
@@ -341,14 +342,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
       data-testid={`chat-item-${id}`}
     >
       <div
-        className={`mr-2 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium ${
-          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
-            ? "[-webkit-mask-image:var(--sidebar-mask-active)] [mask-image:var(--sidebar-mask-active)]"
-            : "[-webkit-mask-image:var(--sidebar-mask)] [mask-image:var(--sidebar-mask)]"
+        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${
+          showActions ? "pr-7" : ""
         }`}
         dir="auto"
       >
         <span className="flex min-w-0 items-center gap-1.5">
+          {isStreaming && (
+            <LoaderCircle
+              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
+              data-testid="chat-item-streaming-icon"
+            />
+          )}
           {isPinned && !isStreaming && (
             <Pin
               className="size-3 flex-shrink-0 text-muted-foreground"
@@ -376,21 +381,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
               Awaiting approval
             </span>
           )}
-          {isStreaming && (
-            <LoaderCircle
-              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
-              data-testid="chat-item-streaming-icon"
-            />
-          )}
         </span>
       </div>
 
       <div
         className={`absolute right-2 opacity-0 transition-opacity ${
-          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
-            ? "opacity-100"
-            : ""
+          showActions ? "opacity-100" : "pointer-events-none"
         }`}
+        aria-hidden={!showActions}
       >
         <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
           <DropdownMenuTrigger asChild>
@@ -398,6 +396,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               variant="ghost"
               size="sm"
               className="h-6 w-6 p-0 hover:bg-sidebar-accent"
+              tabIndex={showActions ? 0 : -1}
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();

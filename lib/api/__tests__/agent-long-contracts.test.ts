@@ -62,6 +62,11 @@ const agentRouteErrorsSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentPartialSaveRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-partial-save-route.ts"),
+  "utf8",
+);
+
 const chatComponentSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/components/chat.tsx"),
   "utf8",
@@ -376,9 +381,40 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
     expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
+    expect(chatComponentSrc).toMatch(/AGENT_PARTIAL_SAVE_ENDPOINT/);
+    expect(chatComponentSrc).toMatch(/saveAgentLongPartialSnapshot/);
+    expect(chatComponentSrc).toMatch(
+      /saveAgentLongPartialSnapshot\("resume_terminal_204"\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /getLatestAgentLongAssistantMessageForPartialSave/,
+    );
     expect(chatComponentSrc).toMatch(/stop\(\)/);
     expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+  });
+
+  test("client partial-save endpoint is authenticated and assistant-only", () => {
+    expect(agentEndpointsSrc).toMatch(
+      /AGENT_PARTIAL_SAVE_ENDPOINT\s*=\s*"\/api\/agent\/partial-save"/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(/getUserID\(req\)/);
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /assertUserCanAccessChatHistory\(userId\)/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /getChatById\(\{\s*id:\s*body\.chatId\s*\}\)/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /message\.role\s*!==\s*"assistant"/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(/hasVisibleAssistantContent/);
+    expect(agentPartialSaveRouteSrc).toMatch(/saveMessage\(\{/);
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /finishReason:\s*CLIENT_SAVED_FINISH_REASON/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(/updateChat\(\{/);
   });
 
   test("stops the local stream when a streaming chat unmounts", () => {

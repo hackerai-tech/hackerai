@@ -7,7 +7,6 @@ import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
 import {
   AGENT_RUN_SPEND_CAP_FINISH_REASON,
   AGENT_RUN_SPEND_CAP_REASON,
-  AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
 } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
@@ -71,7 +70,7 @@ export const FinishReasonNotice = ({
     }
 
     if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {
-      return <>Paused at the Pro Agent per-run safety cap.</>;
+      return <>Paused at a legacy Pro Agent per-run safety cap.</>;
     }
 
     if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
@@ -85,19 +84,12 @@ export const FinishReasonNotice = ({
 
   if (!content) return null;
 
-  const shouldContinueWithStandard =
-    finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON &&
-    agentRunSpendCapPremiumContinuationAllowed === false;
   const showContinue =
     onContinue &&
     !hasContinued &&
     finishReason !== BUDGET_EXHAUSTION_FINISH_REASON;
-  const continuationModel = shouldContinueWithStandard
-    ? AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL
-    : undefined;
-  const continueButtonLabel = shouldContinueWithStandard
-    ? "Continue with Standard"
-    : "Continue";
+  const continuationModel = undefined;
+  const continueButtonLabel = "Continue";
 
   return (
     <div className="mt-2 w-full">

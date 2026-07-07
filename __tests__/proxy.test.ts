@@ -41,19 +41,25 @@ function createRequest({
   accept = "application/json",
   hasSession = false,
   userAgent = "BetterStack",
+  method = "GET",
+  headers = {},
 }: {
   pathname: string;
   accept?: string;
   hasSession?: boolean;
   userAgent?: string;
+  method?: string;
+  headers?: Record<string, string>;
 }): NextRequest {
   const url = new URL(pathname, "https://hackerai.co");
   return {
+    method,
     nextUrl: url,
     url: url.toString(),
     headers: new Headers({
       accept,
       "user-agent": userAgent,
+      ...headers,
     }),
     cookies: {
       has: jest.fn((name: string) => name === "wos-session" && hasSession),
@@ -85,6 +91,98 @@ describe("proxy", () => {
     expect(mockNextResponseNext).toHaveBeenCalledWith();
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-action root POSTs before AuthKit", async () => {
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/index",
+        method: "POST",
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "method_not_allowed",
+        message: "POST is not supported for this route.",
+      },
+      { status: 405, headers: { Allow: "GET, HEAD" } },
+    );
+  });
+
+  it("lets root Server Action POSTs continue through AuthKit", async () => {
+    mockAuthkit.mockResolvedValue({
+      session: { user: { id: "user_123" } },
+      headers: new Headers(),
+      authorizationUrl: undefined,
+    });
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "POST",
+        headers: { "next-action": "action-id" },
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "next" });
+    expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
+  });
+
+  it("treats callback-only ended-session refresh errors as logged-out requests", async () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+          rawData: {
+            error: "invalid_grant",
+            error_description: "Session has already ended.",
+          },
+        },
+      },
+    );
+    try {
+      mockAuthkit.mockImplementation((_request, options: any) => {
+        options.onSessionRefreshError({ error: endedSessionError });
+        return Promise.resolve({
+          session: { user: { id: "stale-user" } },
+          headers: new Headers(),
+          authorizationUrl: undefined,
+        });
+      });
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(
+        createRequest({
+          pathname: "/share/d87274de-f182-4a3c-a821-c0949295af2d",
+          method: "POST",
+          hasSession: true,
+        }),
+      );
+
+      expect(response).toMatchObject({ kind: "next" });
+      expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      expect(JSON.parse(String(infoSpy.mock.calls[0][0]))).toMatchObject({
+        level: "info",
+        event: "auth.session_refresh_ended",
+        service: "hackerai-web",
+        pathname: "/share/d87274de-f182-4a3c-a821-c0949295af2d",
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it("still requires auth for protected API routes", async () => {

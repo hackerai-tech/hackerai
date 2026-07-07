@@ -69,43 +69,31 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("warns before selecting HackerAI Pro in ask mode on paid plans", () => {
+  it("selects HackerAI Pro in ask mode without a high-cost warning", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
 
-    expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
-    expect(screen.getByText("High-cost model")).toBeVisible();
     expect(
-      screen.getByText(/long requests can use around \$10 of usage/i),
-    ).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
-
-    expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
+      screen.queryByTestId("high-cost-model-warning"),
+    ).not.toBeInTheDocument();
+    expect(mockDismissHighCostModelUsageNotice).not.toHaveBeenCalled();
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("warns before selecting HackerAI Pro in agent mode on paid plans", () => {
+  it("selects HackerAI Pro in agent mode without a high-cost warning", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
 
-    expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByTestId("high-cost-model-warning")).toBeVisible();
-    expect(screen.getByText("High-cost model")).toBeVisible();
     expect(
-      screen.getByText(/long requests can use around \$10 of usage/i),
-    ).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: /Use HackerAI Pro/i }));
-
-    expect(mockDismissHighCostModelUsageNotice).toHaveBeenCalledTimes(1);
+      screen.queryByTestId("high-cost-model-warning"),
+    ).not.toBeInTheDocument();
+    expect(mockDismissHighCostModelUsageNotice).not.toHaveBeenCalled();
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
@@ -136,13 +124,13 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-max");
   });
 
-  it("uses team-specific warning copy for team users", () => {
+  it("uses team-specific warning copy for team users selecting Max", () => {
     mockSubscription = "team";
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
 
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText(/your team's usage/i)).toBeVisible();

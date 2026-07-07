@@ -60,7 +60,7 @@ describe("RateLimitWarning", () => {
     expect(screen.getByText(/free Agent requests/i)).toBeInTheDocument();
   });
 
-  it("renders Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
+  it("renders legacy Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
     render(
       <RateLimitWarning
         data={{
@@ -81,6 +81,9 @@ describe("RateLimitWarning", () => {
     expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
       "$5.24",
     );
+    expect(screen.getByText(/legacy per-run safety cap/i)).toHaveTextContent(
+      "Continue to keep working",
+    );
     expect(
       screen.queryByRole("button", { name: /upgrade plan/i }),
     ).not.toBeInTheDocument();
@@ -89,7 +92,7 @@ describe("RateLimitWarning", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("points spend-cap continuation to Standard when premium continuation is unavailable", () => {
+  it("uses current-model continuation copy when premium continuation is unavailable", () => {
     render(
       <RateLimitWarning
         data={{
@@ -108,7 +111,7 @@ describe("RateLimitWarning", () => {
     );
 
     expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
-      "Continue with Standard",
+      "Continue to keep working",
     );
   });
 

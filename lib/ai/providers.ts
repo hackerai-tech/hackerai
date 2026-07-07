@@ -179,6 +179,7 @@ const openrouter = createOpenRouter({
 type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
+export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const GROK_4_3_SLUG = "x-ai/grok-4.3";
 
@@ -196,6 +197,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
+    "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-minimax-m3": or(MINIMAX_M3_SLUG),
     "model-kimi-k2.7-code": or(KIMI_K2_7_CODE_SLUG),
     // Compatibility alias for stale internal references persisted before the
@@ -223,6 +225,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
+  "model-glm-5.2": "June 2026",
   "model-minimax-m3": "May 2026",
   "model-kimi-k2.7-code": "June 2025",
   "model-kimi-k2.6": "June 2025",
@@ -244,6 +247,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-glm-5.2": "Z.ai GLM 5.2",
   "model-minimax-m3": "MiniMax M3",
   "model-kimi-k2.7-code": "Moonshot Kimi K2.7 Code",
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
@@ -331,7 +335,7 @@ export function resolveTierToProviderKey(
     case "hackerai-standard":
       return isAgentMode(mode) ? "model-minimax-m3" : "model-deepseek-v4-pro";
     case "hackerai-pro":
-      return "model-sonnet-4.6";
+      return "model-glm-5.2";
     case "hackerai-max":
       return "model-opus-4.6";
   }

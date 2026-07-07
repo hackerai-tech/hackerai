@@ -23,26 +23,40 @@ const TERMINAL_STATUSES = new Set([
 export const createAgentResumeGet =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
-    try {
-      const { userId } = await getUserIDAndPro(req);
+    let stage = "authenticate";
+    let userId: string | undefined;
+    let chatId: string | undefined;
+    let runId: string | undefined;
+    const requestId =
+      req.headers.get("x-request-id") ??
+      req.headers.get("x-vercel-id") ??
+      undefined;
 
-      const chatId = req.nextUrl.searchParams.get("chatId");
+    try {
+      const authContext = await getUserIDAndPro(req);
+      userId = authContext.userId;
+
+      stage = "validate_request";
+      chatId = req.nextUrl.searchParams.get("chatId") ?? undefined;
       if (!chatId) {
         return new NextResponse("chatId required", { status: 400 });
       }
 
+      stage = "get_chat";
       const chat = await getChatById({ id: chatId });
       if (!chat || chat.user_id !== userId) {
         return new NextResponse("Forbidden", { status: 403 });
       }
 
-      const runId = await getActiveTriggerRun({ chatId });
+      stage = "get_active_trigger_run";
+      runId = (await getActiveTriggerRun({ chatId })) ?? undefined;
       if (!runId) {
         return new NextResponse(null, { status: 204 });
       }
 
       let runStatus: string | undefined;
       try {
+        stage = "retrieve_trigger_run";
         const run = await runs.retrieve(runId);
         runStatus = run.status;
       } catch (err) {
@@ -56,6 +70,7 @@ export const createAgentResumeGet =
       }
 
       if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
+        stage = "clear_terminal_trigger_run";
         await setActiveTriggerRun({
           chatId,
           triggerRunId: null,
@@ -65,6 +80,7 @@ export const createAgentResumeGet =
         return new NextResponse(null, { status: 204 });
       }
 
+      stage = "create_public_token";
       const [publicAccessToken, approvalSessionPublicAccessToken] =
         await Promise.all([
           auth.createPublicToken({
@@ -100,6 +116,13 @@ export const createAgentResumeGet =
         endpoint,
         action: "resume",
         fallbackMessage: "Failed to resume run",
+        context: {
+          requestId,
+          userId,
+          chatId,
+          runId,
+          stage,
+        },
       });
     }
   };

@@ -10,6 +10,8 @@ import {
 } from "@/lib/referrals/config";
 
 const AUTHKIT_BYPASS_PATHS = new Set(["/api/health/trigger-agent-mode"]);
+const ROOT_PAGE_POST_PATHS = new Set(["/", "/index"]);
+const NEXT_ACTION_HEADER = "next-action";
 
 const UNAUTHENTICATED_PATHS = new Set([
   ...AUTHKIT_BYPASS_PATHS,
@@ -62,6 +64,17 @@ function isUnauthenticatedPath(pathname: string): boolean {
 
 function shouldBypassAuthkit(pathname: string): boolean {
   return AUTHKIT_BYPASS_PATHS.has(pathname);
+}
+
+function isUnsupportedRootPagePost(
+  request: NextRequest,
+  pathname: string,
+): boolean {
+  return (
+    request.method === "POST" &&
+    ROOT_PAGE_POST_PATHS.has(pathname) &&
+    !request.headers.has(NEXT_ACTION_HEADER)
+  );
 }
 
 function isBrowserRequest(request: NextRequest): boolean {
@@ -144,6 +157,16 @@ function buildEndedSessionResponse(
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
+  if (isUnsupportedRootPagePost(request, pathname)) {
+    return NextResponse.json(
+      {
+        code: "method_not_allowed",
+        message: "POST is not supported for this route.",
+      },
+      { status: 405, headers: { Allow: "GET, HEAD" } },
+    );
+  }
+
   if (shouldBypassAuthkit(pathname)) {
     return NextResponse.next();
   }
@@ -163,6 +186,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   let refreshHitRateLimit = false;
+  let refreshEndedSession = false;
   const hadSessionCookie = request.cookies.has("wos-session");
 
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
@@ -172,6 +196,18 @@ export default async function proxy(request: NextRequest) {
       eagerAuth: true,
       onSessionRefreshError: ({ error }) => {
         if (isEndedSessionRefreshError(error)) {
+          refreshEndedSession = true;
+          console.info(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "info",
+              event: "auth.session_refresh_ended",
+              service: "hackerai-web",
+              environment:
+                process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+              pathname,
+            }),
+          );
           return;
         }
 
@@ -213,6 +249,10 @@ export default async function proxy(request: NextRequest) {
   }
 
   const { session, headers, authorizationUrl } = authkitResult;
+
+  if (refreshEndedSession) {
+    return buildEndedSessionResponse(request, pathname);
+  }
 
   const requestHeaders = buildRequestHeaders(request, headers);
   const responseHeaders = buildResponseHeaders(headers);

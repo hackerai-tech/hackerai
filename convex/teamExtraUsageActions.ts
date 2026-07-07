@@ -6,6 +6,10 @@ import { v } from "convex/values";
 import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
+import {
+  extraUsageDollarsToPoints,
+  extraUsagePointsToDollars,
+} from "./lib/extraUsagePricing";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -13,7 +17,6 @@ import { convexLogger } from "./lib/logger";
 
 let stripeInstance: Stripe | null = null;
 let workosInstance: WorkOS | null = null;
-const POINTS_PER_DOLLAR = 10_000;
 
 function getStripe(): Stripe {
   if (!stripeInstance) {
@@ -366,7 +369,9 @@ export const deductWithAutoReloadForTeam = action({
 
     const thresholdPoints = state.autoReloadThresholdPoints ?? 0;
     const reloadAmount = state.autoReloadAmountDollars ?? 0;
-    const requestedDeductionDollars = args.amountPoints / POINTS_PER_DOLLAR;
+    const requestedDeductionDollars = extraUsagePointsToDollars(
+      args.amountPoints,
+    );
     const requestNeedsReload = state.balancePoints < args.amountPoints;
     const balanceForReloadPoints = deductResult.success
       ? deductResult.newBalancePoints
@@ -458,8 +463,8 @@ export const deductWithAutoReloadForTeam = action({
                   if (deductResult.success) {
                     deductResult = {
                       ...deductResult,
-                      newBalancePoints: Math.round(
-                        creditResult.newBalance * POINTS_PER_DOLLAR,
+                      newBalancePoints: extraUsageDollarsToPoints(
+                        creditResult.newBalance,
                       ),
                       newBalanceDollars: creditResult.newBalance,
                     };

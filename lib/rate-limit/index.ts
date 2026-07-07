@@ -28,6 +28,7 @@ import type {
 export {
   checkTokenBucketLimit,
   deductUsage,
+  deductUsageDelta,
   refundUsage,
   resetRateLimitBuckets,
   stashOldBucketRemaining,
@@ -38,6 +39,7 @@ export {
   addOrgRemovedUsage,
   clearOrgRemovedUsage,
   applyTeamSeatDebt,
+  billableCostDollarsToPoints,
   calculateTokenCost,
   calculateRawTokenCost,
   getBudgetLimits,
@@ -59,6 +61,16 @@ export {
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export {
+  addUsageDeductionDelta,
+  costDollarsToPoints,
+  createUsageSettlementState,
+  getUsageSettlementInitialDeduction,
+  getUnsettledUsagePoints,
+  shouldSettleUsageMidRun,
+  replaceUsageSettlementState,
+  type UsageSettlementState,
+} from "./usage-settlement";
 export { acquireFreeRunConcurrencyLock } from "./free-concurrency";
 export {
   checkFreeMonthlyCostLimit,

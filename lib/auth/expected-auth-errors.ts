@@ -1,5 +1,7 @@
 const INVALID_GRANT_ERROR = "invalid_grant";
 const SESSION_ENDED_MESSAGE = "session has already ended";
+const SESSION_ENDED_DUE_TO_INACTIVITY_MESSAGE =
+  "session ended due to inactivity";
 const INVALID_CODE_VERIFIER_MESSAGE = "invalid code verifier";
 const SIGN_IN_SESSION_UNVERIFIED_MESSAGE =
   "sign-in session could not be verified";
@@ -51,7 +53,8 @@ export const isEndedSessionRefreshError = (value: unknown): boolean => {
   const errorText = collectAuthErrorText(value).toLowerCase();
   return (
     errorText.includes(INVALID_GRANT_ERROR) &&
-    errorText.includes(SESSION_ENDED_MESSAGE)
+    (errorText.includes(SESSION_ENDED_MESSAGE) ||
+      errorText.includes(SESSION_ENDED_DUE_TO_INACTIVITY_MESSAGE))
   );
 };
 

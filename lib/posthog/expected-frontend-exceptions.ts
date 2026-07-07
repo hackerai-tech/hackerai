@@ -5,9 +5,22 @@ type PostHogEventLike = {
   properties?: Record<string, unknown>;
 };
 
+type FrontendExceptionCategory =
+  "react_max_update_depth" | "stack_overflow" | "unknown";
+
 const RESIZE_OBSERVER_MESSAGES = new Set([
   "ResizeObserver loop completed with undelivered notifications.",
   "ResizeObserver loop limit exceeded",
+]);
+
+const BROWSER_FETCH_TRANSPORT_MESSAGES = new Set([
+  "Failed to fetch",
+  "Load failed",
+  "NetworkError when attempting to fetch resource.",
+  "network error",
+  "timeout",
+  "connection closed",
+  "An unexpected response was received from the server.",
 ]);
 
 const MANUAL_CHAT_STOP_ABORT_MESSAGES = new Set([
@@ -33,6 +46,22 @@ const TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS = [
   "ReadableStreamDefaultController.close: Cannot close a stream that is already closed.",
 ];
 
+const CHUNK_LOAD_MESSAGE_FRAGMENTS = [
+  "ChunkLoadError",
+  "Failed to load chunk",
+  "Loading chunk",
+  "error loading dynamically imported module",
+  "Importing a module script failed",
+  "Failed to fetch dynamically imported module",
+];
+
+const REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT = "Minified React error #185";
+const STACK_OVERFLOW_MESSAGES = new Set([
+  "Maximum call stack size exceeded",
+  "Maximum call stack size exceeded.",
+  "too much recursion",
+]);
+
 const collectStrings = (value: unknown, strings: string[] = []): string[] => {
   if (typeof value === "string") {
     strings.push(value);
@@ -55,6 +84,36 @@ const collectStrings = (value: unknown, strings: string[] = []): string[] => {
   return strings;
 };
 
+const collectStackFrameSources = (
+  value: unknown,
+  sources: string[] = [],
+): string[] => {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStackFrameSources(item, sources);
+    }
+    return sources;
+  }
+
+  if (!value || typeof value !== "object") {
+    return sources;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (
+      (key === "source" || key === "filename") &&
+      typeof nestedValue === "string"
+    ) {
+      sources.push(nestedValue);
+      continue;
+    }
+
+    collectStackFrameSources(nestedValue, sources);
+  }
+
+  return sources;
+};
+
 const includesAny = (strings: string[], fragments: string[]): boolean =>
   strings.some((value) =>
     fragments.some((fragment) => value.includes(fragment)),
@@ -71,8 +130,20 @@ const hasExactStringFrom = (
 const hasResizeObserverMessage = (strings: string[]): boolean =>
   strings.some((value) => RESIZE_OBSERVER_MESSAGES.has(value));
 
+const hasBrowserFetchTransportMessage = (strings: string[]): boolean =>
+  strings.some((value) => BROWSER_FETCH_TRANSPORT_MESSAGES.has(value));
+
+const hasChunkLoadMessage = (strings: string[]): boolean =>
+  includesAny(strings, CHUNK_LOAD_MESSAGE_FRAGMENTS);
+
+const hasStackOverflowMessage = (strings: string[]): boolean =>
+  hasExactStringFrom(strings, STACK_OVERFLOW_MESSAGES);
+
 const hasTriggerStreamCloseMessage = (strings: string[]): boolean =>
   includesAny(strings, TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS);
+
+const matchesTriggerStreamClosePattern = (strings: string[]): boolean =>
+  hasTriggerStreamCloseMessage(strings);
 
 type ExpectedFrontendPattern = {
   message: string;
@@ -83,7 +154,9 @@ const EXPECTED_FRONTEND_PATTERNS: ExpectedFrontendPattern[] = [
   {
     message: "Failed to refresh access token",
     sourceFragments: [
+      "@workos-inc+authkit-nextjs",
       "@workos-inc/authkit-nextjs",
+      "src/components/tokenStore.ts",
       "convex/dist/esm/browser/sync/authentication_manager.js",
       "lib/auth/shared-token.ts",
       "lib/auth/use-auth-from-authkit.ts",
@@ -106,8 +179,19 @@ const matchesExpectedFrontendPattern = (strings: string[]): boolean =>
       hasExactString(strings, message) && includesAny(strings, sourceFragments),
   );
 
-const matchesTriggerStreamClosePattern = (strings: string[]): boolean =>
-  hasTriggerStreamCloseMessage(strings);
+const matchesBareBrowserTransportPattern = (
+  strings: string[],
+  frameSources: string[],
+): boolean =>
+  hasBrowserFetchTransportMessage(strings) && frameSources.length === 0;
+
+const getExceptionCategory = (strings: string[]): FrontendExceptionCategory => {
+  if (includesAny(strings, [REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT])) {
+    return "react_max_update_depth";
+  }
+  if (hasStackOverflowMessage(strings)) return "stack_overflow";
+  return "unknown";
+};
 
 export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   if (event.event !== "$exception") {
@@ -119,13 +203,78 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   }
 
   const strings = collectStrings(event.properties);
+  const frameSources = collectStackFrameSources(event.properties);
 
   return (
     hasResizeObserverMessage(strings) ||
+    matchesBareBrowserTransportPattern(strings, frameSources) ||
+    hasChunkLoadMessage(strings) ||
     hasExactStringFrom(strings, MANUAL_CHAT_STOP_ABORT_MESSAGES) ||
     hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES) ||
     hasExactStringFrom(strings, OPAQUE_SYNTHETIC_MESSAGES) ||
     matchesExpectedFrontendPattern(strings) ||
     matchesTriggerStreamClosePattern(strings)
   );
+}
+
+const getRouteKind = (currentUrl: unknown): string | undefined => {
+  if (typeof currentUrl !== "string") return undefined;
+
+  try {
+    const { pathname } = new URL(currentUrl, "https://hackerai.co");
+    if (pathname === "/") return "home";
+    if (pathname.startsWith("/c/")) return "chat";
+    if (pathname.startsWith("/share/")) return "share";
+    if (pathname.startsWith("/download")) return "download";
+    if (pathname.startsWith("/auth-error")) return "auth";
+    return "other";
+  } catch {
+    return undefined;
+  }
+};
+
+function getBrowserNetworkDetails() {
+  if (typeof navigator === "undefined") return {};
+
+  const connection = (
+    navigator as Navigator & {
+      connection?: {
+        effectiveType?: string;
+        saveData?: boolean;
+      };
+    }
+  ).connection;
+
+  return {
+    hackerai_online: navigator.onLine,
+    ...(connection?.effectiveType
+      ? { hackerai_connection_effective_type: connection.effectiveType }
+      : {}),
+    ...(typeof connection?.saveData === "boolean"
+      ? { hackerai_connection_save_data: connection.saveData }
+      : {}),
+  };
+}
+
+export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
+  event: T,
+): T {
+  if (event.event !== "$exception") return event;
+
+  const properties = event.properties ?? {};
+  const strings = collectStrings(properties);
+  const category = getExceptionCategory(strings);
+  const routeKind = getRouteKind(properties.$current_url);
+
+  event.properties = {
+    ...properties,
+    hackerai_exception_category: category,
+    ...(routeKind ? { hackerai_route_kind: routeKind } : {}),
+    ...(typeof document !== "undefined"
+      ? { hackerai_visibility_state: document.visibilityState }
+      : {}),
+    ...getBrowserNetworkDetails(),
+  };
+
+  return event;
 }

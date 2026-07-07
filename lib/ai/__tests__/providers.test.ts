@@ -26,6 +26,10 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("x-ai/grok-4.3");
     expect(
+      (myProvider.languageModel("model-glm-5.2") as { modelId: string })
+        .modelId,
+    ).toBe("z-ai/glm-5.2");
+    expect(
       (
         myProvider.languageModel("model-gemini-3-flash") as {
           modelId: string;
@@ -53,6 +57,7 @@ describe("provider registry", () => {
     ).toBe("x-ai/grok-4.3");
     expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
     expect(getModelDisplayName("model-grok-4.3")).toBe("xAI Grok 4.3");
+    expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.3");
     expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.3");
   });

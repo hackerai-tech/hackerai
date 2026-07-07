@@ -98,6 +98,8 @@ import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
+const GLM_AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+
 // ---------------------------------------------------------------------------
 // Mutable state — the runner updates these in place; callers read them back.
 // ---------------------------------------------------------------------------
@@ -384,6 +386,10 @@ export type AgentStreamContext = {
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
+  settleUsageAfterStep?: (args: {
+    currentCostDollars: number;
+    force: boolean;
+  }) => Promise<void>;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -439,6 +445,7 @@ export async function createAgentStream(
   > => getActiveToolsWithExclusions();
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
+  let lastRequestedSlug = requestedSlug;
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
   const abortSignal = combineAbortSignals([
@@ -463,7 +470,7 @@ export async function createAgentStream(
       state.streamUsage = lastStep.usage as Record<string, unknown>;
     }
     state.responseModel = lastStep?.response?.modelId ?? state.responseModel;
-    state.responseModel ??= requestedSlug;
+    state.responseModel ??= lastRequestedSlug;
 
     const openRouterMetadata = lastStep
       ? extractOpenRouterMetadata({
@@ -541,24 +548,43 @@ export async function createAgentStream(
   let streamHasImageViewResults = uiMessagesContainImageViewResult(
     state.finalMessages,
   );
-  const getStepProviderOptions = () =>
+  const getEffectiveModelName = () =>
+    modelName === "model-glm-5.2" &&
+    ctx.mode === "agent" &&
+    streamHasImageViewResults
+      ? GLM_AGENT_VISION_MODEL
+      : modelName;
+  const getEffectiveModelInfo = () => {
+    const effectiveModelName = getEffectiveModelName();
+    const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
+    lastRequestedSlug = languageModel.modelId;
+    return {
+      modelName: effectiveModelName,
+      languageModel,
+      requestedSlug: languageModel.modelId,
+    };
+  };
+  const getStepProviderOptions = (
+    effectiveModelName = getEffectiveModelName(),
+  ) =>
     buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
-      modelName,
+      effectiveModelName,
       ctx.mode,
       {
         hasMultimodalToolResults: streamHasImageViewResults,
-        ...(ctx.providerReasoningOverride?.modelName === modelName && {
+        ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
       },
     );
   const prepareProviderMessages = (
     messages: ModelMessage[],
+    effectiveModelName = getEffectiveModelName(),
   ): ModelMessage[] => {
     const nonEmptyMessages = filterEmptyAssistantMessages(messages);
-    if (!isAnthropicModel(modelName)) return nonEmptyMessages;
+    if (!isAnthropicModel(effectiveModelName)) return nonEmptyMessages;
 
     const repair = repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
     if (repair.action !== "none") {
@@ -566,13 +592,15 @@ export async function createAgentStream(
         action: repair.action,
         reason: repair.reason,
         trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
-        model: modelName,
+        model: effectiveModelName,
       });
     }
     return repair.messages as ModelMessage[];
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
+    modelName: string;
+    requestedSlug?: string;
     stepIndex: number;
     source: ProviderRequestDiagnostics["source"];
     messages: ModelMessage[];
@@ -580,8 +608,8 @@ export async function createAgentStream(
     activeTools: Array<keyof typeof ctx.tools> | undefined;
   }) => {
     latestProviderRequestDiagnostics = buildProviderRequestDiagnostics({
-      modelName,
-      requestedSlug,
+      modelName: args.modelName,
+      requestedSlug: args.requestedSlug,
       stepIndex: args.stepIndex,
       source: args.source,
       messages: args.messages,
@@ -598,14 +626,20 @@ export async function createAgentStream(
     );
     return latestProviderRequestDiagnostics;
   };
-  const initialProviderOptions = getStepProviderOptions();
+  const initialModelInfo = getEffectiveModelInfo();
+  const initialProviderOptions = getStepProviderOptions(
+    initialModelInfo.modelName,
+  );
   const promptSerializationTools = createPromptSerializationTools(ctx.tools);
   const initialModelMessages = prepareProviderMessages(
     await convertToModelMessages(state.finalMessages, {
       tools: promptSerializationTools,
     }),
+    initialModelInfo.modelName,
   );
   recordProviderRequestDiagnostics({
+    modelName: initialModelInfo.modelName,
+    requestedSlug: initialModelInfo.requestedSlug,
     stepIndex: 0,
     source: "initial",
     messages: initialModelMessages,
@@ -614,9 +648,12 @@ export async function createAgentStream(
   });
 
   return streamText({
-    model: requestedLanguageModel,
+    model: initialModelInfo.languageModel,
     maxOutputTokens,
-    system: buildSystemPrompt(ctx.currentSystemPrompt, modelName),
+    system: buildSystemPrompt(
+      ctx.currentSystemPrompt,
+      initialModelInfo.modelName,
+    ),
     messages: initialModelMessages,
     tools: ctx.tools,
     activeTools: initialActiveTools,
@@ -638,6 +675,7 @@ export async function createAgentStream(
         if (toolResultsContainImageViewResult(toolResults)) {
           streamHasImageViewResults = true;
         }
+        const effectiveModelInfo = getEffectiveModelInfo();
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
 
@@ -647,7 +685,7 @@ export async function createAgentStream(
             messages: state.finalMessages,
             modelMessages: messages,
             subscription: ctx.subscription,
-            languageModel: ctx.trackedProvider.languageModel(modelName),
+            languageModel: effectiveModelInfo.languageModel,
             mode: ctx.mode,
             writer: ctx.writer,
             chatId: ctx.chatId,
@@ -661,7 +699,9 @@ export async function createAgentStream(
             providerInputTokens: state.lastStepInputTokens,
             chatSystemPrompt: ctx.currentSystemPrompt,
             tools: ctx.tools,
-            providerOptions: getStepProviderOptions(),
+            providerOptions: getStepProviderOptions(
+              effectiveModelInfo.modelName,
+            ),
             transcriptMessages: state.transcriptSourceMessages,
             providerPromptPressure,
           });
@@ -677,7 +717,9 @@ export async function createAgentStream(
             }
             state.transcriptSourceMessages = undefined;
             const activeTools = await getActiveToolsForRecovery(loopRecovery);
-            const providerOptions = getStepProviderOptions();
+            const providerOptions = getStepProviderOptions(
+              effectiveModelInfo.modelName,
+            );
             let summarizedModelMessages = await convertToModelMessages(
               result.summarizedMessages,
               {
@@ -696,8 +738,11 @@ export async function createAgentStream(
             ];
             const preparedMessages = prepareProviderMessages(
               summarizedModelMessages,
+              effectiveModelInfo.modelName,
             );
             recordProviderRequestDiagnostics({
+              modelName: effectiveModelInfo.modelName,
+              requestedSlug: effectiveModelInfo.requestedSlug,
               stepIndex: steps.length + 1,
               source: "summarized_prepare_step",
               messages: preparedMessages,
@@ -705,6 +750,7 @@ export async function createAgentStream(
               activeTools,
             });
             return {
+              model: effectiveModelInfo.languageModel,
               activeTools,
               providerOptions,
               messages: preparedMessages,
@@ -731,14 +777,19 @@ export async function createAgentStream(
         }
 
         const activeTools = await getActiveToolsForRecovery(loopRecovery);
-        const providerOptions = getStepProviderOptions();
+        const providerOptions = getStepProviderOptions(
+          effectiveModelInfo.modelName,
+        );
         const preparedMessages = prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(
             updatedMessages,
-            modelName,
+            effectiveModelInfo.modelName,
           ) as ModelMessage[],
+          effectiveModelInfo.modelName,
         ) as typeof messages;
         recordProviderRequestDiagnostics({
+          modelName: effectiveModelInfo.modelName,
+          requestedSlug: effectiveModelInfo.requestedSlug,
           stepIndex: steps.length + 1,
           source: "prepare_step",
           messages: preparedMessages as ModelMessage[],
@@ -746,6 +797,7 @@ export async function createAgentStream(
           activeTools,
         });
         return {
+          model: effectiveModelInfo.languageModel,
           activeTools,
           providerOptions,
           messages: preparedMessages,
@@ -854,9 +906,15 @@ export async function createAgentStream(
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const budgetDecision = ctx.budgetMonitor?.checkAfterStep(
-        ctx.usageTracker.computeCostDollars(modelName),
-      );
+      const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName);
+      const budgetDecision =
+        ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
+      await ctx.settleUsageAfterStep?.({
+        currentCostDollars,
+        force:
+          budgetDecision?.type === "abort" ||
+          budgetDecision?.type === "abort-agent-run-spend-cap",
+      });
       if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
         ctx.abortController.abort();

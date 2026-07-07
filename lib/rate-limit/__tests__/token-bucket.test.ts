@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 
 import {
+  billableCostDollarsToPoints,
   calculateTokenCost,
   calculateRawTokenCost,
   calculateProratedCredits,
@@ -187,6 +188,20 @@ describe("token-bucket", () => {
   describe("POINTS_PER_DOLLAR", () => {
     it("should be 10000 (1 point = $0.0001)", () => {
       expect(POINTS_PER_DOLLAR).toBe(10_000);
+    });
+  });
+
+  describe("billableCostDollarsToPoints", () => {
+    it("applies the normal usage multiplier to raw provider and tool cost", () => {
+      expect(billableCostDollarsToPoints(1)).toBe(13_000);
+      expect(billableCostDollarsToPoints(0.005)).toBe(65);
+      expect(billableCostDollarsToPoints(0.000000000001)).toBe(1);
+    });
+
+    it("returns 0 for non-positive or invalid cost", () => {
+      expect(billableCostDollarsToPoints(0)).toBe(0);
+      expect(billableCostDollarsToPoints(-1)).toBe(0);
+      expect(billableCostDollarsToPoints(Number.NaN)).toBe(0);
     });
   });
 
@@ -407,6 +422,15 @@ describe("token-bucket", () => {
       expect(
         calculateTokenCost(1_000_000, "output", "model-deepseek-v4-pro"),
       ).toBe(11310);
+    });
+
+    it("should use GLM 5.2 pricing ($0.9086/$2.856)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
+        11812,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
+        37128,
+      );
     });
 
     it.each(["agent-model", "agent-model-free", "model-minimax-m3"])(
