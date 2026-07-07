@@ -4,6 +4,7 @@ import {
   query,
   type MutationCtx,
 } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
@@ -58,7 +59,7 @@ const currentMonthString = (): string => {
 };
 
 const getMonthlySpentPointsForCurrentMonth = (
-  settings: { monthly_reset_date?: string; monthly_spent_points?: number } | null,
+  settings: Doc<"extra_usage"> | null,
 ): number => {
   if (!settings || settings.monthly_reset_date !== currentMonthString()) {
     return 0;
