@@ -635,9 +635,10 @@ export const getTeamExtraUsageAdminView = query({
         ? pointsToDollars(team.auto_reload_threshold_points)
         : undefined,
       autoReloadAmountDollars: team?.auto_reload_amount_dollars,
-      monthlyCapDollars: team?.monthly_cap_points
-        ? pointsToDollars(team.monthly_cap_points)
-        : undefined,
+      monthlyCapDollars:
+        team?.monthly_cap_points === undefined
+          ? undefined
+          : pointsToDollars(team.monthly_cap_points),
       monthlySpentDollars: pointsToDollars(teamMonthlySpent),
       autoReloadDisabledReason: team?.auto_reload_disabled_reason,
       members: members.map((m) => {
@@ -707,6 +708,13 @@ export const updateTeamExtraUsageSettings = mutation({
       args.autoReloadAmountDollars < args.autoReloadThresholdDollars + 10
     ) {
       throw new Error("Reload amount must be at least $10 more than threshold");
+    }
+    if (
+      args.monthlyCapDollars !== undefined &&
+      args.monthlyCapDollars !== null &&
+      (!Number.isFinite(args.monthlyCapDollars) || args.monthlyCapDollars < 1)
+    ) {
+      throw new Error("Monthly spending limit must be at least $1");
     }
 
     const row = await ensureTeamRow(ctx, args.organizationId);
