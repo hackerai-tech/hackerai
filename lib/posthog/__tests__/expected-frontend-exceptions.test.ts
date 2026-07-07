@@ -33,6 +33,7 @@ describe("shouldDropExpectedFrontendException", () => {
       "Load failed",
       "NetworkError when attempting to fetch resource.",
       "network error",
+      "Error in input stream",
       "timeout",
       "connection closed",
       "An unexpected response was received from the server.",
@@ -61,6 +62,114 @@ describe("shouldDropExpectedFrontendException", () => {
                 frames: [
                   {
                     source: "turbopack:///[project]/app/components/chat.tsx",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("drops Next server action transport and stale deployment failures", () => {
+    for (const value of [
+      "Failed to fetch",
+      "An unexpected response was received from the server.",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: [value],
+            $exception_list: [
+              {
+                stacktrace: {
+                  frames: [
+                    {
+                      source:
+                        "turbopack:///[project]/node_modules/.pnpm/next@16.2.9/node_modules/next/src/client/components/router-reducer/reducers/server-action-reducer.ts",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ).toBe(true);
+    }
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_types: ["UnrecognizedActionError"],
+          $exception_values: [
+            'Server Action "00b3ff60fce156a3bb78260aa8fa56550dc48b7f77" was not found on the server. Read more: https://nextjs.org/docs/messages/failed-to-find-server-action',
+          ],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "/docs/messages/failed-to-find-server-action",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps generic network failures when a server action failure has app frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "turbopack:///[project]/app/actions/example.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps non-stale server action failures", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: [
+            "Server Action failed while creating a checkout session",
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps stale-looking server action messages with app stack frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Checkout session was not found on the server"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "turbopack:///[project]/app/actions/billing.ts",
                   },
                 ],
               },
@@ -173,6 +282,8 @@ describe("shouldDropExpectedFrontendException", () => {
       "Event captured as exception with keys: isTrusted",
       "'Error' captured as exception with message: 'Aa'",
       "'TypeError' captured as exception with message: 'undefined is not an object (evaluating 'a.J')'",
+      "'Error' captured as exception with message: 'Invalid call to runtime.sendMessage(). Tab not found.'",
+      "Cannot read properties of undefined (reading 'CoinType')",
     ]) {
       expect(
         shouldDropExpectedFrontendException({

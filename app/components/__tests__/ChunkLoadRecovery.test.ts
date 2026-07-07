@@ -62,6 +62,14 @@ describe("ChunkLoadRecovery", () => {
     ).toBe(true);
 
     expect(
+      isStaleServerActionFailure(
+        new Error(
+          'Server Action "00b3ff60fce156a3bb78260aa8fa56550dc48b7f77" was not found on the server. Read more: https://nextjs.org/docs/messages/failed-to-find-server-action',
+        ),
+      ),
+    ).toBe(true);
+
+    expect(
       isStaleServerActionFailure({
         message: "This request might be from an older or newer deployment.",
       }),

@@ -111,6 +111,7 @@ const MULTIMODAL_REJECTION_PATTERNS = [
   /(?:not supported|unsupported|reject|invalid).{0,80}(?:vision|multimodal|image)/i,
   /model does not support images/i,
   /image.*(?:must be|should be).*(?:url|text)/i,
+  /fetching image from URL/i,
   /content.*image.*not.*allowed/i,
 ] as const;
 
