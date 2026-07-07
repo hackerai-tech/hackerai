@@ -118,6 +118,7 @@ describe("GET /api/health/trigger-agent-mode", () => {
       "https://status.trigger.dev/index.json",
       expect.objectContaining({
         cache: "no-store",
+        signal: expect.anything(),
         headers: { accept: "application/json" },
       }),
     );

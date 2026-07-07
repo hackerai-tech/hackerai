@@ -16,6 +16,8 @@ const CHUNK_LOAD_PATTERNS = [
 
 const STALE_SERVER_ACTION_PATTERNS = [
   /Failed to find Server Action/i,
+  /Server Action\s+"[^"]+"\s+was not found on the server/i,
+  /failed-to-find-server-action/i,
   /older or newer deployment/i,
 ];
 

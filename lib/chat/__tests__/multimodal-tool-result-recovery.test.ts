@@ -128,6 +128,20 @@ describe("multimodal tool result recovery", () => {
     );
 
     expect(isProviderMultimodalToolResultRejectionError(error)).toBe(true);
+
+    expect(
+      isProviderMultimodalToolResultRejectionError(
+        Object.assign(
+          new Error(
+            "Received 404 status code when fetching image from URL: https://example.com/missing.png",
+          ),
+          {
+            name: "AI_APICallError",
+            statusCode: 400,
+          },
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("does not treat media size or retryable provider errors as image rejection", () => {

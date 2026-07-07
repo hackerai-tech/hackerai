@@ -18,6 +18,7 @@ const BROWSER_FETCH_TRANSPORT_MESSAGES = new Set([
   "Load failed",
   "NetworkError when attempting to fetch resource.",
   "network error",
+  "Error in input stream",
   "timeout",
   "connection closed",
   "An unexpected response was received from the server.",
@@ -38,6 +39,8 @@ const OPAQUE_SYNTHETIC_MESSAGES = new Set([
   "Event captured as exception with keys: isTrusted",
   "'Error' captured as exception with message: 'Aa'",
   "'TypeError' captured as exception with message: 'undefined is not an object (evaluating 'a.J')'",
+  "'Error' captured as exception with message: 'Invalid call to runtime.sendMessage(). Tab not found.'",
+  "Cannot read properties of undefined (reading 'CoinType')",
 ]);
 
 const TRIGGER_STREAM_CLOSE_MESSAGE_FRAGMENTS = [
@@ -53,6 +56,18 @@ const CHUNK_LOAD_MESSAGE_FRAGMENTS = [
   "error loading dynamically imported module",
   "Importing a module script failed",
   "Failed to fetch dynamically imported module",
+];
+
+const NEXT_SERVER_ACTION_SOURCE_FRAGMENTS = [
+  "next/src/client/components/router-reducer/reducers/server-action-reducer.ts",
+  "/docs/messages/failed-to-find-server-action",
+];
+
+const STALE_SERVER_ACTION_MESSAGE_FRAGMENTS = [
+  "Failed to find Server Action",
+  "was not found on the server",
+  "failed-to-find-server-action",
+  "older or newer deployment",
 ];
 
 const REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT = "Minified React error #185";
@@ -136,6 +151,17 @@ const hasBrowserFetchTransportMessage = (strings: string[]): boolean =>
 const hasChunkLoadMessage = (strings: string[]): boolean =>
   includesAny(strings, CHUNK_LOAD_MESSAGE_FRAGMENTS);
 
+const hasStaleServerActionMessage = (strings: string[]): boolean =>
+  includesAny(strings, STALE_SERVER_ACTION_MESSAGE_FRAGMENTS);
+
+const hasOnlyNextServerActionFrames = (frameSources: string[]): boolean =>
+  frameSources.length > 0 &&
+  frameSources.every((source) =>
+    NEXT_SERVER_ACTION_SOURCE_FRAGMENTS.some((fragment) =>
+      source.includes(fragment),
+    ),
+  );
+
 const hasStackOverflowMessage = (strings: string[]): boolean =>
   hasExactStringFrom(strings, STACK_OVERFLOW_MESSAGES);
 
@@ -185,6 +211,13 @@ const matchesBareBrowserTransportPattern = (
 ): boolean =>
   hasBrowserFetchTransportMessage(strings) && frameSources.length === 0;
 
+const matchesNextServerActionTransportPattern = (
+  strings: string[],
+  frameSources: string[],
+): boolean =>
+  hasBrowserFetchTransportMessage(strings) &&
+  hasOnlyNextServerActionFrames(frameSources);
+
 const getExceptionCategory = (strings: string[]): FrontendExceptionCategory => {
   if (includesAny(strings, [REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT])) {
     return "react_max_update_depth";
@@ -208,6 +241,8 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
   return (
     hasResizeObserverMessage(strings) ||
     matchesBareBrowserTransportPattern(strings, frameSources) ||
+    matchesNextServerActionTransportPattern(strings, frameSources) ||
+    hasStaleServerActionMessage(strings) ||
     hasChunkLoadMessage(strings) ||
     hasExactStringFrom(strings, MANUAL_CHAT_STOP_ABORT_MESSAGES) ||
     hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES) ||

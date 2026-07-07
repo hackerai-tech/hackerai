@@ -485,6 +485,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /Cannot close a stream that is already closed/,
     );
+    expect(chatComponentSrc).toMatch(/previousOnError[\s\S]*try[\s\S]*catch/);
     expect(chatComponentSrc).toMatch(/event\.preventDefault\(\)/);
   });
 
