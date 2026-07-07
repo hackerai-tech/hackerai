@@ -74,6 +74,18 @@ const getTriggerStreamHeaders = (
   return headers;
 };
 
+const getTriggerJsonHeaders = (
+  accessToken: string,
+): Record<string, string> => ({
+  Authorization: `Bearer ${accessToken}`,
+  "Content-Type": "application/json",
+  "trigger-version": TRIGGER_VERSION,
+  "x-trigger-api-version": TRIGGER_API_VERSION,
+  "x-trigger-client": "browser",
+  "x-trigger-realtime-streams-version": "v2",
+  "x-trigger-source": "sdk",
+});
+
 const linkAbort = (
   parent: AbortSignal | undefined,
   child: AbortController,
