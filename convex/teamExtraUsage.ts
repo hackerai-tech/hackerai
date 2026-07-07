@@ -12,6 +12,7 @@ import {
   extraUsageDollarsToPoints as dollarsToPoints,
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
+import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
 
 // =============================================================================
 // Internal helpers
@@ -709,13 +710,7 @@ export const updateTeamExtraUsageSettings = mutation({
     ) {
       throw new Error("Reload amount must be at least $10 more than threshold");
     }
-    if (
-      args.monthlyCapDollars !== undefined &&
-      args.monthlyCapDollars !== null &&
-      (!Number.isFinite(args.monthlyCapDollars) || args.monthlyCapDollars < 1)
-    ) {
-      throw new Error("Monthly spending limit must be at least $1");
-    }
+    validateMonthlyCapDollars(args.monthlyCapDollars);
 
     const row = await ensureTeamRow(ctx, args.organizationId);
 
