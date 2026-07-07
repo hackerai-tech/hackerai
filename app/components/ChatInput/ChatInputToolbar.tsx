@@ -30,19 +30,19 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {user ? (
-        <ModelSelector
-          value={selectedModel}
-          onChange={setSelectedModel}
-          mode={chatMode}
-        />
-      ) : null}
       {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
           <AgentPermissionSelector />
         </div>
       ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
+        {user ? (
+          <ModelSelector
+            value={selectedModel}
+            onChange={setSelectedModel}
+            mode={chatMode}
+          />
+        ) : null}
         <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>
     </div>

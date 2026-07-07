@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Check, CornerDownLeft, Loader2, X } from "lucide-react";
+import { useRef, useState, type KeyboardEvent } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  CornerDownLeft,
+  Loader2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -35,15 +42,35 @@ const APPROVAL_OPTIONS: Array<{
   },
 ];
 
+const isPlainEnterKey = (event: {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+}) =>
+  event.key === "Enter" &&
+  !event.altKey &&
+  !event.ctrlKey &&
+  !event.metaKey &&
+  !event.shiftKey;
+
 export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   const { session, sendToolApproval, toolApprovalSendStates } =
     useAgentApproval();
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedDecision, setSelectedDecision] =
     useState<AgentToolApprovalDecision>("approve");
   const sendState = toolApprovalSendStates[request.approvalId] ?? "idle";
   const isSending = sendState === "sending";
   const isSettled = sendState === "approved" || sendState === "denied";
   const canSubmit = !!session && !isSending && !isSettled;
+  const selectedOptionIndex = Math.max(
+    0,
+    APPROVAL_OPTIONS.findIndex(
+      (option) => option.decision === selectedDecision,
+    ),
+  );
 
   const submitDecision = async (decision: AgentToolApprovalDecision) => {
     if (!canSubmit) return;
@@ -62,9 +89,41 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     }
   };
 
+  const selectOptionAtIndex = (index: number) => {
+    const nextOption = APPROVAL_OPTIONS[index];
+    if (!nextOption) return;
+    setSelectedDecision(nextOption.decision);
+    optionRefs.current[index]?.focus();
+  };
+
+  const handlePromptKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = Math.min(
+        Math.max(selectedOptionIndex + direction, 0),
+        APPROVAL_OPTIONS.length - 1,
+      );
+      selectOptionAtIndex(nextIndex);
+      return;
+    }
+
+    if (!isPlainEnterKey(event)) return;
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.closest("[data-agent-approval-native-enter='true']")
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    void submitDecision(selectedDecision);
+  };
+
   return (
     <form
       className="order-2 sm:order-1 flex flex-col gap-3 rounded-[22px] border border-black/8 bg-input-chat p-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
+      onKeyDown={handlePromptKeyDown}
       onSubmit={(event) => {
         event.preventDefault();
         void submitDecision(selectedDecision);
@@ -93,12 +152,17 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
         aria-label="Agent approval options"
         className="flex flex-col gap-1"
       >
-        {APPROVAL_OPTIONS.map((option) => {
+        {APPROVAL_OPTIONS.map((option, optionIndex) => {
           const selected = selectedDecision === option.decision;
           const OptionIcon = option.decision === "approve" ? Check : X;
+          const canMoveUp = optionIndex > 0;
+          const canMoveDown = optionIndex < APPROVAL_OPTIONS.length - 1;
           return (
             <button
               key={option.decision}
+              ref={(node) => {
+                optionRefs.current[optionIndex] = node;
+              }}
               type="button"
               role="radio"
               aria-checked={selected}
@@ -109,6 +173,13 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
                   : "text-muted-foreground hover:bg-foreground/5"
               } disabled:cursor-not-allowed disabled:opacity-60`}
               onClick={() => setSelectedDecision(option.decision)}
+              onKeyDown={(event) => {
+                if (!isPlainEnterKey(event)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setSelectedDecision(option.decision);
+                void submitDecision(option.decision);
+              }}
             >
               <span
                 className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-sm font-medium ${
@@ -120,12 +191,34 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               >
                 {selected ? <OptionIcon className="h-4 w-4" /> : option.index}
               </span>
-              <span className="flex min-w-0 flex-col">
-                <span className="text-sm font-medium">{option.label}</span>
-                <span className="text-xs text-muted-foreground">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm font-medium">
+                  {option.label}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
                   {option.description}
                 </span>
               </span>
+              {selected ? (
+                <span
+                  className="ml-auto flex shrink-0 items-center gap-1"
+                  aria-hidden="true"
+                  data-testid={`agent-approval-option-${option.decision}-arrows`}
+                >
+                  <ArrowUp
+                    className={`size-4 ${
+                      canMoveUp ? "text-foreground/70" : "text-foreground/25"
+                    }`}
+                  />
+                  <ArrowDown
+                    className={`size-4 ${
+                      canMoveDown
+                        ? "text-foreground/70"
+                        : "text-foreground/25"
+                    }`}
+                  />
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -136,11 +229,16 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
           type="button"
           variant="ghost"
           disabled={!canSubmit}
+          data-agent-approval-native-enter="true"
           onClick={() => void submitDecision("deny")}
         >
           Skip
         </Button>
-        <Button type="submit" disabled={!canSubmit}>
+        <Button
+          type="submit"
+          disabled={!canSubmit}
+          data-agent-approval-native-enter="true"
+        >
           {isSending ? <Loader2 className="animate-spin" /> : null}
           {isSettled ? "Submitted" : "Submit"}
           {!isSending && !isSettled ? <CornerDownLeft /> : null}

@@ -6,6 +6,7 @@ import {
   readTriggerRunStream,
   retrieveTriggerRunStatus,
 } from "./trigger-browser-realtime";
+import { createReasoningSequenceGuard } from "./agent-long-reasoning-sequence-guard";
 
 /**
  * `fetch` adapter for Trigger-backed Agent mode used by the chat transport.
@@ -415,6 +416,7 @@ const buildSSEResponseFromRun = (
         let batchedDeltaCount = 0;
         let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
         const toolInputDedup = createToolInputDedupFilter();
+        const reasoningSequenceGuard = createReasoningSequenceGuard();
 
         const flushDeltaBuffers = () => {
           if (deltaFlushTimer !== null) {
@@ -520,6 +522,14 @@ const buildSSEResponseFromRun = (
           const chunkType = (chunk as { type?: string }).type;
           const chunkId = (chunk as { id?: string }).id;
           const chunkDelta = (chunk as { delta?: string }).delta;
+
+          if (
+            reasoningSequenceGuard.shouldDrop(
+              chunk as { type?: string; id?: string },
+            )
+          ) {
+            continue;
+          }
 
           if (
             (chunkType === "text-delta" || chunkType === "reasoning-delta") &&
