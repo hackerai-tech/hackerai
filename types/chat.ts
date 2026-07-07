@@ -100,6 +100,59 @@ export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   );
 }
 
+export type ExtraUsageAvailability = Pick<
+  ExtraUsageConfig,
+  | "enabled"
+  | "hasBalance"
+  | "balanceDollars"
+  | "monthlyRemainingDollars"
+  | "autoReloadEnabled"
+>;
+
+export function canUseExtraUsage(
+  extraUsageConfig: ExtraUsageAvailability | null | undefined,
+): boolean {
+  if (!extraUsageConfig?.enabled) return false;
+  if (
+    extraUsageConfig.monthlyRemainingDollars !== undefined &&
+    extraUsageConfig.monthlyRemainingDollars <= 0
+  ) {
+    return false;
+  }
+
+  const hasBalance =
+    extraUsageConfig.hasBalance ?? (extraUsageConfig.balanceDollars ?? 0) > 0;
+
+  return Boolean(hasBalance || extraUsageConfig.autoReloadEnabled);
+}
+
+type MaxModelEntitlementOptions = {
+  extraUsageAvailable?: boolean;
+  extraUsageConfig?: ExtraUsageAvailability | null;
+};
+
+export function canUseMaxModel(
+  subscription: SubscriptionTier,
+  options: MaxModelEntitlementOptions = {},
+): boolean {
+  if (subscription === "ultra") return true;
+  if (subscription === "free") return false;
+  return (
+    options.extraUsageAvailable ?? canUseExtraUsage(options.extraUsageConfig)
+  );
+}
+
+export const normalizeMaxModelForSubscription = (
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+  options: MaxModelEntitlementOptions = {},
+): SelectedModel | null | undefined => {
+  if (model === "hackerai-max" && !canUseMaxModel(subscription, options)) {
+    return "hackerai-pro";
+  }
+  return model;
+};
+
 export function normalizeSelectedModelForSubscription(
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,

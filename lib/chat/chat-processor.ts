@@ -1,5 +1,10 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
+import {
+  normalizeMaxModelForSubscription,
+  type ChatMode,
+  type SelectedModel,
+  type SubscriptionTier,
+} from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
@@ -51,8 +56,14 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
+  options: { extraUsageAvailable?: boolean } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
+  const allowedSelectedModel = normalizeMaxModelForSubscription(
+    selectedModel,
+    subscription,
+    options,
+  );
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
   // multimodal/file-capable model such as Kimi or Opus.
@@ -71,26 +82,30 @@ export function selectModel(
       ? "ask-model-free"
       : paidAskMediaModel;
 
-  // Free users always route through the auto router; paid users may pick a
-  // tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
-  if (!selectedModel || selectedModel === "auto" || subscription === "free") {
+  // Free users always route through the auto router; paid users may pick an
+  // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
+  if (
+    !allowedSelectedModel ||
+    allowedSelectedModel === "auto" ||
+    subscription === "free"
+  ) {
     return autoModel;
   }
 
   // Paid ASK Standard mirrors the auto-route split, but uses explicit keys so
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
-  if (selectedModel === "hackerai-standard" && !isAgent) {
+  if (allowedSelectedModel === "hackerai-standard" && !isAgent) {
     return hasAskImage || hasAskPdf
       ? "model-grok-4.3"
       : "model-deepseek-v4-pro";
   }
 
-  if (selectedModel === "hackerai-pro") {
+  if (allowedSelectedModel === "hackerai-pro") {
     return hasProProviderMedia ? "model-kimi-k2.7-code" : "model-glm-5.2";
   }
 
-  const providerKey = resolveTierToProviderKey(selectedModel, mode);
+  const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
   return providerKey ?? autoModel;
 }
 
@@ -653,6 +668,7 @@ export async function processChatMessages({
   subscription,
   uploadBasePath,
   modelOverride,
+  extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -661,6 +677,7 @@ export async function processChatMessages({
   subscription: SubscriptionTier;
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
+  extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -738,6 +755,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
+    { extraUsageAvailable },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

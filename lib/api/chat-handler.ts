@@ -26,8 +26,10 @@ import type {
   SandboxBootInfo,
 } from "@/types";
 import {
+  canUseExtraUsage,
   coerceSelectedModel,
   isLimitRescueRequest,
+  normalizeMaxModelForSubscription,
   normalizeSelectedModelOverrideForSubscription,
 } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
@@ -71,7 +73,6 @@ import {
   shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
-import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import {
   countFileAttachments,
   stripImageAttachments,
@@ -321,15 +322,11 @@ export const createChatHandler = () => {
         userCustomization,
         organizationId,
       });
-
-      selectedModelOverride = resolveAgentRunSpendCapContinuationModel({
-        finishReason: chat?.finish_reason,
-        isAutoContinue,
-        mode,
-        subscription,
-        selectedModelOverride,
-        extraUsageConfig,
-      });
+      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      selectedModelOverride =
+        normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
+          extraUsageAvailable,
+        }) ?? undefined;
 
       if (!temporary) {
         await handleInitialChatAndUserMessage({
@@ -369,6 +366,7 @@ export const createChatHandler = () => {
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          extraUsageAvailable,
           allowLocalDesktopFiles:
             isAgentMode(mode) && sandboxPreference === "desktop",
         });
