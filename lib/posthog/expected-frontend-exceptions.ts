@@ -218,6 +218,13 @@ const matchesNextServerActionTransportPattern = (
   hasBrowserFetchTransportMessage(strings) &&
   hasOnlyNextServerActionFrames(frameSources);
 
+const matchesStaleServerActionPattern = (
+  strings: string[],
+  frameSources: string[],
+): boolean =>
+  hasStaleServerActionMessage(strings) &&
+  (frameSources.length === 0 || hasOnlyNextServerActionFrames(frameSources));
+
 const getExceptionCategory = (strings: string[]): FrontendExceptionCategory => {
   if (includesAny(strings, [REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT])) {
     return "react_max_update_depth";
@@ -242,7 +249,7 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
     hasResizeObserverMessage(strings) ||
     matchesBareBrowserTransportPattern(strings, frameSources) ||
     matchesNextServerActionTransportPattern(strings, frameSources) ||
-    hasStaleServerActionMessage(strings) ||
+    matchesStaleServerActionPattern(strings, frameSources) ||
     hasChunkLoadMessage(strings) ||
     hasExactStringFrom(strings, MANUAL_CHAT_STOP_ABORT_MESSAGES) ||
     hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES) ||

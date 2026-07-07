@@ -158,6 +158,28 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(false);
   });
 
+  it("keeps stale-looking server action messages with app stack frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Checkout session was not found on the server"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source: "turbopack:///[project]/app/actions/billing.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("drops chunk load failures even with Next runtime frames", () => {
     expect(
       shouldDropExpectedFrontendException({

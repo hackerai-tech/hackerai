@@ -6,6 +6,7 @@ import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
+import { logger } from "@/lib/logger";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -277,10 +278,10 @@ export const POST = async (req: NextRequest) => {
         ? (error as any).message
         : "Failed to delete account";
     const errorName = error instanceof Error ? error.name : "UnknownError";
-    console.error(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "error",
+    logger.error(
+      "account_deletion_failed",
+      error instanceof Error ? error : undefined,
+      {
         event: "account_deletion_failed",
         service: "hackerai-web",
         environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
@@ -290,8 +291,7 @@ export const POST = async (req: NextRequest) => {
         free_quota_subject_present: freeQuotaSubjectPresent,
         error_name: errorName,
         error_message: message,
-      }),
-      error,
+      },
     );
     return NextResponse.json({ error: message }, { status: 500 });
   }
