@@ -6,6 +6,7 @@ import type { SubscriptionTier } from "@/types/chat";
 let mockSubscription: SubscriptionTier;
 let mockQueryResult: unknown;
 const mockRedirectToPricing = jest.fn();
+const mockOpenSettingsDialog = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -19,6 +20,10 @@ jest.mock("@/hooks/use-mobile", () => ({
 
 jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: (...args: unknown[]) => mockRedirectToPricing(...args),
+}));
+
+jest.mock("@/lib/utils/settings-dialog", () => ({
+  openSettingsDialog: (...args: unknown[]) => mockOpenSettingsDialog(...args),
 }));
 
 jest.mock("convex/react", () => ({
@@ -35,6 +40,7 @@ describe("ModelSelector", () => {
     mockSubscription = "pro-plus";
     mockQueryResult = undefined;
     mockRedirectToPricing.mockClear();
+    mockOpenSettingsDialog.mockClear();
   });
 
   it("shows model choices immediately while Auto is selected", () => {
@@ -98,20 +104,22 @@ describe("ModelSelector", () => {
     expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
-  it("locks HackerAI Max on Pro Plus and routes to Ultra pricing", () => {
+  it("locks HackerAI Max on Pro Plus and opens Extra Usage settings", () => {
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+    const maxButton = screen.getByRole("button", { name: /HackerAI Max/i });
+
+    expect(maxButton).toHaveAccessibleName(
+      "HackerAI Max. Manage Extra Usage for Max mode.",
+    );
+
+    fireEvent.click(maxButton);
 
     expect(onChange).not.toHaveBeenCalled();
-    expect(mockRedirectToPricing).toHaveBeenCalledWith({
-      surface: "model_selector",
-      source: "max_model_gate",
-      from_tier: "pro-plus",
-      cta_text: "Upgrade to Ultra",
-    });
+    expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Extra Usage");
+    expect(mockRedirectToPricing).not.toHaveBeenCalled();
   });
 
   it("selects HackerAI Max on Pro Plus when extra usage is available", () => {
@@ -151,12 +159,8 @@ describe("ModelSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
 
     expect(onChange).not.toHaveBeenCalled();
-    expect(mockRedirectToPricing).toHaveBeenCalledWith({
-      surface: "model_selector",
-      source: "max_model_gate",
-      from_tier: "team",
-      cta_text: "Upgrade to Ultra",
-    });
+    expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Extra Usage");
+    expect(mockRedirectToPricing).not.toHaveBeenCalled();
   });
 
   it("does not display a stale paid model as selected for free users", () => {

@@ -35,6 +35,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
@@ -57,6 +58,9 @@ const AUTO_MODEL_DESCRIPTION =
 
 const isMaxModel = (model: SelectedModel): boolean => model === "hackerai-max";
 
+const canUnlockMaxWithExtraUsage = (subscription: SubscriptionTier): boolean =>
+  subscription !== "free" && subscription !== "ultra";
+
 const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
@@ -65,13 +69,25 @@ const isModelLockedForSubscription = (
   subscription === "free" ||
   (isMaxModel(model) && !canUseMaxModel(subscription, { extraUsageAvailable }));
 
-const getLockedModelCta = (model: SelectedModel): string =>
-  isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
+const getLockedModelCta = (
+  model: SelectedModel,
+  subscription: SubscriptionTier,
+): string => {
+  if (isMaxModel(model) && canUnlockMaxWithExtraUsage(subscription)) {
+    return "Manage Extra Usage";
+  }
+  return isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
+};
 
-const getLockedModelAnnouncement = (model: SelectedModel): string =>
-  `${getLockedModelCta(model)}${isMaxModel(model) ? " for Max mode" : " to unlock"}`;
+const getLockedModelAnnouncement = (
+  model: SelectedModel,
+  subscription: SubscriptionTier,
+): string =>
+  `${getLockedModelCta(model, subscription)}${
+    isMaxModel(model) ? " for Max mode" : " to unlock"
+  }`;
 
-const redirectLockedModelToPricing = ({
+const handleLockedModelCta = ({
   mobile,
   option,
   subscription,
@@ -81,11 +97,16 @@ const redirectLockedModelToPricing = ({
   subscription: SubscriptionTier;
 }) => {
   const maxLocked = isMaxModel(option.id);
+  if (maxLocked && canUnlockMaxWithExtraUsage(subscription)) {
+    openSettingsDialog("Extra Usage");
+    return;
+  }
+
   redirectToPricing({
     surface: mobile ? "model_selector_mobile" : "model_selector",
     source: maxLocked ? "max_model_gate" : "locked_model_option",
     from_tier: subscription,
-    cta_text: getLockedModelCta(option.id),
+    cta_text: getLockedModelCta(option.id, subscription),
   });
 };
 
@@ -128,12 +149,14 @@ const ModelOptionButton = ({
   option,
   isSelected,
   isLocked,
+  subscription,
   onSelect,
   mobile = false,
 }: {
   option: ModelOption;
   isSelected: boolean;
   isLocked: boolean;
+  subscription: SubscriptionTier;
   onSelect: (option: ModelOption) => void;
   mobile?: boolean;
 }) => {
@@ -144,7 +167,10 @@ const ModelOptionButton = ({
       aria-pressed={isSelected}
       aria-label={
         isLocked
-          ? `${option.label}. ${getLockedModelAnnouncement(option.id)}.`
+          ? `${option.label}. ${getLockedModelAnnouncement(
+              option.id,
+              subscription,
+            )}.`
           : undefined
       }
       className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
@@ -278,6 +304,7 @@ const ModelOptionList = ({
               option={option}
               isSelected={isSelected}
               isLocked={isLocked}
+              subscription={subscription}
               onSelect={onSelect}
               mobile={mobile}
             />
@@ -293,6 +320,7 @@ const ModelOptionList = ({
                 option={option}
                 isSelected={isSelected}
                 isLocked={isLocked}
+                subscription={subscription}
                 onSelect={onSelect}
                 mobile={mobile}
               />
@@ -320,11 +348,16 @@ const ModelOptionList = ({
             )}
             <p className="text-xs text-muted-foreground leading-relaxed pt-1">
               <a
-                href="#pricing"
+                href={
+                  isMaxModel(option.id) &&
+                  canUnlockMaxWithExtraUsage(subscription)
+                    ? "#extra-usage"
+                    : "#pricing"
+                }
                 onClick={(event) => {
                   event.preventDefault();
                   onClose();
-                  redirectLockedModelToPricing({
+                  handleLockedModelCta({
                     mobile,
                     option,
                     subscription,
@@ -333,7 +366,7 @@ const ModelOptionList = ({
                 className="text-foreground underline underline-offset-2 hover:text-foreground/80"
                 tabIndex={0}
               >
-                {getLockedModelCta(option.id)}
+                {getLockedModelCta(option.id, subscription)}
               </a>
               {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
             </p>
@@ -420,7 +453,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       )
     ) {
       setOpen(false);
-      redirectLockedModelToPricing({
+      handleLockedModelCta({
         mobile: isMobile,
         option,
         subscription,
