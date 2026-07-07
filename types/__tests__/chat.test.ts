@@ -17,9 +17,24 @@ describe("normalizeSelectedModelForSubscription", () => {
     expect(normalizeSelectedModelForSubscription("hackerai-pro", "pro")).toBe(
       "hackerai-pro",
     );
+    expect(normalizeSelectedModelForSubscription("hackerai-max", "ultra")).toBe(
+      "hackerai-max",
+    );
     expect(normalizeSelectedModelForSubscription(null, "ultra")).toBe("auto");
     expect(normalizeSelectedModelForSubscription(undefined, "team")).toBe(
       "auto",
+    );
+  });
+
+  it("downgrades Max to Pro outside Ultra", () => {
+    expect(normalizeSelectedModelForSubscription("hackerai-max", "pro")).toBe(
+      "hackerai-pro",
+    );
+    expect(
+      normalizeSelectedModelForSubscription("hackerai-max", "pro-plus"),
+    ).toBe("hackerai-pro");
+    expect(normalizeSelectedModelForSubscription("hackerai-max", "team")).toBe(
+      "hackerai-pro",
     );
   });
 });
@@ -43,9 +58,15 @@ describe("normalizeSelectedModelOverrideForSubscription", () => {
     ).toBeUndefined();
   });
 
-  it("preserves explicit paid overrides", () => {
+  it("preserves explicit paid overrides except Max outside Ultra", () => {
+    expect(
+      normalizeSelectedModelOverrideForSubscription("hackerai-max", "ultra"),
+    ).toBe("hackerai-max");
     expect(
       normalizeSelectedModelOverrideForSubscription("hackerai-max", "team"),
-    ).toBe("hackerai-max");
+    ).toBe("hackerai-pro");
+    expect(
+      normalizeSelectedModelOverrideForSubscription("hackerai-pro", "team"),
+    ).toBe("hackerai-pro");
   });
 });

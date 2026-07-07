@@ -46,7 +46,7 @@ export const freeFeatures: Array<PricingFeature> = [
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Access to the best AI models for pentesting" },
+  { icon: Check, text: "Access to HackerAI Standard and Pro models" },
   { icon: Check, text: "Extended limits" },
   { icon: Check, text: "File uploads" },
   { icon: Check, text: "Cloud agents" },
@@ -58,6 +58,7 @@ export const proPlusFeatures: Array<PricingFeature> = [
 ];
 
 export const ultraFeatures: Array<PricingFeature> = [
+  { icon: Check, text: "Ultra-only HackerAI Max mode with Claude Opus" },
   { icon: Check, text: "10x more usage than Pro" },
   { icon: Check, text: "Priority access to new features" },
 ];

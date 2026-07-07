@@ -100,12 +100,26 @@ export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   );
 }
 
+export function canUseMaxModel(subscription: SubscriptionTier): boolean {
+  return subscription === "ultra";
+}
+
+const normalizeMaxModelForSubscription = (
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): SelectedModel | null | undefined => {
+  if (model === "hackerai-max" && !canUseMaxModel(subscription)) {
+    return "hackerai-pro";
+  }
+  return model;
+};
+
 export function normalizeSelectedModelForSubscription(
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
 ): SelectedModel {
   if (subscription === "free") return "auto";
-  return model ?? "auto";
+  return normalizeMaxModelForSubscription(model, subscription) ?? "auto";
 }
 
 export function normalizeSelectedModelOverrideForSubscription(
@@ -113,7 +127,7 @@ export function normalizeSelectedModelOverrideForSubscription(
   subscription: SubscriptionTier,
 ): SelectedModel | undefined {
   if (subscription === "free") return "auto";
-  return model ?? undefined;
+  return normalizeMaxModelForSubscription(model, subscription) ?? undefined;
 }
 
 export interface SidebarFile {

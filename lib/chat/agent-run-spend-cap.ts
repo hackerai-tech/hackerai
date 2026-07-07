@@ -1,8 +1,9 @@
-import type {
-  ChatMode,
-  ExtraUsageConfig,
-  SelectedModel,
-  SubscriptionTier,
+import {
+  canUseMaxModel,
+  type ChatMode,
+  type ExtraUsageConfig,
+  type SelectedModel,
+  type SubscriptionTier,
 } from "@/types";
 
 export const AGENT_RUN_SPEND_CAP_REASON = "agent_run_spend_cap" as const;
@@ -58,5 +59,11 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
   selectedModelOverride: SelectedModel | undefined;
   extraUsageConfig: ExtraUsageConfig | undefined;
 }): SelectedModel | undefined {
+  if (
+    args.selectedModelOverride === "hackerai-max" &&
+    !canUseMaxModel(args.subscription)
+  ) {
+    return "hackerai-pro";
+  }
   return args.selectedModelOverride;
 }
