@@ -63,6 +63,9 @@ const isModelLockedForSubscription = (
 const getLockedModelCta = (model: SelectedModel): string =>
   isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
 
+const getLockedModelAnnouncement = (model: SelectedModel): string =>
+  `${getLockedModelCta(model)}${isMaxModel(model) ? " for Max mode" : " to unlock"}`;
+
 const redirectLockedModelToPricing = ({
   mobile,
   option,
@@ -77,7 +80,7 @@ const redirectLockedModelToPricing = ({
     surface: mobile ? "model_selector_mobile" : "model_selector",
     source: maxLocked ? "max_model_gate" : "locked_model_option",
     from_tier: subscription,
-    cta_text: maxLocked ? "Upgrade to Ultra" : option.label,
+    cta_text: getLockedModelCta(option.id),
   });
 };
 
@@ -134,6 +137,11 @@ const ModelOptionButton = ({
       type="button"
       onClick={() => onSelect(option)}
       aria-pressed={isSelected}
+      aria-label={
+        isLocked
+          ? `${option.label}. ${getLockedModelAnnouncement(option.id)}.`
+          : undefined
+      }
       className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
         mobile ? "py-2.5" : "py-1.5"
       } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}

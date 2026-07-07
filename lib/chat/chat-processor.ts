@@ -1,6 +1,6 @@
 import { getModerationResult } from "@/lib/moderation";
 import {
-  canUseMaxModel,
+  normalizeMaxModelForSubscription,
   type ChatMode,
   type SelectedModel,
   type SubscriptionTier,
@@ -58,10 +58,10 @@ export function selectModel(
   hasPdfAttachment?: boolean,
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  const allowedSelectedModel =
-    selectedModel === "hackerai-max" && !canUseMaxModel(subscription)
-      ? "hackerai-pro"
-      : selectedModel;
+  const allowedSelectedModel = normalizeMaxModelForSubscription(
+    selectedModel,
+    subscription,
+  );
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
   // multimodal/file-capable model such as Kimi or Opus.

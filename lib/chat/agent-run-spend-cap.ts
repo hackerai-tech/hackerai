@@ -1,5 +1,5 @@
 import {
-  canUseMaxModel,
+  normalizeMaxModelForSubscription,
   type ChatMode,
   type ExtraUsageConfig,
   type SelectedModel,
@@ -59,11 +59,10 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
   selectedModelOverride: SelectedModel | undefined;
   extraUsageConfig: ExtraUsageConfig | undefined;
 }): SelectedModel | undefined {
-  if (
-    args.selectedModelOverride === "hackerai-max" &&
-    !canUseMaxModel(args.subscription)
-  ) {
-    return "hackerai-pro";
-  }
-  return args.selectedModelOverride;
+  return (
+    normalizeMaxModelForSubscription(
+      args.selectedModelOverride,
+      args.subscription,
+    ) ?? undefined
+  );
 }

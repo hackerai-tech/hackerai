@@ -152,6 +152,15 @@ describe("ModelSelector", () => {
       <ModelSelector value="hackerai-max" onChange={jest.fn()} mode="agent" />,
     );
 
-    expect(screen.getByRole("button", { name: /HackerAI Pro/i })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+
+    const proButton = screen
+      .getAllByRole("button", { name: /HackerAI Pro/i })
+      .find((button) => button.hasAttribute("aria-pressed"));
+    const maxButton = screen.getByRole("button", { name: /HackerAI Max/i });
+
+    expect(proButton).toBeDefined();
+    expect(proButton).toHaveAttribute("aria-pressed", "true");
+    expect(maxButton).toHaveAttribute("aria-pressed", "false");
   });
 });

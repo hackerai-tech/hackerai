@@ -104,7 +104,7 @@ export function canUseMaxModel(subscription: SubscriptionTier): boolean {
   return subscription === "ultra";
 }
 
-const normalizeMaxModelForSubscription = (
+export const normalizeMaxModelForSubscription = (
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
 ): SelectedModel | null | undefined => {
