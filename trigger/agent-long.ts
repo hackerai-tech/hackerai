@@ -119,7 +119,7 @@ import type {
   SandboxBootInfo,
   ToolFailureLogEvent,
 } from "@/types";
-import { canUseExtraUsage } from "@/types";
+import { canUseExtraUsage, normalizeMaxModelForSubscription } from "@/types";
 import {
   createAgentStream,
   initAgentStreamState,
@@ -987,7 +987,7 @@ export const agentLongTask = task({
       messages,
       localDesktopAttachmentsPrepared,
       sandboxPreference,
-      selectedModel: selectedModelOverride,
+      selectedModel: rawSelectedModelOverride,
       userLocation,
       temporary,
       isAutoContinue,
@@ -995,6 +995,7 @@ export const agentLongTask = task({
       isNewChat,
       endpoint: payloadEndpoint,
     } = payload;
+    let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
@@ -1094,6 +1095,11 @@ export const agentLongTask = task({
         userCustomization,
         organizationId,
       });
+      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      selectedModelOverride =
+        normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
+          extraUsageAvailable,
+        }) ?? undefined;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -1118,7 +1124,7 @@ export const agentLongTask = task({
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
-          extraUsageAvailable: canUseExtraUsage(extraUsageConfig),
+          extraUsageAvailable,
           allowLocalDesktopFiles: sandboxPreference === "desktop",
         });
 
