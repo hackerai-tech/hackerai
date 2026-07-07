@@ -142,6 +142,7 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
 import {
@@ -1900,12 +1901,19 @@ export const agentLongTask = task({
                       const stoppedDueToAssistantContentLoop =
                         state.stoppedDueToAssistantContentLoop ||
                         (!isAborted && assistantContentLoopDetection.detected);
+                      const hasTerminalProviderStreamError =
+                        isTerminalProviderStreamError(state);
+                      const shouldRetryInterruptedToolInput =
+                        shouldRetryProviderStreamAfterInterruptedToolInput(
+                          lastAssistantMessageParts,
+                          { hasTerminalProviderStreamError },
+                        );
                       const shouldRetryWithFallback =
                         shouldRetryAgentLongWithFallback(
                           lastAssistantMessageParts,
                           {
                             hasTerminalProviderStreamError:
-                              isTerminalProviderStreamError(state),
+                              hasTerminalProviderStreamError,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             stoppedDueToAssistantContentLoop,
                             detectAssistantContentLoop: !isAborted,
@@ -1928,7 +1936,8 @@ export const agentLongTask = task({
                         (isAutoModel ||
                           shouldRetryWithoutImageToolResults ||
                           stoppedDueToAssistantContentLoop ||
-                          state.stoppedDueToDoomLoop)
+                          state.stoppedDueToDoomLoop ||
+                          shouldRetryInterruptedToolInput)
                       ) {
                         const retryReason = shouldRetryWithoutImageToolResults
                           ? "image_tool_result_rejection"
@@ -1936,7 +1945,9 @@ export const agentLongTask = task({
                             ? "assistant_content_loop"
                             : state.stoppedDueToDoomLoop
                               ? "doom_loop"
-                              : "incomplete_stream";
+                              : shouldRetryInterruptedToolInput
+                                ? "interrupted_tool_input"
+                                : "incomplete_stream";
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -1955,6 +1966,7 @@ export const agentLongTask = task({
                               assistantContentLoopDetection.detected
                                 ? assistantContentLoopDetection
                                 : undefined,
+                            shouldRetryInterruptedToolInput,
                             imageToolResultsOmitted: imageRecovery.omittedCount,
                           },
                         );

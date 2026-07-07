@@ -170,6 +170,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryProviderStreamWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
@@ -1313,12 +1314,19 @@ export const createChatHandler = () => {
                     const stoppedDueToAssistantContentLoop =
                       state.stoppedDueToAssistantContentLoop ||
                       (!isAborted && assistantContentLoopDetection.detected);
+                    const hasTerminalProviderStreamError =
+                      state.streamFinishReason === "error";
+                    const shouldRetryInterruptedToolInput =
+                      shouldRetryProviderStreamAfterInterruptedToolInput(
+                        lastAssistantMessageParts,
+                        { hasTerminalProviderStreamError },
+                      );
                     const shouldRetryWithFallback =
                       shouldRetryProviderStreamWithFallback(
                         lastAssistantMessageParts,
                         {
                           hasTerminalProviderStreamError:
-                            state.streamFinishReason === "error",
+                            hasTerminalProviderStreamError,
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           stoppedDueToAssistantContentLoop,
                           detectAssistantContentLoop: !isAborted,
@@ -1344,7 +1352,9 @@ export const createChatHandler = () => {
                           ? "assistant_content_loop"
                           : state.stoppedDueToDoomLoop
                             ? "doom_loop"
-                            : "incomplete_stream";
+                            : shouldRetryInterruptedToolInput
+                              ? "interrupted_tool_input"
+                              : "incomplete_stream";
                       phLogger.warn(
                         shouldRetryWithoutImageToolResults
                           ? "Provider rejected image tool output - retrying without images"
@@ -1352,9 +1362,11 @@ export const createChatHandler = () => {
                             ? "Assistant content loop detected - triggering fallback"
                             : retryReason === "doom_loop"
                               ? "Agent doom loop detected - triggering fallback"
-                              : state.streamFinishReason === "error"
-                                ? "Provider stream errored before useful output - triggering fallback"
-                                : "Stream finished incomplete - triggering fallback",
+                              : retryReason === "interrupted_tool_input"
+                                ? "Provider stream errored during tool input - triggering bounded fallback"
+                                : hasTerminalProviderStreamError
+                                  ? "Provider stream errored before useful output - triggering fallback"
+                                  : "Stream finished incomplete - triggering fallback",
                         {
                           chatId,
                           endpoint,
@@ -1373,6 +1385,7 @@ export const createChatHandler = () => {
                             assistantContentLoopDetection.detected
                               ? assistantContentLoopDetection
                               : undefined,
+                          shouldRetryInterruptedToolInput,
                           imageToolResultsOmitted: imageRecovery.omittedCount,
                         },
                       );
@@ -1386,7 +1399,8 @@ export const createChatHandler = () => {
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
                           shouldRetryWithoutImageToolResults ||
-                          loopTriggeredRetry)
+                          loopTriggeredRetry ||
+                          shouldRetryInterruptedToolInput)
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
