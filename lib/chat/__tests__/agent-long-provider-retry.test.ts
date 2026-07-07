@@ -2,6 +2,7 @@ import {
   createAssistantContentLoopMonitor,
   detectAssistantContentLoopFromText,
   shouldRetryAgentLongWithFallback,
+  shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
 
 describe("shouldRetryAgentLongWithFallback", () => {
@@ -61,6 +62,85 @@ describe("shouldRetryAgentLongWithFallback", () => {
         ],
         { hasTerminalProviderStreamError: true },
       ),
+    ).toBe(false);
+  });
+
+  it("retries terminal provider errors during meaningful tool input streaming", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "text", text: "I'll update the file now." },
+      {
+        type: "tool-file",
+        toolCallId: "call_1",
+        state: "input-streaming",
+        input: {
+          action: "write",
+          path: "/repo/script.py",
+          text: "partial file body",
+        },
+      },
+    ];
+
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRetryProviderStreamAfterInterruptedToolInput(parts, {
+        hasTerminalProviderStreamError: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retry interrupted tool input without meaningful input", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          {
+            type: "tool-file",
+            toolCallId: "call_1",
+            state: "input-streaming",
+            input: {},
+          },
+        ],
+        { hasTerminalProviderStreamError: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not replay an interrupted tool input after completed tool output", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { command: "npm test" },
+        output: { result: { exitCode: 0, output: "ok" } },
+      },
+      {
+        type: "tool-file",
+        toolCallId: "call_2",
+        state: "input-streaming",
+        input: {
+          action: "write",
+          path: "/repo/script.py",
+          text: "partial file body",
+        },
+      },
+    ];
+
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        hasTerminalProviderStreamError: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRetryProviderStreamAfterInterruptedToolInput(parts, {
+        hasTerminalProviderStreamError: true,
+      }),
     ).toBe(false);
   });
 

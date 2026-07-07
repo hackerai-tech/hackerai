@@ -1,6 +1,11 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
-import { AGENT_API_ENDPOINT } from "@/lib/api/agent-endpoints";
+import {
+  AGENT_API_ENDPOINT,
+  AGENT_STATUS_ENDPOINT,
+  LEGACY_AGENT_RESUME_ENDPOINT,
+  LEGACY_AGENT_STATUS_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
 import { createToolInputDedupFilter } from "./agent-long-tool-input-dedup";
 import {
   readTriggerRunStream,
@@ -148,14 +153,28 @@ const getChatIdFromResumeUrl = (url: string): string | undefined => {
   }
 };
 
+const getStatusEndpointFromResumeUrl = (url: string): string => {
+  try {
+    const base =
+      typeof window === "undefined" ? "http://localhost" : window.location.href;
+    const pathname = new URL(url, base).pathname;
+    return pathname === LEGACY_AGENT_RESUME_ENDPOINT
+      ? LEGACY_AGENT_STATUS_ENDPOINT
+      : AGENT_STATUS_ENDPOINT;
+  } catch {
+    return AGENT_STATUS_ENDPOINT;
+  }
+};
+
 const buildSSEResponseFromRun = (
   handle: RunHandle,
   signal?: AbortSignal,
-  options?: { chatId?: string },
+  options?: { chatId?: string; statusEndpoint?: string },
 ): Response => {
   const { runId, publicAccessToken } = handle;
   const encoder = new TextEncoder();
   const chatId = options?.chatId ?? handle.chatId;
+  const statusEndpoint = options?.statusEndpoint ?? AGENT_STATUS_ENDPOINT;
   let cancelRealtimeSubscriptions: (() => Promise<void> | void) | undefined;
   let closeConsumerStream: (() => void) | undefined;
   let consumerCanceled = false;
@@ -340,11 +359,11 @@ const buildSSEResponseFromRun = (
         };
 
         const pollRunStatusForTerminalRun = async () => {
-          const status = await retrieveTriggerRunStatus(
-            runId,
-            publicAccessToken,
-            readAbortController?.signal,
-          );
+          const status = await retrieveTriggerRunStatus(runId, {
+            chatId,
+            signal: readAbortController?.signal,
+            statusEndpoint,
+          });
           handleRunStatus(status);
         };
 
@@ -665,6 +684,7 @@ export const fetchAgentLongStream = async (
     const handle: RunHandle = await startResponse.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      statusEndpoint: AGENT_STATUS_ENDPOINT,
     });
   } finally {
     unregisterStartCancel?.();
@@ -697,6 +717,7 @@ export const resumeAgentLongStream = async (
     const handle: RunHandle = await response.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      statusEndpoint: getStatusEndpointFromResumeUrl(url),
     });
   } finally {
     unregisterStartCancel?.();

@@ -74,7 +74,7 @@ export function handleAgentRouteError({
 }: {
   error: unknown;
   endpoint: AgentApiEndpoint;
-  action: "start" | "resume" | "cancel";
+  action: "start" | "resume" | "cancel" | "status";
   fallbackMessage: string;
   context?: AgentRouteErrorContext;
 }) {

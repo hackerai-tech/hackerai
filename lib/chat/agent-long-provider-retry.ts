@@ -1,6 +1,13 @@
+import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
+
 type MessagePartLike = {
   type?: unknown;
   text?: unknown;
+  state?: unknown;
+  input?: unknown;
+  output?: unknown;
+  result?: unknown;
+  errorText?: unknown;
 };
 
 type RetryDecisionOptions = {
@@ -20,6 +27,13 @@ export type AssistantContentLoopDetection = {
 const FALLBACK_SAFE_METADATA_PART_TYPES = new Set([
   "data-agent-heartbeat",
   "data-context-usage",
+]);
+
+const INTERRUPTED_TOOL_INPUT_SAFE_PART_TYPES = new Set([
+  "step-start",
+  "reasoning",
+  "text",
+  ...FALLBACK_SAFE_METADATA_PART_TYPES,
 ]);
 
 const NO_ASSISTANT_CONTENT_LOOP: AssistantContentLoopDetection = {
@@ -47,6 +61,46 @@ const getPartText = (part: unknown): string | undefined => {
   return typeof text === "string" ? text : undefined;
 };
 
+const getPartState = (part: unknown): string | undefined => {
+  if (!part || typeof part !== "object") return undefined;
+  const state = (part as MessagePartLike).state;
+  return typeof state === "string" ? state : undefined;
+};
+
+const isToolPart = (part: unknown): boolean =>
+  getPartType(part)?.startsWith("tool-") ?? false;
+
+const hasToolOutputOrError = (part: unknown): boolean => {
+  if (!part || typeof part !== "object") return false;
+  const candidate = part as MessagePartLike;
+  return (
+    candidate.output != null ||
+    candidate.result != null ||
+    candidate.errorText != null ||
+    candidate.state === "output-available" ||
+    candidate.state === "output-error"
+  );
+};
+
+const isRestartableInterruptedToolInput = (part: unknown): boolean => {
+  if (!isToolPart(part) || !part || typeof part !== "object") return false;
+  const candidate = part as MessagePartLike;
+  return (
+    getPartState(part) === "input-streaming" &&
+    !hasToolOutputOrError(part) &&
+    hasMeaningfulToolInput(candidate.input)
+  );
+};
+
+const isSafeInterruptedToolInputPart = (part: unknown): boolean => {
+  const type = getPartType(part);
+  if (!type) return false;
+  return (
+    INTERRUPTED_TOOL_INPUT_SAFE_PART_TYPES.has(type) ||
+    isRestartableInterruptedToolInput(part)
+  );
+};
+
 const isOnlyStepStart = (parts: unknown[]): boolean =>
   parts.length === 1 && getPartType(parts[0]) === "step-start";
 
@@ -66,6 +120,11 @@ const isReasoningOnlyProviderOutput = (parts: unknown[]): boolean =>
   parts.length > 0 &&
   hasReasoningPart(parts) &&
   parts.every(isFallbackSafeProviderPart);
+
+const isInterruptedToolInputOnlyProviderOutput = (parts: unknown[]): boolean =>
+  parts.length > 0 &&
+  parts.some(isRestartableInterruptedToolInput) &&
+  parts.every(isSafeInterruptedToolInputPart);
 
 const stripFencedCodeBlocks = (text: string): string =>
   text
@@ -207,9 +266,17 @@ export const shouldRetryProviderStreamWithFallback = (
   // safer than failing the whole run on a discarded provider socket.
   return (
     options.hasTerminalProviderStreamError &&
-    isReasoningOnlyProviderOutput(parts)
+    (isReasoningOnlyProviderOutput(parts) ||
+      isInterruptedToolInputOnlyProviderOutput(parts))
   );
 };
 
 export const shouldRetryAgentLongWithFallback =
   shouldRetryProviderStreamWithFallback;
+
+export const shouldRetryProviderStreamAfterInterruptedToolInput = (
+  parts: unknown[],
+  options: Pick<RetryDecisionOptions, "hasTerminalProviderStreamError">,
+): boolean =>
+  options.hasTerminalProviderStreamError &&
+  isInterruptedToolInputOnlyProviderOutput(parts);
