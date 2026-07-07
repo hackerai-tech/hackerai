@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runs } from "@trigger.dev/sdk";
+import { ApiError, runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
@@ -14,6 +14,13 @@ type TriggerRunStatus = {
   metadata?: unknown;
   status?: string;
 };
+
+const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
+
+const isMissingTriggerRunError = (error: unknown): boolean =>
+  error instanceof ApiError &&
+  error.status !== undefined &&
+  MISSING_RUN_STATUSES.has(error.status);
 
 const runBelongsToChatOwner = (
   run: TriggerRunStatus,
@@ -65,6 +72,10 @@ export const createAgentStatusPost =
 
       return NextResponse.json({ status: run.status });
     } catch (error) {
+      if (isMissingTriggerRunError(error)) {
+        return new NextResponse("Run not found", { status: 404 });
+      }
+
       return handleAgentRouteError({
         error,
         endpoint,

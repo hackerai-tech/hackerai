@@ -260,6 +260,9 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
     expect(transportSrc).toMatch(/statusEndpoint/);
     expect(statusSrc).toMatch(/runs\.retrieve\(runId\)/);
+    expect(statusSrc).toMatch(/ApiError/);
+    expect(statusSrc).toMatch(/MISSING_RUN_STATUSES/);
+    expect(statusSrc).toMatch(/Run not found/);
     expect(statusSrc).toMatch(/metadata\.chatId\s*===\s*expected\.chatId/);
     expect(statusSrc).toMatch(/metadata\.userId\s*===\s*expected\.userId/);
     expect(statusSrc).not.toMatch(/\/api\/v1\/runs/);
