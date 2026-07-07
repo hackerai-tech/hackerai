@@ -56,11 +56,13 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
+  options: { extraUsageAvailable?: boolean } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
     selectedModel,
     subscription,
+    options,
   );
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
@@ -666,6 +668,7 @@ export async function processChatMessages({
   subscription,
   uploadBasePath,
   modelOverride,
+  extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -674,6 +677,7 @@ export async function processChatMessages({
   subscription: SubscriptionTier;
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
+  extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
@@ -751,6 +755,7 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
+    { extraUsageAvailable },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.

@@ -4,6 +4,7 @@ import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { SubscriptionTier } from "@/types/chat";
 
 let mockSubscription: SubscriptionTier;
+let mockQueryResult: unknown;
 const mockRedirectToPricing = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -20,6 +21,11 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: (...args: unknown[]) => mockRedirectToPricing(...args),
 }));
 
+jest.mock("convex/react", () => ({
+  useQuery: (_query: unknown, args: unknown) =>
+    args === "skip" ? undefined : mockQueryResult,
+}));
+
 const { ModelSelector } = jest.requireActual<
   typeof import("../../ModelSelector")
 >("../../ModelSelector");
@@ -27,6 +33,7 @@ const { ModelSelector } = jest.requireActual<
 describe("ModelSelector", () => {
   beforeEach(() => {
     mockSubscription = "pro-plus";
+    mockQueryResult = undefined;
     mockRedirectToPricing.mockClear();
   });
 
@@ -107,6 +114,23 @@ describe("ModelSelector", () => {
     });
   });
 
+  it("selects HackerAI Max on Pro Plus when extra usage is available", () => {
+    mockQueryResult = {
+      extra_usage_enabled: true,
+      balanceDollars: 10,
+      autoReloadEnabled: false,
+      monthlySpentDollars: 0,
+    };
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    expect(onChange).toHaveBeenCalledWith("hackerai-max");
+    expect(mockRedirectToPricing).not.toHaveBeenCalled();
+  });
+
   it("selects HackerAI Max for Ultra users", () => {
     mockSubscription = "ultra";
     const onChange = jest.fn();
@@ -162,5 +186,28 @@ describe("ModelSelector", () => {
     expect(proButton).toBeDefined();
     expect(proButton).toHaveAttribute("aria-pressed", "true");
     expect(maxButton).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("displays stale Max as selected for Pro users with extra usage available", () => {
+    mockSubscription = "pro";
+    mockQueryResult = {
+      extra_usage_enabled: true,
+      balanceDollars: 0,
+      autoReloadEnabled: true,
+      monthlySpentDollars: 0,
+    };
+
+    render(
+      <ModelSelector value="hackerai-max" onChange={jest.fn()} mode="agent" />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Max/i }));
+
+    const maxButton = screen
+      .getAllByRole("button", { name: /HackerAI Max/i })
+      .find((button) => button.hasAttribute("aria-pressed"));
+
+    expect(maxButton).toBeDefined();
+    expect(maxButton).toHaveAttribute("aria-pressed", "true");
   });
 });

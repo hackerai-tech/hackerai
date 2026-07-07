@@ -1,4 +1,5 @@
 import {
+  canUseExtraUsage,
   normalizeMaxModelForSubscription,
   type ChatMode,
   type ExtraUsageConfig,
@@ -38,17 +39,7 @@ export function isAgentRunSpendCapBasis(
 export function canContinueProAgentRunWithPremium(
   extraUsageConfig: ExtraUsageConfig | undefined,
 ): boolean {
-  if (!extraUsageConfig?.enabled) return false;
-  if (
-    extraUsageConfig.monthlyRemainingDollars !== undefined &&
-    extraUsageConfig.monthlyRemainingDollars <= 0
-  ) {
-    return false;
-  }
-
-  return Boolean(
-    extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled,
-  );
+  return canUseExtraUsage(extraUsageConfig);
 }
 
 export function resolveAgentRunSpendCapContinuationModel(args: {
@@ -63,6 +54,11 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
     normalizeMaxModelForSubscription(
       args.selectedModelOverride,
       args.subscription,
+      {
+        extraUsageAvailable: canContinueProAgentRunWithPremium(
+          args.extraUsageConfig,
+        ),
+      },
     ) ?? undefined
   );
 }

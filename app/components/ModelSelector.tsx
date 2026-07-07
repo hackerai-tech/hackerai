@@ -20,8 +20,12 @@ import {
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
+  canUseExtraUsage,
   canUseMaxModel,
+  normalizeMaxModelForSubscription,
   normalizeSelectedModelForSubscription,
   type ChatMode,
   type SelectedModel,
@@ -56,9 +60,10 @@ const isMaxModel = (model: SelectedModel): boolean => model === "hackerai-max";
 const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
+  extraUsageAvailable = false,
 ): boolean =>
   subscription === "free" ||
-  (isMaxModel(model) && !canUseMaxModel(subscription));
+  (isMaxModel(model) && !canUseMaxModel(subscription, { extraUsageAvailable }));
 
 const getLockedModelCta = (model: SelectedModel): string =>
   isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
@@ -205,6 +210,7 @@ const ModelOptionList = ({
   isAuto,
   isFreeUser,
   subscription,
+  maxModelExtraUsageAvailable,
   onAutoSelect,
   onSelect,
   onClose,
@@ -215,6 +221,7 @@ const ModelOptionList = ({
   isAuto: boolean;
   isFreeUser: boolean;
   subscription: SubscriptionTier;
+  maxModelExtraUsageAvailable: boolean;
   onAutoSelect: () => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -257,7 +264,11 @@ const ModelOptionList = ({
 
     {options.map((option) => {
       const isSelected = value === option.id;
-      const isLocked = isModelLockedForSubscription(subscription, option.id);
+      const isLocked = isModelLockedForSubscription(
+        subscription,
+        option.id,
+        maxModelExtraUsageAvailable,
+      );
       const showUpgradeTooltip = isLocked && !mobile;
 
       if (!showUpgradeTooltip) {
@@ -341,10 +352,38 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const isMobile = Boolean(useIsMobile());
 
   const isFreeUser = subscription === "free";
-  const displayValue = normalizeSelectedModelForSubscription(
+  const shouldCheckPersonalExtraUsage =
+    subscription === "pro" || subscription === "pro-plus";
+  const userCustomization = useQuery(
+    api.userCustomization.getUserCustomization,
+    shouldCheckPersonalExtraUsage ? undefined : "skip",
+  );
+  const extraUsageSettings = useQuery(
+    api.extraUsage.getExtraUsageSettings,
+    shouldCheckPersonalExtraUsage ? undefined : "skip",
+  );
+  const monthlyRemainingDollars =
+    extraUsageSettings?.monthlyCapDollars === undefined
+      ? undefined
+      : Math.max(
+          0,
+          extraUsageSettings.monthlyCapDollars -
+            (extraUsageSettings.monthlySpentDollars ?? 0),
+        );
+  const maxModelExtraUsageAvailable = canUseExtraUsage({
+    enabled: userCustomization?.extra_usage_enabled ?? false,
+    balanceDollars: extraUsageSettings?.balanceDollars,
+    autoReloadEnabled: extraUsageSettings?.autoReloadEnabled,
+    monthlyRemainingDollars,
+  });
+  const subscriptionValue = normalizeSelectedModelForSubscription(
     value,
     subscription,
   );
+  const displayValue =
+    normalizeMaxModelForSubscription(subscriptionValue, subscription, {
+      extraUsageAvailable: maxModelExtraUsageAvailable,
+    }) ?? "auto";
   const isAuto = displayValue === "auto";
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
@@ -373,7 +412,13 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   };
 
   const handleModelSelect = (option: ModelOption) => {
-    if (isModelLockedForSubscription(subscription, option.id)) {
+    if (
+      isModelLockedForSubscription(
+        subscription,
+        option.id,
+        maxModelExtraUsageAvailable,
+      )
+    ) {
       setOpen(false);
       redirectLockedModelToPricing({
         mobile: isMobile,
@@ -421,6 +466,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               isAuto={isAuto}
               isFreeUser={isFreeUser}
               subscription={subscription}
+              maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
               onAutoSelect={handleAutoSelect}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -443,6 +489,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             isAuto={isAuto}
             isFreeUser={isFreeUser}
             subscription={subscription}
+            maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
             onAutoSelect={handleAutoSelect}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}

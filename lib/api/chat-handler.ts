@@ -26,6 +26,7 @@ import type {
   SandboxBootInfo,
 } from "@/types";
 import {
+  canUseExtraUsage,
   coerceSelectedModel,
   isLimitRescueRequest,
   normalizeSelectedModelOverrideForSubscription,
@@ -369,6 +370,7 @@ export const createChatHandler = () => {
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          extraUsageAvailable: canUseExtraUsage(extraUsageConfig),
           allowLocalDesktopFiles:
             isAgentMode(mode) && sandboxPreference === "desktop",
         });
