@@ -4,7 +4,11 @@ import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { SubscriptionTier } from "@/types/chat";
 
 let mockSubscription: SubscriptionTier;
-let mockQueryResult: unknown;
+let mockMaxEntitlement: unknown;
+const mockUseQuery = jest.fn(
+  (_query: unknown, args: unknown) =>
+    args === "skip" ? undefined : mockMaxEntitlement,
+);
 const mockRedirectToPricing = jest.fn();
 const mockOpenSettingsDialog = jest.fn();
 
@@ -27,8 +31,7 @@ jest.mock("@/lib/utils/settings-dialog", () => ({
 }));
 
 jest.mock("convex/react", () => ({
-  useQuery: (_query: unknown, args: unknown) =>
-    args === "skip" ? undefined : mockQueryResult,
+  useQuery: (...args: unknown[]) => mockUseQuery(...args),
 }));
 
 const { ModelSelector } = jest.requireActual<
@@ -38,9 +41,20 @@ const { ModelSelector } = jest.requireActual<
 describe("ModelSelector", () => {
   beforeEach(() => {
     mockSubscription = "pro-plus";
-    mockQueryResult = undefined;
+    mockMaxEntitlement = undefined;
+    mockUseQuery.mockClear();
     mockRedirectToPricing.mockClear();
     mockOpenSettingsDialog.mockClear();
+  });
+
+  it("skips the Max entitlement query until a paid user opens the selector", () => {
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    expect(mockUseQuery).toHaveBeenLastCalledWith(expect.anything(), "skip");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+
+    expect(mockUseQuery).toHaveBeenLastCalledWith(expect.anything(), {});
   });
 
   it("shows model choices immediately while Auto is selected", () => {
@@ -105,6 +119,12 @@ describe("ModelSelector", () => {
   });
 
   it("locks HackerAI Max on Pro Plus and opens Extra Usage settings", () => {
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "disabled",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
 
@@ -112,7 +132,7 @@ describe("ModelSelector", () => {
     const maxButton = screen.getByRole("button", { name: /HackerAI Max/i });
 
     expect(maxButton).toHaveAccessibleName(
-      "HackerAI Max. Manage Extra Usage for Max mode.",
+      "HackerAI Max. Set up Extra Usage for Max mode.",
     );
 
     fireEvent.click(maxButton);
@@ -122,12 +142,30 @@ describe("ModelSelector", () => {
     expect(mockRedirectToPricing).not.toHaveBeenCalled();
   });
 
+  it("shows a checking state while lazy Max entitlement is loading", () => {
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+
+    const maxButton = screen.getByRole("button", { name: /HackerAI Max/i });
+    expect(maxButton).toHaveAccessibleName(
+      "HackerAI Max. Checking Extra Usage for Max mode.",
+    );
+    expect(maxButton).toBeDisabled();
+
+    fireEvent.click(maxButton);
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(mockOpenSettingsDialog).not.toHaveBeenCalled();
+  });
+
   it("selects HackerAI Max on Pro Plus when extra usage is available", () => {
-    mockQueryResult = {
-      extra_usage_enabled: true,
-      balanceDollars: 10,
+    mockMaxEntitlement = {
+      extraUsageAvailable: true,
+      reason: "available",
+      hasBalance: true,
       autoReloadEnabled: false,
-      monthlySpentDollars: 0,
     };
     const onChange = jest.fn();
     render(<ModelSelector value="auto" onChange={onChange} mode="agent" />);
@@ -175,6 +213,12 @@ describe("ModelSelector", () => {
 
   it("does not display stale Max as selected outside Ultra", () => {
     mockSubscription = "pro";
+    mockMaxEntitlement = {
+      extraUsageAvailable: false,
+      reason: "empty",
+      hasBalance: false,
+      autoReloadEnabled: false,
+    };
 
     render(
       <ModelSelector value="hackerai-max" onChange={jest.fn()} mode="agent" />,
@@ -194,11 +238,11 @@ describe("ModelSelector", () => {
 
   it("displays stale Max as selected for Pro users with extra usage available", () => {
     mockSubscription = "pro";
-    mockQueryResult = {
-      extra_usage_enabled: true,
-      balanceDollars: 0,
+    mockMaxEntitlement = {
+      extraUsageAvailable: true,
+      reason: "available",
+      hasBalance: false,
       autoReloadEnabled: true,
-      monthlySpentDollars: 0,
     };
 
     render(

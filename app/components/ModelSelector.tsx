@@ -1,6 +1,13 @@
 "use client";
 
-import { Brain, Check, ChevronDown, ChevronRight, Lock } from "lucide-react";
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Lock,
+} from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -23,7 +30,6 @@ import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
-  canUseExtraUsage,
   canUseMaxModel,
   normalizeMaxModelForSubscription,
   normalizeSelectedModelForSubscription,
@@ -74,7 +80,7 @@ const getLockedModelCta = (
   subscription: SubscriptionTier,
 ): string => {
   if (isMaxModel(model) && canUnlockMaxWithExtraUsage(subscription)) {
-    return "Manage Extra Usage";
+    return "Set up Extra Usage";
   }
   return isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
 };
@@ -149,6 +155,7 @@ const ModelOptionButton = ({
   option,
   isSelected,
   isLocked,
+  isPending,
   subscription,
   onSelect,
   mobile = false,
@@ -156,6 +163,7 @@ const ModelOptionButton = ({
   option: ModelOption;
   isSelected: boolean;
   isLocked: boolean;
+  isPending: boolean;
   subscription: SubscriptionTier;
   onSelect: (option: ModelOption) => void;
   mobile?: boolean;
@@ -164,18 +172,28 @@ const ModelOptionButton = ({
     <button
       type="button"
       onClick={() => onSelect(option)}
+      disabled={isPending}
+      aria-busy={isPending || undefined}
       aria-pressed={isSelected}
       aria-label={
-        isLocked
-          ? `${option.label}. ${getLockedModelAnnouncement(
-              option.id,
-              subscription,
-            )}.`
-          : undefined
+        isPending
+          ? `${option.label}. Checking Extra Usage for Max mode.`
+          : isLocked
+            ? `${option.label}. ${getLockedModelAnnouncement(
+                option.id,
+                subscription,
+              )}.`
+            : undefined
       }
-      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
         mobile ? "py-2.5" : "py-1.5"
-      } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+      } ${
+        isPending
+          ? `cursor-wait opacity-80 ${isSelected ? "bg-accent" : ""}`
+          : isSelected
+            ? "cursor-pointer bg-accent"
+            : "cursor-pointer hover:bg-muted/50 active:bg-muted/50"
+      }`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
@@ -194,7 +212,9 @@ const ModelOptionButton = ({
           {option.id !== "auto" && <CostIndicator modelId={option.id} />}
         </div>
       </div>
-      {isLocked ? (
+      {isPending ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+      ) : isLocked ? (
         <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
       ) : isSelected ? (
         <Check className="h-3.5 w-3.5 shrink-0" />
@@ -237,6 +257,7 @@ const ModelOptionList = ({
   isFreeUser,
   subscription,
   maxModelExtraUsageAvailable,
+  maxModelEntitlementLoading,
   onAutoSelect,
   onSelect,
   onClose,
@@ -248,6 +269,7 @@ const ModelOptionList = ({
   isFreeUser: boolean;
   subscription: SubscriptionTier;
   maxModelExtraUsageAvailable: boolean;
+  maxModelEntitlementLoading: boolean;
   onAutoSelect: () => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -295,7 +317,11 @@ const ModelOptionList = ({
         option.id,
         maxModelExtraUsageAvailable,
       );
-      const showUpgradeTooltip = isLocked && !mobile;
+      const isPending = isMaxModel(option.id) && maxModelEntitlementLoading;
+      const showUpgradeTooltip =
+        isLocked &&
+        !mobile &&
+        !(isMaxModel(option.id) && maxModelEntitlementLoading);
 
       if (!showUpgradeTooltip) {
         return (
@@ -304,6 +330,7 @@ const ModelOptionList = ({
               option={option}
               isSelected={isSelected}
               isLocked={isLocked}
+              isPending={isPending}
               subscription={subscription}
               onSelect={onSelect}
               mobile={mobile}
@@ -320,6 +347,7 @@ const ModelOptionList = ({
                 option={option}
                 isSelected={isSelected}
                 isLocked={isLocked}
+                isPending={false}
                 subscription={subscription}
                 onSelect={onSelect}
                 mobile={mobile}
@@ -385,38 +413,27 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const isMobile = Boolean(useIsMobile());
 
   const isFreeUser = subscription === "free";
-  const shouldCheckPersonalExtraUsage =
-    subscription === "pro" || subscription === "pro-plus";
-  const userCustomization = useQuery(
-    api.userCustomization.getUserCustomization,
-    shouldCheckPersonalExtraUsage ? undefined : "skip",
+  const shouldCheckPersonalMaxExtraUsage =
+    (subscription === "pro" || subscription === "pro-plus") &&
+    (open || value === "hackerai-max");
+  const maxModelEntitlement = useQuery(
+    api.extraUsage.getMaxModelExtraUsageEntitlement,
+    shouldCheckPersonalMaxExtraUsage ? {} : "skip",
   );
-  const extraUsageSettings = useQuery(
-    api.extraUsage.getExtraUsageSettings,
-    shouldCheckPersonalExtraUsage ? undefined : "skip",
-  );
-  const monthlyRemainingDollars =
-    extraUsageSettings?.monthlyCapDollars === undefined
-      ? undefined
-      : Math.max(
-          0,
-          extraUsageSettings.monthlyCapDollars -
-            (extraUsageSettings.monthlySpentDollars ?? 0),
-        );
-  const maxModelExtraUsageAvailable = canUseExtraUsage({
-    enabled: userCustomization?.extra_usage_enabled ?? false,
-    balanceDollars: extraUsageSettings?.balanceDollars,
-    autoReloadEnabled: extraUsageSettings?.autoReloadEnabled,
-    monthlyRemainingDollars,
-  });
+  const maxModelEntitlementLoading =
+    shouldCheckPersonalMaxExtraUsage && maxModelEntitlement === undefined;
+  const maxModelExtraUsageAvailable =
+    maxModelEntitlement?.extraUsageAvailable ?? false;
   const subscriptionValue = normalizeSelectedModelForSubscription(
     value,
     subscription,
   );
   const displayValue =
-    normalizeMaxModelForSubscription(subscriptionValue, subscription, {
-      extraUsageAvailable: maxModelExtraUsageAvailable,
-    }) ?? "auto";
+    value === "hackerai-max" && maxModelEntitlementLoading
+      ? subscriptionValue
+      : (normalizeMaxModelForSubscription(subscriptionValue, subscription, {
+          extraUsageAvailable: maxModelExtraUsageAvailable,
+        }) ?? "auto");
   const isAuto = displayValue === "auto";
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
@@ -445,6 +462,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   };
 
   const handleModelSelect = (option: ModelOption) => {
+    if (isMaxModel(option.id) && maxModelEntitlementLoading) {
+      return;
+    }
+
     if (
       isModelLockedForSubscription(
         subscription,
@@ -500,6 +521,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               isFreeUser={isFreeUser}
               subscription={subscription}
               maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
+              maxModelEntitlementLoading={maxModelEntitlementLoading}
               onAutoSelect={handleAutoSelect}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -523,6 +545,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             isFreeUser={isFreeUser}
             subscription={subscription}
             maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
+            maxModelEntitlementLoading={maxModelEntitlementLoading}
             onAutoSelect={handleAutoSelect}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}

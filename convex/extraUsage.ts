@@ -18,6 +18,11 @@ type ExtraUsagePurchaseRoute =
   "checkout_action" | "confirm" | "webhook" | "repair";
 type ExtraUsagePurchaseResult =
   "created" | "paid_seen" | "credited" | "already_processed" | "failed";
+type MaxModelExtraUsageReason =
+  | "available"
+  | "disabled"
+  | "empty"
+  | "monthly_cap_exhausted";
 
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const PURCHASE_JSON_SECRET_PATTERN =
@@ -46,6 +51,20 @@ const sanitizePurchaseError = (error: string): string =>
     .split("\n", 1)[0]
     .trim()
     .slice(0, MAX_PURCHASE_ERROR_LENGTH);
+
+const currentMonthString = (): string => {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+};
+
+const getMonthlySpentPointsForCurrentMonth = (
+  settings: { monthly_reset_date?: string; monthly_spent_points?: number } | null,
+): number => {
+  if (!settings || settings.monthly_reset_date !== currentMonthString()) {
+    return 0;
+  }
+  return settings.monthly_spent_points ?? 0;
+};
 
 async function upsertExtraUsagePurchase(
   ctx: MutationCtx,
@@ -847,12 +866,7 @@ export const getExtraUsageBalanceForBackend = query({
 
     const balancePoints = settings?.balance_points ?? 0;
     const thresholdPoints = settings?.auto_reload_threshold_points;
-    const now = new Date();
-    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const monthlySpentPoints =
-      settings?.monthly_reset_date === currentMonth
-        ? (settings?.monthly_spent_points ?? 0)
-        : 0;
+    const monthlySpentPoints = getMonthlySpentPointsForCurrentMonth(settings);
     const monthlyCapPoints = settings?.monthly_cap_points;
     const monthlyRemainingPoints =
       monthlyCapPoints === undefined
@@ -874,6 +888,79 @@ export const getExtraUsageBalanceForBackend = query({
           ? undefined
           : pointsToDollars(monthlyCapPoints),
       monthlySpentDollars: pointsToDollars(monthlySpentPoints),
+      monthlyRemainingDollars:
+        monthlyRemainingPoints === undefined
+          ? undefined
+          : pointsToDollars(monthlyRemainingPoints),
+    };
+  },
+});
+
+/**
+ * Minimal frontend entitlement check for HackerAI Max on paid personal plans.
+ * The selector uses this instead of subscribing to broad customization and
+ * balance payloads just to answer whether Extra Usage can unlock Max.
+ */
+export const getMaxModelExtraUsageEntitlement = query({
+  args: {},
+  returns: v.union(
+    v.null(),
+    v.object({
+      extraUsageAvailable: v.boolean(),
+      reason: v.union(
+        v.literal("available"),
+        v.literal("disabled"),
+        v.literal("empty"),
+        v.literal("monthly_cap_exhausted"),
+      ),
+      hasBalance: v.boolean(),
+      autoReloadEnabled: v.boolean(),
+      monthlyRemainingDollars: v.optional(v.number()),
+    }),
+  ),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return null;
+    }
+
+    const [customization, settings] = await Promise.all([
+      ctx.db
+        .query("user_customization")
+        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .first(),
+      ctx.db
+        .query("extra_usage")
+        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .first(),
+    ]);
+
+    const enabled = customization?.extra_usage_enabled ?? false;
+    const hasBalance = (settings?.balance_points ?? 0) > 0;
+    const autoReloadEnabled = settings?.auto_reload_enabled ?? false;
+    const monthlySpentPoints = getMonthlySpentPointsForCurrentMonth(settings);
+    const monthlyCapPoints = settings?.monthly_cap_points;
+    const monthlyRemainingPoints =
+      monthlyCapPoints === undefined
+        ? undefined
+        : Math.max(0, monthlyCapPoints - monthlySpentPoints);
+    const monthlyCapExhausted =
+      monthlyRemainingPoints !== undefined && monthlyRemainingPoints <= 0;
+
+    let reason: MaxModelExtraUsageReason = "available";
+    if (!enabled) {
+      reason = "disabled";
+    } else if (monthlyCapExhausted) {
+      reason = "monthly_cap_exhausted";
+    } else if (!hasBalance && !autoReloadEnabled) {
+      reason = "empty";
+    }
+
+    return {
+      extraUsageAvailable: reason === "available",
+      reason,
+      hasBalance,
+      autoReloadEnabled,
       monthlyRemainingDollars:
         monthlyRemainingPoints === undefined
           ? undefined
