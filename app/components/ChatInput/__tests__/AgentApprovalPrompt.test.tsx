@@ -110,6 +110,77 @@ describe("AgentApprovalPrompt", () => {
     expect(approveOption).toHaveAttribute("aria-checked", "true");
   });
 
+  it("navigates approval options from page-level arrow keys", async () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    const approveOption = screen.getByRole("radio", {
+      name: /Approve full access/,
+    });
+    const denyOption = screen.getByRole("radio", { name: /Deny/ });
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown" });
+
+    expect(denyOption).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.keyDown(document.body, { key: "ArrowUp", code: "ArrowUp" });
+
+    expect(approveOption).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("submits the selected approval option from page-level Enter", async () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    fireEvent.keyDown(document.body, {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "approve",
+      }),
+    );
+  });
+
+  it("submits the page-selected approval option from page-level Enter", async () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown" });
+    fireEvent.keyDown(document.body, { key: "Enter", code: "Enter" });
+
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "deny",
+      }),
+    );
+  });
+
+  it("does not capture approval keys from editable fields", () => {
+    render(
+      <>
+        <input aria-label="Outside input" />
+        <AgentApprovalPrompt request={request} />
+      </>,
+    );
+
+    const outsideInput = screen.getByLabelText("Outside input");
+    const approveOption = screen.getByRole("radio", {
+      name: /Approve full access/,
+    });
+    const denyOption = screen.getByRole("radio", { name: /Deny/ });
+
+    fireEvent.keyDown(outsideInput, { key: "ArrowDown", code: "ArrowDown" });
+    fireEvent.keyDown(outsideInput, { key: "Enter", code: "Enter" });
+
+    expect(approveOption).toHaveAttribute("aria-checked", "true");
+    expect(denyOption).toHaveAttribute("aria-checked", "false");
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+  });
+
   it("submits the arrow-selected approval option when Enter is pressed", async () => {
     render(<AgentApprovalPrompt request={request} />);
 

@@ -396,7 +396,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       >
         {showStreamingIndicator ? (
           <LoaderCircle
-            className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
+            className="size-4 flex-shrink-0 animate-spin text-muted-foreground"
             data-testid="chat-item-streaming-icon"
             aria-hidden="true"
           />

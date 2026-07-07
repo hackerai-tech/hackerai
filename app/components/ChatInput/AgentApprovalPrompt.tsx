@@ -1,6 +1,12 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -55,9 +61,34 @@ const isPlainEnterKey = (event: {
   !event.metaKey &&
   !event.shiftKey;
 
+const isEditableKeyTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+
+  const editableElement = target.closest("input, textarea, select");
+  if (!editableElement) return false;
+
+  if (editableElement instanceof HTMLInputElement) {
+    return ![
+      "button",
+      "checkbox",
+      "color",
+      "file",
+      "image",
+      "radio",
+      "range",
+      "reset",
+      "submit",
+    ].includes(editableElement.type);
+  }
+
+  return true;
+};
+
 export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   const { session, sendToolApproval, toolApprovalSendStates } =
     useAgentApproval();
+  const formRef = useRef<HTMLFormElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [selectedDecision, setSelectedDecision] =
     useState<AgentToolApprovalDecision>("approve");
@@ -72,39 +103,48 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     ),
   );
 
-  const submitDecision = async (decision: AgentToolApprovalDecision) => {
-    if (!canSubmit) return;
-    try {
-      await sendToolApproval({
-        approvalId: request.approvalId,
-        toolCallId: request.toolCallId,
-        decision,
-      });
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to send approval response.",
-      );
-    }
-  };
+  const submitDecision = useCallback(
+    async (decision: AgentToolApprovalDecision) => {
+      if (!canSubmit) return;
+      try {
+        await sendToolApproval({
+          approvalId: request.approvalId,
+          toolCallId: request.toolCallId,
+          decision,
+        });
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to send approval response.",
+        );
+      }
+    },
+    [canSubmit, request.approvalId, request.toolCallId, sendToolApproval],
+  );
 
-  const selectOptionAtIndex = (index: number) => {
+  const selectOptionAtIndex = useCallback((index: number) => {
     const nextOption = APPROVAL_OPTIONS[index];
     if (!nextOption) return;
     setSelectedDecision(nextOption.decision);
     optionRefs.current[index]?.focus();
-  };
+  }, []);
 
-  const handlePromptKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
+  const moveSelectedOption = useCallback(
+    (direction: 1 | -1) => {
       const nextIndex = Math.min(
         Math.max(selectedOptionIndex + direction, 0),
         APPROVAL_OPTIONS.length - 1,
       );
       selectOptionAtIndex(nextIndex);
+    },
+    [selectOptionAtIndex, selectedOptionIndex],
+  );
+
+  const handlePromptKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelectedOption(event.key === "ArrowDown" ? 1 : -1);
       return;
     }
 
@@ -120,8 +160,37 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     void submitDecision(selectedDecision);
   };
 
+  useEffect(() => {
+    const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!canSubmit || event.defaultPrevented) return;
+      if (
+        event.target instanceof Node &&
+        formRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      if (isEditableKeyTarget(event.target)) return;
+
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveSelectedOption(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+
+      if (!isPlainEnterKey(event)) return;
+      event.preventDefault();
+      void submitDecision(selectedDecision);
+    };
+
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleDocumentKeyDown);
+    };
+  }, [canSubmit, moveSelectedOption, selectedDecision, submitDecision]);
+
   return (
     <form
+      ref={formRef}
       className="order-2 sm:order-1 flex flex-col gap-3 rounded-[22px] border border-black/8 bg-input-chat p-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
       onKeyDown={handlePromptKeyDown}
       onSubmit={(event) => {
