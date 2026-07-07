@@ -37,6 +37,11 @@ const resumeSrc = fs.readFileSync(
   "utf8",
 );
 
+const statusSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-status-route.ts"),
+  "utf8",
+);
+
 const routeSrc = fs.readFileSync(
   path.resolve(__dirname, "../agent-trigger-route.ts"),
   "utf8",
@@ -47,8 +52,18 @@ const agentRouteSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentStatusRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/api/agent/status/route.ts"),
+  "utf8",
+);
+
 const legacyAgentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent-long/route.ts"),
+  "utf8",
+);
+
+const legacyAgentStatusRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../app/api/agent-long/status/route.ts"),
   "utf8",
 );
 
@@ -237,6 +252,19 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(transportSrc).toMatch(/pollRunStatusForTerminalRun/);
     expect(transportSrc).toMatch(/TERMINAL_RUN_STATUSES\.has\(status\)/);
     expect(transportSrc).toMatch(/readAbortController\?\.abort\(\)/);
+  });
+
+  test("proxies run status polling through same-origin routes", () => {
+    expect(triggerBrowserRealtimeSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
+    expect(triggerBrowserRealtimeSrc).toMatch(/method:\s*"POST"/);
+    expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
+    expect(transportSrc).toMatch(/statusEndpoint/);
+    expect(statusSrc).toMatch(/runs\.retrieve\(runId\)/);
+    expect(statusSrc).toMatch(/metadata\.chatId\s*===\s*expected\.chatId/);
+    expect(statusSrc).toMatch(/metadata\.userId\s*===\s*expected\.userId/);
+    expect(statusSrc).not.toMatch(/\/api\/v1\/runs/);
+    expect(agentStatusRouteSrc).toMatch(/createAgentStatusPost/);
+    expect(legacyAgentStatusRouteSrc).toMatch(/createAgentStatusPost/);
   });
 
   test("setTimeout aborts the stream reader and closes the SSE", () => {
@@ -536,7 +564,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /AGENT_API_ENDPOINT\s*=\s*"\/api\/agent"/,
     );
     expect(agentEndpointsSrc).toMatch(
+      /AGENT_STATUS_ENDPOINT\s*=\s*"\/api\/agent\/status"/,
+    );
+    expect(agentEndpointsSrc).toMatch(
       /LEGACY_AGENT_API_ENDPOINT\s*=\s*"\/api\/agent-long"/,
+    );
+    expect(agentEndpointsSrc).toMatch(
+      /LEGACY_AGENT_STATUS_ENDPOINT\s*=\s*"\/api\/agent-long\/status"/,
     );
     expect(agentEndpointsSrc).toMatch(
       /AGENT_TRIGGER_TASK_ID\s*=\s*"agent-long"/,

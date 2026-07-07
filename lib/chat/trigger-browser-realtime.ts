@@ -1,3 +1,5 @@
+import { AGENT_STATUS_ENDPOINT } from "@/lib/api/agent-endpoints";
+
 type TriggerStreamRecord = {
   seq_num?: number | string;
   timestamp?: number;
@@ -17,6 +19,12 @@ type ParsedSSEEvent = {
 
 type TriggerRunStatusResponse = {
   status?: string;
+};
+
+type RetrieveTriggerRunStatusOptions = {
+  chatId?: string;
+  signal?: AbortSignal;
+  statusEndpoint?: string;
 };
 
 type ReadTriggerRunStreamOptions = {
@@ -57,18 +65,6 @@ const getTriggerStreamHeaders = (
 
   return headers;
 };
-
-const getTriggerJsonHeaders = (
-  accessToken: string,
-): Record<string, string> => ({
-  Authorization: `Bearer ${accessToken}`,
-  "Content-Type": "application/json",
-  "trigger-version": TRIGGER_VERSION,
-  "x-trigger-api-version": TRIGGER_API_VERSION,
-  "x-trigger-client": "browser",
-  "x-trigger-realtime-streams-version": "v2",
-  "x-trigger-source": "sdk",
-});
 
 const linkAbort = (
   parent: AbortSignal | undefined,
@@ -223,14 +219,20 @@ async function* readSSEEvents(
 
 export async function retrieveTriggerRunStatus(
   runId: string,
-  accessToken: string,
-  signal?: AbortSignal,
+  options: RetrieveTriggerRunStatusOptions,
 ): Promise<string | undefined> {
   const response = await fetch(
-    `${TRIGGER_API_BASE_URL}/api/v1/runs/${encodeURIComponent(runId)}`,
+    options.statusEndpoint ?? AGENT_STATUS_ENDPOINT,
     {
-      headers: getTriggerJsonHeaders(accessToken),
-      signal,
+      body: JSON.stringify({
+        chatId: options.chatId,
+        runId,
+      }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+      signal: options.signal,
     },
   );
 

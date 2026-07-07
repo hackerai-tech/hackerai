@@ -2,11 +2,13 @@ export const CHAT_API_ENDPOINT = "/api/chat" as const;
 export const AGENT_API_ENDPOINT = "/api/agent" as const;
 export const AGENT_RESUME_ENDPOINT = "/api/agent/resume" as const;
 export const AGENT_CANCEL_ENDPOINT = "/api/agent/cancel" as const;
+export const AGENT_STATUS_ENDPOINT = "/api/agent/status" as const;
 export const AGENT_PARTIAL_SAVE_ENDPOINT = "/api/agent/partial-save" as const;
 
 export const LEGACY_AGENT_API_ENDPOINT = "/api/agent-long" as const;
 export const LEGACY_AGENT_RESUME_ENDPOINT = "/api/agent-long/resume" as const;
 export const LEGACY_AGENT_CANCEL_ENDPOINT = "/api/agent-long/cancel" as const;
+export const LEGACY_AGENT_STATUS_ENDPOINT = "/api/agent-long/status" as const;
 
 // Keep the Trigger task id stable until old Vercel clients and Trigger deploys
 // can no longer race against the renamed API route.
