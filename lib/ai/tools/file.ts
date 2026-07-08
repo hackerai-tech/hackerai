@@ -661,6 +661,19 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function convertToLineEnding(text: string, lineEnding: "\n" | "\r\n"): string {
+  const normalized = normalizeLineEndings(text);
+  return lineEnding === "\r\n" ? normalized.replace(/\n/g, "\r\n") : normalized;
+}
+
 async function runSandboxCommand(
   sandbox: AnySandbox,
   command: string,
@@ -701,6 +714,32 @@ function getWindowsNativePath(path: string): string {
 
 function getPythonPathForSandbox(sandbox: AnySandbox, path: string): string {
   return isWindowsSandbox(sandbox) ? getWindowsNativePath(path) : path;
+}
+
+type NativeDesktopFiles = {
+  stat?: (path: string) => Promise<SandboxFileState>;
+  readText?: (
+    path: string,
+    options?: {
+      range?: [number, number];
+      maxFullBytes?: number;
+      maxResultBytes?: number;
+    },
+  ) => Promise<SandboxTextReadPayload>;
+  append?: (path: string, content: string) => Promise<void>;
+};
+
+function getNativeDesktopFiles(sandbox: AnySandbox): NativeDesktopFiles | null {
+  if (!isCentrifugoSandbox(sandbox)) return null;
+
+  const maybeSandbox = sandbox as unknown as {
+    supportsNativeFileRelay?: () => boolean;
+    files?: NativeDesktopFiles;
+  };
+  if (maybeSandbox.supportsNativeFileRelay?.() !== true) {
+    return null;
+  }
+  return maybeSandbox.files ?? null;
 }
 
 function toWindowsBashPath(path: string): string {
@@ -769,6 +808,11 @@ async function getSandboxFileState(
   sandbox: AnySandbox,
   path: string,
 ): Promise<SandboxFileState> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.stat) {
+    return nativeFiles.stat(path);
+  }
+
   const pythonPath = getPythonPathForSandbox(sandbox, path);
   const result = await runPythonScript(
     sandbox,
@@ -854,6 +898,15 @@ async function readSandboxTextFile(
   path: string,
   range?: number[],
 ): Promise<SandboxTextReadPayload> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.readText) {
+    return nativeFiles.readText(path, {
+      ...(range ? { range: [range[0], range[1]] } : {}),
+      maxFullBytes: MAX_TEXT_FILE_READ_BYTES,
+      maxResultBytes: MAX_TEXT_READ_RESULT_BYTES,
+    });
+  }
+
   const pythonPath = getPythonPathForSandbox(sandbox, path);
   const envVars = {
     HACKERAI_FILE_READ_PATH: pythonPath,
@@ -984,6 +1037,12 @@ async function appendSandboxTextFile(
   path: string,
   text: string,
 ): Promise<void> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.append) {
+    await nativeFiles.append(path, text);
+    return;
+  }
+
   const tempPath = `/tmp/hackerai_append_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`;
   await sandbox.files.write(tempPath, text, {
     user: "user" as const,
@@ -1337,7 +1396,10 @@ export const createFile = (context: ToolContext) => {
             }
 
             // Append directly without adding extra newline - agent controls exact content
-            const newContent = existingContent + text;
+            const appendText = existingContent
+              ? convertToLineEnding(text, detectLineEnding(existingContent))
+              : text;
+            const newContent = existingContent + appendText;
 
             await sandbox.files.write(path, newContent, {
               user: "user" as const,
@@ -1395,9 +1457,15 @@ export const createFile = (context: ToolContext) => {
             }
 
             // Validate all find strings exist before applying any edits (atomic behavior)
+            const lineEnding = detectLineEnding(originalContent);
+            const normalizedEdits = edits.map((edit) => ({
+              ...edit,
+              find: convertToLineEnding(edit.find, lineEnding),
+              replace: convertToLineEnding(edit.replace, lineEnding),
+            }));
             const missingFinds: { index: number; find: string }[] = [];
-            for (let i = 0; i < edits.length; i++) {
-              if (!originalContent.includes(edits[i].find)) {
+            for (let i = 0; i < normalizedEdits.length; i++) {
+              if (!originalContent.includes(normalizedEdits[i].find)) {
                 missingFinds.push({ index: i + 1, find: edits[i].find });
               }
             }
@@ -1418,7 +1486,7 @@ export const createFile = (context: ToolContext) => {
             let content = originalContent;
             let totalReplacements = 0;
 
-            for (const edit of edits) {
+            for (const edit of normalizedEdits) {
               const { find, replace, all = false } = edit;
 
               if (all) {
@@ -1437,7 +1505,7 @@ export const createFile = (context: ToolContext) => {
             });
 
             // Format content with line numbers for model output (padded format with pipe separator)
-            const lines = content.split("\n");
+            const lines = normalizeLineEndings(content).split("\n");
             const numberedLines = lines
               .map(
                 (line, index) =>

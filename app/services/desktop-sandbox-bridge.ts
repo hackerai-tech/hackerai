@@ -9,6 +9,13 @@ import {
   type PtyInputMessage,
   type PtyResizeMessage,
   type PtyKillMessage,
+  type FileRequestMessage,
+  type FileStatMessage,
+  type FileReadMessage,
+  type FileWriteMessage,
+  type FileAppendMessage,
+  type FileRemoveMessage,
+  type FileListMessage,
 } from "@/lib/centrifugo/types";
 import {
   DEFAULT_PTY_COLS,
@@ -21,9 +28,7 @@ type RefreshTokenResult =
       ok: false;
       terminated: true;
       reason:
-        | "connection_not_found"
-        | "ownership_mismatch"
-        | "connection_inactive";
+        "connection_not_found" | "ownership_mismatch" | "connection_inactive";
       connectionId: string;
       clientVersion: string | null;
       status: string | null;
@@ -49,6 +54,7 @@ interface StreamChunk {
 type TargetedIncomingMessage =
   | CommandMessage
   | CommandCancelMessage
+  | FileRequestMessage
   | PtyCreateMessage
   | PtyInputMessage
   | PtyResizeMessage
@@ -68,6 +74,12 @@ function isTargetedIncomingMessage(
     typeof targetConnectionId === "string" &&
     (type === "command" ||
       type === "command_cancel" ||
+      type === "file_stat" ||
+      type === "file_read" ||
+      type === "file_write" ||
+      type === "file_append" ||
+      type === "file_remove" ||
+      type === "file_list" ||
       type === "pty_create" ||
       type === "pty_input" ||
       type === "pty_resize" ||
@@ -93,6 +105,11 @@ interface DesktopBridgeConfig {
       arch: string;
       release: string;
       hostname: string;
+    };
+    capabilities?: {
+      commands: boolean;
+      pty: boolean;
+      files?: boolean;
     };
   }) => Promise<{
     connectionId: string;
@@ -140,6 +157,7 @@ export class DesktopSandboxBridge {
       await this.config.connectDesktop({
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
+        capabilities: { commands: true, pty: true, files: true },
       });
 
     this.connectionId = connectionId;
@@ -239,6 +257,42 @@ export class DesktopSandboxBridge {
               );
             },
           );
+          break;
+
+        case "file_stat":
+          this.handleFileStat(message as FileStatMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File stat failed:", err);
+          });
+          break;
+
+        case "file_read":
+          this.handleFileRead(message as FileReadMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File read failed:", err);
+          });
+          break;
+
+        case "file_write":
+          this.handleFileWrite(message as FileWriteMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File write failed:", err);
+          });
+          break;
+
+        case "file_append":
+          this.handleFileAppend(message as FileAppendMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File append failed:", err);
+          });
+          break;
+
+        case "file_remove":
+          this.handleFileRemove(message as FileRemoveMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File remove failed:", err);
+          });
+          break;
+
+        case "file_list":
+          this.handleFileList(message as FileListMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] File list failed:", err);
+          });
           break;
 
         case "pty_create":
@@ -391,6 +445,233 @@ export class DesktopSandboxBridge {
       });
     } finally {
       this.activeCommands.delete(commandId);
+    }
+  }
+
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private async publishFileError(
+    requestId: string,
+    error: unknown,
+  ): Promise<void> {
+    await this.publishResult({
+      type: "file_error",
+      requestId,
+      message: this.getErrorMessage(error),
+    });
+  }
+
+  private async callLocalFileServer<T>(
+    route: string,
+    body: Record<string, unknown>,
+  ): Promise<T> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const info = await invoke<{ port: number; token: string }>(
+      "get_cmd_server_info",
+    );
+    if (!info.port || !info.token) {
+      throw new Error("Desktop file server is not ready");
+    }
+
+    const response = await fetch(`http://127.0.0.1:${info.port}${route}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${info.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload?.error === "string"
+          ? payload.error
+          : `Desktop file server request failed: ${response.status}`,
+      );
+    }
+    return payload as T;
+  }
+
+  private countLines(content: string): number {
+    if (content.length === 0) return 0;
+    return content.endsWith("\n")
+      ? content.split("\n").length - 1
+      : content.split("\n").length;
+  }
+
+  private normalizeReadPayload(
+    path: string,
+    payload: unknown,
+    range?: [number, number],
+  ): {
+    path: string;
+    sizeBytes: number;
+    totalLines: number;
+    content?: string;
+    startLine?: number;
+    tooLarge?: boolean;
+    truncated?: boolean;
+  } {
+    const data =
+      typeof payload === "object" && payload !== null
+        ? (payload as Record<string, unknown>)
+        : {};
+    const content = typeof data.content === "string" ? data.content : undefined;
+
+    if (typeof data.sizeBytes === "number") {
+      return {
+        path: typeof data.path === "string" ? data.path : path,
+        sizeBytes: data.sizeBytes,
+        totalLines:
+          typeof data.totalLines === "number"
+            ? data.totalLines
+            : content !== undefined
+              ? this.countLines(content)
+              : 0,
+        ...(content !== undefined ? { content } : {}),
+        ...(typeof data.startLine === "number"
+          ? { startLine: data.startLine }
+          : range
+            ? { startLine: range[0] }
+            : {}),
+        ...(data.tooLarge === true ? { tooLarge: true } : {}),
+        ...(data.truncated === true ? { truncated: true } : {}),
+      };
+    }
+
+    if (content === undefined) {
+      throw new Error("Desktop file server returned an invalid read payload");
+    }
+
+    const lines = content.split("\n");
+    const selectedContent = range
+      ? lines
+          .slice(range[0] - 1, range[1] === -1 ? undefined : range[1])
+          .join("\n")
+      : content;
+
+    return {
+      path,
+      sizeBytes: new TextEncoder().encode(content).byteLength,
+      totalLines: this.countLines(content),
+      content: selectedContent,
+      startLine: range?.[0] ?? 1,
+    };
+  }
+
+  private async handleFileStat(message: FileStatMessage): Promise<void> {
+    const { requestId, path } = message;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const metadata = await invoke<{ path: string; size: number }>(
+        "get_local_file_metadata",
+        { path },
+      );
+      await this.publishResult({
+        type: "file_stat_result",
+        requestId,
+        kind: "file",
+        path: metadata.path,
+        sizeBytes: metadata.size,
+      });
+    } catch (error) {
+      const msg = this.getErrorMessage(error);
+      if (msg.includes("Selected path is not a file")) {
+        await this.publishResult({
+          type: "file_stat_result",
+          requestId,
+          kind: "not_file",
+          path,
+        });
+        return;
+      }
+      if (msg.includes("Metadata error")) {
+        await this.publishResult({
+          type: "file_stat_result",
+          requestId,
+          kind: "missing",
+          path,
+        });
+        return;
+      }
+      await this.publishFileError(requestId, error);
+    }
+  }
+
+  private async handleFileRead(message: FileReadMessage): Promise<void> {
+    const { requestId, path, range, maxFullBytes, maxResultBytes } = message;
+    try {
+      const payload = await this.callLocalFileServer<unknown>("/files/read", {
+        path,
+        range_start: range?.[0],
+        range_end: range?.[1],
+        max_full_bytes: maxFullBytes,
+        max_result_bytes: maxResultBytes,
+      });
+      await this.publishResult({
+        type: "file_read_result",
+        requestId,
+        ...this.normalizeReadPayload(path, payload, range),
+      });
+    } catch (error) {
+      await this.publishFileError(requestId, error);
+    }
+  }
+
+  private async handleFileWrite(message: FileWriteMessage): Promise<void> {
+    const { requestId, path, content, isBase64 } = message;
+    try {
+      await this.callLocalFileServer("/files/write", {
+        path,
+        content,
+        is_base64: Boolean(isBase64),
+      });
+      await this.publishResult({ type: "file_ok", requestId });
+    } catch (error) {
+      await this.publishFileError(requestId, error);
+    }
+  }
+
+  private async handleFileAppend(message: FileAppendMessage): Promise<void> {
+    const { requestId, path, content, isBase64 } = message;
+    try {
+      await this.callLocalFileServer("/files/append", {
+        path,
+        content,
+        is_base64: Boolean(isBase64),
+      });
+      await this.publishResult({ type: "file_ok", requestId });
+    } catch (error) {
+      await this.publishFileError(requestId, error);
+    }
+  }
+
+  private async handleFileRemove(message: FileRemoveMessage): Promise<void> {
+    const { requestId, path } = message;
+    try {
+      await this.callLocalFileServer("/files/remove", { path });
+      await this.publishResult({ type: "file_ok", requestId });
+    } catch (error) {
+      await this.publishFileError(requestId, error);
+    }
+  }
+
+  private async handleFileList(message: FileListMessage): Promise<void> {
+    const { requestId, path } = message;
+    try {
+      const entries = await this.callLocalFileServer<Array<{ name: string }>>(
+        "/files/list",
+        { path },
+      );
+      await this.publishResult({
+        type: "file_list_result",
+        requestId,
+        entries,
+      });
+    } catch (error) {
+      await this.publishFileError(requestId, error);
     }
   }
 

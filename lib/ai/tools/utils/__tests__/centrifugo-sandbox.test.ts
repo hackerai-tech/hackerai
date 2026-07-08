@@ -85,6 +85,19 @@ function createSandbox(
   );
 }
 
+function createDesktopSandbox(): CentrifugoSandbox {
+  return createSandbox({
+    isDesktop: true,
+    capabilities: { commands: true, pty: true, files: true },
+    osInfo: {
+      platform: "win32",
+      arch: "x64",
+      release: "10.0.22631",
+      hostname: "WIN-DEV",
+    },
+  });
+}
+
 /**
  * Helper: starts a command, then simulates publication messages from the sandbox client.
  * Returns the promise and the subscription so the caller can emit messages.
@@ -487,6 +500,149 @@ describe("CentrifugoSandbox", () => {
 
       expect(result.stdout).toBe("mine\n");
       expect(result.stdout).not.toContain("not mine");
+    });
+  });
+
+  describe("native desktop file relay", () => {
+    it("requires the desktop files capability before enabling the native relay", () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x64",
+          release: "10.0.22631",
+          hostname: "WIN-OLD",
+        },
+      });
+
+      expect(sandbox.supportsNativeFileRelay()).toBe(false);
+    });
+
+    it("files.read publishes a targeted file_read request for desktop connections", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.read("C:\\repo\\app.ts");
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_read",
+          path: "C:\\repo\\app.ts",
+          targetConnectionId: "conn-1",
+          requestId: expect.any(String),
+        }),
+      );
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      sub.emit("publication", {
+        data: {
+          type: "file_read_result",
+          requestId: request.requestId,
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 12,
+          totalLines: 1,
+          content: "hello world\n",
+          startLine: 1,
+        },
+      });
+
+      await expect(promise).resolves.toBe("hello world\n");
+    });
+
+    it("files.write publishes file_write instead of shell heredoc for desktop connections", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.write("C:\\repo\\app.ts", "updated");
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_write",
+          path: "C:\\repo\\app.ts",
+          content: "updated",
+          targetConnectionId: "conn-1",
+          requestId: expect.any(String),
+        }),
+      );
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      sub.emit("publication", {
+        data: { type: "file_ok", requestId: request.requestId },
+      });
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it("chunks large native writes into file_write then file_append requests", async () => {
+      const sandbox = createDesktopSandbox();
+      const content = "x".repeat(70 * 1024);
+      const promise = sandbox.files.write("C:\\repo\\large.txt", content);
+
+      await jest.advanceTimersByTimeAsync(0);
+      const firstSub = mockSubscriptions[0];
+      firstSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const firstRequest = (firstSub.publish as jest.Mock).mock.calls[0][0] as {
+        type: string;
+        requestId: string;
+        content: string;
+        isBase64?: boolean;
+      };
+      expect(firstRequest).toEqual(
+        expect.objectContaining({
+          type: "file_write",
+          path: "C:\\repo\\large.txt",
+          isBase64: true,
+          targetConnectionId: "conn-1",
+        }),
+      );
+      firstSub.emit("publication", {
+        data: { type: "file_ok", requestId: firstRequest.requestId },
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const secondSub = mockSubscriptions[1];
+      secondSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const secondRequest = (secondSub.publish as jest.Mock).mock
+        .calls[0][0] as {
+        type: string;
+        requestId: string;
+        content: string;
+        isBase64?: boolean;
+      };
+      expect(secondRequest).toEqual(
+        expect.objectContaining({
+          type: "file_append",
+          path: "C:\\repo\\large.txt",
+          isBase64: true,
+          targetConnectionId: "conn-1",
+        }),
+      );
+      secondSub.emit("publication", {
+        data: { type: "file_ok", requestId: secondRequest.requestId },
+      });
+
+      await expect(promise).resolves.toBeUndefined();
+      expect(
+        Buffer.from(
+          firstRequest.content + secondRequest.content,
+          "base64",
+        ).toString("utf8"),
+      ).toBe(content);
     });
   });
 

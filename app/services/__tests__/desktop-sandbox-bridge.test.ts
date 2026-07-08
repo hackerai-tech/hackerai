@@ -27,6 +27,7 @@ let mockInvokeHandler: (
   args?: Record<string, unknown>,
 ) => Promise<unknown>;
 let capturedChannel: { onmessage?: (event: unknown) => void } | null = null;
+const originalFetch = global.fetch;
 
 jest.mock("@tauri-apps/api/core", () => ({
   invoke: jest.fn((...args: unknown[]) => {
@@ -80,6 +81,7 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 beforeEach(() => {
   jest.clearAllMocks();
   capturedChannel = null;
+  global.fetch = originalFetch;
 
   mockInvokeHandler = async (cmd: string) => {
     if (cmd === "execute_command") {
@@ -94,6 +96,26 @@ beforeEach(() => {
     }
     throw new Error(`Unknown command: ${cmd}`);
   };
+});
+
+afterEach(() => {
+  global.fetch = originalFetch;
+});
+
+// ── desktop capability registration ───────────────────────────────────
+
+describe("desktop capability registration", () => {
+  it("advertises native file relay support for updated desktop builds", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    );
+  });
 });
 
 // ── targetConnectionId filtering ──────────────────────────────────────
@@ -223,6 +245,175 @@ describe("targetConnectionId filtering", () => {
       "execute_pty_create",
       expect.anything(),
     );
+  });
+});
+
+// ── native desktop file relay ─────────────────────────────────────────
+
+describe("native desktop file relay", () => {
+  it("handles file_read with the local desktop file server", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        path: "C:\\repo\\app.ts",
+        sizeBytes: 12,
+        totalLines: 1,
+        content: "hello world\n",
+        startLine: 1,
+        truncated: false,
+      }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_read",
+        requestId: "file-req-1",
+        path: "C:\\repo\\app.ts",
+        range: [1, 1],
+        maxFullBytes: 1024,
+        maxResultBytes: 1024,
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/read",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer file-token",
+        }),
+        body: JSON.stringify({
+          path: "C:\\repo\\app.ts",
+          range_start: 1,
+          range_end: 1,
+          max_full_bytes: 1024,
+          max_result_bytes: 1024,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_read_result",
+      requestId: "file-req-1",
+      path: "C:\\repo\\app.ts",
+      sizeBytes: 12,
+      totalLines: 1,
+      content: "hello world\n",
+      startLine: 1,
+    });
+  });
+
+  it("handles file_write without executing a shell command", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+    (invoke as jest.Mock).mockClear();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-req-2",
+        path: "C:\\repo\\app.ts",
+        content: "updated",
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.anything(),
+    );
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/write",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\app.ts",
+          content: "updated",
+          is_base64: false,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-req-2",
+    });
+  });
+
+  it("passes base64 append requests through to the local file server", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_append",
+        requestId: "file-req-3",
+        path: "C:\\repo\\asset.bin",
+        content: "AAEC",
+        isBase64: true,
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/append",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\asset.bin",
+          content: "AAEC",
+          is_base64: true,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-req-3",
+    });
   });
 });
 
