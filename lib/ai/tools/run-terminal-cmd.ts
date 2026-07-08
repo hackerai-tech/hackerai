@@ -39,7 +39,7 @@ import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
-  runTerminalCmdTool,
+  createRunTerminalCmdToolSchema,
 } from "./schemas";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
@@ -65,6 +65,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const runTerminalCmdTool = createRunTerminalCmdToolSchema({
+    approvalGated: !!context.requestToolApproval,
+  });
 
   return tool({
     ...runTerminalCmdTool,

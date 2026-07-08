@@ -11,10 +11,15 @@ export const toolBriefSchema = z
 export const RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 export const RUN_TERMINAL_MAX_TIMEOUT_SECONDS = 600;
 
-export const runTerminalCmdTool = tool({
-  description: `Execute a command on behalf of the user.
+export const createRunTerminalCmdToolSchema = ({
+  approvalGated = false,
+}: {
+  approvalGated?: boolean;
+} = {}) =>
+  tool({
+    description: `Execute a command on behalf of the user.
 If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
-Commands run in the selected sandbox environment. If Agent approval mode is set to ask, the platform can pause execution after you call this tool and ask the user to approve it; do not ask in chat instead of calling the tool when a command is needed.
+Commands run in the selected sandbox environment.${approvalGated ? " The platform will pause execution after you call this tool and ask the user to approve it; do not ask in chat instead of calling the tool when a command is needed." : ""}
 In using these tools, adhere to the following guidelines:
 1. Use command chaining and pipes for efficiency:
    - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
@@ -37,32 +42,34 @@ In using these tools, adhere to the following guidelines:
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
-  inputSchema: z.object({
-    command: z.string().describe("The shell command to execute"),
-    brief: toolBriefSchema,
-    is_background: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
-      ),
-    timeout: z
-      .number()
-      .optional()
-      .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
-      .describe(
-        `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
-      ),
-    interactive: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
-      ),
-  }),
-});
+    inputSchema: z.object({
+      command: z.string().describe("The shell command to execute"),
+      brief: toolBriefSchema,
+      is_background: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
+        ),
+      timeout: z
+        .number()
+        .optional()
+        .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
+        .describe(
+          `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+        ),
+      interactive: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
+        ),
+    }),
+  });
+
+export const runTerminalCmdTool = createRunTerminalCmdToolSchema();
 
 export const INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
 export const INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS = 300;
@@ -178,8 +185,10 @@ const fileEditSchema = z.object({
 
 export const createFileToolSchema = ({
   supportsView,
+  approvalGated = false,
 }: {
   supportsView: boolean;
+  approvalGated?: boolean;
 }) => {
   const actionSchema = (
     supportsView
@@ -199,7 +208,9 @@ export const createFileToolSchema = ({
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
-    "Write, append, and edit actions may be approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first.",
+    approvalGated
+      ? "Write, append, and edit actions are approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first."
+      : null,
     "For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
@@ -225,6 +236,7 @@ export const createFileToolSchema = ({
     "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
   ];
   const instructionsDescription = instructions
+    .filter((instruction): instruction is string => Boolean(instruction))
     .map((instruction, index) => `${index + 1}. ${instruction}`)
     .join("\n");
 

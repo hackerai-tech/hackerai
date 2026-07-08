@@ -55,9 +55,7 @@ type SandboxViewPayload = {
 };
 
 type FileViewImageUsageOutcome =
-  | "success"
-  | "unsupported_model"
-  | "inspection_failed";
+  "success" | "unsupported_model" | "inspection_failed";
 
 type FileViewStage = "initial_inspection" | "model_output";
 
@@ -1162,6 +1160,7 @@ export const createFile = (context: ToolContext) => {
   const supportsViewInSchema = canViewMultimodalFiles();
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
+    approvalGated: !!context.requestToolApproval,
   });
 
   return tool({
