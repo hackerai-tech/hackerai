@@ -16,6 +16,10 @@ Paid funnel events use stable snake_case event names. Most events include
 - `subscription_started`: Stripe confirmed a new paid subscription invoice.
 - `subscription_changed`: Stripe confirmed a tier change on an existing
   subscription.
+- `billing_payment_failed`: Stripe confirmed a subscription invoice payment
+  failure or a payment-failed subscription deletion. Use this to separate
+  renewal quality, bank declines, Radar blocks, subscription updates, and
+  other involuntary churn causes.
 - `limit_hit`: a chat or agent request was blocked by a free or paid limit.
 - `monthly_cap_hit`: legacy paid-only monthly cap event kept for existing
   dashboards.
@@ -69,6 +73,15 @@ Paid funnel events use stable snake_case event names. Most events include
   or payment guardrail rather than the included monthly bucket alone.
 - `paid_monthly_exhaustion`: true for paid users whose included monthly bucket
   is exhausted and can be resolved through add-credit/upgrade flow.
+- Billing-failure events include `billing_failure_lifecycle`
+  (`invoice_payment_failed` or `subscription_deleted`),
+  `billing_failure_stage` (`first_payment`, `renewal`,
+  `subscription_update`, etc.), `billing_failure_group`
+  (`insufficient_funds`, `transaction_not_allowed`, `stripe_risk_block`,
+  `authentication_failed`, etc.), Stripe invoice/payment ids, attempt count,
+  amount fields, decline/outcome codes, and coarse payment method metadata
+  such as card country/funding. Do not log last4, emails, names, or billing
+  addresses.
 - Agent-first onboarding events include `first_experience_event_version`,
   `eligible_subscription_tier`, `selected_subscription_tier`,
   `selection_reason`, `default_applied`, `saved_mode_present`,
@@ -105,6 +118,10 @@ Paid funnel events use stable snake_case event names. Most events include
   `agent_run_spend_cap_hit -> subscription_cancelled`, grouped by
   `agent_run_spend_cap_continue_clicked`, `cap_basis`, and
   `cancellation_reason`.
+- Involuntary churn:
+  `billing_payment_failed -> subscription_cancelled`, grouped by
+  `billing_failure_stage`, `billing_failure_group`, `billing_reason`,
+  `card_country`, `subscription_tier`, and `attempt_count`.
 - Referral revenue:
   `referred_signup_attributed -> referred_user_paid_conversion`, grouped by
   `referral_code`.
