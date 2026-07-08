@@ -5,6 +5,7 @@ export const revalidate = 0;
 export const maxDuration = 10;
 
 const TRIGGER_STATUS_URL = "https://status.trigger.dev/index.json";
+const TRIGGER_STATUS_FETCH_TIMEOUT_MS = 8_000;
 const OPERATIONAL_STATUS = "operational";
 
 const REQUIRED_TRIGGER_RESOURCES = [
@@ -102,10 +103,22 @@ function json(
   });
 }
 
+function getTriggerStatusFetchSignal(): AbortSignal | undefined {
+  if (typeof AbortSignal === "undefined") return undefined;
+  const timeout = (
+    AbortSignal as typeof AbortSignal & {
+      timeout?: (milliseconds: number) => AbortSignal;
+    }
+  ).timeout;
+
+  return timeout?.(TRIGGER_STATUS_FETCH_TIMEOUT_MS);
+}
+
 export async function GET() {
   try {
     const response = await fetch(TRIGGER_STATUS_URL, {
       cache: "no-store",
+      signal: getTriggerStatusFetchSignal(),
       headers: {
         accept: "application/json",
       },
@@ -140,6 +153,7 @@ export async function GET() {
         service: "hackerai",
         timestamp: checkedAt,
         source: TRIGGER_STATUS_URL,
+        timeout_ms: TRIGGER_STATUS_FETCH_TIMEOUT_MS,
         error_name: error instanceof Error ? error.name : "UnknownError",
         error_message: error instanceof Error ? error.message : "Unknown error",
         environment: process.env.VERCEL_ENV,
@@ -154,6 +168,7 @@ export async function GET() {
         checkedAt,
         error: "trigger_status_fetch_failed",
         message: "Failed to fetch Trigger status feed.",
+        timeoutMs: TRIGGER_STATUS_FETCH_TIMEOUT_MS,
       },
       { status: 503 },
     );

@@ -37,7 +37,7 @@ const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
             <span className="text-2xl font-semibold tabular-nums">
               ${monthlySpentDollars.toFixed(2)}
             </span>
-            {monthlyCapDollars ? (
+            {monthlyCapDollars != null ? (
               <span className="text-sm text-muted-foreground">
                 / ${monthlyCapDollars.toFixed(2)}
               </span>

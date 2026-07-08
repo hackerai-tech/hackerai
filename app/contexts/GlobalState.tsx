@@ -20,6 +20,7 @@ import {
   type QueueBehavior,
   type SandboxPreference,
   isChatMode,
+  normalizeSelectedModelForSubscription,
 } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
@@ -477,6 +478,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     writeSelectedModel(selectedModel);
   }, [selectedModel]);
+
+  useEffect(() => {
+    if (!subscriptionResolved) return;
+    const normalizedModel = normalizeSelectedModelForSubscription(
+      selectedModel,
+      subscription,
+    );
+    if (normalizedModel !== selectedModel) {
+      setSelectedModelRaw(normalizedModel);
+    }
+  }, [selectedModel, subscription, subscriptionResolved]);
 
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);

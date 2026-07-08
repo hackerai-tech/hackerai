@@ -54,7 +54,7 @@ describe("canContinueProAgentRunWithPremium", () => {
 });
 
 describe("resolveAgentRunSpendCapContinuationModel", () => {
-  it("preserves Pro Agent spend-cap continuations without requiring extra usage", () => {
+  it("preserves non-Max Pro Agent spend-cap continuations", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
@@ -108,16 +108,16 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-max",
         extraUsageConfig: undefined,
       }),
-    ).toBe("hackerai-max");
+    ).toBe("hackerai-pro");
   });
 
-  it("keeps the selected model when extra usage or auto-reload can cover continuation", () => {
+  it("keeps Max for Ultra continuations", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
         isAutoContinue: true,
         mode: "agent",
-        subscription: "pro",
+        subscription: "ultra",
         selectedModelOverride: "hackerai-max",
         extraUsageConfig: {
           enabled: true,
@@ -127,6 +127,43 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         },
       }),
     ).toBe("hackerai-max");
+  });
+
+  it("keeps Max outside Ultra when extra usage is available", () => {
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-max",
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: true,
+          balanceDollars: 10,
+          autoReloadEnabled: false,
+        },
+      }),
+    ).toBe("hackerai-max");
+  });
+
+  it("downgrades Max outside Ultra when extra usage is unavailable", () => {
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-max",
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: true,
+          balanceDollars: 10,
+          autoReloadEnabled: false,
+          monthlyRemainingDollars: 0,
+        },
+      }),
+    ).toBe("hackerai-pro");
   });
 
   it("leaves Standard and non-spend-cap requests unchanged", () => {

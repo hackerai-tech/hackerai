@@ -35,7 +35,7 @@ const AdjustSpendingLimitDialogContent = ({
 
   const handleSetLimit = async () => {
     const limit = parseFloat(inputValue);
-    if (isNaN(limit) || limit < 0) return;
+    if (isNaN(limit) || limit < 1) return;
     await onSave(limit);
   };
 
@@ -44,7 +44,7 @@ const AdjustSpendingLimitDialogContent = ({
   };
 
   const parsedLimit = parseFloat(inputValue);
-  const isValidLimit = !isNaN(parsedLimit) && parsedLimit >= 0;
+  const isValidLimit = !isNaN(parsedLimit) && parsedLimit >= 1;
 
   return (
     <>
@@ -67,7 +67,7 @@ const AdjustSpendingLimitDialogContent = ({
             aria-label="Monthly spending limit"
           />
           <p className="text-xs mt-3 text-muted-foreground">
-            This spending limit goes into effect immediately
+            Enter at least $1, or set the limit to unlimited.
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">

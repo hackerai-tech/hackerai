@@ -82,6 +82,74 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("treats user-provided targets as active authorized scope", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "provided by the user in the current conversation are the active user-declared scope",
+    );
+    expect(prompt).toContain(
+      "Treat those targets as authorized for the task without asking the user to restate permission",
+    );
+    expect(prompt).toContain(
+      "authorized security validation, reproduction, confirmation, assessment, and remediation",
+    );
+    expect(prompt).toContain(
+      "Do NOT ask for proof of authorization for a user-declared target",
+    );
+    expect(prompt).toContain(
+      "before expanding materially to unrelated third-party assets",
+    );
+  });
+
+  it("adds a compact finding quality contract for agent security work", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<finding_quality>");
+    expect(prompt).toContain(
+      "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
+    );
+    expect(prompt).toContain(
+      "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+    );
+    expect(prompt).toContain(
+      "Deduplicate equivalent findings and consolidate repeated evidence",
+    );
+    expect(prompt).toContain(
+      "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
+    );
+  });
+
+  it("does not add agent finding quality guidance to ask mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).not.toContain("<finding_quality>");
+  });
+
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {
     const prompt = await systemPrompt(
       "user_123",

@@ -125,6 +125,7 @@ import type {
   SandboxBootInfo,
   ToolFailureLogEvent,
 } from "@/types";
+import { canUseExtraUsage, normalizeMaxModelForSubscription } from "@/types";
 import {
   createAgentStream,
   initAgentStreamState,
@@ -1315,7 +1316,7 @@ export const agentLongTask = task({
       sandboxPreference,
       agentPermissionMode = "full_access",
       approvalSessionId,
-      selectedModel: selectedModelOverride,
+      selectedModel: rawSelectedModelOverride,
       userLocation,
       temporary,
       isAutoContinue,
@@ -1323,6 +1324,7 @@ export const agentLongTask = task({
       isNewChat,
       endpoint: payloadEndpoint,
     } = payload;
+    let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
@@ -1416,6 +1418,17 @@ export const agentLongTask = task({
       ]);
       const { chat, fileTokens } = fetched;
       const truncatedMessages = fetched.truncatedMessages;
+      const extraUsageConfig = await buildExtraUsageConfig({
+        userId,
+        subscription,
+        userCustomization,
+        organizationId,
+      });
+      const extraUsageAvailable = canUseExtraUsage(extraUsageConfig);
+      selectedModelOverride =
+        normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
+          extraUsageAvailable,
+        }) ?? undefined;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -1440,6 +1453,7 @@ export const agentLongTask = task({
           subscription,
           uploadBasePath,
           modelOverride: selectedModelOverride,
+          extraUsageAvailable,
           allowLocalDesktopFiles: sandboxPreference === "desktop",
         });
 
@@ -1518,7 +1532,6 @@ export const agentLongTask = task({
       // before agentUiStream.pipe() registered the stream, and the frontend
       // transport would only see a FAILED status with no error message.
       let rateLimitInfo: RateLimitInfo;
-      let extraUsageConfig: Awaited<ReturnType<typeof buildExtraUsageConfig>>;
 
       let streamError: unknown;
       const uiStream = createUIMessageStream({
@@ -1542,13 +1555,6 @@ export const agentLongTask = task({
               );
               releaseFreeRunLock = lock.release;
             }
-
-            extraUsageConfig = await buildExtraUsageConfig({
-              userId,
-              subscription,
-              userCustomization,
-              organizationId,
-            });
 
             rateLimitInfo = await checkRateLimit(
               userId,

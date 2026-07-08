@@ -185,7 +185,9 @@ const ExtraUsageSection = () => {
         monthlyCapDollars: limitDollars,
       });
       toast.success(
-        limitDollars ? "Spending limit updated" : "Spending limit removed",
+        limitDollars === null
+          ? "Spending limit removed"
+          : "Spending limit updated",
       );
       setShowSpendingLimitDialog(false);
     } catch (error) {

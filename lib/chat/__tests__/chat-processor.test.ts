@@ -242,8 +242,26 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6", () => {
-      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-opus-4.6");
+    it("should map HackerAI Max to Opus 4.6 for Ultra", () => {
+      expect(selectModel("ask", "ultra", "hackerai-max")).toBe(
+        "model-opus-4.6",
+      );
+    });
+
+    it("should downgrade HackerAI Max to Pro outside Ultra", () => {
+      expect(selectModel("ask", "pro", "hackerai-max")).toBe("model-glm-5.2");
+      expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
+        "model-glm-5.2",
+      );
+      expect(selectModel("ask", "team", "hackerai-max")).toBe("model-glm-5.2");
+    });
+
+    it("should map HackerAI Max to Opus 4.6 for paid users with extra usage", () => {
+      expect(
+        selectModel("ask", "pro", "hackerai-max", false, false, {
+          extraUsageAvailable: true,
+        }),
+      ).toBe("model-opus-4.6");
     });
   });
 
@@ -265,10 +283,28 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Opus 4.6 in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-max")).toBe(
+    it("should map HackerAI Max to Opus 4.6 in agent mode for Ultra", () => {
+      expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
         "model-opus-4.6",
       );
+    });
+
+    it("should downgrade HackerAI Max to Pro in agent mode outside Ultra", () => {
+      expect(selectModel("agent", "pro", "hackerai-max")).toBe("model-glm-5.2");
+      expect(selectModel("agent", "pro-plus", "hackerai-max")).toBe(
+        "model-glm-5.2",
+      );
+      expect(selectModel("agent", "team", "hackerai-max")).toBe(
+        "model-glm-5.2",
+      );
+    });
+
+    it("should map HackerAI Max to Opus 4.6 in agent mode for paid users with extra usage", () => {
+      expect(
+        selectModel("agent", "pro-plus", "hackerai-max", false, false, {
+          extraUsageAvailable: true,
+        }),
+      ).toBe("model-opus-4.6");
     });
 
     it("should default to agent-model when no model selected", () => {

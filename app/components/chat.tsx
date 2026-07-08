@@ -1012,7 +1012,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) => {
       if (isAgentLongDoubleCloseNoise(message)) return true;
       if (typeof previousOnError === "function") {
-        return previousOnError(message, source, lineno, colno, error);
+        try {
+          return previousOnError(message, source, lineno, colno, error);
+        } catch {
+          return false;
+        }
       }
       return false;
     };
