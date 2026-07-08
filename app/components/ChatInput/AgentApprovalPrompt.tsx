@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -244,6 +245,34 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     };
   }, [canSubmit, moveSelectedOption, selectedOptionId, submitOption]);
 
+  const actionControls = (
+    <div
+      className="flex shrink-0 items-center justify-end gap-2 pl-2"
+      data-testid="agent-approval-actions"
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        disabled={!canSubmit}
+        size="sm"
+        data-agent-approval-native-enter="true"
+        onClick={() => void submitSkip()}
+      >
+        Skip
+      </Button>
+      <Button
+        type="submit"
+        disabled={!canSubmit}
+        size="sm"
+        data-agent-approval-native-enter="true"
+      >
+        {isSending ? <Loader2 className="animate-spin" /> : null}
+        {isSettled ? "Submitted" : "Submit"}
+        {!isSending && !isSettled ? <CornerDownLeft /> : null}
+      </Button>
+    </div>
+  );
+
   return (
     <form
       ref={formRef}
@@ -270,7 +299,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
       <div
         role="radiogroup"
         aria-label="Agent approval options"
-        className="flex flex-col gap-1"
+        className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1"
       >
         {APPROVAL_OPTIONS.map((option, optionIndex) => {
           const selected = selectedOptionId === option.id;
@@ -313,48 +342,51 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
 
           if (option.id === "deny_feedback") {
             return (
-              <div
-                key={option.id}
-                ref={(node) => {
-                  optionRefs.current[optionIndex] = node;
-                }}
-                role="radio"
-                aria-checked={selected}
-                aria-label={label}
-                tabIndex={canSubmit ? 0 : -1}
-                className={rowClassName}
-                onClick={() => {
-                  setSelectedOptionId(option.id);
-                  feedbackInputRef.current?.focus();
-                }}
-                onKeyDown={(event) => {
-                  if (!isPlainEnterKey(event)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setSelectedOptionId(option.id);
-                  feedbackInputRef.current?.focus();
-                }}
-              >
-                <span className={iconClassName} aria-hidden="true">
-                  <Pencil className="h-3.5 w-3.5" />
-                </span>
-                <input
-                  ref={feedbackInputRef}
-                  type="text"
-                  value={feedback}
-                  disabled={!canSubmit}
-                  className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground"
-                  aria-label={label}
-                  placeholder={label}
-                  data-agent-approval-native-enter="true"
-                  onFocus={() => setSelectedOptionId(option.id)}
-                  onChange={(event) => {
-                    setSelectedOptionId(option.id);
-                    setFeedback(event.target.value);
+              <Fragment key={option.id}>
+                <div
+                  ref={(node) => {
+                    optionRefs.current[optionIndex] = node;
                   }}
-                />
-                {arrows}
-              </div>
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={label}
+                  tabIndex={canSubmit ? 0 : -1}
+                  className={`${rowClassName} min-w-0`}
+                  data-testid="agent-approval-feedback-row"
+                  onClick={() => {
+                    setSelectedOptionId(option.id);
+                    feedbackInputRef.current?.focus();
+                  }}
+                  onKeyDown={(event) => {
+                    if (!isPlainEnterKey(event)) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedOptionId(option.id);
+                    feedbackInputRef.current?.focus();
+                  }}
+                >
+                  <span className={iconClassName} aria-hidden="true">
+                    <Pencil className="h-3.5 w-3.5" />
+                  </span>
+                  <input
+                    ref={feedbackInputRef}
+                    type="text"
+                    value={feedback}
+                    disabled={!canSubmit}
+                    className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground"
+                    aria-label={label}
+                    placeholder={label}
+                    data-agent-approval-native-enter="true"
+                    onFocus={() => setSelectedOptionId(option.id)}
+                    onChange={(event) => {
+                      setSelectedOptionId(option.id);
+                      setFeedback(event.target.value);
+                    }}
+                  />
+                  {arrows}
+                </div>
+                {actionControls}
+              </Fragment>
             );
           }
 
@@ -368,7 +400,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               role="radio"
               aria-checked={selected}
               disabled={!canSubmit}
-              className={rowClassName}
+              className={`${rowClassName} col-span-2`}
               onClick={() => setSelectedOptionId(option.id)}
               onKeyDown={(event) => {
                 if (!isPlainEnterKey(event)) return;
@@ -388,29 +420,6 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
             </button>
           );
         })}
-      </div>
-
-      <div className="flex items-center justify-end gap-2 pt-1">
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={!canSubmit}
-          size="sm"
-          data-agent-approval-native-enter="true"
-          onClick={() => void submitSkip()}
-        >
-          Skip
-        </Button>
-        <Button
-          type="submit"
-          disabled={!canSubmit}
-          size="sm"
-          data-agent-approval-native-enter="true"
-        >
-          {isSending ? <Loader2 className="animate-spin" /> : null}
-          {isSettled ? "Submitted" : "Submit"}
-          {!isSending && !isSettled ? <CornerDownLeft /> : null}
-        </Button>
       </div>
     </form>
   );

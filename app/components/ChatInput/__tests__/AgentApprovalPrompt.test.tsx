@@ -71,6 +71,21 @@ describe("AgentApprovalPrompt", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps Skip and Submit inline with the feedback option row", () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    const feedbackRow = screen.getByTestId("agent-approval-feedback-row");
+    const actions = screen.getByTestId("agent-approval-actions");
+
+    expect(actions.previousElementSibling).toBe(feedbackRow);
+    expect(actions).toContainElement(
+      screen.getByRole("button", { name: "Skip" }),
+    );
+    expect(actions).toContainElement(
+      screen.getByRole("button", { name: /Submit/ }),
+    );
+  });
+
   it("submits the focused approval option when Enter is pressed", async () => {
     render(<AgentApprovalPrompt request={request} />);
 
