@@ -257,6 +257,42 @@ describe("getChatById", () => {
     }
   });
 
+  it("retries Convex queue saturation failures before returning a chat", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    const queueError = new Error(
+      "ExpiredInQueue: Too many concurrent requests",
+    );
+    mockQuery
+      .mockRejectedValueOnce(queueError as never)
+      .mockRejectedValueOnce(queueError as never)
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" } as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(getChatById({ id: "chat-1" })).resolves.toEqual({
+        id: "chat-1",
+        user_id: "user-1",
+      });
+
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_fetch_retry_scheduled");
+
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "convex_queue_saturated",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("classifies exhausted transient fetch failures as database availability errors", async () => {
     const { getChatById, mockPhEvent, mockQuery } =
       await loadSaveMessageWithMocks();
@@ -797,6 +833,69 @@ describe("getMessagesByChatId", () => {
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+    }
+  });
+
+  it("retries transient chat history page fetches before falling back", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const existingMessage = {
+      id: "existing-message-1",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: "previous prompt" }],
+    };
+    const newMessage = {
+      id: "new-message-1",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: "next prompt" }],
+    };
+    const convexError = new Error(
+      "InternalServerError: Your request couldn't be completed. Try again later",
+    );
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockRejectedValueOnce(convexError)
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "free",
+        newMessages: [newMessage],
+        isTemporary: false,
+        mode: "ask",
+      });
+
+      expect(result.truncatedMessages).toEqual([existingMessage, newMessage]);
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter(
+          (payload) => payload.event === "chat_history_fetch_retry_scheduled",
+        );
+
+      expect(retryEvents).toHaveLength(1);
+      expect(retryEvents[0]).toMatchObject({
+        db_operation: "messages.getMessagesPageForBackend",
+        retry_reason: "convex_server_error",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        user_id: "user-1",
+        page_size: 24,
+        cursor_present: false,
+      });
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 
