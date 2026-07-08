@@ -775,6 +775,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // Max chunk size ~500KB base64 to stay under size limits (bash path)
   private static readonly MAX_CHUNK_SIZE = 500 * 1024;
 
+  // Keep native file relay messages comfortably below common WebSocket frame
+  // limits after JSON overhead. Base64 chunks must stay divisible by 4.
+  private static readonly MAX_NATIVE_FILE_MESSAGE_CHARS = 48 * 1024;
+
   // cmd.exe has an ~8191 character command line limit. Reserve room for
   // `echo `, redirect operator, and file path — keep data under 7000 chars.
   private static readonly MAX_CMD_CHUNK_SIZE = 7000;
@@ -1018,24 +1022,64 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     rawPath: string,
     content: string | Buffer | ArrayBuffer,
   ): Promise<void> {
-    const isBase64 = typeof content !== "string";
+    if (
+      typeof content === "string" &&
+      Buffer.byteLength(content, "utf8") <=
+        CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
+    ) {
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: "file_write",
+          path: rawPath,
+          content,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+      return;
+    }
+
     const encodedContent =
       typeof content === "string"
-        ? content
+        ? Buffer.from(content, "utf8").toString("base64")
         : content instanceof ArrayBuffer
           ? Buffer.from(content).toString("base64")
           : content.toString("base64");
 
-    await this.runFileRequest<FileOkMessage>(
-      {
-        type: "file_write",
-        path: rawPath,
-        content: encodedContent,
-        ...(isBase64 ? { isBase64: true } : {}),
-      },
-      new Set(["file_ok"]),
-      120000,
-    );
+    if (encodedContent.length === 0) {
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: "file_write",
+          path: rawPath,
+          content: "",
+          isBase64: true,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+      return;
+    }
+
+    for (
+      let offset = 0;
+      offset < encodedContent.length;
+      offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
+    ) {
+      const chunk = encodedContent.slice(
+        offset,
+        offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
+      );
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: offset === 0 ? "file_write" : "file_append",
+          path: rawPath,
+          content: chunk,
+          isBase64: true,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+    }
   }
 
   private async appendNativeTextFile(

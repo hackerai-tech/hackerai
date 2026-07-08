@@ -583,6 +583,67 @@ describe("CentrifugoSandbox", () => {
 
       await expect(promise).resolves.toBeUndefined();
     });
+
+    it("chunks large native writes into file_write then file_append requests", async () => {
+      const sandbox = createDesktopSandbox();
+      const content = "x".repeat(70 * 1024);
+      const promise = sandbox.files.write("C:\\repo\\large.txt", content);
+
+      await jest.advanceTimersByTimeAsync(0);
+      const firstSub = mockSubscriptions[0];
+      firstSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const firstRequest = (firstSub.publish as jest.Mock).mock.calls[0][0] as {
+        type: string;
+        requestId: string;
+        content: string;
+        isBase64?: boolean;
+      };
+      expect(firstRequest).toEqual(
+        expect.objectContaining({
+          type: "file_write",
+          path: "C:\\repo\\large.txt",
+          isBase64: true,
+          targetConnectionId: "conn-1",
+        }),
+      );
+      firstSub.emit("publication", {
+        data: { type: "file_ok", requestId: firstRequest.requestId },
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const secondSub = mockSubscriptions[1];
+      secondSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const secondRequest = (secondSub.publish as jest.Mock).mock
+        .calls[0][0] as {
+        type: string;
+        requestId: string;
+        content: string;
+        isBase64?: boolean;
+      };
+      expect(secondRequest).toEqual(
+        expect.objectContaining({
+          type: "file_append",
+          path: "C:\\repo\\large.txt",
+          isBase64: true,
+          targetConnectionId: "conn-1",
+        }),
+      );
+      secondSub.emit("publication", {
+        data: { type: "file_ok", requestId: secondRequest.requestId },
+      });
+
+      await expect(promise).resolves.toBeUndefined();
+      expect(
+        Buffer.from(
+          firstRequest.content + secondRequest.content,
+          "base64",
+        ).toString("utf8"),
+      ).toBe(content);
+    });
   });
 
   describe("close()", () => {

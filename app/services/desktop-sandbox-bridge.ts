@@ -635,11 +635,12 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
-    const { requestId, path, content } = message;
+    const { requestId, path, content, isBase64 } = message;
     try {
       await this.callLocalFileServer("/files/append", {
         path,
         content,
+        is_base64: Boolean(isBase64),
       });
       await this.publishResult({ type: "file_ok", requestId });
     } catch (error) {

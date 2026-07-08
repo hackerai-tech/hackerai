@@ -327,6 +327,8 @@ struct FileRemoveRequest {
 struct FileAppendRequest {
     path: String,
     content: String,
+    #[serde(default)]
+    is_base64: bool,
 }
 
 #[derive(Deserialize)]
@@ -802,7 +804,12 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
     let max_full_bytes = req.max_full_bytes.unwrap_or(1024 * 1024);
     let max_result_bytes = req.max_result_bytes.unwrap_or(1024 * 1024);
     let size_bytes = metadata.len();
-    let total_lines = count_file_lines(path, size_bytes).await?;
+    let should_count_lines = range_start == 0 || size_bytes <= max_full_bytes;
+    let total_lines = if should_count_lines {
+        count_file_lines(path, size_bytes).await?
+    } else {
+        0
+    };
 
     if range_start == 0 && size_bytes > max_full_bytes {
         return serde_json::to_string(&serde_json::json!({
@@ -814,7 +821,7 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
         .map_err(|e| e.to_string());
     }
 
-    if range_start > 0 {
+    if range_start > 0 && should_count_lines {
         if range_end != -1 && range_end < range_start as i64 {
             return Err(format!(
                 "Invalid range: start_line ({}) cannot be greater than end_line ({}).",
@@ -932,9 +939,19 @@ async fn handle_file_append(body: &str) -> Result<String, String> {
         .open(&req.path)
         .await
         .map_err(|e| format!("Open error: {}", e))?;
-    file.write_all(req.content.as_bytes())
-        .await
-        .map_err(|e| format!("Append error: {}", e))?;
+    if req.is_base64 {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&req.content)
+            .map_err(|e| format!("Base64 decode error: {}", e))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| format!("Append error: {}", e))?;
+    } else {
+        file.write_all(req.content.as_bytes())
+            .await
+            .map_err(|e| format!("Append error: {}", e))?;
+    }
     file.flush()
         .await
         .map_err(|e| format!("Flush error: {}", e))?;

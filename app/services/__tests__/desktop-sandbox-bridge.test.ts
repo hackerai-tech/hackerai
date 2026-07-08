@@ -368,6 +368,53 @@ describe("native desktop file relay", () => {
       requestId: "file-req-2",
     });
   });
+
+  it("passes base64 append requests through to the local file server", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_append",
+        requestId: "file-req-3",
+        path: "C:\\repo\\asset.bin",
+        content: "AAEC",
+        isBase64: true,
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/append",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\asset.bin",
+          content: "AAEC",
+          is_base64: true,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-req-3",
+    });
+  });
 });
 
 // ── extractUserIdFromToken ────────────────────────────────────────────

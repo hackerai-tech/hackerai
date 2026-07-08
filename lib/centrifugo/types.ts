@@ -74,6 +74,7 @@ export interface FileAppendMessage {
   requestId: string;
   path: string;
   content: string;
+  isBase64?: boolean;
   targetConnectionId: string;
 }
 
