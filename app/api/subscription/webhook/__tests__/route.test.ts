@@ -710,6 +710,10 @@ describe("POST /api/subscription/webhook", () => {
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ received: true });
+    expect(mockRetrieveInvoice).toHaveBeenCalledWith(
+      "in_deleted_payment_failed",
+      { expand: ["payment_intent", "payment_intent.latest_charge"] },
+    );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "subscription_cancelled",
       expect.objectContaining({
