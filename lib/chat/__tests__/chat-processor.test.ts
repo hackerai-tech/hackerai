@@ -445,11 +445,11 @@ describe("selectModel", () => {
 // getMaxStepsForUser - Step limits by mode and subscription
 // ==========================================================================
 describe("getMaxStepsForUser", () => {
-  it("should return 100 steps for agent mode (all tiers)", () => {
-    expect(getMaxStepsForUser("agent", "free")).toBe(100);
-    expect(getMaxStepsForUser("agent", "pro")).toBe(100);
-    expect(getMaxStepsForUser("agent", "ultra")).toBe(100);
-    expect(getMaxStepsForUser("agent", "team")).toBe(100);
+  it("should return 300 steps for agent mode (all tiers)", () => {
+    expect(getMaxStepsForUser("agent", "free")).toBe(300);
+    expect(getMaxStepsForUser("agent", "pro")).toBe(300);
+    expect(getMaxStepsForUser("agent", "ultra")).toBe(300);
+    expect(getMaxStepsForUser("agent", "team")).toBe(300);
   });
 
   it("should return 15 steps for free ask mode", () => {
