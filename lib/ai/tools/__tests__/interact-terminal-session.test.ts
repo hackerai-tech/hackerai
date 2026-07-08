@@ -52,6 +52,33 @@ jest.mock("../utils/centrifugo-pty-adapter", () => ({
   createCentrifugoPtyHandle: jest.fn(),
 }));
 
+jest.mock("../utils/pty-wait-utils", () => {
+  const actual = jest.requireActual("../utils/pty-wait-utils");
+  return {
+    ...actual,
+    waitForOutput: jest.fn(),
+  };
+});
+
+import { waitForOutput } from "../utils/pty-wait-utils";
+
+const realWaitForOutput = jest.requireActual("../utils/pty-wait-utils")
+  .waitForOutput as typeof waitForOutput;
+const mockWaitForOutput = waitForOutput as jest.MockedFunction<
+  typeof waitForOutput
+>;
+const immediateWaitForOutput: typeof waitForOutput = async (
+  session,
+  _timeoutMs,
+  _signal,
+  onChunk,
+  consume,
+) => {
+  const delta = consume(session);
+  if (delta.byteLength > 0) onChunk(delta);
+  return delta;
+};
+
 // ── Fake PTY handle factory ──────────────────────────────────────────
 
 interface FakeHandle extends PtyHandle {
@@ -212,6 +239,7 @@ async function createSession(
 describe("interact_terminal_session — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
+    mockWaitForOutput.mockImplementation(immediateWaitForOutput);
   });
 
   test("send on unknown session returns structured error", async () => {
@@ -279,16 +307,11 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     const sendAndGet = async (input: string) => {
       const beforeLen = handle.sendInputCalls.length;
-      // send awaits a short capture window before resolving; we don't need
-      // its return value here, only that handle.sendInput was called.
-      void runTool(tool, {
+      await runTool(tool, {
         action: "send",
         session: sessionId,
         input,
       });
-      // Yield so the tool's awaited sendInput runs before we read the bytes.
-      await new Promise((r) => setTimeout(r, 0));
-      await new Promise((r) => setTimeout(r, 0));
       return handle.sendInputCalls[beforeLen];
     };
 
@@ -326,6 +349,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const { context } = makeContext({ sandbox: e2b });
     const sessionId = await createSession(context, handle);
 
+    mockWaitForOutput.mockImplementationOnce(realWaitForOutput);
     const tool = createInteractTerminalSession(context);
     const started = Date.now();
     const waitP = runTool(tool, {
