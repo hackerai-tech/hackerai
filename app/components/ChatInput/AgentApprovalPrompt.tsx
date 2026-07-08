@@ -247,7 +247,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   return (
     <form
       ref={formRef}
-      className="order-2 flex flex-col gap-4 rounded-[28px] border border-black/8 bg-input-chat p-5 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1"
+      className="order-2 flex flex-col gap-2 rounded-[22px] border border-black/8 bg-input-chat px-3 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1"
       onKeyDown={handlePromptKeyDown}
       onSubmit={(event) => {
         event.preventDefault();
@@ -255,14 +255,14 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
       }}
       data-testid="agent-approval-prompt"
     >
-      <div className="flex flex-col gap-1">
-        <div className="text-lg font-medium leading-snug text-foreground">
+      <div className="flex flex-col gap-1 px-1">
+        <div className="text-[15px] font-medium leading-5 text-foreground">
           {request.title}
         </div>
       </div>
 
       {approvalTarget ? (
-        <div className="max-h-28 overflow-auto rounded-2xl bg-black/5 px-4 py-3 font-mono text-base leading-relaxed text-muted-foreground dark:bg-white/5">
+        <div className="max-h-20 overflow-auto rounded-xl bg-black/5 px-3 py-2 font-mono text-sm leading-5 text-muted-foreground dark:bg-white/5">
           {request.target}
         </div>
       ) : null}
@@ -282,12 +282,12 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               : option.id === "target_prefix"
                 ? targetPrefixLabel
                 : "No, and tell Codex what to do differently";
-          const rowClassName = `flex min-h-14 w-full items-center gap-3 rounded-2xl px-3 text-left transition-colors ${
+          const rowClassName = `flex min-h-11 w-full items-center gap-2 rounded-xl px-2.5 text-left transition-colors ${
             selected
               ? "bg-foreground/10 text-foreground"
               : "text-muted-foreground hover:bg-foreground/5"
           } ${canSubmit ? "" : "cursor-not-allowed opacity-60"}`;
-          const iconClassName = `flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-base font-medium ${
+          const iconClassName = `flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-sm font-medium ${
             selected
               ? "border-foreground bg-foreground text-background"
               : "border-border"
@@ -336,14 +336,14 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
                 }}
               >
                 <span className={iconClassName} aria-hidden="true">
-                  <Pencil className="h-4 w-4" />
+                  <Pencil className="h-3.5 w-3.5" />
                 </span>
                 <input
                   ref={feedbackInputRef}
                   type="text"
                   value={feedback}
                   disabled={!canSubmit}
-                  className="min-w-0 flex-1 bg-transparent text-base font-medium outline-none placeholder:text-muted-foreground"
+                  className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground"
                   aria-label={label}
                   placeholder={label}
                   data-agent-approval-native-enter="true"
@@ -381,7 +381,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               <span className={iconClassName} aria-hidden="true">
                 {option.index}
               </span>
-              <span className="min-w-0 flex-1 truncate text-base font-medium">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
                 {label}
               </span>
               {arrows}
@@ -390,11 +390,12 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
         })}
       </div>
 
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex items-center justify-end gap-2 pt-1">
         <Button
           type="button"
           variant="ghost"
           disabled={!canSubmit}
+          size="sm"
           data-agent-approval-native-enter="true"
           onClick={() => void submitSkip()}
         >
@@ -403,6 +404,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
         <Button
           type="submit"
           disabled={!canSubmit}
+          size="sm"
           data-agent-approval-native-enter="true"
         >
           {isSending ? <Loader2 className="animate-spin" /> : null}
