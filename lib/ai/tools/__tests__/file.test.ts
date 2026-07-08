@@ -114,6 +114,39 @@ function makeSandbox(
   };
 }
 
+function makeNativeDesktopSandbox() {
+  const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+  return {
+    sandbox: {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => true,
+      supportsNativeFileRelay: () => true,
+      commands: { run: commandRun },
+      files: {
+        stat: jest.fn(async () => ({
+          kind: "file" as const,
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 18,
+        })),
+        readText: jest.fn(async () => ({
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 18,
+          totalLines: 2,
+          content: "line one\nline two\n",
+          startLine: 1,
+          truncated: false,
+        })),
+        append: jest.fn(async () => undefined),
+        read: jest.fn(async () => "line one\nline two\n"),
+        write: jest.fn(async () => undefined),
+        remove: jest.fn(async () => undefined),
+        list: jest.fn(),
+      },
+    },
+    commandRun,
+  };
+}
+
 describe("file tool large text safety", () => {
   test("blocks file operations when a selected local sandbox falls back", async () => {
     const commandRun = jest.fn(async () => ({
@@ -344,6 +377,67 @@ describe("file tool large text safety", () => {
     expect(result.content).toContain("   500|line 500");
     expect(result.content).toContain("   501|line 501");
     expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+
+  test("uses native desktop readText for Windows desktop reads", async () => {
+    const { sandbox, commandRun } = makeNativeDesktopSandbox();
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "C:\\repo\\app.ts",
+      brief: "Read through native desktop bridge",
+    })) as { content: string };
+
+    expect(result.content).toContain("     1|line one");
+    expect(result.content).toContain("     2|line two");
+    expect(sandbox.files.readText).toHaveBeenCalledWith("C:\\repo\\app.ts", {
+      maxFullBytes: 1024 * 1024,
+      maxResultBytes: 1024 * 1024,
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("normalizes edit strings to the existing CRLF line endings", async () => {
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        kind: "file",
+        path: "C:\\repo\\app.ts",
+        sizeBytes: 32,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const write = jest.fn(async () => undefined);
+    const sandbox = {
+      commands: { run: commandRun },
+      files: {
+        read: jest.fn(async () => "const a = 1;\r\nconst b = 2;\r\n"),
+        write,
+        remove: jest.fn(async () => undefined),
+        list: jest.fn(),
+      },
+    };
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "edit",
+      path: "C:\\repo\\app.ts",
+      brief: "Edit CRLF file",
+      edits: [
+        {
+          find: "const a = 1;\nconst b = 2;",
+          replace: "const a = 1;\nconst b = 3;",
+        },
+      ],
+    })) as { content: string };
+
+    expect(result.content).toContain("Multi-edit completed");
+    expect(write).toHaveBeenCalledWith(
+      "C:\\repo\\app.ts",
+      "const a = 1;\r\nconst b = 3;\r\n",
+      { user: "user" },
+    );
   });
 
   test("oversized append on Windows does not use POSIX cat/rm commands", async () => {

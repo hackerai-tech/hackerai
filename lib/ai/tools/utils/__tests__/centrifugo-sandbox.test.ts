@@ -85,6 +85,19 @@ function createSandbox(
   );
 }
 
+function createDesktopSandbox(): CentrifugoSandbox {
+  return createSandbox({
+    isDesktop: true,
+    capabilities: { commands: true, pty: true, files: true },
+    osInfo: {
+      platform: "win32",
+      arch: "x64",
+      release: "10.0.22631",
+      hostname: "WIN-DEV",
+    },
+  });
+}
+
 /**
  * Helper: starts a command, then simulates publication messages from the sandbox client.
  * Returns the promise and the subscription so the caller can emit messages.
@@ -487,6 +500,88 @@ describe("CentrifugoSandbox", () => {
 
       expect(result.stdout).toBe("mine\n");
       expect(result.stdout).not.toContain("not mine");
+    });
+  });
+
+  describe("native desktop file relay", () => {
+    it("requires the desktop files capability before enabling the native relay", () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, pty: true },
+        osInfo: {
+          platform: "win32",
+          arch: "x64",
+          release: "10.0.22631",
+          hostname: "WIN-OLD",
+        },
+      });
+
+      expect(sandbox.supportsNativeFileRelay()).toBe(false);
+    });
+
+    it("files.read publishes a targeted file_read request for desktop connections", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.read("C:\\repo\\app.ts");
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_read",
+          path: "C:\\repo\\app.ts",
+          targetConnectionId: "conn-1",
+          requestId: expect.any(String),
+        }),
+      );
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      sub.emit("publication", {
+        data: {
+          type: "file_read_result",
+          requestId: request.requestId,
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 12,
+          totalLines: 1,
+          content: "hello world\n",
+          startLine: 1,
+        },
+      });
+
+      await expect(promise).resolves.toBe("hello world\n");
+    });
+
+    it("files.write publishes file_write instead of shell heredoc for desktop connections", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.write("C:\\repo\\app.ts", "updated");
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_write",
+          path: "C:\\repo\\app.ts",
+          content: "updated",
+          targetConnectionId: "conn-1",
+          requestId: expect.any(String),
+        }),
+      );
+
+      const request = (sub.publish as jest.Mock).mock.calls[0][0] as {
+        requestId: string;
+      };
+      sub.emit("publication", {
+        data: { type: "file_ok", requestId: request.requestId },
+      });
+
+      await expect(promise).resolves.toBeUndefined();
     });
   });
 

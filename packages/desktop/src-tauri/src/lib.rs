@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -304,6 +304,10 @@ async fn wait_with_output_or_kill_on_timeout(
 #[derive(Deserialize)]
 struct FileReadRequest {
     path: String,
+    range_start: Option<u64>,
+    range_end: Option<i64>,
+    max_full_bytes: Option<u64>,
+    max_result_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -320,7 +324,18 @@ struct FileRemoveRequest {
 }
 
 #[derive(Deserialize)]
+struct FileAppendRequest {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
 struct FileListRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct FileStatRequest {
     path: String,
 }
 
@@ -524,8 +539,10 @@ async fn handle_cmd_request(
 
     let result = match (method.as_str(), route_path) {
         ("POST", "/execute") => handle_execute(&body).await,
+        ("POST", "/files/stat") => handle_file_stat(&body).await,
         ("POST", "/files/read") => handle_file_read(&body).await,
         ("POST", "/files/write") => handle_file_write(&body).await,
+        ("POST", "/files/append") => handle_file_append(&body).await,
         ("POST", "/files/remove") => handle_file_remove(&body).await,
         ("POST", "/files/list") => handle_file_list(&body).await,
         (_, "/health") => Ok(r#"{"status":"ok"}"#.to_string()),
@@ -713,13 +730,162 @@ async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
     let _ = stream.flush().await;
 }
 
+async fn count_file_lines(path: &std::path::Path, file_size: u64) -> Result<u64, String> {
+    if file_size == 0 {
+        return Ok(0);
+    }
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("Open error: {}", e))?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut lines = 0u64;
+    let mut last_byte = 0u8;
+
+    loop {
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("Read error: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        lines += buf[..n].iter().filter(|&&b| b == b'\n').count() as u64;
+        last_byte = buf[n - 1];
+    }
+
+    if last_byte != b'\n' {
+        lines += 1;
+    }
+
+    Ok(lines)
+}
+
+async fn handle_file_stat(body: &str) -> Result<String, String> {
+    let req: FileStatRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let path = std::path::Path::new(&req.path);
+
+    let payload = match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.is_file() => serde_json::json!({
+            "kind": "file",
+            "path": req.path,
+            "sizeBytes": metadata.len(),
+        }),
+        Ok(_) => serde_json::json!({
+            "kind": "not_file",
+            "path": req.path,
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
+            "kind": "missing",
+            "path": req.path,
+        }),
+        Err(error) => return Err(format!("Metadata error: {}", error)),
+    };
+
+    serde_json::to_string(&payload).map_err(|e| e.to_string())
+}
+
 async fn handle_file_read(body: &str) -> Result<String, String> {
     let req: FileReadRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-    let content = tokio::fs::read_to_string(&req.path)
+    let path = std::path::Path::new(&req.path);
+    let metadata = tokio::fs::metadata(path)
         .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    serde_json::to_string(&serde_json::json!({ "content": content })).map_err(|e| e.to_string())
+        .map_err(|e| format!("Metadata error: {}", e))?;
+    if !metadata.is_file() {
+        return Err("Selected path is not a file".to_string());
+    }
+
+    let range_start = req.range_start.unwrap_or(0);
+    let range_end = req.range_end.unwrap_or(-1);
+    let max_full_bytes = req.max_full_bytes.unwrap_or(1024 * 1024);
+    let max_result_bytes = req.max_result_bytes.unwrap_or(1024 * 1024);
+    let size_bytes = metadata.len();
+    let total_lines = count_file_lines(path, size_bytes).await?;
+
+    if range_start == 0 && size_bytes > max_full_bytes {
+        return serde_json::to_string(&serde_json::json!({
+            "path": req.path,
+            "sizeBytes": size_bytes,
+            "totalLines": total_lines,
+            "tooLarge": true,
+        }))
+        .map_err(|e| e.to_string());
+    }
+
+    if range_start > 0 {
+        if range_end != -1 && range_end < range_start as i64 {
+            return Err(format!(
+                "Invalid range: start_line ({}) cannot be greater than end_line ({}).",
+                range_start, range_end
+            ));
+        }
+        if range_start > total_lines {
+            return Err(format!(
+                "Invalid start_line: {}. File has {} lines (1-indexed).",
+                range_start, total_lines
+            ));
+        }
+        if range_end != -1 && range_end as u64 > total_lines {
+            return Err(format!(
+                "Invalid end_line: {}. File has {} lines (1-indexed).",
+                range_end, total_lines
+            ));
+        }
+    }
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("Open error: {}", e))?;
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut line = Vec::<u8>::new();
+    let mut line_no = 0u64;
+    let mut selected = Vec::<u8>::new();
+    let mut truncated = false;
+    let start_line = if range_start > 0 { range_start } else { 1 };
+
+    loop {
+        line.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut line)
+            .await
+            .map_err(|e| format!("Read error: {}", e))?;
+        if bytes_read == 0 {
+            break;
+        }
+        line_no += 1;
+
+        if range_start > 0 && line_no < range_start {
+            continue;
+        }
+        if range_start > 0 && range_end != -1 && line_no > range_end as u64 {
+            break;
+        }
+
+        let remaining = max_result_bytes.saturating_sub(selected.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if line.len() > remaining {
+            selected.extend_from_slice(&line[..remaining]);
+            truncated = true;
+            break;
+        }
+        selected.extend_from_slice(&line);
+    }
+
+    let content = String::from_utf8_lossy(&selected).to_string();
+    serde_json::to_string(&serde_json::json!({
+        "path": req.path,
+        "sizeBytes": size_bytes,
+        "totalLines": total_lines,
+        "content": content,
+        "startLine": start_line,
+        "truncated": truncated,
+    }))
+    .map_err(|e| e.to_string())
 }
 
 async fn handle_file_write(body: &str) -> Result<String, String> {
@@ -746,6 +912,32 @@ async fn handle_file_write(body: &str) -> Result<String, String> {
             .await
             .map_err(|e| format!("Write error: {}", e))?;
     }
+
+    Ok(r#"{"ok":true}"#.to_string())
+}
+
+async fn handle_file_append(body: &str) -> Result<String, String> {
+    let req: FileAppendRequest =
+        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    if let Some(parent) = std::path::Path::new(&req.path).parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Mkdir error: {}", e))?;
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&req.path)
+        .await
+        .map_err(|e| format!("Open error: {}", e))?;
+    file.write_all(req.content.as_bytes())
+        .await
+        .map_err(|e| format!("Append error: {}", e))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {}", e))?;
 
     Ok(r#"{"ok":true}"#.to_string())
 }

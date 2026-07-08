@@ -6,6 +6,12 @@ import {
   sandboxConnectionChannel,
   type CommandResponseMessage,
   type CommandMessage,
+  type FileRequestMessage,
+  type FileResponseMessage,
+  type FileOkMessage,
+  type FileStatResultMessage,
+  type FileReadResultMessage,
+  type FileListResultMessage,
 } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
@@ -22,6 +28,17 @@ const VALID_MESSAGE_TYPES = new Set([
 ]);
 
 const IGNORED_MESSAGE_TYPES = new Set([
+  "file_stat",
+  "file_read",
+  "file_write",
+  "file_append",
+  "file_remove",
+  "file_list",
+  "file_ok",
+  "file_error",
+  "file_stat_result",
+  "file_read_result",
+  "file_list_result",
   "pty_create",
   "pty_input",
   "pty_resize",
@@ -99,12 +116,67 @@ export function parseSandboxMessage(
   return data as CommandResponseMessage;
 }
 
+const VALID_FILE_RESPONSE_TYPES = new Set([
+  "file_ok",
+  "file_error",
+  "file_stat_result",
+  "file_read_result",
+  "file_list_result",
+]);
+
+function parseFileResponseMessage(data: unknown): FileResponseMessage | null {
+  if (typeof data !== "object" || data === null) return null;
+
+  const msg = data as Record<string, unknown>;
+  if (
+    typeof msg.type !== "string" ||
+    !VALID_FILE_RESPONSE_TYPES.has(msg.type)
+  ) {
+    return null;
+  }
+  if (typeof msg.requestId !== "string") return null;
+
+  switch (msg.type) {
+    case "file_error":
+      return typeof msg.message === "string"
+        ? (data as FileResponseMessage)
+        : null;
+    case "file_stat_result":
+      return (msg.kind === "file" ||
+        msg.kind === "missing" ||
+        msg.kind === "not_file") &&
+        typeof msg.path === "string"
+        ? (data as FileResponseMessage)
+        : null;
+    case "file_read_result":
+      return typeof msg.path === "string" &&
+        typeof msg.sizeBytes === "number" &&
+        typeof msg.totalLines === "number"
+        ? (data as FileResponseMessage)
+        : null;
+    case "file_list_result":
+      return Array.isArray(msg.entries) ? (data as FileResponseMessage) : null;
+    case "file_ok":
+      return data as FileResponseMessage;
+    default:
+      return null;
+  }
+}
+
 interface CommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
   pid?: number;
 }
+
+type DistributiveOmit<T, K extends keyof any> = T extends unknown
+  ? Omit<T, K>
+  : never;
+type FileRequestInput = DistributiveOmit<
+  FileRequestMessage,
+  "requestId" | "targetConnectionId"
+>;
 
 export interface CentrifugoConfig {
   wsUrl: string;
@@ -137,6 +209,13 @@ export class CentrifugoSandbox extends EventEmitter {
 
   supportsPty(): boolean {
     return this.connectionInfo.capabilities?.pty !== false;
+  }
+
+  supportsNativeFileRelay(): boolean {
+    return (
+      this.connectionInfo.isDesktop === true &&
+      this.connectionInfo.capabilities?.files === true
+    );
   }
 
   getUserId(): string {
@@ -191,6 +270,155 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    */
   getOsContext(): string | null {
     return this.getSandboxContext();
+  }
+
+  private async runFileRequest<T extends FileResponseMessage>(
+    input: FileRequestInput,
+    expectedTypes: Set<string>,
+    timeoutMs = 30000,
+  ): Promise<T> {
+    if (!this.supportsNativeFileRelay()) {
+      throw new Error("Native desktop file relay is not available.");
+    }
+
+    const requestId = crypto.randomUUID();
+    const channel = sandboxConnectionChannel(
+      this.userId,
+      this.connectionInfo.connectionId,
+    );
+    const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
+    const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+    const client = new Centrifuge(this.config.wsUrl, { token });
+    this.activeClients.push(client);
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      let timeoutId: NodeJS.Timeout | undefined;
+      let subscription: Subscription | undefined;
+
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
+        if (subscription) {
+          try {
+            subscription.unsubscribe();
+            subscription.removeAllListeners();
+          } catch {
+            // Ignore cleanup errors.
+          }
+        }
+        try {
+          client.disconnect();
+        } catch {
+          // Ignore disconnect errors.
+        }
+        const idx = this.activeClients.indexOf(client);
+        if (idx !== -1) {
+          this.activeClients.splice(idx, 1);
+        }
+      };
+
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      timeoutId = setTimeout(() => {
+        fail(
+          new Error(
+            `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
+          ),
+        );
+      }, timeoutMs + 5000);
+
+      subscription = client.newSubscription(channel);
+      subscription.on("publication", (ctx) => {
+        if (settled) return;
+
+        const message = parseFileResponseMessage(ctx.data);
+        if (!message || message.requestId !== requestId) return;
+
+        if (message.type === "file_error") {
+          fail(new Error(message.message));
+          return;
+        }
+        if (!expectedTypes.has(message.type)) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+        resolve(message as T);
+      });
+
+      subscription.on("error", (ctx) => {
+        fail(
+          new Error(
+            `Centrifugo file subscription error: ${ctx.error?.message ?? "unknown"}`,
+          ),
+        );
+      });
+
+      subscription.on("subscribed", () => {
+        if (settled || !subscription) return;
+
+        void (async () => {
+          try {
+            const presence = await subscription!.presence();
+            if (
+              !presenceHasConnectionId(
+                presence,
+                this.connectionInfo.connectionId,
+              )
+            ) {
+              fail(
+                new Error(
+                  `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the file relay. Reconnect the Desktop app, wait until it is ready, then try again.`,
+                ),
+              );
+              return;
+            }
+          } catch (error) {
+            console.warn(
+              "[local-file]",
+              JSON.stringify({
+                event: "local_file_presence_check_failed",
+                service: "web",
+                request_id: requestId,
+                connection_id: this.connectionInfo.connectionId,
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            );
+          }
+
+          if (settled || !subscription) return;
+          const request = {
+            ...input,
+            requestId,
+            targetConnectionId: this.connectionInfo.connectionId,
+          } as FileRequestMessage;
+
+          try {
+            await subscription.publish(request);
+          } catch (error) {
+            fail(
+              new Error(
+                `Failed to publish desktop file request: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              ),
+            );
+          }
+        })();
+      });
+
+      subscription.subscribe();
+      client.connect();
+    });
   }
 
   commands = {
@@ -751,11 +979,134 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return "curl";
   }
 
+  private async statNativeFile(
+    rawPath: string,
+  ): Promise<FileStatResultMessage> {
+    return this.runFileRequest<FileStatResultMessage>(
+      { type: "file_stat", path: rawPath },
+      new Set(["file_stat_result"]),
+      30000,
+    );
+  }
+
+  private async readNativeTextFile(
+    rawPath: string,
+    options: {
+      range?: [number, number];
+      maxFullBytes?: number;
+      maxResultBytes?: number;
+    } = {},
+  ): Promise<FileReadResultMessage> {
+    return this.runFileRequest<FileReadResultMessage>(
+      {
+        type: "file_read",
+        path: rawPath,
+        ...(options.range ? { range: options.range } : {}),
+        ...(typeof options.maxFullBytes === "number"
+          ? { maxFullBytes: options.maxFullBytes }
+          : {}),
+        ...(typeof options.maxResultBytes === "number"
+          ? { maxResultBytes: options.maxResultBytes }
+          : {}),
+      },
+      new Set(["file_read_result"]),
+      120000,
+    );
+  }
+
+  private async writeNativeFile(
+    rawPath: string,
+    content: string | Buffer | ArrayBuffer,
+  ): Promise<void> {
+    const isBase64 = typeof content !== "string";
+    const encodedContent =
+      typeof content === "string"
+        ? content
+        : content instanceof ArrayBuffer
+          ? Buffer.from(content).toString("base64")
+          : content.toString("base64");
+
+    await this.runFileRequest<FileOkMessage>(
+      {
+        type: "file_write",
+        path: rawPath,
+        content: encodedContent,
+        ...(isBase64 ? { isBase64: true } : {}),
+      },
+      new Set(["file_ok"]),
+      120000,
+    );
+  }
+
+  private async appendNativeTextFile(
+    rawPath: string,
+    content: string,
+  ): Promise<void> {
+    await this.runFileRequest<FileOkMessage>(
+      {
+        type: "file_append",
+        path: rawPath,
+        content,
+      },
+      new Set(["file_ok"]),
+      120000,
+    );
+  }
+
+  private async removeNativeFile(rawPath: string): Promise<void> {
+    await this.runFileRequest<FileOkMessage>(
+      { type: "file_remove", path: rawPath },
+      new Set(["file_ok"]),
+      30000,
+    );
+  }
+
+  private async listNativeFiles(
+    rawPath: string,
+  ): Promise<Array<{ name: string }>> {
+    const result = await this.runFileRequest<FileListResultMessage>(
+      { type: "file_list", path: rawPath },
+      new Set(["file_list_result"]),
+      30000,
+    );
+    return result.entries;
+  }
+
   files = {
+    stat: async (rawPath: string): Promise<FileStatResultMessage> => {
+      return this.statNativeFile(rawPath);
+    },
+
+    readText: async (
+      rawPath: string,
+      options?: {
+        range?: [number, number];
+        maxFullBytes?: number;
+        maxResultBytes?: number;
+      },
+    ): Promise<FileReadResultMessage> => {
+      return this.readNativeTextFile(rawPath, options);
+    },
+
+    append: async (rawPath: string, content: string): Promise<void> => {
+      if (this.supportsNativeFileRelay()) {
+        await this.appendNativeTextFile(rawPath, content);
+        return;
+      }
+
+      const existingContent = await this.files.read(rawPath).catch(() => "");
+      await this.files.write(rawPath, existingContent + content);
+    },
+
     write: async (
       rawPath: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
+      if (this.supportsNativeFileRelay()) {
+        await this.writeNativeFile(rawPath, content);
+        return;
+      }
+
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
 
@@ -871,6 +1222,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     },
 
     read: async (rawPath: string): Promise<string> => {
+      if (this.supportsNativeFileRelay()) {
+        const payload = await this.readNativeTextFile(rawPath);
+        if (payload.tooLarge) {
+          throw new Error(`File is too large to read in full: ${rawPath}`);
+        }
+        return payload.content ?? "";
+      }
+
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escaped = escapePath(path);
@@ -914,6 +1273,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     },
 
     remove: async (rawPath: string): Promise<void> => {
+      if (this.supportsNativeFileRelay()) {
+        await this.removeNativeFile(rawPath);
+        return;
+      }
+
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escaped = escapePath(path);
@@ -931,6 +1295,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     },
 
     list: async (rawPath: string = "/"): Promise<{ name: string }[]> => {
+      if (this.supportsNativeFileRelay()) {
+        return this.listNativeFiles(rawPath);
+      }
+
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const dirName = path.split(/[/\\]/).pop() || path;
       const escaped = escapePath(path);

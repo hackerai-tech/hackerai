@@ -204,6 +204,7 @@ export const connect = mutation({
       v.object({
         commands: v.boolean(),
         pty: v.boolean(),
+        files: v.optional(v.boolean()),
       }),
     ),
   },
@@ -423,6 +424,13 @@ export const connectDesktop = mutation({
         hostname: v.string(),
       }),
     ),
+    capabilities: v.optional(
+      v.object({
+        commands: v.boolean(),
+        pty: v.boolean(),
+        files: v.optional(v.boolean()),
+      }),
+    ),
   },
   returns: v.object({
     connectionId: v.string(),
@@ -468,7 +476,7 @@ export const connectDesktop = mutation({
       client_version: "desktop",
       mode: "dangerous",
       os_info: args.osInfo,
-      capabilities: { commands: true, pty: true },
+      capabilities: args.capabilities ?? { commands: true, pty: true },
       last_heartbeat: Date.now(),
       status: "connected",
       created_at: Date.now(),
@@ -614,6 +622,7 @@ export const listConnections = query({
       capabilities: v.object({
         commands: v.boolean(),
         pty: v.boolean(),
+        files: v.optional(v.boolean()),
       }),
     }),
   ),
@@ -665,6 +674,7 @@ export const listConnectionsForBackend = query({
       capabilities: v.object({
         commands: v.boolean(),
         pty: v.boolean(),
+        files: v.optional(v.boolean()),
       }),
     }),
   ),
