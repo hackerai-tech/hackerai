@@ -269,10 +269,11 @@ export const FileContentViewer = ({
               )}
             </div>
           ) : pdfUrl ? (
+            // Chromium's PDF viewer can fail inside sandboxed iframes. The PDF
+            // path is gated above by MIME type and magic bytes before blob URL creation.
             <iframe
               src={pdfUrl}
               title={`Preview of ${fileName}`}
-              sandbox="allow-downloads"
               className="h-full w-full border-0"
             />
           ) : (

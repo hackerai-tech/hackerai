@@ -53,7 +53,7 @@ describe("FileContentViewer", () => {
     );
   }
 
-  it("renders valid in-memory PDFs in a sandboxed iframe", async () => {
+  it("renders valid in-memory PDFs in the native PDF iframe", async () => {
     const file = makeFile("%PDF-1.7\n1 0 obj\n", "safe.pdf", "application/pdf");
 
     const { container } = renderViewer(file);
@@ -65,7 +65,7 @@ describe("FileContentViewer", () => {
     const iframe = container.querySelector("iframe");
     expect(createObjectURL).toHaveBeenCalledWith(file);
     expect(iframe).toHaveAttribute("src", "blob:preview-pdf");
-    expect(iframe).toHaveAttribute("sandbox", "allow-downloads");
+    expect(iframe).not.toHaveAttribute("sandbox");
   });
 
   it("shows crafted HTML .pdf files as escaped text instead of iframe PDFs", async () => {
