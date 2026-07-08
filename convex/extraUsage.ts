@@ -13,6 +13,7 @@ import {
   extraUsageDollarsToPoints as dollarsToPoints,
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
+import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
 type ExtraUsagePurchaseRoute =
@@ -1012,9 +1013,10 @@ export const getExtraUsageSettings = query({
         ? pointsToDollars(settings.auto_reload_threshold_points)
         : undefined,
       autoReloadAmountDollars: settings.auto_reload_amount_dollars,
-      monthlyCapDollars: settings.monthly_cap_points
-        ? pointsToDollars(settings.monthly_cap_points)
-        : undefined,
+      monthlyCapDollars:
+        settings.monthly_cap_points === undefined
+          ? undefined
+          : pointsToDollars(settings.monthly_cap_points),
       monthlySpentDollars: pointsToDollars(settings.monthly_spent_points ?? 0),
       autoReloadDisabledReason: settings.auto_reload_disabled_reason,
     };
@@ -1075,6 +1077,7 @@ export const updateExtraUsageSettings = mutation({
     ) {
       throw new Error("Reload amount must be at least $10 more than threshold");
     }
+    validateMonthlyCapDollars(args.monthlyCapDollars);
 
     const settings = await ctx.db
       .query("extra_usage")

@@ -12,6 +12,7 @@ import {
   extraUsageDollarsToPoints as dollarsToPoints,
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
+import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
 
 // =============================================================================
 // Internal helpers
@@ -635,9 +636,10 @@ export const getTeamExtraUsageAdminView = query({
         ? pointsToDollars(team.auto_reload_threshold_points)
         : undefined,
       autoReloadAmountDollars: team?.auto_reload_amount_dollars,
-      monthlyCapDollars: team?.monthly_cap_points
-        ? pointsToDollars(team.monthly_cap_points)
-        : undefined,
+      monthlyCapDollars:
+        team?.monthly_cap_points === undefined
+          ? undefined
+          : pointsToDollars(team.monthly_cap_points),
       monthlySpentDollars: pointsToDollars(teamMonthlySpent),
       autoReloadDisabledReason: team?.auto_reload_disabled_reason,
       members: members.map((m) => {
@@ -708,6 +710,7 @@ export const updateTeamExtraUsageSettings = mutation({
     ) {
       throw new Error("Reload amount must be at least $10 more than threshold");
     }
+    validateMonthlyCapDollars(args.monthlyCapDollars);
 
     const row = await ensureTeamRow(ctx, args.organizationId);
 
