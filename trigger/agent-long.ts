@@ -273,29 +273,11 @@ const buildPendingApprovalRequest = ({
   approvalId: string;
   request: AgentToolApprovalRequest;
 }): AgentToolApprovalPendingRequest => {
-  const isTerminal =
-    request.operation === "terminal_execute" ||
-    request.operation === "terminal_interact";
-  const fileTitles: Partial<
-    Record<AgentToolApprovalRequest["operation"], string>
-  > = {
-    file_write: "The agent wants to create this file.",
-    file_append: "The agent wants to append to this file.",
-    file_edit: "The agent wants to edit this file.",
-  };
-
   return {
     approvalId,
     toolCallId: request.toolCallId,
-    title: isTerminal
-      ? "The agent wants to run this terminal command."
-      : (fileTitles[request.operation] ??
-        "The agent wants to change this file."),
+    operation: request.operation,
     target: request.target,
-    detail: isTerminal
-      ? "Approve to continue, or deny to stop this command."
-      : "Approve to continue, or deny to stop this file change.",
-    kind: isTerminal ? "terminal" : "file",
     createdAt: Date.now(),
   };
 };

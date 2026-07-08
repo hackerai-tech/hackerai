@@ -74,6 +74,12 @@ import {
   type ChatMessage,
   type ChatMode,
 } from "@/types";
+import {
+  getAgentToolApprovalPromptDetail,
+  getAgentToolApprovalPromptKind,
+  getAgentToolApprovalPromptTitle,
+  isAgentToolApprovalOperation,
+} from "@/types/agent";
 import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -96,7 +102,7 @@ const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
 
-const getStoredAgentApprovalRequest = (
+export const getStoredAgentApprovalRequest = (
   chatData: unknown,
 ): ActiveAgentToolApprovalRequest | null => {
   if (!chatData || typeof chatData !== "object") return null;
@@ -107,27 +113,45 @@ const getStoredAgentApprovalRequest = (
   const approvalRequest = request as Record<string, unknown>;
   const approvalId = approvalRequest.approvalId;
   const toolCallId = approvalRequest.toolCallId;
-  const title = approvalRequest.title;
-  if (
-    typeof approvalId !== "string" ||
-    typeof toolCallId !== "string" ||
-    typeof title !== "string"
-  ) {
+  if (typeof approvalId !== "string" || typeof toolCallId !== "string") {
     return null;
   }
-  const kind = approvalRequest.kind;
+  const operation = isAgentToolApprovalOperation(approvalRequest.operation)
+    ? approvalRequest.operation
+    : undefined;
+  const fallbackTitle =
+    typeof approvalRequest.title === "string"
+      ? approvalRequest.title
+      : undefined;
+  const title = getAgentToolApprovalPromptTitle({
+    operation,
+    fallback: fallbackTitle,
+  });
+  if (!title) return null;
+  const fallbackDetail =
+    typeof approvalRequest.detail === "string"
+      ? approvalRequest.detail
+      : undefined;
+  const fallbackKind =
+    approvalRequest.kind === "terminal" || approvalRequest.kind === "file"
+      ? approvalRequest.kind
+      : undefined;
+  const kind = getAgentToolApprovalPromptKind(operation) ?? fallbackKind;
+  const detail = getAgentToolApprovalPromptDetail({
+    operation,
+    fallback: fallbackDetail,
+  });
 
   return {
     approvalId,
     toolCallId,
     title,
+    ...(operation ? { operation } : {}),
     ...(typeof approvalRequest.target === "string"
       ? { target: approvalRequest.target }
       : {}),
-    ...(typeof approvalRequest.detail === "string"
-      ? { detail: approvalRequest.detail }
-      : {}),
-    ...(kind === "terminal" || kind === "file" ? { kind } : {}),
+    ...(detail ? { detail } : {}),
+    ...(kind ? { kind } : {}),
     ...(typeof approvalRequest.createdAt === "number"
       ? { createdAt: approvalRequest.createdAt }
       : {}),

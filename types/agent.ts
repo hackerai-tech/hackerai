@@ -102,6 +102,74 @@ export type AgentToolApprovalOperation =
   | "file_append"
   | "file_edit";
 
+const AGENT_TOOL_APPROVAL_OPERATIONS = [
+  "terminal_execute",
+  "terminal_interact",
+  "file_write",
+  "file_append",
+  "file_edit",
+] as const satisfies readonly AgentToolApprovalOperation[];
+
+export type AgentToolApprovalPromptKind = "terminal" | "file";
+
+export const isAgentToolApprovalOperation = (
+  value: unknown,
+): value is AgentToolApprovalOperation =>
+  typeof value === "string" &&
+  (AGENT_TOOL_APPROVAL_OPERATIONS as readonly string[]).includes(value);
+
+export const getAgentToolApprovalPromptKind = (
+  operation: AgentToolApprovalOperation | undefined,
+): AgentToolApprovalPromptKind | undefined => {
+  if (!operation) return undefined;
+  if (operation === "terminal_execute" || operation === "terminal_interact") {
+    return "terminal";
+  }
+  return "file";
+};
+
+export const getAgentToolApprovalPromptTitle = ({
+  operation,
+  fallback,
+}: {
+  operation: AgentToolApprovalOperation | undefined;
+  fallback?: string;
+}): string | undefined => {
+  if (operation === "terminal_execute") {
+    return "The agent wants to run this terminal command.";
+  }
+  if (operation === "terminal_interact") {
+    return "The agent wants to interact with this terminal session.";
+  }
+  if (operation === "file_write") {
+    return "The agent wants to create this file.";
+  }
+  if (operation === "file_append") {
+    return "The agent wants to append to this file.";
+  }
+  if (operation === "file_edit") {
+    return "The agent wants to edit this file.";
+  }
+  return fallback;
+};
+
+export const getAgentToolApprovalPromptDetail = ({
+  operation,
+  fallback,
+}: {
+  operation: AgentToolApprovalOperation | undefined;
+  fallback?: string;
+}): string | undefined => {
+  const kind = getAgentToolApprovalPromptKind(operation);
+  if (kind === "terminal") {
+    return "Approve to continue, or deny to stop this command.";
+  }
+  if (kind === "file") {
+    return "Approve to continue, or deny to stop this file change.";
+  }
+  return fallback;
+};
+
 export type AgentToolApprovalRequest = {
   toolCallId: string;
   toolName: string;
@@ -113,11 +181,16 @@ export type AgentToolApprovalRequest = {
 export type AgentToolApprovalPendingRequest = {
   approvalId: string;
   toolCallId: string;
-  title: string;
+  operation?: AgentToolApprovalOperation;
   target?: string;
+  title?: string;
   detail?: string;
-  kind?: "terminal" | "file";
+  kind?: AgentToolApprovalPromptKind;
   createdAt?: number;
+};
+
+export type AgentToolApprovalPromptRequest = AgentToolApprovalPendingRequest & {
+  title: string;
 };
 
 export type AgentToolApprovalResult =

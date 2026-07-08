@@ -16,8 +16,17 @@ const usageDeductionFailureReasonValidator = v.union(
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
-  title: v.string(),
+  operation: v.optional(
+    v.union(
+      v.literal("terminal_execute"),
+      v.literal("terminal_interact"),
+      v.literal("file_write"),
+      v.literal("file_append"),
+      v.literal("file_edit"),
+    ),
+  ),
   target: v.optional(v.string()),
+  title: v.optional(v.string()),
   detail: v.optional(v.string()),
   kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
   createdAt: v.optional(v.number()),

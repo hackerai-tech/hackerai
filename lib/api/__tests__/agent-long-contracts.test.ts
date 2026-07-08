@@ -685,6 +685,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("agent approval pending state is durable until the user responds", () => {
     expect(taskSrc).toMatch(/buildPendingApprovalRequest/);
     expect(taskSrc).toMatch(/AgentToolApprovalPendingRequest/);
+    expect(taskSrc).toMatch(/operation:\s*request\.operation/);
     expect(taskSrc).toMatch(/let shouldClearApprovalPending = false/);
     expect(taskSrc).toMatch(
       /if\s*\(\s*approvalPendingMarked\s*&&\s*shouldClearApprovalPending\s*\)/,

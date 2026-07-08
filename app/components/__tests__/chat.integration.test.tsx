@@ -173,7 +173,11 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 
 // ===== NOW import components =====
-import { Chat, getExistingChatLoadState } from "../chat";
+import {
+  Chat,
+  getExistingChatLoadState,
+  getStoredAgentApprovalRequest,
+} from "../chat";
 import { ChatLayout } from "../ChatLayout";
 import { TestWrapper } from "../testUtils";
 
@@ -299,6 +303,30 @@ describe("Chat Component Integration", () => {
       ).toEqual({
         isInitialExistingChatLoad: false,
         isChatNotFound: true,
+      });
+    });
+
+    it("derives a stored approval prompt from operation and target only", () => {
+      expect(
+        getStoredAgentApprovalRequest({
+          active_agent_approval_pending: true,
+          active_agent_approval_request: {
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+            operation: "terminal_execute",
+            target: "ping -c 4 hackerone.com",
+            createdAt: 123,
+          },
+        }),
+      ).toEqual({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        operation: "terminal_execute",
+        title: "The agent wants to run this terminal command.",
+        target: "ping -c 4 hackerone.com",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal",
+        createdAt: 123,
       });
     });
   });
