@@ -198,7 +198,7 @@ export const createAgentTriggerPost =
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
-      const triggerRegion = getTriggerRegionForVercelRequest(req);
+      const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
 
       assertFreeAgentGates({
         mode: "agent",

@@ -990,9 +990,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long only passes explicit Trigger.dev region when mapped", () => {
-    const routingIdx = routeSrc.indexOf(
-      "getTriggerRegionForVercelRequest(req)",
-    );
+    const routingIdx = routeSrc.indexOf("getTriggerRegionForVercelRequest(");
+    const userLocationIdx = routeSrc.indexOf("userLocation", routingIdx);
     const triggerIdx = routeSrc.indexOf("tasks.trigger", routingIdx);
     const regionOptionIdx = routeSrc.indexOf(
       "...(triggerRegion ? { region: triggerRegion } : {})",
@@ -1000,6 +999,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
 
     expect(routingIdx).toBeGreaterThan(-1);
+    expect(userLocationIdx).toBeGreaterThan(routingIdx);
     expect(triggerIdx).toBeGreaterThan(routingIdx);
     expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
