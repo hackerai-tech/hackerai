@@ -180,7 +180,7 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
-export const GROK_4_3_SLUG = "x-ai/grok-4.3";
+export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
@@ -189,10 +189,10 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "agent-model": or(MINIMAX_M3_SLUG),
     "agent-model-free": or(MINIMAX_M3_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
-    "model-grok-4.3": or(GROK_4_3_SLUG),
+    "model-grok-4.5": or(GROK_4_5_SLUG),
     // Compatibility alias for stale internal references persisted before the
-    // paid Ask PDF route settled on Grok 4.3.
-    "model-gemini-3-flash": or(GROK_4_3_SLUG),
+    // paid Ask PDF route settled on Grok 4.5.
+    "model-gemini-3-flash": or(GROK_4_5_SLUG),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
@@ -204,8 +204,8 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-kimi-k2.6": or(KIMI_K2_7_CODE_SLUG),
     "fallback-agent-model": or(MINIMAX_M3_SLUG),
     "fallback-ask-model": or(MINIMAX_M3_SLUG),
-    "fallback-grok-4.3": or(GROK_4_3_SLUG),
-    "title-generator-model": or(GROK_4_3_SLUG),
+    "fallback-grok-4.5": or(GROK_4_5_SLUG),
+    "title-generator-model": or(GROK_4_5_SLUG),
   }) as Record<string, any>;
 
 const baseProviders = buildProviderMap(openrouter);
@@ -219,8 +219,8 @@ export const modelCutoffDates: Record<ModelName, string> &
   "agent-model": "May 2026",
   "agent-model-free": "May 2026",
   "model-sonnet-4.6": "May 2025",
-  "model-grok-4.3": "April 2026",
-  "model-gemini-3-flash": "April 2026",
+  "model-grok-4.5": "July 2026",
+  "model-gemini-3-flash": "July 2026",
   "model-deepseek-v4-flash": "May 2025",
   "model-deepseek-v4-pro": "May 2025",
   "model-opus-4.6": "May 2025",
@@ -230,8 +230,8 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-kimi-k2.6": "June 2025",
   "fallback-agent-model": "May 2026",
   "fallback-ask-model": "May 2026",
-  "fallback-grok-4.3": "April 2026",
-  "title-generator-model": "April 2026",
+  "fallback-grok-4.5": "July 2026",
+  "title-generator-model": "July 2026",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -241,8 +241,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
-  "model-grok-4.3": "xAI Grok 4.3",
-  "model-gemini-3-flash": "xAI Grok 4.3",
+  "model-grok-4.5": "xAI Grok 4.5",
+  "model-gemini-3-flash": "xAI Grok 4.5",
   "model-deepseek-v4-flash": "DeepSeek V4 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
@@ -252,8 +252,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k2.6": "Moonshot Kimi K2.7 Code",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "fallback-grok-4.3": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "xAI Grok 4.3",
+  "fallback-grok-4.5": "Auto, an intelligent model router built by HackerAI",
+  "title-generator-model": "xAI Grok 4.5",
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {

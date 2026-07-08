@@ -39,6 +39,7 @@ export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   // so map them to Standard rather than dropping the user's preference.
   "grok-4.1": "hackerai-standard",
   "grok-4.3": "hackerai-standard",
+  "grok-4.5": "hackerai-standard",
   "hackerai-lite": "hackerai-standard",
 };
 

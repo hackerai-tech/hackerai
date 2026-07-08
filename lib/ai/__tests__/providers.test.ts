@@ -22,9 +22,9 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("minimax/minimax-m3");
     expect(
-      (myProvider.languageModel("model-grok-4.3") as { modelId: string })
+      (myProvider.languageModel("model-grok-4.5") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (myProvider.languageModel("model-glm-5.2") as { modelId: string })
         .modelId,
@@ -35,7 +35,7 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("x-ai/grok-4.3");
+    ).toBe("x-ai/grok-4.5");
     expect(
       (
         myProvider.languageModel("model-kimi-k2.6") as {
@@ -54,12 +54,12 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
-    ).toBe("x-ai/grok-4.3");
+    ).toBe("x-ai/grok-4.5");
     expect(getModelDisplayName("model-minimax-m3")).toBe("MiniMax M3");
-    expect(getModelDisplayName("model-grok-4.3")).toBe("xAI Grok 4.3");
+    expect(getModelDisplayName("model-grok-4.5")).toBe("xAI Grok 4.5");
     expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
-    expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.3");
-    expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.3");
+    expect(getModelDisplayName("model-gemini-3-flash")).toBe("xAI Grok 4.5");
+    expect(getModelDisplayName("title-generator-model")).toBe("xAI Grok 4.5");
   });
 });
 
@@ -67,7 +67,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
   it("strips encrypted reasoning details when an OpenRouter fallback can route to xAI", () => {
     const body = {
       model: "minimax/minimax-m3",
-      models: ["x-ai/grok-4.3"],
+      models: ["x-ai/grok-4.5"],
       messages: [
         {
           role: "assistant",
@@ -102,7 +102,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
   it("removes reasoning_details when every detail is encrypted", () => {
     const body = {
-      model: "x-ai/grok-4.3",
+      model: "x-ai/grok-4.5",
       messages: [
         {
           role: "assistant",
@@ -118,7 +118,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
     expect(result.changed).toBe(true);
     expect(result.body).toEqual({
-      model: "x-ai/grok-4.3",
+      model: "x-ai/grok-4.5",
       messages: [
         {
           role: "assistant",
@@ -150,7 +150,7 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 
   it("preserves encrypted_content outside provider reasoning metadata", () => {
     const body = {
-      model: "x-ai/grok-4.3",
+      model: "x-ai/grok-4.5",
       messages: [
         {
           role: "user",
@@ -206,10 +206,10 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("allows multimodal fallback keys and slugs used after image tool results", () => {
-    expect(supportsMultimodalToolResults("model-grok-4.3")).toBe(true);
+    expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-gemini-3-flash")).toBe(true);
-    expect(supportsMultimodalToolResults("fallback-grok-4.3")).toBe(true);
-    expect(supportsMultimodalToolResults("x-ai/grok-4.3")).toBe(true);
+    expect(supportsMultimodalToolResults("fallback-grok-4.5")).toBe(true);
+    expect(supportsMultimodalToolResults("x-ai/grok-4.5")).toBe(true);
   });
 
   it("still rejects text-only DeepSeek model keys", () => {

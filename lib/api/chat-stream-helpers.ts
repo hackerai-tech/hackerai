@@ -539,7 +539,7 @@ export class SummarizationTracker {
  */
 const MINIMAX_M3_FALLBACK_CHAIN = [
   "model-kimi-k2.7-code",
-  "fallback-grok-4.3",
+  "fallback-grok-4.5",
 ] as const satisfies readonly ModelName[];
 
 const AGENT_TEXT_FALLBACK_CHAIN = [
@@ -554,14 +554,14 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
   "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
   "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-grok-4.5": AGENT_TEXT_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
   "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
   "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-kimi-k2.7-code": ["fallback-grok-4.3"],
-  "model-kimi-k2.6": ["fallback-grok-4.3"],
+  "model-kimi-k2.7-code": ["fallback-grok-4.5"],
+  "model-kimi-k2.6": ["fallback-grok-4.5"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -588,7 +588,7 @@ export function isAutoModelSelectionForRetry({
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
     agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.3"],
+    ask: ["model-grok-4.5"],
   };
 
 const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
@@ -600,7 +600,7 @@ const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
   "ask-model",
   "model-minimax-m3",
-  "model-grok-4.3",
+  "model-grok-4.5",
   "model-gemini-3-flash",
 ] as const satisfies readonly ModelName[];
 
@@ -665,12 +665,12 @@ export function getRetryFallbackModel(
     modelName === "ask-model-free" ||
     modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro" ||
-    modelName === "model-grok-4.3" ||
+    modelName === "model-grok-4.5" ||
     modelName === "model-gemini-3-flash"
   ) {
     return "model-minimax-m3";
   }
-  return "fallback-grok-4.3";
+  return "fallback-grok-4.5";
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -708,6 +708,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
   "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
   "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+  "x-ai/grok-4.5": "model-grok-4.5",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",

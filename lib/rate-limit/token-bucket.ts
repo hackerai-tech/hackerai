@@ -30,10 +30,11 @@ export { isUserRateLimitKey } from "./key-cleanup";
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  "model-grok-4.3": { input: 1.25, output: 2.5 },
-  "model-gemini-3-flash": { input: 1.25, output: 2.5 },
+  // Grok 4.5 rates from OpenRouter: $2.00 in / $6.00 out per 1M tokens.
+  "model-grok-4.5": { input: 2.0, output: 6.0 },
+  "model-gemini-3-flash": { input: 2.0, output: 6.0 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
-  "fallback-grok-4.3": { input: 1.25, output: 2.5 },
+  "fallback-grok-4.5": { input: 2.0, output: 6.0 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   // Rates from OpenRouter: $0.9086 in / $2.856 out per 1M tokens.
   "model-glm-5.2": { input: 0.9086, output: 2.856 },

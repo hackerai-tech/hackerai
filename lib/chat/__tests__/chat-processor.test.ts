@@ -201,15 +201,15 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return Grok 4.3 for paid ask when a PDF is attached", () => {
+    it("should return Grok 4.5 for paid ask when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
 
-    it("should prefer Grok 4.3 when paid ask has both image and PDF attachments", () => {
+    it("should prefer Grok 4.5 when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
 
@@ -260,15 +260,15 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.3 when a PDF is attached", () => {
+    it("should promote HackerAI Standard to Grok 4.5 when a PDF is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
 
-    it("should prefer Grok 4.3 for HackerAI Standard when image and PDF are both attached", () => {
+    it("should prefer Grok 4.5 for HackerAI Standard when image and PDF are both attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
 
@@ -405,7 +405,7 @@ describe("selectModel", () => {
 
     it("should treat 'auto' as no override in ask mode with PDF -> Grok", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
   });
@@ -423,7 +423,7 @@ describe("selectModel", () => {
         "ask-model",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-grok-4.3",
+        "model-grok-4.5",
       );
     });
   });
