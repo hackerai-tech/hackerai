@@ -24,9 +24,9 @@ interface FileHandlerProps {
 }
 
 const FILE_APPROVAL_TITLES: Partial<Record<FileInput["action"], string>> = {
-  write: "The agent wants full access to create this file.",
-  append: "The agent wants full access to append to this file.",
-  edit: "The agent wants full access to edit this file.",
+  write: "The agent wants to create this file.",
+  append: "The agent wants to append to this file.",
+  edit: "The agent wants to edit this file.",
 };
 
 interface FileViewOutput {
@@ -298,10 +298,11 @@ export const FileHandler = memo(function FileHandler({
         toolCallId={part.toolCallId}
         title={
           FILE_APPROVAL_TITLES[action ?? "write"] ??
-          "The agent wants full access to change this file."
+          "The agent wants to change this file."
         }
         target={target}
         detail="Approve to continue, or deny to stop this file change."
+        kind="file"
       />
     </div>
   );

@@ -89,7 +89,9 @@ export type ToolFailureLogger = (
   event: ToolFailureLogEvent,
 ) => void | Promise<void>;
 
-export type AgentToolApprovalGrant = "full_access";
+export type AgentToolApprovalGrant = "full_access" | "target_prefix";
+export type AgentToolApprovalGrantKind =
+  "terminal_command" | "terminal_interaction" | "file_change";
 
 export type AgentToolApprovalDecision = "approve" | "deny";
 
@@ -129,6 +131,9 @@ export type AgentToolApprovalInputRecord = {
   toolCallId: string;
   decision: AgentToolApprovalDecision;
   grant: AgentToolApprovalGrant;
+  targetPrefix?: string;
+  targetKind?: AgentToolApprovalGrantKind;
+  message?: string;
   at?: number;
 };
 

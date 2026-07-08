@@ -87,9 +87,10 @@ const AgentApprovalSetter = () => {
     setActiveToolApprovalRequest({
       approvalId: "approval-1",
       toolCallId: "tool-1",
-      title: "The agent wants full access to run this terminal command.",
+      title: "The agent wants to run this terminal command.",
       target: "ping -c 4 hackerone.com",
       detail: "Approve to continue, or deny to stop this command.",
+      kind: "terminal",
     });
   }, [setActiveToolApprovalRequest, setAgentApprovalSession, setChatMode]);
 
@@ -206,7 +207,17 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         await screen.findByTestId("agent-approval-prompt"),
       ).toBeInTheDocument();
-      expect(screen.getByText("Approve full access")).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("radio", {
+          name: /Yes, and don't ask again for commands that start with ping/,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByPlaceholderText(
+          "No, and tell Codex what to do differently",
+        ),
+      ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });

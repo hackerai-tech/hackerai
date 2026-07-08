@@ -9,6 +9,7 @@ type ToolApprovalControlsProps = {
   title: string;
   target?: string;
   detail?: string;
+  kind?: "terminal" | "file";
 };
 
 export function ToolApprovalControls({
@@ -17,6 +18,7 @@ export function ToolApprovalControls({
   title,
   target,
   detail,
+  kind,
 }: ToolApprovalControlsProps) {
   const {
     setActiveToolApprovalRequest,
@@ -40,6 +42,7 @@ export function ToolApprovalControls({
       title,
       target,
       detail,
+      kind,
     });
 
     return () => {
@@ -50,6 +53,7 @@ export function ToolApprovalControls({
     clearActiveToolApprovalRequest,
     detail,
     isSettled,
+    kind,
     setActiveToolApprovalRequest,
     target,
     title,

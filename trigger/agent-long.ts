@@ -221,8 +221,47 @@ const isAgentToolApprovalInputRecord = (
     typeof record.approvalId === "string" &&
     typeof record.toolCallId === "string" &&
     (record.decision === "approve" || record.decision === "deny") &&
-    record.grant === "full_access"
+    (record.grant === "full_access" || record.grant === "target_prefix") &&
+    (record.targetPrefix === undefined ||
+      typeof record.targetPrefix === "string") &&
+    (record.targetKind === undefined ||
+      record.targetKind === "terminal_command" ||
+      record.targetKind === "terminal_interaction" ||
+      record.targetKind === "file_change") &&
+    (record.message === undefined || typeof record.message === "string")
   );
+};
+
+type AgentToolApprovalTargetGrant = {
+  kind: NonNullable<AgentToolApprovalInputRecord["targetKind"]>;
+  prefix: string;
+};
+
+const getApprovalGrantKindForRequest = (
+  request: AgentToolApprovalRequest,
+): AgentToolApprovalTargetGrant["kind"] => {
+  if (request.operation === "terminal_execute") return "terminal_command";
+  if (request.operation === "terminal_interact") return "terminal_interaction";
+  return "file_change";
+};
+
+const matchesApprovalTargetGrant = (
+  request: AgentToolApprovalRequest,
+  grant: AgentToolApprovalTargetGrant,
+): boolean => {
+  const target = request.target.trim();
+  const prefix = grant.prefix.trim();
+  if (!prefix) return false;
+  return (
+    grant.kind === getApprovalGrantKindForRequest(request) &&
+    target.startsWith(prefix)
+  );
+};
+
+const buildDeniedApprovalReason = (message: string | undefined): string => {
+  const trimmed = message?.trim();
+  if (!trimmed) return "The user denied approval for this operation.";
+  return `The user denied approval for this operation and said: ${trimmed}`;
 };
 
 type TriggerSessionInputWaitOutcome =
@@ -280,6 +319,7 @@ const buildAgentToolApprovalRequester = ({
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
+  const approvedTargetGrants: AgentToolApprovalTargetGrant[] = [];
   const setApprovalPending = async (pending: boolean) => {
     if (!approvalSessionId) return;
     try {
@@ -311,6 +351,26 @@ const buildAgentToolApprovalRequester = ({
     let approvalPendingMarked = false;
     try {
       const approvalId = generateId();
+      const existingGrant = approvedTargetGrants.find((grant) =>
+        matchesApprovalTargetGrant(request, grant),
+      );
+      if (existingGrant) {
+        metadata
+          .set("approvalStatus", "auto_approved")
+          .set("approvalToolName", request.toolName)
+          .set("approvalOperation", request.operation);
+        triggerLogger.info("[agent-long] tool approval reused", {
+          chatId,
+          userId,
+          runId,
+          approvalId,
+          tool_name: request.toolName,
+          operation: request.operation,
+          target_kind: existingGrant.kind,
+          target_prefix: existingGrant.prefix,
+        });
+        return { approved: true, approvalId };
+      }
 
       if (!approvalSessionId) {
         return {
@@ -393,6 +453,20 @@ const buildAgentToolApprovalRequester = ({
           .set("approvalResolvedAt", Date.now());
 
         if (next.output.decision === "approve") {
+          if (
+            next.output.grant === "target_prefix" &&
+            next.output.targetPrefix?.trim()
+          ) {
+            const targetKind = getApprovalGrantKindForRequest(request);
+            approvedTargetGrants.push({
+              kind: targetKind,
+              prefix: next.output.targetPrefix.trim(),
+            });
+            metadata
+              .set("approvalGrant", "target_prefix")
+              .set("approvalTargetKind", targetKind)
+              .set("approvalTargetPrefix", next.output.targetPrefix.trim());
+          }
           triggerLogger.info("[agent-long] tool approval granted", {
             chatId,
             userId,
@@ -400,6 +474,9 @@ const buildAgentToolApprovalRequester = ({
             approvalId,
             tool_name: request.toolName,
             operation: request.operation,
+            grant: next.output.grant,
+            target_kind: getApprovalGrantKindForRequest(request),
+            target_prefix: next.output.targetPrefix,
           });
           return { approved: true, approvalId };
         }
@@ -415,7 +492,7 @@ const buildAgentToolApprovalRequester = ({
         return {
           approved: false,
           approvalId,
-          reason: "The user denied approval for this operation.",
+          reason: buildDeniedApprovalReason(next.output.message),
         };
       }
 

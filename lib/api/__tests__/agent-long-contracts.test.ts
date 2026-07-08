@@ -654,7 +654,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId\s*\}/,
     );
     expect(taskSrc).toMatch(
-      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*"The user denied approval for this operation\."/,
+      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
+    );
+    expect(taskSrc).toMatch(/record\.message === undefined/);
+    expect(taskSrc).toMatch(
+      /The user denied approval for this operation and said:/,
     );
 
     const denyLogIdx = taskSrc.indexOf("tool approval denied");
@@ -664,6 +668,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(denyLogIdx).toBeGreaterThan(-1);
     expect(denyReturnIdx).toBeGreaterThan(denyLogIdx);
     expect(abortIdx === -1 || abortIdx > denyReturnIdx).toBe(true);
+  });
+
+  test("agent approval supports target prefix grants for ask-again behavior", () => {
+    expect(taskSrc).toMatch(/record\.grant === "target_prefix"/);
+    expect(taskSrc).toMatch(/record\.targetPrefix === undefined/);
+    expect(taskSrc).toMatch(/record\.targetKind === undefined/);
+    expect(taskSrc).toMatch(/const approvedTargetGrants/);
+    expect(taskSrc).toMatch(/matchesApprovalTargetGrant/);
+    expect(taskSrc).toMatch(/approvalStatus", "auto_approved"/);
+    expect(taskSrc).toMatch(/next\.output\.grant === "target_prefix"/);
+    expect(taskSrc).toMatch(/approvalGrant", "target_prefix"/);
   });
 
   test("handled tool failures are visible in Trigger logs and metadata", () => {

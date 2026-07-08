@@ -11,6 +11,8 @@ import {
 import { sendTriggerSessionInput } from "@/lib/chat/trigger-browser-realtime";
 import type {
   AgentToolApprovalDecision,
+  AgentToolApprovalGrant,
+  AgentToolApprovalGrantKind,
   AgentToolApprovalInputRecord,
 } from "@/types";
 
@@ -28,12 +30,17 @@ export type ActiveAgentToolApprovalRequest = {
   title: string;
   target?: string;
   detail?: string;
+  kind?: "terminal" | "file";
 };
 
 type SendAgentToolApprovalArgs = {
   approvalId: string;
   toolCallId: string;
   decision: AgentToolApprovalDecision;
+  grant?: AgentToolApprovalGrant;
+  targetPrefix?: string;
+  targetKind?: AgentToolApprovalGrantKind;
+  message?: string;
 };
 
 type AgentApprovalContextValue = {
@@ -90,7 +97,15 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
   );
 
   const sendToolApproval = useCallback(
-    async ({ approvalId, toolCallId, decision }: SendAgentToolApprovalArgs) => {
+    async ({
+      approvalId,
+      toolCallId,
+      decision,
+      grant = "full_access",
+      targetPrefix,
+      targetKind,
+      message,
+    }: SendAgentToolApprovalArgs) => {
       if (!session) {
         throw new Error("No active Agent approval session.");
       }
@@ -108,7 +123,10 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
         approvalId,
         toolCallId,
         decision,
-        grant: "full_access",
+        grant,
+        ...(targetPrefix ? { targetPrefix } : {}),
+        ...(targetKind ? { targetKind } : {}),
+        ...(message ? { message } : {}),
         at: Date.now(),
       };
 
@@ -121,7 +139,7 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
         await sendTriggerSessionInput({
           sessionId: session.sessionId,
           accessToken: session.publicAccessToken,
-          partId: `agent-tool-approval:${approvalId}:${decision}`,
+          partId: `agent-tool-approval:${approvalId}:${decision}:${grant}`,
           value: record,
         });
         setToolApprovalSendStates((states) => ({

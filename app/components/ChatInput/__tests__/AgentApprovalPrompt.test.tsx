@@ -23,9 +23,10 @@ const { AgentApprovalPrompt } = jest.requireActual<
 const request = {
   approvalId: "approval-1",
   toolCallId: "tool-1",
-  title: "The agent wants full access to run this terminal command.",
+  title: "The agent wants to run this terminal command.",
   target: "ping -c 4 hackerone.com",
   detail: "Approve to continue, or deny to stop this command.",
+  kind: "terminal" as const,
 };
 
 describe("AgentApprovalPrompt", () => {
@@ -50,13 +51,34 @@ describe("AgentApprovalPrompt", () => {
     );
   });
 
+  it("renders three Codex-style options without option descriptions", () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", {
+        name: /Yes, and don't ask again for commands that start with ping/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("No, and tell Codex what to do differently"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Allow this command or file change to run."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Stop this action and let the agent recover."),
+    ).not.toBeInTheDocument();
+  });
+
   it("submits the focused approval option when Enter is pressed", async () => {
     render(<AgentApprovalPrompt request={request} />);
 
-    const denyOption = screen.getByText("Deny").closest("button");
-    expect(denyOption).toBeInTheDocument();
+    const prefixOption = screen.getByRole("radio", {
+      name: /don't ask again/,
+    });
 
-    fireEvent.keyDown(denyOption!, {
+    fireEvent.keyDown(prefixOption, {
       key: "Enter",
       code: "Enter",
     });
@@ -65,7 +87,10 @@ describe("AgentApprovalPrompt", () => {
       expect(mockSendToolApproval).toHaveBeenCalledWith({
         approvalId: "approval-1",
         toolCallId: "tool-1",
-        decision: "deny",
+        decision: "approve",
+        grant: "target_prefix",
+        targetKind: "terminal_command",
+        targetPrefix: "ping",
       }),
     );
   });
@@ -88,10 +113,13 @@ describe("AgentApprovalPrompt", () => {
     render(<AgentApprovalPrompt request={request} />);
 
     const prompt = screen.getByTestId("agent-approval-prompt");
-    const approveOption = screen.getByRole("radio", {
-      name: /Approve full access/,
+    const approveOption = screen.getByRole("radio", { name: "Yes" });
+    const prefixOption = screen.getByRole("radio", {
+      name: /don't ask again/,
     });
-    const denyOption = screen.getByRole("radio", { name: /Deny/ });
+    const feedbackOption = screen.getByRole("radio", {
+      name: /tell Codex what to do differently/,
+    });
 
     expect(approveOption).toHaveAttribute("aria-checked", "true");
     expect(
@@ -100,27 +128,34 @@ describe("AgentApprovalPrompt", () => {
 
     fireEvent.keyDown(prompt, { key: "ArrowDown", code: "ArrowDown" });
 
-    expect(denyOption).toHaveAttribute("aria-checked", "true");
+    expect(prefixOption).toHaveAttribute("aria-checked", "true");
     expect(
-      screen.getByTestId("agent-approval-option-deny-arrows"),
+      screen.getByTestId("agent-approval-option-target_prefix-arrows"),
     ).toBeInTheDocument();
 
-    fireEvent.keyDown(denyOption, { key: "ArrowUp", code: "ArrowUp" });
+    fireEvent.keyDown(prompt, { key: "ArrowDown", code: "ArrowDown" });
 
-    expect(approveOption).toHaveAttribute("aria-checked", "true");
+    expect(feedbackOption).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByTestId("agent-approval-option-deny_feedback-arrows"),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(feedbackOption, { key: "ArrowUp", code: "ArrowUp" });
+
+    expect(prefixOption).toHaveAttribute("aria-checked", "true");
   });
 
   it("navigates approval options from page-level arrow keys", async () => {
     render(<AgentApprovalPrompt request={request} />);
 
-    const approveOption = screen.getByRole("radio", {
-      name: /Approve full access/,
+    const approveOption = screen.getByRole("radio", { name: "Yes" });
+    const prefixOption = screen.getByRole("radio", {
+      name: /don't ask again/,
     });
-    const denyOption = screen.getByRole("radio", { name: /Deny/ });
 
     fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown" });
 
-    expect(denyOption).toHaveAttribute("aria-checked", "true");
+    expect(prefixOption).toHaveAttribute("aria-checked", "true");
 
     fireEvent.keyDown(document.body, { key: "ArrowUp", code: "ArrowUp" });
 
@@ -144,7 +179,7 @@ describe("AgentApprovalPrompt", () => {
     );
   });
 
-  it("submits the page-selected approval option from page-level Enter", async () => {
+  it("submits the page-selected prefix approval option from page-level Enter", async () => {
     render(<AgentApprovalPrompt request={request} />);
 
     fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown" });
@@ -154,7 +189,32 @@ describe("AgentApprovalPrompt", () => {
       expect(mockSendToolApproval).toHaveBeenCalledWith({
         approvalId: "approval-1",
         toolCallId: "tool-1",
+        decision: "approve",
+        grant: "target_prefix",
+        targetKind: "terminal_command",
+        targetPrefix: "ping",
+      }),
+    );
+  });
+
+  it("submits typed feedback with a denied approval response", async () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    const feedbackInput = screen.getByPlaceholderText(
+      "No, and tell Codex what to do differently",
+    );
+
+    fireEvent.change(feedbackInput, {
+      target: { value: "Use curl instead" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Submit/ }));
+
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
         decision: "deny",
+        message: "Use curl instead",
       }),
     );
   });
@@ -168,23 +228,24 @@ describe("AgentApprovalPrompt", () => {
     );
 
     const outsideInput = screen.getByLabelText("Outside input");
-    const approveOption = screen.getByRole("radio", {
-      name: /Approve full access/,
+    const approveOption = screen.getByRole("radio", { name: "Yes" });
+    const prefixOption = screen.getByRole("radio", {
+      name: /don't ask again/,
     });
-    const denyOption = screen.getByRole("radio", { name: /Deny/ });
 
     fireEvent.keyDown(outsideInput, { key: "ArrowDown", code: "ArrowDown" });
     fireEvent.keyDown(outsideInput, { key: "Enter", code: "Enter" });
 
     expect(approveOption).toHaveAttribute("aria-checked", "true");
-    expect(denyOption).toHaveAttribute("aria-checked", "false");
+    expect(prefixOption).toHaveAttribute("aria-checked", "false");
     expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
-  it("submits the arrow-selected approval option when Enter is pressed", async () => {
+  it("submits the arrow-selected feedback option when Enter is pressed", async () => {
     render(<AgentApprovalPrompt request={request} />);
 
     const prompt = screen.getByTestId("agent-approval-prompt");
+    fireEvent.keyDown(prompt, { key: "ArrowDown", code: "ArrowDown" });
     fireEvent.keyDown(prompt, { key: "ArrowDown", code: "ArrowDown" });
     fireEvent.keyDown(prompt, { key: "Enter", code: "Enter" });
 
