@@ -1694,6 +1694,7 @@ export const agentLongTask = task({
               userCustomization,
               temporary,
               sandboxContext,
+              agentPermissionMode,
             );
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
 

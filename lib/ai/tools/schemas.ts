@@ -14,7 +14,7 @@ export const RUN_TERMINAL_MAX_TIMEOUT_SECONDS = 600;
 export const runTerminalCmdTool = tool({
   description: `Execute a command on behalf of the user.
 If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
-Commands execute immediately without requiring user approval.
+Commands run in the selected sandbox environment. If Agent approval mode is set to ask, the platform can pause execution after you call this tool and ask the user to approve it; do not ask in chat instead of calling the tool when a command is needed.
 In using these tools, adhere to the following guidelines:
 1. Use command chaining and pipes for efficiency:
    - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
@@ -199,6 +199,7 @@ export const createFileToolSchema = ({
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
+    "Write, append, and edit actions may be approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first.",
     "For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
