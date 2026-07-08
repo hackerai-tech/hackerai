@@ -222,6 +222,33 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
+    it("renders a stored approval selector after the live request state is gone", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "The agent wants to run this terminal command.",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+    });
+
     it("should allow switching to agent mode via global state", async () => {
       // Note: Mode switching UI test removed due to flakiness with dropdown interactions
       // Mode switching is tested at the GlobalState level in GlobalState.messageQueue.test.tsx

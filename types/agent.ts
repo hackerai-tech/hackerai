@@ -110,6 +110,16 @@ export type AgentToolApprovalRequest = {
   brief?: string;
 };
 
+export type AgentToolApprovalPendingRequest = {
+  approvalId: string;
+  toolCallId: string;
+  title: string;
+  target?: string;
+  detail?: string;
+  kind?: "terminal" | "file";
+  createdAt?: number;
+};
+
 export type AgentToolApprovalResult =
   | {
       approved: true;

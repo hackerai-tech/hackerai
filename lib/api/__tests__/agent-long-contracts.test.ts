@@ -682,6 +682,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/approvalGrant", "target_prefix"/);
   });
 
+  test("agent approval pending state is durable until the user responds", () => {
+    expect(taskSrc).toMatch(/buildPendingApprovalRequest/);
+    expect(taskSrc).toMatch(/AgentToolApprovalPendingRequest/);
+    expect(taskSrc).toMatch(/let shouldClearApprovalPending = false/);
+    expect(taskSrc).toMatch(
+      /if\s*\(\s*approvalPendingMarked\s*&&\s*shouldClearApprovalPending\s*\)/,
+    );
+    expect(taskSrc).toMatch(/shouldClearApprovalPending = true/);
+    expect(taskSrc).toMatch(/setApprovalPending\(\s*true,\s*[\s\S]*approvalId/);
+  });
+
   test("handled tool failures are visible in Trigger logs and metadata", () => {
     expect(taskSrc).toMatch(/recordAgentLongHandledToolFailureForDashboard/);
     expect(taskSrc).toMatch(/lastHandledToolFailureStatus/);

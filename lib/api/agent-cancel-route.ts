@@ -52,6 +52,7 @@ export const createAgentCancelPost =
             chatId,
             triggerRunId: null,
             approvalSessionId: null,
+            clearApprovalPending: true,
           });
         }
         // No active run — treat as already-stopped (idempotent).
@@ -70,6 +71,7 @@ export const createAgentCancelPost =
         triggerRunId: null,
         approvalSessionId: null,
         expectedRunId: runId,
+        clearApprovalPending: true,
       });
 
       return NextResponse.json({ canceled: true, runId });

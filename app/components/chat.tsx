@@ -28,7 +28,10 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useAgentApproval } from "../contexts/AgentApprovalContext";
+import {
+  type ActiveAgentToolApprovalRequest,
+  useAgentApproval,
+} from "../contexts/AgentApprovalContext";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
@@ -92,6 +95,44 @@ const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
+const getStoredAgentApprovalRequest = (
+  chatData: unknown,
+): ActiveAgentToolApprovalRequest | null => {
+  if (!chatData || typeof chatData !== "object") return null;
+  const record = chatData as Record<string, unknown>;
+  if (record.active_agent_approval_pending !== true) return null;
+  const request = record.active_agent_approval_request;
+  if (!request || typeof request !== "object") return null;
+  const approvalRequest = request as Record<string, unknown>;
+  const approvalId = approvalRequest.approvalId;
+  const toolCallId = approvalRequest.toolCallId;
+  const title = approvalRequest.title;
+  if (
+    typeof approvalId !== "string" ||
+    typeof toolCallId !== "string" ||
+    typeof title !== "string"
+  ) {
+    return null;
+  }
+  const kind = approvalRequest.kind;
+
+  return {
+    approvalId,
+    toolCallId,
+    title,
+    ...(typeof approvalRequest.target === "string"
+      ? { target: approvalRequest.target }
+      : {}),
+    ...(typeof approvalRequest.detail === "string"
+      ? { detail: approvalRequest.detail }
+      : {}),
+    ...(kind === "terminal" || kind === "file" ? { kind } : {}),
+    ...(typeof approvalRequest.createdAt === "number"
+      ? { createdAt: approvalRequest.createdAt }
+      : {}),
+  };
+};
 
 export function getExistingChatLoadState({
   isExistingChat,
@@ -545,6 +586,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
+  const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
+    chatDataForCurrentChat,
+  );
   const activeTriggerRunRef = useLatestRef(
     (chatDataForCurrentChat as any)?.active_trigger_run_id as
       string | undefined,
@@ -1834,6 +1878,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
+                            storedApprovalRequest={storedAgentApprovalRequest}
                           />
                         </div>
                       )}
@@ -1865,6 +1910,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
+                    storedApprovalRequest={storedAgentApprovalRequest}
                   />
                 )}
             </div>

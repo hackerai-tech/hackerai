@@ -81,4 +81,25 @@ describe("SidebarHistory", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("streaming-approval-chat")).toBeInTheDocument();
   });
+
+  it("keeps pending approval chats marked as streaming without an active run", () => {
+    render(
+      <SidebarHistory
+        chats={[
+          chat({
+            id: "stored-approval-chat",
+            active_agent_approval_pending: true,
+          }),
+        ]}
+        paginationStatus="Exhausted"
+      />,
+    );
+
+    expect(
+      screen.getByTestId("awaiting-approval-stored-approval-chat"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("streaming-stored-approval-chat"),
+    ).toBeInTheDocument();
+  });
 });

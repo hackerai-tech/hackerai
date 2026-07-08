@@ -119,6 +119,7 @@ import type {
   SelectedModel,
   AgentPermissionMode,
   AgentToolApprovalInputRecord,
+  AgentToolApprovalPendingRequest,
   AgentToolApprovalRequest,
   AgentToolApprovalRequester,
   RateLimitInfo,
@@ -265,6 +266,40 @@ const buildDeniedApprovalReason = (message: string | undefined): string => {
   return `The user denied approval for this operation and said: ${trimmed}`;
 };
 
+const buildPendingApprovalRequest = ({
+  approvalId,
+  request,
+}: {
+  approvalId: string;
+  request: AgentToolApprovalRequest;
+}): AgentToolApprovalPendingRequest => {
+  const isTerminal =
+    request.operation === "terminal_execute" ||
+    request.operation === "terminal_interact";
+  const fileTitles: Partial<
+    Record<AgentToolApprovalRequest["operation"], string>
+  > = {
+    file_write: "The agent wants to create this file.",
+    file_append: "The agent wants to append to this file.",
+    file_edit: "The agent wants to edit this file.",
+  };
+
+  return {
+    approvalId,
+    toolCallId: request.toolCallId,
+    title: isTerminal
+      ? "The agent wants to run this terminal command."
+      : (fileTitles[request.operation] ??
+        "The agent wants to change this file."),
+    target: request.target,
+    detail: isTerminal
+      ? "Approve to continue, or deny to stop this command."
+      : "Approve to continue, or deny to stop this file change.",
+    kind: isTerminal ? "terminal" : "file",
+    createdAt: Date.now(),
+  };
+};
+
 type TriggerSessionInputWaitOutcome =
   | {
       status: "input";
@@ -321,12 +356,16 @@ const buildAgentToolApprovalRequester = ({
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
   const approvedTargetGrants: AgentToolApprovalTargetGrant[] = [];
-  const setApprovalPending = async (pending: boolean) => {
+  const setApprovalPending = async (
+    pending: boolean,
+    request?: AgentToolApprovalPendingRequest,
+  ) => {
     if (!approvalSessionId) return;
     try {
       await setActiveAgentApprovalPending({
         chatId,
         pending,
+        request,
         expectedRunId: runId,
         expectedApprovalSessionId: approvalSessionId,
       });
@@ -350,6 +389,7 @@ const buildAgentToolApprovalRequester = ({
 
     await previousApproval;
     let approvalPendingMarked = false;
+    let shouldClearApprovalPending = false;
     try {
       const approvalId = generateId();
       const existingGrant = approvedTargetGrants.find((grant) =>
@@ -401,7 +441,10 @@ const buildAgentToolApprovalRequester = ({
         };
       }
 
-      await setApprovalPending(true);
+      await setApprovalPending(
+        true,
+        buildPendingApprovalRequest({ approvalId, request }),
+      );
       approvalPendingMarked = true;
 
       writer.write({
@@ -452,6 +495,7 @@ const buildAgentToolApprovalRequester = ({
         metadata
           .set("approvalStatus", next.output.decision)
           .set("approvalResolvedAt", Date.now());
+        shouldClearApprovalPending = true;
 
         if (next.output.decision === "approve") {
           if (
@@ -504,7 +548,7 @@ const buildAgentToolApprovalRequester = ({
         reason: "The Agent run was stopped before approval was received.",
       };
     } finally {
-      if (approvalPendingMarked) {
+      if (approvalPendingMarked && shouldClearApprovalPending) {
         await setApprovalPending(false);
       }
       releaseApproval();

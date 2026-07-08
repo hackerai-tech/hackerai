@@ -28,7 +28,10 @@ import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import type { UploadedFileState } from "@/types/file";
-import { useAgentApproval } from "@/app/contexts/AgentApprovalContext";
+import {
+  type ActiveAgentToolApprovalRequest,
+  useAgentApproval,
+} from "@/app/contexts/AgentApprovalContext";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -48,6 +51,7 @@ interface ChatInputProps {
   placeholder?: string;
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
+  storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -125,6 +129,7 @@ export const ChatInput = ({
   placeholder,
   autoFocus,
   restoreDraftAttachments = true,
+  storedApprovalRequest,
 }: ChatInputProps) => {
   const {
     input,
@@ -158,7 +163,8 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
-  const showAgentApprovalPrompt = !!activeToolApprovalRequest;
+  const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
+  const showAgentApprovalPrompt = !!approvalRequest;
 
   const draftId =
     isNewChat && (!hasMessages || temporaryChatsEnabled)
@@ -342,8 +348,8 @@ export const ChatInput = ({
 
         {showAgentApprovalPrompt ? (
           <AgentApprovalPrompt
-            key={activeToolApprovalRequest.approvalId}
-            request={activeToolApprovalRequest}
+            key={approvalRequest.approvalId}
+            request={approvalRequest}
           />
         ) : (
           <div

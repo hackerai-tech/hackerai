@@ -17,7 +17,11 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
-import type { SubscriptionTier, NoteCategory } from "@/types";
+import type {
+  AgentToolApprovalPendingRequest,
+  SubscriptionTier,
+  NoteCategory,
+} from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -1275,11 +1279,13 @@ export async function setActiveTriggerRun({
   triggerRunId,
   approvalSessionId,
   expectedRunId,
+  clearApprovalPending,
 }: {
   chatId: string;
   triggerRunId: string | null;
   approvalSessionId?: string | null;
   expectedRunId?: string;
+  clearApprovalPending?: boolean;
 }) {
   try {
     await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
@@ -1288,6 +1294,7 @@ export async function setActiveTriggerRun({
       triggerRunId,
       ...(approvalSessionId !== undefined ? { approvalSessionId } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
     });
   } catch (error) {
     throw new ChatSDKError(
@@ -1300,11 +1307,13 @@ export async function setActiveTriggerRun({
 export async function setActiveAgentApprovalPending({
   chatId,
   pending,
+  request,
   expectedRunId,
   expectedApprovalSessionId,
 }: {
   chatId: string;
   pending: boolean;
+  request?: AgentToolApprovalPendingRequest;
   expectedRunId?: string;
   expectedApprovalSessionId?: string;
 }) {
@@ -1313,6 +1322,7 @@ export async function setActiveAgentApprovalPending({
       serviceKey,
       chatId,
       pending,
+      ...(request !== undefined ? { request } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
       ...(expectedApprovalSessionId !== undefined
         ? { expectedApprovalSessionId }

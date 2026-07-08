@@ -39,6 +39,16 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
   "estimated_compacted_input_tokens",
 ] as const;
 
+const activeAgentApprovalRequestValidator = v.object({
+  approvalId: v.string(),
+  toolCallId: v.string(),
+  title: v.string(),
+  target: v.optional(v.string()),
+  detail: v.optional(v.string()),
+  kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
+  createdAt: v.optional(v.number()),
+});
+
 const getErrorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
@@ -143,6 +153,7 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
     chat.active_stream_id === undefined &&
     chat.active_trigger_run_id === undefined &&
     chat.active_agent_approval_pending === undefined &&
+    chat.active_agent_approval_request === undefined &&
     chat.canceled_at !== undefined
   ) {
     return;
@@ -157,6 +168,7 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
     active_trigger_run_id: undefined,
     active_agent_approval_session_id: undefined,
     active_agent_approval_pending: undefined,
+    active_agent_approval_request: undefined,
     canceled_at: Date.now(),
     finish_reason: undefined,
   });
@@ -352,6 +364,9 @@ export const getChatByIdFromClient = query({
       active_trigger_run_id: v.optional(v.string()),
       active_agent_approval_session_id: v.optional(v.string()),
       active_agent_approval_pending: v.optional(v.boolean()),
+      active_agent_approval_request: v.optional(
+        activeAgentApprovalRequestValidator,
+      ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -449,6 +464,9 @@ export const getChatById = query({
       active_trigger_run_id: v.optional(v.string()),
       active_agent_approval_session_id: v.optional(v.string()),
       active_agent_approval_pending: v.optional(v.boolean()),
+      active_agent_approval_request: v.optional(
+        activeAgentApprovalRequestValidator,
+      ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -1211,6 +1229,7 @@ export const setActiveTriggerRun = mutation({
     triggerRunId: v.union(v.string(), v.null()),
     approvalSessionId: v.optional(v.union(v.string(), v.null())),
     expectedRunId: v.optional(v.string()),
+    clearApprovalPending: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1226,17 +1245,22 @@ export const setActiveTriggerRun = mutation({
     ) {
       return null;
     }
+    const shouldClearApprovalPending =
+      args.clearApprovalPending === true || args.triggerRunId !== null;
+
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
       ...(args.approvalSessionId !== undefined
         ? {
             active_agent_approval_session_id:
               args.approvalSessionId ?? undefined,
-            active_agent_approval_pending: undefined,
           }
         : {}),
-      ...(args.triggerRunId === null
-        ? { active_agent_approval_pending: undefined }
+      ...(shouldClearApprovalPending
+        ? {
+            active_agent_approval_pending: undefined,
+            active_agent_approval_request: undefined,
+          }
         : {}),
     });
     return null;
@@ -1248,6 +1272,7 @@ export const setActiveAgentApprovalPending = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     pending: v.boolean(),
+    request: v.optional(activeAgentApprovalRequestValidator),
     expectedRunId: v.optional(v.string()),
     expectedApprovalSessionId: v.optional(v.string()),
   },
@@ -1273,6 +1298,7 @@ export const setActiveAgentApprovalPending = mutation({
     }
     await ctx.db.patch(chat._id, {
       active_agent_approval_pending: args.pending ? true : undefined,
+      active_agent_approval_request: args.pending ? args.request : undefined,
     });
     return null;
   },

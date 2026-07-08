@@ -14,6 +14,7 @@ import type {
   AgentToolApprovalGrant,
   AgentToolApprovalGrantKind,
   AgentToolApprovalInputRecord,
+  AgentToolApprovalPendingRequest,
 } from "@/types";
 
 export type AgentApprovalSendState = "idle" | "sending" | "approved" | "denied";
@@ -24,14 +25,7 @@ export type AgentApprovalSession = {
   publicAccessToken: string;
 };
 
-export type ActiveAgentToolApprovalRequest = {
-  approvalId: string;
-  toolCallId: string;
-  title: string;
-  target?: string;
-  detail?: string;
-  kind?: "terminal" | "file";
-};
+export type ActiveAgentToolApprovalRequest = AgentToolApprovalPendingRequest;
 
 type SendAgentToolApprovalArgs = {
   approvalId: string;

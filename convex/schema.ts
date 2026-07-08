@@ -13,6 +13,16 @@ const usageDeductionFailureReasonValidator = v.union(
   v.literal("deduction_failed"),
 );
 
+const activeAgentApprovalRequestValidator = v.object({
+  approvalId: v.string(),
+  toolCallId: v.string(),
+  title: v.string(),
+  target: v.optional(v.string()),
+  detail: v.optional(v.string()),
+  kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
+  createdAt: v.optional(v.number()),
+});
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -23,6 +33,9 @@ export default defineSchema({
     active_trigger_run_id: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
     active_agent_approval_pending: v.optional(v.boolean()),
+    active_agent_approval_request: v.optional(
+      activeAgentApprovalRequestValidator,
+    ),
     canceled_at: v.optional(v.number()),
     default_model_slug: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
