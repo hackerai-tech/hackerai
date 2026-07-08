@@ -47,6 +47,24 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toBe("us-west-2");
   });
 
+  test("routes Canadian east requests to us-east-1", () => {
+    expect(
+      getTriggerRegionForVercelRequest(requestWithHeaders({}), {
+        country: "CA",
+        countryRegion: "ON",
+      }),
+    ).toBe("us-east-1");
+  });
+
+  test("routes Canadian west requests to us-west-2", () => {
+    expect(
+      getTriggerRegionForVercelRequest(requestWithHeaders({}), {
+        country: "CA",
+        countryRegion: "BC",
+      }),
+    ).toBe("us-west-2");
+  });
+
   test("uses coordinates before coarse subdivisions", () => {
     expect(
       getTriggerRegionForVercelRequest(requestWithHeaders({}), {
@@ -68,7 +86,7 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toBe("us-west-2");
   });
 
-  test("uses the dashboard default for non-European, non-North-American locations", () => {
+  test("returns undefined for non-European, non-North-American locations", () => {
     expect(
       getTriggerRegionForVercelRequest(requestWithHeaders({}), {
         country: "IN",
