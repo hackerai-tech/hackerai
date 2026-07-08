@@ -27,6 +27,12 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
+import {
+  invoiceSubscriptionId,
+  stripeObjectId,
+  subscriptionPaymentFailureProperties,
+  type BillingFailureProperties,
+} from "@/lib/billing/subscription-payment-failure";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -120,6 +126,22 @@ function monthlyUsagePeriodEndSeconds(
   if (priceBillingInterval(price) !== "month") return undefined;
   if ((price?.recurring?.interval_count ?? 1) !== 1) return undefined;
   return subscriptionCurrentPeriodEndSeconds(subscription);
+}
+
+async function retrieveInvoiceForFailureAnalytics(
+  invoiceId: string,
+): Promise<Stripe.Invoice | null> {
+  try {
+    return await stripe.invoices.retrieve(invoiceId, {
+      expand: ["payment_intent", "payment_intent.latest_charge"],
+    });
+  } catch (error) {
+    phLogger.warn("subscription_payment_failure_invoice_retrieve_failed", {
+      stripe_invoice_id: invoiceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 /** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
@@ -486,6 +508,50 @@ async function recordPaidStartMix({
   });
 }
 
+async function emitBillingPaymentFailed(args: {
+  invoice: Stripe.Invoice;
+  customerId: string;
+  userIds: string[];
+  orgId?: string;
+  tier?: SubscriptionTier | null;
+  price?: Stripe.Price;
+  lifecycle: BillingFailureProperties["billing_failure_lifecycle"];
+}) {
+  if (args.userIds.length === 0) return;
+
+  const failureProperties = subscriptionPaymentFailureProperties({
+    invoice: args.invoice,
+    lifecycle: args.lifecycle,
+  });
+
+  for (const uid of args.userIds) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.billingPaymentFailed,
+      paidFunnelProperties({
+        userId: uid,
+        org_id: args.orgId,
+        subscription_tier: args.tier,
+        plan: args.price?.lookup_key,
+        billing_interval: priceBillingInterval(args.price),
+        billing_interval_count: args.price?.recurring?.interval_count,
+        stripe_customer_id: args.customerId,
+        stripe_subscription_id:
+          invoiceSubscriptionId(args.invoice) ??
+          stripeObjectId(
+            (
+              args.invoice as unknown as {
+                subscription?: string | { id?: string } | null;
+              }
+            ).subscription,
+          ),
+        stripe_price_id: args.price?.id,
+        ...failureProperties,
+        $insert_id: `${PAID_FUNNEL_EVENTS.billingPaymentFailed}:${args.lifecycle}:${args.invoice.id}:${uid}`,
+      }),
+    );
+  }
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -778,6 +844,69 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   if (tier === "team" && orgId) {
     await clearOrgRemovedUsage(orgId);
   }
+}
+
+async function handleInvoicePaymentFailed(
+  invoice: Stripe.Invoice,
+): Promise<void> {
+  const subscriptionId = invoiceSubscriptionId(invoice);
+  if (!subscriptionId) return;
+
+  const customerId =
+    typeof invoice.customer === "string"
+      ? invoice.customer
+      : invoice.customer?.id;
+
+  if (!customerId) {
+    console.error(
+      "[Subscription Webhook] invoice.payment_failed missing customer ID:",
+      invoice.id,
+    );
+    return;
+  }
+
+  const customerResult = await resolveUserIdsFromCustomer(customerId);
+  const { userIds, orgId } = customerResult;
+
+  if (customerResult.reason === "legacy_user_metadata") {
+    console.info(
+      `[Subscription Webhook] invoice.payment_failed: skipping legacy customer invoice ${invoice.id} for customer ${customerId}`,
+    );
+    return;
+  }
+
+  if (userIds.length === 0) {
+    console.error(
+      `[Subscription Webhook] Could not resolve users (${customerResult.reason ?? "unknown"}) for failed invoice ${invoice.id}`,
+    );
+    return;
+  }
+
+  const resolved = await resolveSubscription(subscriptionId);
+  if (resolved?.kind === "legacy_pentestgpt") {
+    console.info(
+      `[Subscription Webhook] invoice.payment_failed: skipping legacy PentestGPT subscription ${subscriptionId} for invoice ${invoice.id}`,
+    );
+    return;
+  }
+
+  const expandedInvoice = (invoice as unknown as { payment_intent?: unknown })
+    .payment_intent
+    ? invoice
+    : ((await retrieveInvoiceForFailureAnalytics(invoice.id)) ?? invoice);
+  const subscription =
+    resolved?.kind === "resolved" ? resolved.subscription : undefined;
+  const price = subscription?.items?.data[0]?.price;
+
+  await emitBillingPaymentFailed({
+    invoice: expandedInvoice,
+    customerId,
+    userIds,
+    orgId: orgId ?? undefined,
+    tier: resolved?.kind === "resolved" ? resolved.tier : undefined,
+    price,
+    lifecycle: "invoice_payment_failed",
+  });
 }
 
 /** Handle checkout.session.completed — attach Checkout Session IDs to saved referral attribution. */
@@ -1180,6 +1309,17 @@ async function handleSubscriptionDeleted(
   }
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
+  const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
+  const failureInvoice =
+    cancellationReason === "payment_failed" && latestInvoiceId
+      ? await retrieveInvoiceForFailureAnalytics(latestInvoiceId)
+      : null;
+  const failureProperties = failureInvoice
+    ? subscriptionPaymentFailureProperties({
+        invoice: failureInvoice,
+        lifecycle: "subscription_deleted",
+      })
+    : undefined;
 
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
@@ -1201,7 +1341,20 @@ async function handleSubscriptionDeleted(
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,
+      ...(failureProperties ?? {}),
       $set: { subscription_tier: "free" },
+    });
+  }
+
+  if (failureInvoice) {
+    await emitBillingPaymentFailed({
+      invoice: failureInvoice,
+      customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      tier,
+      price,
+      lifecycle: "subscription_deleted",
     });
   }
 
@@ -1222,7 +1375,8 @@ async function handleSubscriptionDeleted(
  * Configure in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
  * - Events: checkout.session.completed, invoice.paid,
- *   customer.subscription.updated, customer.subscription.deleted
+ *   invoice.payment_failed, customer.subscription.updated,
+ *   customer.subscription.deleted
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -1319,12 +1473,15 @@ export async function POST(req: NextRequest) {
       await handleInvoicePaid(event.data.object as Stripe.Invoice);
       break;
     }
+    case "invoice.payment_failed": {
+      await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+      break;
+    }
     case "customer.subscription.updated": {
       await handleSubscriptionUpdated(
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
-          | Partial<Stripe.Subscription>
-          | undefined,
+          Partial<Stripe.Subscription> | undefined,
       );
       break;
     }
