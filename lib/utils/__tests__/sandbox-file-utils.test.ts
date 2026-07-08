@@ -187,6 +187,7 @@ describe("desktop-local sandbox file helpers", () => {
   });
 
   it("normalizes thrown E2B curl write errors and retries in a writable directory", async () => {
+    jest.useFakeTimers();
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
@@ -230,7 +231,7 @@ describe("desktop-local sandbox file helpers", () => {
     });
 
     try {
-      const result = await uploadSandboxFiles(
+      const pendingResult = uploadSandboxFiles(
         [
           {
             kind: "url",
@@ -242,6 +243,8 @@ describe("desktop-local sandbox file helpers", () => {
           commands: { run },
         }),
       );
+      await jest.advanceTimersByTimeAsync(1_500);
+      const result = await pendingResult;
 
       expect(result).toEqual({
         failedCount: 0,
@@ -262,6 +265,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(homeCurlAttempts).toHaveLength(3);
       expect(fallbackCurlAttempts).toHaveLength(1);
     } finally {
+      jest.useRealTimers();
       consoleWarnSpy.mockRestore();
     }
   });
