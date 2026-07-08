@@ -12,6 +12,12 @@ const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
 
 /** Guard against freezing the UI on very large text files */
 const MAX_PREVIEW_CHARS = 500_000;
+const PDF_MAGIC_BYTES = "%PDF-";
+
+async function hasPdfMagicBytes(file: File): Promise<boolean> {
+  const header = await file.slice(0, PDF_MAGIC_BYTES.length).text();
+  return header === PDF_MAGIC_BYTES;
+}
 
 interface FileContentViewerProps {
   isOpen: boolean;
@@ -88,6 +94,9 @@ export const FileContentViewer = ({
           // blob URL; restored-from-draft files use a short-lived signed URL.
           let url: string;
           if (isBrowserFile(file)) {
+            if (!(await hasPdfMagicBytes(file))) {
+              throw new Error("Invalid PDF signature");
+            }
             createdBlobUrl = URL.createObjectURL(file);
             url = createdBlobUrl;
           } else {
@@ -260,6 +269,8 @@ export const FileContentViewer = ({
               )}
             </div>
           ) : pdfUrl ? (
+            // Chromium's PDF viewer can fail inside sandboxed iframes. The PDF
+            // path is gated above by MIME type and magic bytes before blob URL creation.
             <iframe
               src={pdfUrl}
               title={`Preview of ${fileName}`}
