@@ -1032,18 +1032,41 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long only passes explicit Trigger.dev region when mapped", () => {
-    const routingIdx = routeSrc.indexOf(
-      "getTriggerRegionForVercelRequest(req)",
+    const userLocationIdx = routeSrc.indexOf(
+      "const userLocation = geolocation(req)",
     );
-    const regionOptionIdx = routeSrc.indexOf(
-      "...(triggerRegion ? { region: triggerRegion } : {})",
+    const routingIdx = routeSrc.indexOf(
+      "getTriggerRegionForVercelRequest(req, userLocation)",
+      userLocationIdx,
+    );
+    const triggerOptionsIdx = routeSrc.indexOf(
+      "const triggerOptions",
       routingIdx,
     );
-    const triggerIdx = routeSrc.indexOf("tasks.trigger", regionOptionIdx);
+    const triggerOptionsRegionIdx = routeSrc.indexOf(
+      "...(triggerRegion ? { region: triggerRegion } : {})",
+      triggerOptionsIdx,
+    );
+    const sessionStartIdx = routeSrc.indexOf(
+      "sessions.start",
+      triggerOptionsRegionIdx,
+    );
+    const sessionRegionIdx = routeSrc.indexOf(
+      "...(triggerRegion ? { region: triggerRegion } : {})",
+      sessionStartIdx,
+    );
+    const triggerIdx = routeSrc.indexOf(
+      "tasks.trigger",
+      triggerOptionsRegionIdx,
+    );
 
+    expect(userLocationIdx).toBeGreaterThan(-1);
     expect(routingIdx).toBeGreaterThan(-1);
-    expect(regionOptionIdx).toBeGreaterThan(routingIdx);
-    expect(triggerIdx).toBeGreaterThan(regionOptionIdx);
+    expect(routingIdx).toBeGreaterThan(userLocationIdx);
+    expect(triggerOptionsIdx).toBeGreaterThan(routingIdx);
+    expect(triggerOptionsRegionIdx).toBeGreaterThan(triggerOptionsIdx);
+    expect(sessionRegionIdx).toBeGreaterThan(sessionStartIdx);
+    expect(triggerIdx).toBeGreaterThan(triggerOptionsRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
   });
