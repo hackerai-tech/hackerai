@@ -122,11 +122,11 @@ const TEXT_VIEWABLE_EXTENSIONS = new Set([
 ]);
 
 /**
- * Check if a file is a PDF (by media type, with an extension fallback)
+ * Check if a file is a PDF by media type only.
+ * Extension-only detection can route active content into the PDF iframe preview.
  */
 export function isPdfFile(file: File | LocalDesktopFile): boolean {
-  if (file.type?.toLowerCase() === "application/pdf") return true;
-  return file.name.split(".").pop()?.toLowerCase() === "pdf";
+  return file.type?.split(";")[0]?.trim().toLowerCase() === "application/pdf";
 }
 
 /**
