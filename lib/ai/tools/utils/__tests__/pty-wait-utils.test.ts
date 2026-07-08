@@ -147,10 +147,10 @@ describe("pty-wait-utils", () => {
       "red plain",
     );
 
-    const capped = capOutput("a".repeat(40) + "b".repeat(40), 32);
-    expect(capped).toContain("[truncated");
-    expect(capped).toContain("a");
-    expect(capped).toContain("b");
+    const capped = capOutput("a".repeat(200) + "b".repeat(200), 256);
+    expect(capped).toBe(
+      `${"a".repeat(179)}\n...[truncated 208 bytes]...\n${"b".repeat(13)}`,
+    );
   });
 
   it("peeks resolved exits without waiting on live processes", async () => {

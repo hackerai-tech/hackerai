@@ -188,6 +188,8 @@ describe("feature-flags", () => {
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = "10";
 
       expect(isCrossTabTokenSharingEnabled("user-80")).toBe(true);
+      expect(isCrossTabTokenSharingEnabled("user-86")).toBe(true);
+      expect(isCrossTabTokenSharingEnabled("user-87")).toBe(false);
       expect(isCrossTabTokenSharingEnabled("user-1")).toBe(false);
 
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = originalEnv;
