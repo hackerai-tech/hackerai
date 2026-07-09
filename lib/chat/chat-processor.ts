@@ -45,9 +45,10 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); prompts with images or PDFs promote to Grok 4.3 for native
- *   media support. HackerAI Pro uses GLM 5.2 for text-only prompts and Kimi
- *   K2.7 Code when provider-visible media is attached.
+ *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
+ *   stay on Grok 4.3 for native document support. HackerAI Pro uses GLM 5.2
+ *   for text-only prompts and Kimi K2.7 Code when provider-visible media is
+ *   attached.
  * @returns Model name to use
  */
 export function selectModel(
@@ -66,13 +67,17 @@ export function selectModel(
   );
   // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Kimi or Opus.
+  // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
+  // when mixed with images because the MiniMax ask route is image-scoped.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
   const hasProProviderMedia = !!hasImageAttachment || hasAskPdf;
-  const paidAskMediaModel: ModelName =
-    hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
+  const paidAskMediaModel: ModelName = hasAskPdf
+    ? "model-grok-4.3"
+    : hasAskImage
+      ? "ask-model"
+      : "model-deepseek-v4-pro";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
@@ -96,9 +101,11 @@ export function selectModel(
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
   if (allowedSelectedModel === "hackerai-standard" && !isAgent) {
-    return hasAskImage || hasAskPdf
+    return hasAskPdf
       ? "model-grok-4.3"
-      : "model-deepseek-v4-pro";
+      : hasAskImage
+        ? "model-minimax-m3"
+        : "model-deepseek-v4-pro";
   }
 
   if (allowedSelectedModel === "hackerai-pro") {

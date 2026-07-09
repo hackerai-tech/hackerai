@@ -433,23 +433,23 @@ describe("token-bucket", () => {
       );
     });
 
-    it.each(["agent-model", "agent-model-free", "model-minimax-m3"])(
-      "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
-      (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4200);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(16800);
-      },
-    );
-
     it.each([
       "ask-model",
-      "model-grok-4.3",
-      "model-gemini-3-flash",
-      "fallback-grok-4.3",
-    ])("should use Grok 4.3 pricing for %s ($1.25/$2.50)", (modelName) => {
-      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(17500);
-      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(35000);
+      "agent-model",
+      "agent-model-free",
+      "model-minimax-m3",
+    ])("should use MiniMax M3 pricing for %s ($0.30/$1.20)", (modelName) => {
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4200);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(16800);
     });
+
+    it.each(["model-grok-4.3", "model-gemini-3-flash", "fallback-grok-4.3"])(
+      "should use Grok 4.3 pricing for %s ($1.25/$2.50)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(17500);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(35000);
+      },
+    );
 
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;

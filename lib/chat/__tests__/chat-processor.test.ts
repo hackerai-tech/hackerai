@@ -165,21 +165,21 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should return ask-model (Grok) for paid ask when an image is attached", () => {
+    it("should return ask-model (MiniMax) for paid ask when an image is attached", () => {
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "ask-model",
       );
     });
 
-    it("should return ask-model (Grok) for paid ask when a PDF is attached", () => {
+    it("should return Grok 4.3 for paid ask when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "ask-model",
+        "model-grok-4.3",
       );
     });
 
-    it("should prefer ask-model (Grok) when paid ask has both image and PDF attachments", () => {
+    it("should prefer Grok 4.3 when paid ask has both image and PDF attachments", () => {
       expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "ask-model",
+        "model-grok-4.3",
       );
     });
 
@@ -224,9 +224,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should promote HackerAI Standard to Grok 4.3 when an image is attached", () => {
+    it("should promote HackerAI Standard to MiniMax M3 when an image is attached", () => {
       expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-grok-4.3",
+        "model-minimax-m3",
       );
     });
 
@@ -342,12 +342,14 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
 
-    it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
+    it("should treat 'auto' as no override in ask mode with image -> MiniMax", () => {
       expect(selectModel("ask", "pro", "auto", true, false)).toBe("ask-model");
     });
 
     it("should treat 'auto' as no override in ask mode with PDF -> Grok", () => {
-      expect(selectModel("ask", "pro", "auto", false, true)).toBe("ask-model");
+      expect(selectModel("ask", "pro", "auto", false, true)).toBe(
+        "model-grok-4.3",
+      );
     });
   });
 
@@ -362,7 +364,7 @@ describe("selectModel", () => {
         "ask-model",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "ask-model",
+        "model-grok-4.3",
       );
     });
   });

@@ -6,10 +6,10 @@ import {
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("keeps paid Ask media, Agent Standard, and stale Kimi compatibility keys pointed at their active slugs", () => {
+  it("keeps paid Ask image, Agent Standard, and stale Kimi compatibility keys pointed at their active slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.3");
+    ).toBe("minimax/minimax-m3");
     expect(
       (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
     ).toBe("minimax/minimax-m3");
@@ -196,6 +196,7 @@ describe("supportsMultimodalToolResults", () => {
   it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
     expect(supportsMultimodalToolResults("agent-model-free")).toBe(true);
+    expect(supportsMultimodalToolResults("ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("model-kimi-k2.7-code")).toBe(true);
