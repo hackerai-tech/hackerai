@@ -14,7 +14,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/robots.txt",
   "/sitemap.xml",
 ]);
-const ROOT_PAGE_POST_PATHS = new Set(["/", "/index"]);
+const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
 
 const UNAUTHENTICATED_PATHS = new Set([
@@ -74,7 +74,7 @@ function isUnsupportedRootPageRequest(
   request: NextRequest,
   pathname: string,
 ): boolean {
-  if (!ROOT_PAGE_POST_PATHS.has(pathname)) return false;
+  if (!ROOT_PAGE_PATHS.has(pathname)) return false;
   if (request.method === "GET" || request.method === "HEAD") return false;
 
   return !(

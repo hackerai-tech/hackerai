@@ -77,6 +77,47 @@ function getEnvironment(): string {
   return process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown";
 }
 
+const CHECKOUT_SESSION_PAGE_SIZE = 100;
+const MAX_CHECKOUT_SESSION_PAGES = 5;
+
+async function findReusableCheckoutSession({
+  customerId,
+  organizationId,
+  requestedPlan,
+  quantity,
+}: {
+  customerId: string;
+  organizationId: string;
+  requestedPlan: string;
+  quantity: number;
+}): Promise<Stripe.Checkout.Session | undefined> {
+  let startingAfter: string | undefined;
+
+  for (let page = 0; page < MAX_CHECKOUT_SESSION_PAGES; page += 1) {
+    const sessions = await stripe.checkout.sessions.list({
+      customer: customerId,
+      status: "open",
+      limit: CHECKOUT_SESSION_PAGE_SIZE,
+      ...(startingAfter && { starting_after: startingAfter }),
+    });
+    const reusableSession = sessions.data.find((candidate) =>
+      isReusableCheckoutSession(candidate, {
+        organizationId,
+        requestedPlan,
+        quantity,
+      }),
+    );
+
+    if (reusableSession) return reusableSession;
+    if (!sessions.has_more) return undefined;
+
+    startingAfter = sessions.data.at(-1)?.id;
+    if (!startingAfter) return undefined;
+  }
+
+  return undefined;
+}
+
 export const POST = async (req: NextRequest) => {
   let shouldClearReferralCookies = false;
   const json = (body: unknown, init?: ResponseInit) => {
@@ -358,18 +399,12 @@ export const POST = async (req: NextRequest) => {
 
     const cancelUrl = new URL(baseUrl);
 
-    const openSessions = await stripe.checkout.sessions.list({
-      customer: customer.id,
-      status: "open",
-      limit: 10,
+    let session = await findReusableCheckoutSession({
+      customerId: customer.id,
+      organizationId: organization.id,
+      requestedPlan: subscriptionLevel,
+      quantity,
     });
-    let session = openSessions.data.find((candidate) =>
-      isReusableCheckoutSession(candidate, {
-        organizationId: organization.id,
-        requestedPlan: subscriptionLevel,
-        quantity,
-      }),
-    );
     const reusedCheckoutSession = Boolean(session);
 
     if (!session) {
@@ -419,6 +454,22 @@ export const POST = async (req: NextRequest) => {
         },
       });
     } else {
+      const previousCheckoutAttemptId = session.metadata?.checkoutAttemptId;
+      session = await stripe.checkout.sessions.update(session.id, {
+        metadata: {
+          ...session.metadata,
+          userId,
+          workOSOrganizationId: organization.id,
+          requestedPlan: subscriptionLevel,
+          checkoutQuantity: String(quantity),
+          checkoutAttemptId,
+          ...(checkoutSource && { checkoutSource }),
+          ...(checkoutSurface && { checkoutSurface }),
+          ...(checkoutReason && { checkoutReason }),
+          ...(checkoutLimitType && { checkoutLimitType }),
+          checkoutType: "new_subscription",
+        },
+      });
       logger.warn("Reused an open Stripe Checkout Session", {
         event: "billing.checkout_session_reused",
         request_id: req.headers.get("x-vercel-id") ?? "unknown",
@@ -430,6 +481,7 @@ export const POST = async (req: NextRequest) => {
         checkout_attempt_id: checkoutAttemptId,
         stripe_customer_id: customer.id,
         stripe_checkout_session_id: session.id,
+        previous_checkout_attempt_id: previousCheckoutAttemptId,
         requested_plan: subscriptionLevel,
         quantity,
         checkout_source: checkoutSource,

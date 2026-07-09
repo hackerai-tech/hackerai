@@ -15,6 +15,7 @@ const mockCreateCustomer = jest.fn();
 const mockRetrieveCustomer = jest.fn();
 const mockUpdateCustomer = jest.fn();
 const mockListCheckoutSessions = jest.fn();
+const mockUpdateCheckoutSession = jest.fn();
 const mockCreateCheckoutSession = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
@@ -69,6 +70,7 @@ jest.mock("@/app/api/stripe", () => ({
     checkout: {
       sessions: {
         list: mockListCheckoutSessions,
+        update: mockUpdateCheckoutSession,
         create: mockCreateCheckoutSession,
       },
     },
@@ -136,6 +138,17 @@ describe("POST /api/subscribe", () => {
       url: "https://stripe.example/checkout",
     } as never);
     mockListCheckoutSessions.mockResolvedValue({ data: [] } as never);
+    mockUpdateCheckoutSession.mockImplementation(
+      async (
+        sessionId: string,
+        params: { metadata?: Record<string, string> },
+      ) =>
+        ({
+          id: sessionId,
+          url: "https://stripe.example/existing-checkout",
+          metadata: params.metadata ?? {},
+        }) as never,
+    );
     mockUpdateCustomer.mockImplementation(
       async (
         customerId: string,
@@ -219,19 +232,34 @@ describe("POST /api/subscribe", () => {
       id: "cus_existing_org",
       metadata: { workOSOrganizationId: "org_team" },
     } as never);
-    mockListCheckoutSessions.mockResolvedValue({
-      data: [
-        {
-          id: "cs_open",
-          url: "https://stripe.example/existing-checkout",
-          metadata: {
-            workOSOrganizationId: "org_team",
-            requestedPlan: "pro-monthly-plan",
-            checkoutAttemptId: "ca_original",
+    mockListCheckoutSessions
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "cs_other_plan",
+            url: "https://stripe.example/other-checkout",
+            metadata: {
+              workOSOrganizationId: "org_team",
+              requestedPlan: "team-monthly-plan",
+            },
           },
-        },
-      ],
-    } as never);
+        ],
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "cs_open",
+            url: "https://stripe.example/existing-checkout",
+            metadata: {
+              workOSOrganizationId: "org_team",
+              requestedPlan: "pro-monthly-plan",
+              checkoutAttemptId: "ca_original",
+            },
+          },
+        ],
+        has_more: false,
+      } as never);
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -250,10 +278,26 @@ describe("POST /api/subscribe", () => {
         url: "https://stripe.example/existing-checkout",
         checkoutAttemptId: "ca_retry_123",
       });
-      expect(mockListCheckoutSessions).toHaveBeenCalledWith({
+      expect(mockListCheckoutSessions).toHaveBeenNthCalledWith(1, {
         customer: "cus_existing_org",
         status: "open",
-        limit: 10,
+        limit: 100,
+      });
+      expect(mockListCheckoutSessions).toHaveBeenNthCalledWith(2, {
+        customer: "cus_existing_org",
+        status: "open",
+        limit: 100,
+        starting_after: "cs_other_plan",
+      });
+      expect(mockUpdateCheckoutSession).toHaveBeenCalledWith("cs_open", {
+        metadata: {
+          workOSOrganizationId: "org_team",
+          requestedPlan: "pro-monthly-plan",
+          checkoutAttemptId: "ca_retry_123",
+          userId: "user_123",
+          checkoutQuantity: "1",
+          checkoutType: "new_subscription",
+        },
       });
       expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -264,6 +308,7 @@ describe("POST /api/subscribe", () => {
         stripe_customer_id: "cus_existing_org",
         stripe_checkout_session_id: "cs_open",
         checkout_attempt_id: "ca_retry_123",
+        previous_checkout_attempt_id: "ca_original",
       });
       expect(mockPostHogEvent).toHaveBeenCalledWith(
         "checkout_started",
