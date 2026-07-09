@@ -93,6 +93,21 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
   });
 
+  it.each(["/robots.txt", "/sitemap.xml"])(
+    "bypasses AuthKit for the public SEO route %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(createRequest({ pathname }));
+
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects non-action root POSTs before AuthKit", async () => {
     const { default: proxy } = await import("../proxy");
 

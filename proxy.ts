@@ -9,7 +9,11 @@ import {
   isValidReferralCode,
 } from "@/lib/referrals/config";
 
-const AUTHKIT_BYPASS_PATHS = new Set(["/api/health/trigger-agent-mode"]);
+const AUTHKIT_BYPASS_PATHS = new Set([
+  "/api/health/trigger-agent-mode",
+  "/robots.txt",
+  "/sitemap.xml",
+]);
 const ROOT_PAGE_POST_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
 
