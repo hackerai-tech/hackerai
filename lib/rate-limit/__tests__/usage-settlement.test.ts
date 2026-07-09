@@ -68,7 +68,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 8.71,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 8.71)).toBe(112_230);
+    expect(getUnsettledUsagePoints(state, 8.71)).toBe(120_940);
   });
 
   it("updates cumulative settled totals after a mid-run deduction", () => {

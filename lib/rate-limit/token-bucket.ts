@@ -61,7 +61,7 @@ export const POINTS_PER_DOLLAR = 10_000;
  * This is baked into the point cost so it depletes the subscription bucket
  * faster; it is NOT subtracted from the user's subscription credit balance.
  */
-export const NORMAL_USAGE_MULTIPLIER = 1.3;
+export const NORMAL_USAGE_MULTIPLIER = 1.4;
 
 /** Convert raw provider/tool spend into billable user-balance points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>
