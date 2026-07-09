@@ -15,6 +15,7 @@ export type Surface =
   | "history"
   | "vote"
   | "document"
+  | "sandbox"
   | "suggestions";
 
 export type ErrorCode = `${ErrorType}:${Surface}`;
@@ -30,6 +31,7 @@ export const visibilityBySurface: Record<Surface, ErrorVisibility> = {
   history: "response",
   vote: "response",
   document: "response",
+  sandbox: "response",
   suggestions: "response",
 };
 
@@ -111,6 +113,8 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
 
     case "bad_request:stream":
       return "The model provider returned an error.";
+    case "bad_request:sandbox":
+      return "The computer attachment upload failed.";
     case "forbidden:stream":
       return "The model provider blocked this request.";
 

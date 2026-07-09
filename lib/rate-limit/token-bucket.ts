@@ -29,7 +29,6 @@ export { isUserRateLimitKey } from "./key-cleanup";
 /** Model pricing: $/1M tokens per model. */
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
-  "ask-model": { input: 1.25, output: 2.5 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-grok-4.3": { input: 1.25, output: 2.5 },
   "model-gemini-3-flash": { input: 1.25, output: 2.5 },
@@ -40,6 +39,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-glm-5.2": { input: 0.9086, output: 2.856 },
   // These keys route to minimax/minimax-m3 via lib/ai/providers.ts.
   // Rates from OpenRouter: $0.30 in / $1.20 out per 1M tokens.
+  "ask-model": { input: 0.3, output: 1.2 },
   "agent-model": { input: 0.3, output: 1.2 },
   "agent-model-free": { input: 0.3, output: 1.2 },
   "model-minimax-m3": { input: 0.3, output: 1.2 },
@@ -61,7 +61,7 @@ export const POINTS_PER_DOLLAR = 10_000;
  * This is baked into the point cost so it depletes the subscription bucket
  * faster; it is NOT subtracted from the user's subscription credit balance.
  */
-export const NORMAL_USAGE_MULTIPLIER = 1.3;
+export const NORMAL_USAGE_MULTIPLIER = 1.4;
 
 /** Convert raw provider/tool spend into billable user-balance points. */
 export const billableCostDollarsToPoints = (costDollars: number): number =>

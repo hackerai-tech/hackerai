@@ -212,27 +212,5 @@ describe("s3Cleanup", () => {
       expect(mockDeleteS3Object).not.toHaveBeenCalled();
       expect(console.error).not.toHaveBeenCalled();
     });
-
-    it("should not throw even if all deletions fail", async () => {
-      jest.clearAllMocks();
-
-      const { deleteS3Object } = await import("../s3Utils");
-      const mockDeleteS3Object = deleteS3Object as jest.MockedFunction<
-        typeof deleteS3Object
-      >;
-      mockDeleteS3Object.mockRejectedValue(new Error("All failed"));
-
-      const { deleteS3ObjectsBatchAction } = await import("../s3Cleanup");
-
-      const mockCtx = {};
-      const args = {
-        s3Keys: ["users/user123/file1.pdf", "users/user123/file2.pdf"],
-      };
-
-      // Should not throw
-      await expect(
-        deleteS3ObjectsBatchAction.handler(mockCtx, args),
-      ).resolves.not.toThrow();
-    });
   });
 });

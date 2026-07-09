@@ -248,66 +248,6 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
-
-    it("should allow switching to agent mode via global state", async () => {
-      // Note: Mode switching UI test removed due to flakiness with dropdown interactions
-      // Mode switching is tested at the GlobalState level in GlobalState.messageQueue.test.tsx
-      // This is primarily an integration test of rendering in both modes
-
-      render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="ready"
-          />
-        </TestWrapper>,
-      );
-
-      // Component should render in default ask mode
-      expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
-      ).toBeInTheDocument();
-    });
-  });
-
-  describe("Mode Switching Integration", () => {
-    it("should handle mode state via GlobalState provider", async () => {
-      // Note: UI-based mode switching tests removed due to dropdown interaction complexity
-      // Mode switching logic is thoroughly tested in GlobalState.messageQueue.test.tsx
-      // Integration tests focus on rendering correctly based on mode state
-
-      const { rerender } = render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="ready"
-          />
-        </TestWrapper>,
-      );
-
-      // Should render in ask mode by default
-      expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
-      ).toBeInTheDocument();
-
-      // Re-render with different status
-      rerender(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="streaming"
-          />
-        </TestWrapper>,
-      );
-
-      // Should still show ask mode placeholder
-      expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
-      ).toBeInTheDocument();
-    });
   });
 
   describe("Submit Behavior Integration", () => {

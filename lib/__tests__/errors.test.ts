@@ -27,3 +27,11 @@ describe("isNetworkStreamError", () => {
     );
   });
 });
+
+describe("ChatSDKError messages", () => {
+  it("uses a sandbox-specific message for attachment upload failures", () => {
+    expect(new ChatSDKError("bad_request:sandbox").message).toBe(
+      "The computer attachment upload failed.",
+    );
+  });
+});

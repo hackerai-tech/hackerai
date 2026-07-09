@@ -63,6 +63,10 @@ const NEXT_SERVER_ACTION_SOURCE_FRAGMENTS = [
   "/docs/messages/failed-to-find-server-action",
 ];
 
+const NEXT_GENERATED_CHUNK_SOURCE_PATTERN =
+  /^(?:https?:\/\/[^/]+)?\/_next\/static\/chunks\/[^?\s]+\.js(?:\?[^#\s]*)?(?::\d+){0,2}$/i;
+const VERCEL_DEPLOYMENT_ID_PATTERN = /[?&]dpl=(dpl_[A-Za-z0-9]+)/;
+
 const STALE_SERVER_ACTION_MESSAGE_FRAGMENTS = [
   "Failed to find Server Action",
   "was not found on the server",
@@ -162,6 +166,18 @@ const hasOnlyNextServerActionFrames = (frameSources: string[]): boolean =>
     ),
   );
 
+const hasOnlyNextGeneratedChunkFrames = (frameSources: string[]): boolean =>
+  frameSources.length > 0 &&
+  frameSources.every((source) =>
+    NEXT_GENERATED_CHUNK_SOURCE_PATTERN.test(source),
+  );
+
+const hasOnlyExpectedNextServerActionFrames = (
+  frameSources: string[],
+): boolean =>
+  hasOnlyNextServerActionFrames(frameSources) ||
+  hasOnlyNextGeneratedChunkFrames(frameSources);
+
 const hasStackOverflowMessage = (strings: string[]): boolean =>
   hasExactStringFrom(strings, STACK_OVERFLOW_MESSAGES);
 
@@ -216,14 +232,15 @@ const matchesNextServerActionTransportPattern = (
   frameSources: string[],
 ): boolean =>
   hasBrowserFetchTransportMessage(strings) &&
-  hasOnlyNextServerActionFrames(frameSources);
+  hasOnlyExpectedNextServerActionFrames(frameSources);
 
 const matchesStaleServerActionPattern = (
   strings: string[],
   frameSources: string[],
 ): boolean =>
   hasStaleServerActionMessage(strings) &&
-  (frameSources.length === 0 || hasOnlyNextServerActionFrames(frameSources));
+  (frameSources.length === 0 ||
+    hasOnlyExpectedNextServerActionFrames(frameSources));
 
 const getExceptionCategory = (strings: string[]): FrontendExceptionCategory => {
   if (includesAny(strings, [REACT_MAX_UPDATE_DEPTH_MESSAGE_FRAGMENT])) {
@@ -275,6 +292,16 @@ const getRouteKind = (currentUrl: unknown): string | undefined => {
   }
 };
 
+const getDeploymentIdFromFrameSources = (
+  frameSources: string[],
+): string | undefined => {
+  for (const source of frameSources) {
+    const match = source.match(VERCEL_DEPLOYMENT_ID_PATTERN);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+};
+
 function getBrowserNetworkDetails() {
   if (typeof navigator === "undefined") return {};
 
@@ -305,13 +332,16 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
 
   const properties = event.properties ?? {};
   const strings = collectStrings(properties);
+  const frameSources = collectStackFrameSources(properties);
   const category = getExceptionCategory(strings);
   const routeKind = getRouteKind(properties.$current_url);
+  const deploymentId = getDeploymentIdFromFrameSources(frameSources);
 
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
     ...(routeKind ? { hackerai_route_kind: routeKind } : {}),
+    ...(deploymentId ? { hackerai_exception_deployment_id: deploymentId } : {}),
     ...(typeof document !== "undefined"
       ? { hackerai_visibility_state: document.visibilityState }
       : {}),

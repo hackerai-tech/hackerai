@@ -185,14 +185,14 @@ export const GROK_4_3_SLUG = "x-ai/grok-4.3";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
-    "ask-model": or(GROK_4_3_SLUG),
+    "ask-model": or(MINIMAX_M3_SLUG),
     "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or(MINIMAX_M3_SLUG),
     "agent-model-free": or(MINIMAX_M3_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.3": or(GROK_4_3_SLUG),
     // Compatibility alias for stale internal references persisted before the
-    // paid Ask media route settled on Grok 4.3.
+    // paid Ask PDF route settled on Grok 4.3.
     "model-gemini-3-flash": or(GROK_4_3_SLUG),
     "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
@@ -215,7 +215,7 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
-  "ask-model": "April 2026",
+  "ask-model": "May 2026",
   "ask-model-free": "May 2025",
   "agent-model": "May 2026",
   "agent-model-free": "May 2026",
@@ -292,6 +292,7 @@ export function isMiniMaxModel(modelName: string): boolean {
   return (
     normalized === "agent-model" ||
     normalized === "agent-model-free" ||
+    normalized === "ask-model" ||
     normalized === "model-minimax-m3" ||
     normalized.includes("minimax/minimax-m3")
   );
@@ -303,7 +304,6 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
-    normalized === "ask-model" ||
     normalized === "model-gemini-3-flash" ||
     isKimiModel(normalized) ||
     isMiniMaxModel(normalized) ||

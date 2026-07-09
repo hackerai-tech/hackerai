@@ -200,6 +200,7 @@ interface LocalSandboxConnection {
   capabilities: {
     commands: boolean;
     pty: boolean;
+    files?: boolean;
   };
 }
 

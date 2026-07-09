@@ -215,16 +215,21 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it.each(["ask-model", "model-grok-4.3"] as const)(
-    "falls back from paid Ask media route %s through MiniMax, Kimi, then Grok",
-    (modelName) => {
-      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-      expect(opts.openrouter).toMatchObject({
-        models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
-        user: "user-1",
-      });
-    },
-  );
+  it("falls back from paid Ask image auto route through Kimi then Grok", () => {
+    const opts = buildProviderOptions(false, "user-1", "ask-model", "ask");
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
+
+  it("falls back from paid Ask PDF Grok route through MiniMax, Kimi, then Grok", () => {
+    const opts = buildProviderOptions(false, "user-1", "model-grok-4.3", "ask");
+    expect(opts.openrouter).toMatchObject({
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
+      user: "user-1",
+    });
+  });
 
   it("keeps the stale media route alias on the active Ask fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "model-gemini-3-flash");
@@ -304,6 +309,7 @@ describe("buildProviderOptions fallback chain", () => {
   it.each([
     "model-deepseek-v4-pro",
     "ask-model",
+    "model-minimax-m3",
     "model-grok-4.3",
     "model-gemini-3-flash",
   ])("enables medium reasoning for ask mode model %s", (modelName) => {
@@ -433,9 +439,12 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
+  it("keeps paid Ask image MiniMax app-side retry on the terminal Grok fallback", () => {
+    expect(getRetryFallbackModel("ask-model", "ask")).toBe("fallback-grok-4.3");
+  });
+
   it.each([
     ["model-deepseek-v4-pro", "ask"],
-    ["ask-model", "ask"],
     ["model-grok-4.3", "ask"],
     ["model-gemini-3-flash", "ask"],
   ] as const)(

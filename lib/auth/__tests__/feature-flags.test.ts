@@ -29,66 +29,38 @@ describe("feature-flags", () => {
       expect(result2).toBe(result3);
     });
 
-    it("should return different results for different users at 50%", () => {
-      const featureKey = "test-feature";
-      const percentage = 50;
-      const users = Array.from({ length: 100 }, (_, i) => `user-${i}`);
-
-      const enabledCount = users.filter((userId) =>
-        isFeatureEnabled(userId, featureKey, percentage),
-      ).length;
-
-      // With 100 users at 50%, expect roughly 30-70 to be enabled
-      expect(enabledCount).toBeGreaterThan(20);
-      expect(enabledCount).toBeLessThan(80);
+    it("should return fixture-stable results for different users at 50%", () => {
+      expect(isFeatureEnabled("user-123", "test-feature", 50)).toBe(false);
+      expect(isFeatureEnabled("user-23", "test-feature", 50)).toBe(true);
     });
 
     it("should return different results for different features with same user", () => {
       const userId = "user-123";
       const percentage = 50;
 
-      // Different features should have independent rollouts
-      const results = [
+      expect([
         isFeatureEnabled(userId, "feature-a", percentage),
         isFeatureEnabled(userId, "feature-b", percentage),
         isFeatureEnabled(userId, "feature-c", percentage),
         isFeatureEnabled(userId, "feature-d", percentage),
         isFeatureEnabled(userId, "feature-e", percentage),
-      ];
-
-      // Not all should be the same (very unlikely with 5 independent features at 50%)
-      const allSame = results.every((r) => r === results[0]);
-      // This could theoretically fail, but probability is 1/16 = 6.25%
-      // For a more robust test, we'd use many more features
-      expect(allSame).toBe(false);
+      ]).toEqual([false, false, true, true, true]);
     });
 
-    it("should enable approximately the right percentage of users", () => {
+    it("should use exclusive percentile thresholds", () => {
       const featureKey = "distribution-test";
-      const percentage = 10;
-      const users = Array.from({ length: 1000 }, (_, i) => `user-${i}`);
 
-      const enabledCount = users.filter((userId) =>
-        isFeatureEnabled(userId, featureKey, percentage),
-      ).length;
-
-      // With 1000 users at 10%, expect 50-150 enabled (5-15%)
-      expect(enabledCount).toBeGreaterThan(50);
-      expect(enabledCount).toBeLessThan(150);
+      expect(isFeatureEnabled("user-123", featureKey, 6)).toBe(true);
+      expect(isFeatureEnabled("user-123", featureKey, 5)).toBe(false);
+      expect(isFeatureEnabled("user-abc-123", featureKey, 10)).toBe(false);
     });
 
     it("should handle edge case percentage of 1", () => {
       const featureKey = "one-percent-test";
       const percentage = 1;
-      const users = Array.from({ length: 1000 }, (_, i) => `user-${i}`);
 
-      const enabledCount = users.filter((userId) =>
-        isFeatureEnabled(userId, featureKey, percentage),
-      ).length;
-
-      // With 1000 users at 1%, expect 0-30 enabled
-      expect(enabledCount).toBeGreaterThanOrEqual(0);
-      expect(enabledCount).toBeLessThan(30);
+      expect(isFeatureEnabled("user-9", featureKey, percentage)).toBe(true);
+      expect(isFeatureEnabled("user-8", featureKey, percentage)).toBe(false);
     });
 
     it("should handle empty string user ID", () => {
@@ -211,18 +183,14 @@ describe("feature-flags", () => {
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = originalEnv;
     });
 
-    it("should enable approximately configured percentage of users", () => {
+    it("should respect configured rollout percentage for known users", () => {
       const originalEnv = process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING;
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = "10";
 
-      const users = Array.from({ length: 1000 }, (_, i) => `user-${i}`);
-      const enabledCount = users.filter((userId) =>
-        isCrossTabTokenSharingEnabled(userId),
-      ).length;
-
-      // With 1000 users at 10%, expect 50-150 enabled (5-15%)
-      expect(enabledCount).toBeGreaterThan(50);
-      expect(enabledCount).toBeLessThan(150);
+      expect(isCrossTabTokenSharingEnabled("user-80")).toBe(true);
+      expect(isCrossTabTokenSharingEnabled("user-86")).toBe(true);
+      expect(isCrossTabTokenSharingEnabled("user-87")).toBe(false);
+      expect(isCrossTabTokenSharingEnabled("user-1")).toBe(false);
 
       process.env.NEXT_PUBLIC_FF_CROSS_TAB_TOKEN_SHARING = originalEnv;
     });

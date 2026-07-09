@@ -18,6 +18,7 @@ export interface ConnectionInfo {
   capabilities?: {
     commands: boolean;
     pty: boolean;
+    files?: boolean;
   };
 }
 

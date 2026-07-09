@@ -54,6 +54,8 @@ const SAVE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
   "token_threshold" | "provider_input_threshold" | "provider_pressure";
@@ -244,11 +246,13 @@ const getRetryableDatabaseErrorReason = (
   error: unknown,
 ): string | undefined => {
   const dbErrorData = getErrorData(error);
+  const dbErrorCode = getDatabaseErrorCode(dbErrorData);
+  const dbCauseErrorCode = getDatabaseCauseErrorCode(dbErrorData);
   const errorText = [
     error instanceof Error ? error.name : undefined,
     stringifyError(error),
-    getDatabaseErrorCode(dbErrorData),
-    getDatabaseCauseErrorCode(dbErrorData),
+    dbErrorCode,
+    dbCauseErrorCode,
     getObjectString(dbErrorData, "causeName"),
     getObjectString(dbErrorData, "causeMessage"),
     getObjectString(dbErrorData, "message"),
@@ -257,6 +261,17 @@ const getRetryableDatabaseErrorReason = (
     .join(" ");
 
   if (/WorkerOverloaded/i.test(errorText)) return "worker_overloaded";
+  if (/ExpiredInQueue|Too many concurrent requests/i.test(errorText)) {
+    return "convex_queue_saturated";
+  }
+  if (
+    /InternalServerError|Your request couldn't be completed\.? Try again later|Try again later/i.test(
+      errorText,
+    ) ||
+    (!dbErrorCode && /\[Request ID:\s*[^\]]+\]\s+Server Error/i.test(errorText))
+  ) {
+    return "convex_server_error";
+  }
   if (/failed to fetch|fetch failed/i.test(errorText)) {
     return "network_fetch_failed";
   }
@@ -352,7 +367,7 @@ const logChatMessagePreparationFailure = (
   if (level === "warn") {
     console.warn(line);
   } else {
-    console.error(line);
+    console.error(event, line);
   }
 };
 
@@ -428,7 +443,7 @@ const databaseError = (
   if (logLevel === "warn") {
     console.warn(logLine);
   } else {
-    console.error(logLine);
+    console.error(event, logLine);
     phLogger.event(event, {
       ...diagnosticMetadata,
       service: "chat-handler",
@@ -441,6 +456,75 @@ const databaseError = (
   }
 
   return new ChatSDKError(errorCode, errorMessage, diagnosticMetadata);
+};
+
+type MessagesPageForBackendResult = {
+  page: UIMessage[];
+  isDone: boolean;
+  continueCursor: string | null;
+};
+
+const getMessagesPageForBackendWithRetry = async ({
+  chatId,
+  userId,
+  paginationOpts,
+  mode,
+  isTemporary,
+  regenerate,
+  newMessagesCount,
+}: {
+  chatId: string;
+  userId: string;
+  paginationOpts: { numItems: number; cursor: string | null };
+  mode?: ChatMode;
+  isTemporary: boolean;
+  regenerate: boolean;
+  newMessagesCount: number;
+}): Promise<MessagesPageForBackendResult> => {
+  const queryArgs = {
+    serviceKey,
+    chatId,
+    userId,
+    paginationOpts,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().query(
+        api.messages.getMessagesPageForBackend,
+        queryArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw error;
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_history_fetch_retry_scheduled",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: "messages.getMessagesPageForBackend",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          is_temporary: isTemporary,
+          regenerate,
+          new_messages_count: newMessagesCount,
+          page_size: paginationOpts.numItems,
+          cursor_present: paginationOpts.cursor !== null,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
 };
 
 export async function getChatById({ id }: { id: string }) {
@@ -961,15 +1045,15 @@ export async function getMessagesByChatId({
             page: UIMessage[];
             isDone: boolean;
             continueCursor: string | null;
-          } = await getConvexClient().query(
-            api.messages.getMessagesPageForBackend,
-            {
-              serviceKey,
-              chatId,
-              userId,
-              paginationOpts: { numItems: PAGE_SIZE, cursor },
-            },
-          );
+          } = await getMessagesPageForBackendWithRetry({
+            chatId,
+            userId,
+            paginationOpts: { numItems: PAGE_SIZE, cursor },
+            mode,
+            isTemporary: !!isTemporary,
+            regenerate: !!regenerate,
+            newMessagesCount: newMessages.length,
+          });
           const { page, isDone, continueCursor: nextCursor } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
@@ -1147,6 +1231,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
+          db_retry_reason: getRetryableDatabaseErrorReason(error),
           db_error_data: getErrorData(error),
         });
 

@@ -16,7 +16,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
-    poweredBy: "DeepSeek V4 Pro · Grok 4.3 for images and PDFs",
+    poweredBy: "DeepSeek V4 Pro · MiniMax M3 for images · Grok 4.3 for PDFs",
   },
   {
     id: "hackerai-pro",

@@ -484,7 +484,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "agent-model-free": MINIMAX_M3_FALLBACK_CHAIN,
   "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": AGENT_TEXT_FALLBACK_CHAIN,
+  "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
   "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
   "model-grok-4.3": AGENT_TEXT_FALLBACK_CHAIN,
   "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
@@ -525,12 +525,13 @@ const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
 
 const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
 
-// Standard Ask can route text-only prompts to DeepSeek and media prompts to
-// Grok. Keep those route keys and their persisted Grok alias on one effort
-// level so they do not drift.
+// Standard Ask can route text-only prompts to DeepSeek, image prompts to
+// MiniMax, and PDF prompts to Grok. Keep those route keys and their persisted
+// Grok alias on one effort level so they do not drift.
 const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
   "ask-model",
+  "model-minimax-m3",
   "model-grok-4.3",
   "model-gemini-3-flash",
 ] as const satisfies readonly ModelName[];
@@ -596,7 +597,6 @@ export function getRetryFallbackModel(
     modelName === "ask-model-free" ||
     modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro" ||
-    modelName === "ask-model" ||
     modelName === "model-grok-4.3" ||
     modelName === "model-gemini-3-flash"
   ) {

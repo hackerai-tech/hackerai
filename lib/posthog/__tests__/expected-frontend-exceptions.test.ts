@@ -103,6 +103,29 @@ describe("shouldDropExpectedFrontendException", () => {
       shouldDropExpectedFrontendException({
         event: "$exception",
         properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    raw_frame: {
+                      filename:
+                        "https://hackerai.co/_next/static/chunks/27au5l1vw34oq.js?dpl=dpl_2ruEPyNtAD3Yc4qkCoAN2J7ReZk7",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
           $exception_types: ["UnrecognizedActionError"],
           $exception_values: [
             'Server Action "00b3ff60fce156a3bb78260aa8fa56550dc48b7f77" was not found on the server. Read more: https://nextjs.org/docs/messages/failed-to-find-server-action',
@@ -468,11 +491,26 @@ describe("shouldDropExpectedFrontendException", () => {
         $exception_values: [
           "Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
         ],
+        $exception_list: [
+          {
+            stacktrace: {
+              frames: [
+                {
+                  raw_frame: {
+                    filename:
+                      "https://hackerai.co/_next/static/chunks/react.js?dpl=dpl_G8NpYMgn7xvPfdr4XW6jYBmeC4yB",
+                  },
+                },
+              ],
+            },
+          },
+        ],
       },
     });
 
     expect(event.properties).toMatchObject({
       hackerai_exception_category: "react_max_update_depth",
+      hackerai_exception_deployment_id: "dpl_G8NpYMgn7xvPfdr4XW6jYBmeC4yB",
       hackerai_route_kind: "chat",
     });
   });
