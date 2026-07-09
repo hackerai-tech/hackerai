@@ -1531,7 +1531,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const httpClient = await this.detectHttpClient();
 
       if (httpClient === "wget") {
-        const versionCheck = await this.commands.run("wget 2>&1 | head -1", {
+        const versionCheck = await this.runSetupCommand("wget 2>&1 | head -1", {
           displayName: "",
         });
         if (versionCheck.stdout.toLowerCase().includes("busybox")) {

@@ -998,6 +998,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(/"bad_request:sandbox"/);
     expect(taskSrc).toMatch(/"sandbox_upload_failure"/);
     expect(taskSrc).toMatch(/upload_failure_kind/);
+    expect(taskSrc).toMatch(/isSandboxUploadError/);
+    expect(taskSrc).toMatch(/alreadyEmittedFromStream/);
   });
 
   test("agent-long only passes explicit Trigger.dev region when mapped", () => {

@@ -391,6 +391,11 @@ const isChatNotFoundError = (error: ChatSDKError): boolean => {
   );
 };
 
+const isSandboxUploadError = (error: ChatSDKError): boolean =>
+  error.type === "bad_request" &&
+  error.surface === "sandbox" &&
+  !!error.metadata?.upload_failure_kind;
+
 const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "chat_not_found",
   "login_required",
@@ -2554,7 +2559,11 @@ export const agentLongTask = task({
         await usageRefundTracker.refund().catch(() => {});
       }
       if (error instanceof ChatSDKError) {
-        chatLogger?.emitChatError(error);
+        const alreadyEmittedFromStream =
+          streamPiped && isSandboxUploadError(error);
+        if (!alreadyEmittedFromStream) {
+          chatLogger?.emitChatError(error);
+        }
       } else {
         chatLogger?.emitUnexpectedError(error);
       }
