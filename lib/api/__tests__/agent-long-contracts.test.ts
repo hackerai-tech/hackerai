@@ -845,6 +845,130 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
+    const onStepFinishIdx = agentStreamRunnerSrc.indexOf(
+      "onStepFinish: async ({ usage, response, providerMetadata }) => {",
+    );
+    const accumulateIdx = agentStreamRunnerSrc.indexOf(
+      "stepUsageCostIndex = ctx.usageTracker.accumulateStep",
+      onStepFinishIdx,
+    );
+    const extractIdx = agentStreamRunnerSrc.indexOf(
+      "const stepOpenRouterMetadata = extractOpenRouterMetadata",
+      accumulateIdx,
+    );
+    const setCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.setAuthoritativeModelCostForStep(",
+      extractIdx,
+    );
+    const stepIndexArgIdx = agentStreamRunnerSrc.indexOf(
+      "stepUsageCostIndex",
+      setCostIdx,
+    );
+    const upstreamCostArgIdx = agentStreamRunnerSrc.indexOf(
+      "stepOpenRouterMetadata.openrouter_upstream_inference_cost",
+      stepIndexArgIdx,
+    );
+    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
+      "const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName)",
+      upstreamCostArgIdx,
+    );
+
+    expect(onStepFinishIdx).toBeGreaterThan(-1);
+    expect(accumulateIdx).toBeGreaterThan(onStepFinishIdx);
+    expect(extractIdx).toBeGreaterThan(accumulateIdx);
+    expect(setCostIdx).toBeGreaterThan(extractIdx);
+    expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
+    expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
+    expect(budgetCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+  });
+
+  test("agent stream uses finish-step raw usage as OpenRouter metadata cost fallback", () => {
+    const finishStepsIdx = agentStreamRunnerSrc.indexOf(
+      "const stepOpenRouterMetadatas = Array.isArray(finishMetadata.steps)",
+    );
+    const mapIdx = agentStreamRunnerSrc.indexOf(
+      "? finishMetadata.steps.map((step) => {",
+      finishStepsIdx,
+    );
+    const metadataCostIdx = agentStreamRunnerSrc.indexOf(
+      "metadata.openrouter_upstream_inference_cost ??",
+      mapIdx,
+    );
+    const rawFallbackIdx = agentStreamRunnerSrc.indexOf(
+      "getOpenRouterUpstreamInferenceCostFromUsageRaw(step.usage?.raw)",
+      metadataCostIdx,
+    );
+    const loopIdx = agentStreamRunnerSrc.indexOf(
+      "for (const [index, metadata] of stepOpenRouterMetadatas.entries())",
+      rawFallbackIdx,
+    );
+    const setCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.setAuthoritativeModelCostForStep(",
+      loopIdx,
+    );
+    const stepIndexArgIdx = agentStreamRunnerSrc.indexOf(
+      "stepUsageCostIndexes[index]",
+      setCostIdx,
+    );
+    const upstreamCostArgIdx = agentStreamRunnerSrc.indexOf(
+      "metadata.openrouter_upstream_inference_cost",
+      stepIndexArgIdx,
+    );
+
+    expect(finishStepsIdx).toBeGreaterThan(-1);
+    expect(mapIdx).toBeGreaterThan(finishStepsIdx);
+    expect(metadataCostIdx).toBeGreaterThan(mapIdx);
+    expect(rawFallbackIdx).toBeGreaterThan(metadataCostIdx);
+    expect(loopIdx).toBeGreaterThan(rawFallbackIdx);
+    expect(setCostIdx).toBeGreaterThan(loopIdx);
+    expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
+    expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
+  });
+
+  test("agent stream reapplies merged final OpenRouter cost metadata to usage and logs", () => {
+    const finishMetadataIdx = agentStreamRunnerSrc.indexOf(
+      "const finishOpenRouterMetadata = extractOpenRouterMetadata",
+    );
+    const mergeIdx = agentStreamRunnerSrc.indexOf(
+      "const openRouterMetadata = mergeOpenRouterMetadata(",
+      finishMetadataIdx,
+    );
+    const lastStepMetadataIdx = agentStreamRunnerSrc.indexOf(
+      "stepOpenRouterMetadatas.at(-1)",
+      mergeIdx,
+    );
+    const setCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.setAuthoritativeModelCostForStep(",
+      lastStepMetadataIdx,
+    );
+    const lastStepIndexArgIdx = agentStreamRunnerSrc.indexOf(
+      "stepUsageCostIndexes.at(-1)",
+      setCostIdx,
+    );
+    const upstreamCostArgIdx = agentStreamRunnerSrc.indexOf(
+      "openRouterMetadata.openrouter_upstream_inference_cost",
+      lastStepIndexArgIdx,
+    );
+    const setStreamResponseIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.chatLogger?.setStreamResponse(",
+      upstreamCostArgIdx,
+    );
+    const loggedMetadataIdx = agentStreamRunnerSrc.indexOf(
+      "openRouterMetadata",
+      setStreamResponseIdx,
+    );
+
+    expect(finishMetadataIdx).toBeGreaterThan(-1);
+    expect(mergeIdx).toBeGreaterThan(finishMetadataIdx);
+    expect(lastStepMetadataIdx).toBeGreaterThan(mergeIdx);
+    expect(setCostIdx).toBeGreaterThan(lastStepMetadataIdx);
+    expect(lastStepIndexArgIdx).toBeGreaterThan(setCostIdx);
+    expect(upstreamCostArgIdx).toBeGreaterThan(lastStepIndexArgIdx);
+    expect(setStreamResponseIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(loggedMetadataIdx).toBeGreaterThan(setStreamResponseIdx);
+  });
+
   test("outer catch checks live usage tracker before refunding", () => {
     const liveUsagePredicateIdx = taskSrc.indexOf(
       "const hasObservedUsage = () => !!observedUsageTracker?.hasUsage",
