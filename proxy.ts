@@ -66,14 +66,15 @@ function shouldBypassAuthkit(pathname: string): boolean {
   return AUTHKIT_BYPASS_PATHS.has(pathname);
 }
 
-function isUnsupportedRootPagePost(
+function isUnsupportedRootPageRequest(
   request: NextRequest,
   pathname: string,
 ): boolean {
-  return (
-    request.method === "POST" &&
-    ROOT_PAGE_POST_PATHS.has(pathname) &&
-    !request.headers.has(NEXT_ACTION_HEADER)
+  if (!ROOT_PAGE_POST_PATHS.has(pathname)) return false;
+  if (request.method === "GET" || request.method === "HEAD") return false;
+
+  return !(
+    request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER)
   );
 }
 
@@ -157,13 +158,18 @@ function buildEndedSessionResponse(
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
-  if (isUnsupportedRootPagePost(request, pathname)) {
+  if (isUnsupportedRootPageRequest(request, pathname)) {
     return NextResponse.json(
       {
         code: "method_not_allowed",
-        message: "POST is not supported for this route.",
+        message: `${request.method} is not supported for this route.`,
       },
-      { status: 405, headers: { Allow: "GET, HEAD" } },
+      {
+        status: 405,
+        headers: {
+          Allow: request.method === "POST" ? "GET, HEAD" : "GET, HEAD, POST",
+        },
+      },
     );
   }
 

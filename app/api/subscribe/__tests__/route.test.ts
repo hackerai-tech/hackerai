@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { mockMutation as mockConvexMutation } from "convex/browser";
+import { ChatSDKError } from "@/lib/errors";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetUser = jest.fn();
@@ -13,6 +14,7 @@ const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
 const mockRetrieveCustomer = jest.fn();
 const mockUpdateCustomer = jest.fn();
+const mockListCheckoutSessions = jest.fn();
 const mockCreateCheckoutSession = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
@@ -66,6 +68,7 @@ jest.mock("@/app/api/stripe", () => ({
     },
     checkout: {
       sessions: {
+        list: mockListCheckoutSessions,
         create: mockCreateCheckoutSession,
       },
     },
@@ -132,6 +135,7 @@ describe("POST /api/subscribe", () => {
       id: "cs_123",
       url: "https://stripe.example/checkout",
     } as never);
+    mockListCheckoutSessions.mockResolvedValue({ data: [] } as never);
     mockUpdateCustomer.mockImplementation(
       async (
         customerId: string,
@@ -171,6 +175,160 @@ describe("POST /api/subscribe", () => {
     expect(mockCreateCustomer).not.toHaveBeenCalled();
     expect(mockUpdateOrganization).not.toHaveBeenCalled();
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("returns unauthenticated requests as 401 responses", async () => {
+    mockGetUserIDAndPro.mockRejectedValueOnce(
+      new ChatSDKError("unauthorized:auth") as never,
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+
+      const response = await POST(makeRequest());
+      const body = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(body).toEqual({
+        error: "You need to sign in before continuing.",
+        code: "unauthorized:auth",
+      });
+      expect(mockListCheckoutSessions).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("reuses a matching legacy open Checkout Session", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing_org",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockListCheckoutSessions.mockResolvedValue({
+      data: [
+        {
+          id: "cs_open",
+          url: "https://stripe.example/existing-checkout",
+          metadata: {
+            workOSOrganizationId: "org_team",
+            requestedPlan: "pro-monthly-plan",
+            checkoutAttemptId: "ca_original",
+          },
+        },
+      ],
+    } as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+
+      const response = await POST(
+        makeRequest({
+          plan: "pro-monthly-plan",
+          checkoutAttemptId: "ca_retry_123",
+        }),
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        url: "https://stripe.example/existing-checkout",
+        checkoutAttemptId: "ca_retry_123",
+      });
+      expect(mockListCheckoutSessions).toHaveBeenCalledWith({
+        customer: "cus_existing_org",
+        status: "open",
+        limit: 10,
+      });
+      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toMatchObject({
+        event: "billing.checkout_session_reused",
+        service: "hackerai-web",
+        route: "/api/subscribe",
+        stripe_customer_id: "cus_existing_org",
+        stripe_checkout_session_id: "cs_open",
+        checkout_attempt_id: "ca_retry_123",
+      });
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        "checkout_started",
+        expect.objectContaining({
+          checkout_attempt_id: "ca_retry_123",
+          stripe_checkout_session_id: "cs_open",
+          stripe_checkout_session_reused: true,
+        }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("returns a safe conflict response when Stripe's pending-session limit is reached", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing_org",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    const stripeError = Object.assign(
+      new Error("Customer reached the pending Checkout Session limit"),
+      {
+        code: "customer_max_subscriptions",
+        requestId: "req_stripe_123",
+      },
+    );
+    mockCreateCheckoutSession.mockRejectedValueOnce(stripeError as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+
+      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+      const body = await response.json();
+
+      expect(response.status).toBe(409);
+      expect(body).toEqual({
+        error:
+          "A checkout is already pending. Please resume it or contact support if the problem continues.",
+      });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const log = JSON.parse(String(errorSpy.mock.calls[0]?.[0]));
+      expect(log).toMatchObject({
+        event: "billing.subscribe_request_failed",
+        service: "hackerai-web",
+        route: "/api/subscribe",
+        stripe_error_code: "customer_max_subscriptions",
+        stripe_request_id: "req_stripe_123",
+      });
+      expect(log).not.toHaveProperty("customer_id");
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("uses an existing organization Stripe customer instead of replacing it", async () => {
@@ -215,7 +373,11 @@ describe("POST /api/subscribe", () => {
         customer: "cus_existing_org",
         metadata: expect.objectContaining({
           workOSOrganizationId: "org_team",
+          checkoutQuantity: "1",
           checkoutAttemptId: body.checkoutAttemptId,
+        }),
+        subscription_data: expect.objectContaining({
+          metadata: expect.objectContaining({ checkoutQuantity: "1" }),
         }),
       }),
     );
