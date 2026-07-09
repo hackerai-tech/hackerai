@@ -283,6 +283,12 @@ describe("selectModel", () => {
       );
     });
 
+    it("should route HackerAI Pro to Kimi K2.7 in agent mode when a PDF is attached", () => {
+      expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
+        "model-kimi-k2.7-code",
+      );
+    });
+
     it("should map HackerAI Max to Opus 4.6 in agent mode for Ultra", () => {
       expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
         "model-opus-4.6",

@@ -72,7 +72,7 @@ export function selectModel(
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const hasProProviderMedia = !!hasImageAttachment || hasAskPdf;
+  const hasProProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
   const paidAskMediaModel: ModelName = hasAskPdf
     ? "model-grok-4.3"
     : hasAskImage
