@@ -727,7 +727,7 @@ export const useChatHandlers = ({
     if (status === "streaming") return;
     hasManuallyStoppedRef.current = false;
     const continuationSelectedModel =
-      selectedModelOverride ?? requestSelectedModel;
+      selectedModelOverride ?? requestSelectedModelRef.current;
     runChatAction("continue response", () =>
       sendMessage(
         {

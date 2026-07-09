@@ -3,8 +3,10 @@ import { jest } from "@jest/globals";
 import type { ChatMessage, SelectedModel } from "@/types";
 
 const mockRegenerate = jest.fn();
+const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
 let mockSelectedModel: SelectedModel = "hackerai-standard";
+let mockTemporaryChatsEnabled = true;
 
 jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(async () => undefined),
@@ -21,7 +23,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     setTodos: jest.fn(),
     isUploadingFiles: false,
     subscription: "pro",
-    temporaryChatsEnabled: true,
+    temporaryChatsEnabled: mockTemporaryChatsEnabled,
     queueMessage: jest.fn(),
     messageQueue: [],
     removeQueuedMessage: jest.fn(),
@@ -59,14 +61,53 @@ describe("useChatHandlers regenerate model", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSelectedModel = "hackerai-standard";
+    mockTemporaryChatsEnabled = true;
   });
 
-  it("uses the latest chat input model from a previously rendered regenerate callback", async () => {
+  it.each([
+    ["temporary", true],
+    ["persisted", false],
+  ])(
+    "uses the latest chat input model for %s chats from a previously rendered regenerate callback",
+    async (_chatType, temporaryChatsEnabled) => {
+      mockTemporaryChatsEnabled = temporaryChatsEnabled;
+      const { result, rerender } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: false,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      const regenerateFromRenderedMessage = result.current.handleRegenerate;
+
+      mockSelectedModel = "hackerai-max";
+      rerender();
+
+      await act(async () => {
+        await regenerateFromRenderedMessage();
+      });
+
+      expect(mockRegenerate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ selectedModel: "hackerai-max" }),
+        }),
+      );
+    },
+  );
+
+  it("uses the latest chat input model from a previously rendered continue callback", () => {
     const { result, rerender } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
         messages,
-        sendMessage: jest.fn(),
+        sendMessage: mockSendMessage,
         stop: jest.fn(),
         regenerate: mockRegenerate,
         setMessages: mockSetMessages,
@@ -76,16 +117,17 @@ describe("useChatHandlers regenerate model", () => {
         hasManuallyStoppedRef: { current: false },
       }),
     );
-    const regenerateFromRenderedMessage = result.current.handleRegenerate;
+    const continueFromRenderedMessage = result.current.handleContinue;
 
     mockSelectedModel = "hackerai-max";
     rerender();
 
-    await act(async () => {
-      await regenerateFromRenderedMessage();
+    act(() => {
+      continueFromRenderedMessage();
     });
 
-    expect(mockRegenerate).toHaveBeenCalledWith(
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.any(Object),
       expect.objectContaining({
         body: expect.objectContaining({ selectedModel: "hackerai-max" }),
       }),
