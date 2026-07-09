@@ -97,6 +97,9 @@ export const useChatHandlers = ({
     selectedModel,
     subscription,
   );
+  // MessageItem intentionally ignores callback identity in its memo comparator,
+  // so a rendered Regenerate button can retain an older handler closure.
+  const requestSelectedModelRef = useLatestRef(requestSelectedModel);
 
   // Avoid stale closure on temporary flag
   const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
@@ -479,7 +482,7 @@ export const useChatHandlers = ({
               shouldSendClientMessagesForRegenerate,
             temporary: false,
             sandboxPreference,
-            selectedModel: requestSelectedModel,
+            selectedModel: requestSelectedModelRef.current,
           },
         }),
       );
@@ -493,7 +496,7 @@ export const useChatHandlers = ({
             regenerate: true,
             temporary: true,
             sandboxPreference,
-            selectedModel: requestSelectedModel,
+            selectedModel: requestSelectedModelRef.current,
           },
         }),
       );
