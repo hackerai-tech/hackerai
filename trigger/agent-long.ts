@@ -137,6 +137,10 @@ import {
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
 import {
+  sanitizeAgentLongRealtimeChunk,
+  type AgentLongStreamChunk,
+} from "@/lib/chat/agent-long-realtime-sanitizer";
+import {
   BUDGET_EXHAUSTION_FINISH_REASON,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
@@ -895,7 +899,11 @@ const withAgentLongStreamHeartbeat = (
               safeClose();
               return;
             }
-            safeEnqueue(value);
+            for (const part of sanitizeAgentLongRealtimeChunk(
+              value as AgentLongStreamChunk,
+            )) {
+              safeEnqueue(part as AgentLongUiStreamPart);
+            }
           }
         } catch (error) {
           safeError(error);
