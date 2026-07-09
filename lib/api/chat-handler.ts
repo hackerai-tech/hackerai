@@ -23,7 +23,6 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
-  SandboxBootInfo,
 } from "@/types";
 import {
   canUseExtraUsage,
@@ -585,7 +584,6 @@ export const createChatHandler = () => {
               extraUsageConfig,
             });
 
-            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             const {
               tools,
               getSandbox,
@@ -616,7 +614,6 @@ export const createChatHandler = () => {
               },
               subscription,
               (info) => {
-                uploadSandboxBootPath ??= info.path;
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
@@ -702,10 +699,7 @@ export const createChatHandler = () => {
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
-                  {
-                    retryWithFreshSandboxOnTransientFailure: () =>
-                      uploadSandboxBootPath === "reuse_existing",
-                  },
+                  { retryWithFreshSandboxOnTransientFailure: true },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -714,7 +708,7 @@ export const createChatHandler = () => {
                 const noun =
                   uploadResult.failedCount === 1 ? "attachment" : "attachments";
                 const uploadError = new ChatSDKError(
-                  "bad_request:stream",
+                  "bad_request:sandbox",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
                   getSandboxUploadFailureMetadata(uploadResult),
                 );

@@ -50,6 +50,9 @@ const IGNORED_MESSAGE_TYPES = new Set([
 ]);
 
 const FILE_DOWNLOAD_TIMEOUT_MS = 120000;
+const SETUP_COMMAND_TIMEOUT_MS = 30000;
+const SETUP_COMMAND_MAX_ATTEMPTS = 2;
+const SETUP_COMMAND_RETRY_DELAY_MS = 500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
@@ -58,6 +61,9 @@ const getErrorMessage = (error: unknown): string =>
 
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 export function parseSandboxMessage(
   data: unknown,
@@ -850,11 +856,38 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       this.shellKind = "bash";
       return "bash";
     }
-    const probe = await this.commands.run("echo $BASH_VERSION", {
+    const probe = await this.runSetupCommand("echo $BASH_VERSION", {
       displayName: "",
     });
     this.shellKind = /^\d/.test(probe.stdout.trim()) ? "bash" : "cmd";
     return this.shellKind;
+  }
+
+  private async runSetupCommand(
+    command: string,
+    options: { displayName?: string; timeoutMs?: number } = {},
+  ): Promise<CommandResult> {
+    for (let attempt = 1; attempt <= SETUP_COMMAND_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.commands.run(command, {
+          timeoutMs: options.timeoutMs ?? SETUP_COMMAND_TIMEOUT_MS,
+          displayName: options.displayName ?? "",
+        });
+      } catch (error) {
+        if (
+          attempt === SETUP_COMMAND_MAX_ATTEMPTS ||
+          !isTransientCommandTimeoutError(error)
+        ) {
+          throw error;
+        }
+        console.warn(
+          `[centrifugo-setup] command timeout on attempt ${attempt}/${SETUP_COMMAND_MAX_ATTEMPTS}, retrying: ${getErrorMessage(error)}`,
+        );
+        await delay(SETUP_COMMAND_RETRY_DELAY_MS * attempt);
+      }
+    }
+
+    throw new Error("Setup command failed without returning a result");
   }
 
   /**
@@ -927,7 +960,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }> {
     if (this.curlCaps) return this.curlCaps;
     try {
-      const probe = await this.commands.run("curl --help all 2>&1", {
+      const probe = await this.runSetupCommand("curl --help all 2>&1", {
         displayName: "",
       });
       const help = probe.stdout || "";
@@ -963,7 +996,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return "curl";
     }
 
-    const curlCheck = await this.commands.run("command -v curl || true", {
+    const curlCheck = await this.runSetupCommand("command -v curl || true", {
       displayName: "",
     });
     if (curlCheck.stdout.includes("curl")) {
@@ -971,7 +1004,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return "curl";
     }
 
-    const wgetCheck = await this.commands.run("command -v wget || true", {
+    const wgetCheck = await this.runSetupCommand("command -v wget || true", {
       displayName: "",
     });
     if (wgetCheck.stdout.includes("wget")) {
