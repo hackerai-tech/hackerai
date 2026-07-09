@@ -82,9 +82,36 @@ describe("sanitizeAgentLongRealtimeChunk", () => {
     const sanitized = sanitizeAgentLongRealtimeChunk(chunk);
 
     expect(sanitized.length).toBeGreaterThan(1);
-    expect(sanitized.map((part) => getBytes(part))).toEqual(
-      expect.arrayContaining([expect.any(Number)]),
+    expect(
+      sanitized.every(
+        (part) => getBytes(part) < AGENT_LONG_REALTIME_SAFE_CHUNK_BYTES,
+      ),
+    ).toBe(true);
+    expect(
+      sanitized
+        .map((part) => (part.data as { terminal: string }).terminal)
+        .join(""),
+    ).toBe(terminal);
+  });
+
+  it("accounts for JSON escaping when splitting terminal data", () => {
+    const terminal = "\x1b".repeat(200_000);
+    const chunk = {
+      type: "data-terminal",
+      id: "terminal-escape",
+      data: {
+        terminal,
+        toolCallId: "call_4",
+      },
+    };
+
+    expect(getBytes(chunk)).toBeGreaterThan(
+      AGENT_LONG_REALTIME_SAFE_CHUNK_BYTES,
     );
+
+    const sanitized = sanitizeAgentLongRealtimeChunk(chunk);
+
+    expect(sanitized.length).toBeGreaterThan(1);
     expect(
       sanitized.every(
         (part) => getBytes(part) < AGENT_LONG_REALTIME_SAFE_CHUNK_BYTES,

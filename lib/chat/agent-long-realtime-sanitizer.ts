@@ -1,4 +1,4 @@
-type AgentLongStreamChunk = Record<string, unknown> & {
+export type AgentLongStreamChunk = Record<string, unknown> & {
   type?: string;
   id?: string;
 };
@@ -121,22 +121,40 @@ const compactValueForRealtime = (
 const compactErrorText = (value: unknown): unknown =>
   typeof value === "string" ? truncateMiddle(value, 4_000) : value;
 
-const splitString = (value: string): string[] => {
-  if (
-    encoder.encode(value).byteLength <= AGENT_LONG_REALTIME_SAFE_CHUNK_BYTES
-  ) {
+const splitString = (
+  value: string,
+  getCandidateBytes?: (candidate: string) => number,
+): string[] | null => {
+  const candidateFits = (candidate: string) => {
+    const bytes =
+      getCandidateBytes?.(candidate) ?? encoder.encode(candidate).byteLength;
+    return bytes <= AGENT_LONG_REALTIME_SAFE_CHUNK_BYTES;
+  };
+
+  if (candidateFits(value)) {
     return [value];
   }
 
   const parts: string[] = [];
-  for (
-    let index = 0;
-    index < value.length;
-    index += AGENT_LONG_REALTIME_DELTA_SLICE_CHARS
-  ) {
-    parts.push(
-      value.slice(index, index + AGENT_LONG_REALTIME_DELTA_SLICE_CHARS),
+  let index = 0;
+  while (index < value.length) {
+    let end = Math.min(
+      value.length,
+      index + AGENT_LONG_REALTIME_DELTA_SLICE_CHARS,
     );
+    let part = value.slice(index, end);
+
+    while (part.length > 1 && !candidateFits(part)) {
+      end = index + Math.max(1, Math.floor(part.length * 0.8));
+      part = value.slice(index, end);
+    }
+
+    if (!candidateFits(part)) {
+      return null;
+    }
+
+    parts.push(part);
+    index = end;
   }
   return parts;
 };
@@ -148,7 +166,10 @@ const withSplitStringField = (
   const value = chunk[field];
   if (typeof value !== "string") return null;
 
-  const parts = splitString(value);
+  const parts = splitString(value, (candidate) =>
+    getSerializedBytes({ ...chunk, [field]: candidate }),
+  );
+  if (!parts) return null;
   if (parts.length === 1) return null;
 
   return parts.map((part) => ({
@@ -170,7 +191,16 @@ const withSplitNestedStringField = (
   const value = (container as Record<string, unknown>)[field];
   if (typeof value !== "string") return null;
 
-  const parts = splitString(value);
+  const parts = splitString(value, (candidate) =>
+    getSerializedBytes({
+      ...chunk,
+      [containerField]: {
+        ...container,
+        [field]: candidate,
+      },
+    }),
+  );
+  if (!parts) return null;
   if (parts.length === 1) return null;
 
   const baseId = typeof chunk.id === "string" ? chunk.id : chunk.type;
