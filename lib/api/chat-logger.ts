@@ -216,6 +216,11 @@ const compactChatErrorMetadata = (
   return Object.keys(compact).length > 0 ? compact : undefined;
 };
 
+const isRetriableChatSDKError = (error: ChatSDKError): boolean =>
+  error.type === "rate_limit" ||
+  error.metadata?.providerErrorRetriable === true ||
+  error.metadata?.upload_failure_transient_sandbox_command === true;
+
 const providerErrorEventName = (category: ProviderErrorCategory): string =>
   category === "content_blocked"
     ? "provider_content_blocked"
@@ -824,7 +829,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         message: error.message,
         cause,
         statusCode: error.statusCode,
-        retriable: error.type === "rate_limit",
+        retriable: isRetriableChatSDKError(error),
         metadata: compactChatErrorMetadata(error.metadata),
       });
       logger.info(builder.build());

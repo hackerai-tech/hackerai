@@ -859,6 +859,66 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
+    it("uploadToUrl retries transient command relay timeouts during wget setup probes", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      (sandbox as any).httpClient = "wget";
+      const run = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            "Command timeout after 35000ms [connected: 75ms, subscribed: 75ms, published: 104ms, firstMsg: no] connectionId=conn-1",
+          ),
+        )
+        .mockResolvedValueOnce({
+          stdout: "GNU Wget 1.21.4\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      try {
+        const promise = sandbox.files.uploadToUrl(
+          "/tmp/hackerai-upload/report.txt",
+          "https://example.com/upload",
+          "text/plain",
+        );
+
+        await jest.advanceTimersByTimeAsync(500);
+        await promise;
+
+        expect(run).toHaveBeenCalledTimes(3);
+        expect(run).toHaveBeenNthCalledWith(1, "wget 2>&1 | head -1", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(2, "wget 2>&1 | head -1", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(
+          3,
+          expect.stringContaining("wget -q --method=PUT"),
+          {
+            displayName: "Uploading: report.txt",
+            timeoutMs: 120000,
+          },
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
     it("downloadFromUrl failure diagnostics do not list local directory contents", async () => {
       const consoleWarnSpy = jest
         .spyOn(console, "warn")
@@ -1007,6 +1067,69 @@ describe("CentrifugoSandbox", () => {
             displayName: "Downloading: large.har (retry 1)",
             timeoutMs: 120000,
           }),
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+
+    it("downloadFromUrl retries transient command relay timeouts during setup probes", async () => {
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6.1",
+          hostname: "devbox",
+        },
+      });
+      const run = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            "Command timeout after 35000ms [connected: 75ms, subscribed: 75ms, published: 104ms, firstMsg: no] connectionId=conn-1",
+          ),
+        )
+        .mockResolvedValueOnce({
+          stdout: "/usr/bin/curl\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({
+          stdout: "--retry-all-errors --retry-connrefused\n",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      (sandbox as any).commands.run = run;
+
+      try {
+        const promise = sandbox.files.downloadFromUrl(
+          "https://example.com/image.png",
+          "/tmp/hackerai-upload/image.png",
+        );
+
+        await jest.advanceTimersByTimeAsync(500);
+        await promise;
+
+        expect(run).toHaveBeenCalledTimes(4);
+        expect(run).toHaveBeenNthCalledWith(1, "command -v curl || true", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(2, "command -v curl || true", {
+          displayName: "",
+          timeoutMs: 30000,
+        });
+        expect(run).toHaveBeenNthCalledWith(
+          4,
+          expect.stringContaining("curl -fsSL"),
+          {
+            displayName: "Downloading: image.png",
+            timeoutMs: 120000,
+          },
         );
       } finally {
         consoleWarnSpy.mockRestore();

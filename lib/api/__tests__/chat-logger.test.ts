@@ -955,6 +955,51 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it("marks transient sandbox upload failures retriable", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_upload_timeout",
+        endpoint: "/api/agent",
+      });
+
+      chatLogger.emitChatError(
+        new ChatSDKError(
+          "bad_request:sandbox",
+          "Failed to upload 1 attachment to the computer. Please try again.",
+          {
+            upload_failure_kind: "url",
+            upload_failure_cause:
+              "Command timeout after 35000ms [firstMsg: no]",
+            upload_failure_transient_sandbox_command: true,
+            upload_failure_protocol: "https",
+            upload_failure_url_length: 512,
+            ignored_detail: "too noisy",
+          },
+        ),
+      );
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.error).toMatchObject({
+        code: "bad_request:sandbox",
+        message: "The computer attachment upload failed.",
+        cause:
+          "Failed to upload 1 attachment to the computer. Please try again.",
+        retriable: true,
+      });
+      expect(wideEvent.error.metadata).toEqual({
+        upload_failure_kind: "url",
+        upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
+        upload_failure_transient_sandbox_command: true,
+        upload_failure_protocol: "https",
+        upload_failure_url_length: 512,
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it("emits limit pressure funnel properties for paid monthly exhaustion", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});

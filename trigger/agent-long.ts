@@ -116,7 +116,6 @@ import type {
   SandboxPreference,
   SelectedModel,
   RateLimitInfo,
-  SandboxBootInfo,
   ToolFailureLogEvent,
 } from "@/types";
 import { canUseExtraUsage, normalizeMaxModelForSubscription } from "@/types";
@@ -392,6 +391,11 @@ const isChatNotFoundError = (error: ChatSDKError): boolean => {
   );
 };
 
+const isSandboxUploadError = (error: ChatSDKError): boolean =>
+  error.type === "bad_request" &&
+  error.surface === "sandbox" &&
+  !!error.metadata?.upload_failure_kind;
+
 const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "chat_not_found",
   "login_required",
@@ -487,7 +491,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
                   ? "empty_after_processing"
                   : errorMetadata?.localSandboxFallbackBlocked === true
                     ? "local_sandbox_fallback_blocked"
-                    : "chat_error",
+                    : errorMetadata?.upload_failure_kind
+                      ? "sandbox_upload_failure"
+                      : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -1263,7 +1269,6 @@ export const agentLongTask = task({
               extraUsageConfig,
             });
 
-            let uploadSandboxBootPath: SandboxBootInfo["path"] | null = null;
             let handledToolFailureCount = 0;
             const onToolFailure = (failure: ToolFailureLogEvent) => {
               handledToolFailureCount += 1;
@@ -1318,7 +1323,6 @@ export const agentLongTask = task({
               },
               subscription,
               (info) => {
-                uploadSandboxBootPath ??= info.path;
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
@@ -1395,10 +1399,7 @@ export const agentLongTask = task({
                 uploadResult = await uploadSandboxFiles(
                   sandboxFiles,
                   ensureSandbox,
-                  {
-                    retryWithFreshSandboxOnTransientFailure: () =>
-                      uploadSandboxBootPath === "reuse_existing",
-                  },
+                  { retryWithFreshSandboxOnTransientFailure: true },
                 );
               } finally {
                 writeUploadCompleteStatus(writer);
@@ -1407,7 +1408,7 @@ export const agentLongTask = task({
                 const noun =
                   uploadResult.failedCount === 1 ? "attachment" : "attachments";
                 const uploadError = new ChatSDKError(
-                  "bad_request:stream",
+                  "bad_request:sandbox",
                   `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
                   getSandboxUploadFailureMetadata(uploadResult),
                 );
@@ -2558,7 +2559,11 @@ export const agentLongTask = task({
         await usageRefundTracker.refund().catch(() => {});
       }
       if (error instanceof ChatSDKError) {
-        chatLogger?.emitChatError(error);
+        const alreadyEmittedFromStream =
+          streamPiped && isSandboxUploadError(error);
+        if (!alreadyEmittedFromStream) {
+          chatLogger?.emitChatError(error);
+        }
       } else {
         chatLogger?.emitUnexpectedError(error);
       }
