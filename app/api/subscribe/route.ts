@@ -5,8 +5,11 @@ import { buildWorkOSOrganizationName } from "@/lib/auth/workos-organization-name
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSuspensionMessage } from "@/lib/suspensionMessage";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
+import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
+import type Stripe from "stripe";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -40,6 +43,79 @@ function parseCreatedAtMs(raw: unknown): number | undefined {
 function clearReferralCookies(response: NextResponse) {
   response.cookies.delete(REFERRAL_COOKIE_NAME);
   response.cookies.delete(REFERRAL_COOKIE_CREATED_AT_NAME);
+}
+
+function isReusableCheckoutSession(
+  session: Stripe.Checkout.Session,
+  {
+    organizationId,
+    requestedPlan,
+    quantity,
+  }: {
+    organizationId: string;
+    requestedPlan: string;
+    quantity: number;
+  },
+): boolean {
+  if (!session.url) return false;
+  if (session.metadata?.workOSOrganizationId !== organizationId) return false;
+  if (session.metadata?.requestedPlan !== requestedPlan) return false;
+
+  const checkoutQuantity = session.metadata?.checkoutQuantity;
+  return checkoutQuantity
+    ? checkoutQuantity === String(quantity)
+    : quantity === 1;
+}
+
+function getErrorString(error: unknown, key: string): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function getEnvironment(): string {
+  return process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown";
+}
+
+const CHECKOUT_SESSION_PAGE_SIZE = 100;
+const MAX_CHECKOUT_SESSION_PAGES = 5;
+
+async function findReusableCheckoutSession({
+  customerId,
+  organizationId,
+  requestedPlan,
+  quantity,
+}: {
+  customerId: string;
+  organizationId: string;
+  requestedPlan: string;
+  quantity: number;
+}): Promise<Stripe.Checkout.Session | undefined> {
+  let startingAfter: string | undefined;
+
+  for (let page = 0; page < MAX_CHECKOUT_SESSION_PAGES; page += 1) {
+    const sessions = await stripe.checkout.sessions.list({
+      customer: customerId,
+      status: "open",
+      limit: CHECKOUT_SESSION_PAGE_SIZE,
+      ...(startingAfter && { starting_after: startingAfter }),
+    });
+    const reusableSession = sessions.data.find((candidate) =>
+      isReusableCheckoutSession(candidate, {
+        organizationId,
+        requestedPlan,
+        quantity,
+      }),
+    );
+
+    if (reusableSession) return reusableSession;
+    if (!sessions.has_more) return undefined;
+
+    startingAfter = sessions.data.at(-1)?.id;
+    if (!startingAfter) return undefined;
+  }
+
+  return undefined;
 }
 
 export const POST = async (req: NextRequest) => {
@@ -323,34 +399,32 @@ export const POST = async (req: NextRequest) => {
 
     const cancelUrl = new URL(baseUrl);
 
-    const session = await stripe.checkout.sessions.create({
-      customer: customer.id,
-      billing_address_collection: "auto",
-      line_items: [
-        {
-          price: price.data[0].id,
-          quantity: quantity,
-        },
-      ],
-      mode: "subscription",
-      success_url: successUrl.toString(),
-      cancel_url: cancelUrl.toString(),
-      metadata: {
-        userId,
-        workOSOrganizationId: organization.id,
-        requestedPlan: subscriptionLevel,
-        checkoutAttemptId,
-        ...(checkoutSource && { checkoutSource }),
-        ...(checkoutSurface && { checkoutSurface }),
-        ...(checkoutReason && { checkoutReason }),
-        ...(checkoutLimitType && { checkoutLimitType }),
-        checkoutType: "new_subscription",
-      },
-      subscription_data: {
+    let session = await findReusableCheckoutSession({
+      customerId: customer.id,
+      organizationId: organization.id,
+      requestedPlan: subscriptionLevel,
+      quantity,
+    });
+    const reusedCheckoutSession = Boolean(session);
+
+    if (!session) {
+      session = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        billing_address_collection: "auto",
+        line_items: [
+          {
+            price: price.data[0].id,
+            quantity: quantity,
+          },
+        ],
+        mode: "subscription",
+        success_url: successUrl.toString(),
+        cancel_url: cancelUrl.toString(),
         metadata: {
           userId,
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
+          checkoutQuantity: String(quantity),
           checkoutAttemptId,
           ...(checkoutSource && { checkoutSource }),
           ...(checkoutSurface && { checkoutSurface }),
@@ -358,16 +432,70 @@ export const POST = async (req: NextRequest) => {
           ...(checkoutLimitType && { checkoutLimitType }),
           checkoutType: "new_subscription",
         },
-      },
-      custom_text: {
-        submit: {
-          message:
-            "Renews monthly until cancelled. Cancel anytime in Settings.",
+        subscription_data: {
+          metadata: {
+            userId,
+            workOSOrganizationId: organization.id,
+            requestedPlan: subscriptionLevel,
+            checkoutQuantity: String(quantity),
+            checkoutAttemptId,
+            ...(checkoutSource && { checkoutSource }),
+            ...(checkoutSurface && { checkoutSurface }),
+            ...(checkoutReason && { checkoutReason }),
+            ...(checkoutLimitType && { checkoutLimitType }),
+            checkoutType: "new_subscription",
+          },
         },
-      },
-    });
+        custom_text: {
+          submit: {
+            message:
+              "Renews monthly until cancelled. Cancel anytime in Settings.",
+          },
+        },
+      });
+    } else {
+      const previousCheckoutAttemptId = session.metadata?.checkoutAttemptId;
+      session = await stripe.checkout.sessions.update(session.id, {
+        metadata: {
+          ...session.metadata,
+          userId,
+          workOSOrganizationId: organization.id,
+          requestedPlan: subscriptionLevel,
+          checkoutQuantity: String(quantity),
+          checkoutAttemptId,
+          ...(checkoutSource && { checkoutSource }),
+          ...(checkoutSurface && { checkoutSurface }),
+          ...(checkoutReason && { checkoutReason }),
+          ...(checkoutLimitType && { checkoutLimitType }),
+          checkoutType: "new_subscription",
+        },
+      });
+      logger.warn("Reused an open Stripe Checkout Session", {
+        event: "billing.checkout_session_reused",
+        request_id: req.headers.get("x-vercel-id") ?? "unknown",
+        service: "hackerai-web",
+        environment: getEnvironment(),
+        route: "/api/subscribe",
+        user_id: userId,
+        organization_id: organization.id,
+        checkout_attempt_id: checkoutAttemptId,
+        stripe_customer_id: customer.id,
+        stripe_checkout_session_id: session.id,
+        previous_checkout_attempt_id: previousCheckoutAttemptId,
+        requested_plan: subscriptionLevel,
+        quantity,
+        checkout_source: checkoutSource,
+        checkout_surface: checkoutSurface,
+        checkout_reason: checkoutReason,
+        checkout_limit_type: checkoutLimitType,
+      });
+    }
 
-    if (referralConfig.enabled && canRecordReferralCheckoutSession) {
+    if (
+      !reusedCheckoutSession &&
+      referralConfig.enabled &&
+      canRecordReferralCheckoutSession
+    ) {
       try {
         const referralSession = await getConvexClient().mutation(
           api.referrals.recordReferralCheckoutSession,
@@ -432,6 +560,7 @@ export const POST = async (req: NextRequest) => {
         currency: selectedPrice.currency,
         stripe_customer_id: customer.id,
         stripe_checkout_session_id: session.id,
+        stripe_checkout_session_reused: reusedCheckoutSession,
         stripe_price_id: selectedPrice.id,
         $session_id: posthogSessionId ?? undefined,
         $insert_id: `${PAID_FUNNEL_EVENTS.checkoutStarted}:${checkoutAttemptId}`,
@@ -444,9 +573,44 @@ export const POST = async (req: NextRequest) => {
 
     return json({ url: session.url, checkoutAttemptId });
   } catch (error: unknown) {
+    if (error instanceof ChatSDKError) {
+      return json(
+        {
+          error: error.message,
+          code: `${error.type}:${error.surface}`,
+        },
+        { status: error.statusCode },
+      );
+    }
+
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";
-    console.error(errorMessage, error);
+    const stripeErrorCode = getErrorString(error, "code");
+    const stripeRequestId = getErrorString(error, "requestId");
+    logger.error(
+      "Subscription checkout request failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "billing.subscribe_request_failed",
+        request_id: req.headers.get("x-vercel-id") ?? "unknown",
+        service: "hackerai-web",
+        environment: getEnvironment(),
+        route: "/api/subscribe",
+        stripe_error_code: stripeErrorCode,
+        stripe_request_id: stripeRequestId,
+      },
+    );
+
+    if (stripeErrorCode === "customer_max_subscriptions") {
+      return json(
+        {
+          error:
+            "A checkout is already pending. Please resume it or contact support if the problem continues.",
+        },
+        { status: 409 },
+      );
+    }
+
     return json({ error: errorMessage }, { status: 500 });
   }
 };

@@ -129,6 +129,27 @@ describe("proxy", () => {
     );
   });
 
+  it("rejects nonstandard root methods before AuthKit", async () => {
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "GESP",
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "method_not_allowed",
+        message: "GESP is not supported for this route.",
+      },
+      { status: 405, headers: { Allow: "GET, HEAD, POST" } },
+    );
+  });
+
   it("lets root Server Action POSTs continue through AuthKit", async () => {
     mockAuthkit.mockResolvedValue({
       session: { user: { id: "user_123" } },
