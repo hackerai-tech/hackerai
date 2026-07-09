@@ -709,6 +709,49 @@ describe("UsageTracker", () => {
       expect(usage.costSource).toBe("provider");
     });
 
+    it("keeps non-model spend after fallback reset and bills fallback authoritative metadata cost", () => {
+      tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0.25 },
+      });
+      tracker.providerCost += 0.05;
+      tracker.nonModelCost = 0.05;
+      tracker.resetModelLeg();
+
+      const fallbackStepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(fallbackStepCostIndex, 0.00016);
+
+      expect(tracker.inputTokens).toBe(12);
+      expect(tracker.outputTokens).toBe(4);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00016);
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00016,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.05016);
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.modelCostDollars).toBeCloseTo(0.00016);
+      expect(usage.nonModelCostDollars).toBeCloseTo(0.05);
+      expect(usage.costDollars).toBeCloseTo(0.05016);
+      expect(usage.costSource).toBe("provider");
+    });
+
     it("labels post-run overflow as mixed when final deduction uses extra usage", () => {
       tracker.accumulateStep({
         inputTokens: 1_000_000,
