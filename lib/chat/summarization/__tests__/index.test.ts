@@ -331,6 +331,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(messages);
     expect(result.cutoffMessageId).toBeNull();
@@ -354,6 +355,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
   });
@@ -378,6 +380,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     });
 
+    expect(result.summarizationAttempted).toBe(true);
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Pressure summary");
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
@@ -477,6 +480,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       0,
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
     expect(mockGenerateText).not.toHaveBeenCalled();
@@ -1072,6 +1076,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
+    expect(result.summarizationAttempted).toBe(true);
     expect(result.needsSummarization).toBe(false);
     expect(mockGenerateText).toHaveBeenCalledTimes(2);
 

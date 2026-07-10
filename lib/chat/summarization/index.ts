@@ -952,6 +952,7 @@ export const checkAndSummarizeIfNeeded = async ({
     await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
 
     return {
+      summarizationAttempted: true,
       needsSummarization: true,
       summarizedMessages: [summaryMessage, ...tailSelection.tailMessages],
       cutoffMessageId,
@@ -976,7 +977,10 @@ export const checkAndSummarizeIfNeeded = async ({
       fallbackResult: "no_summarization",
       error,
     });
-    return NO_SUMMARIZATION(uiMessages);
+    return {
+      ...NO_SUMMARIZATION(uiMessages),
+      summarizationAttempted: true,
+    };
   } finally {
     if (!abortSignal?.aborted) {
       writeSummarizationCompleted(writer, 1);

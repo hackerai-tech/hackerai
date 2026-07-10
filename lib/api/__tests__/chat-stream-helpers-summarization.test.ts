@@ -10,10 +10,14 @@ jest.mock("@/lib/logger", () => ({
 
 const makeUsageTracker = () => ({
   inputTokens: 0,
+  summarizationInputTokens: 0,
   outputTokens: 0,
+  totalTokens: 0,
   summarizationOutputTokens: 0,
   cacheReadTokens: 0,
+  summarizationCacheReadTokens: 0,
   cacheWriteTokens: 0,
+  summarizationCacheWriteTokens: 0,
   providerCost: 0,
 });
 
@@ -49,10 +53,14 @@ describe("SummarizationTracker", () => {
     expect(tracker.summarizationCount).toBe(2);
     expect(usageTracker).toEqual({
       inputTokens: 300,
+      summarizationInputTokens: 300,
       outputTokens: 30,
+      totalTokens: 330,
       summarizationOutputTokens: 30,
       cacheReadTokens: 16,
+      summarizationCacheReadTokens: 16,
       cacheWriteTokens: 7,
+      summarizationCacheWriteTokens: 7,
       providerCost: 0.003,
     });
   });
@@ -69,7 +77,9 @@ describe("SummarizationTracker", () => {
     expect(tracker.hasSummarized).toBe(false);
     expect(tracker.summarizationCount).toBe(0);
     expect(usageTracker.inputTokens).toBe(50);
+    expect(usageTracker.summarizationInputTokens).toBe(50);
     expect(usageTracker.outputTokens).toBe(5);
+    expect(usageTracker.totalTokens).toBe(55);
     expect(usageTracker.summarizationOutputTokens).toBe(5);
     expect(usageTracker.providerCost).toBe(0.001);
   });

@@ -156,6 +156,7 @@ describe("createAgentStream repeated compaction", () => {
       "ineffective ".repeat(4_000),
     );
     mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
       needsSummarization: true,
       summarizedMessages: [summary1],
     });
@@ -187,10 +188,14 @@ describe("createAgentStream repeated compaction", () => {
     };
     const usageTracker = {
       inputTokens: 0,
+      summarizationInputTokens: 0,
       outputTokens: 0,
+      totalTokens: 0,
       summarizationOutputTokens: 0,
       cacheReadTokens: 0,
+      summarizationCacheReadTokens: 0,
       cacheWriteTokens: 0,
+      summarizationCacheWriteTokens: 0,
       providerCost: 0,
     };
     const original = uiMessage("original", "old ".repeat(2_000));
@@ -330,7 +335,10 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it("stops cleanly when the attempt budget is exhausted with no accepted summary", async () => {
-    mockRunSummarizationStep.mockResolvedValue({ needsSummarization: false });
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: false,
+    });
     mockCompactModelMessagesInRun.mockResolvedValue(null);
     mockGetProviderPromptPressure.mockReturnValue({
       reason: "serialized_message_bytes",
@@ -378,7 +386,7 @@ describe("createAgentStream repeated compaction", () => {
     }
 
     expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
     );
     expect(tracker.summarizationCount).toBe(0);
     expect(tracker.recordSummarization).not.toHaveBeenCalled();

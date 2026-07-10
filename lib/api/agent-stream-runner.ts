@@ -772,6 +772,11 @@ export async function createAgentStream(
               providerPromptPressure,
             });
 
+            if (result.summarizationAttempted) {
+              compactionAttemptCount++;
+              lastCompactionRawMessageCount = rawModelMessages.length;
+            }
+
             if (result.needsSummarization && result.summarizedMessages) {
               ctx.summarizationTracker.recordSummarization(
                 steps.length,
@@ -807,8 +812,6 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
-              compactionAttemptCount++;
-              lastCompactionRawMessageCount = rawModelMessages.length;
               const preparedMessages = prepareProviderMessages(
                 summarizedModelMessages,
                 effectiveModelInfo.modelName,

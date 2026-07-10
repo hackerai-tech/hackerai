@@ -55,6 +55,8 @@ export interface SummaryPersistenceMetadata {
 }
 
 export interface SummarizationResult {
+  /** True only when summary generation was actually attempted. */
+  summarizationAttempted: boolean;
   needsSummarization: boolean;
   summarizedMessages: UIMessage[];
   cutoffMessageId: string | null;
@@ -65,6 +67,7 @@ export interface SummarizationResult {
 export const NO_SUMMARIZATION = (
   messages: UIMessage[],
 ): SummarizationResult => ({
+  summarizationAttempted: false,
   needsSummarization: false,
   summarizedMessages: messages,
   cutoffMessageId: null,

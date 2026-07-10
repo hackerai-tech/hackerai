@@ -752,6 +752,27 @@ describe("UsageTracker", () => {
       expect(usage.costSource).toBe("provider");
     });
 
+    it("preserves summarization usage across fallback reset", () => {
+      tracker.inputTokens = 1_200;
+      tracker.summarizationInputTokens = 200;
+      tracker.outputTokens = 140;
+      tracker.summarizationOutputTokens = 40;
+      tracker.totalTokens = 1_340;
+      tracker.cacheReadTokens = 90;
+      tracker.summarizationCacheReadTokens = 20;
+      tracker.cacheWriteTokens = 50;
+      tracker.summarizationCacheWriteTokens = 10;
+
+      tracker.resetModelLeg();
+
+      expect(tracker.inputTokens).toBe(200);
+      expect(tracker.outputTokens).toBe(40);
+      expect(tracker.totalTokens).toBe(240);
+      expect(tracker.cacheReadTokens).toBe(20);
+      expect(tracker.cacheWriteTokens).toBe(10);
+      expect(tracker.streamOutputTokens).toBe(0);
+    });
+
     it("labels post-run overflow as mixed when final deduction uses extra usage", () => {
       tracker.accumulateStep({
         inputTokens: 1_000_000,

@@ -17,9 +17,9 @@ export type AgentAutoContinueStopSource =
   | "tool_calls_finish_reason";
 
 /**
- * Returns why a completed Agent turn should ask the client to start a fresh
- * continuation run. Callers opt into elapsed-time continuation by passing the
- * corresponding stop flag.
+ * Returns why a completed Agent turn should signal the connected client to
+ * start a fresh continuation run. Callers opt into elapsed-time continuation
+ * by passing the corresponding stop flag.
  */
 export function getAgentAutoContinueStopSource(state: {
   finishReason: string | undefined;
