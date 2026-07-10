@@ -16,6 +16,7 @@ function makeState(overrides: {
   threshold: number;
   lastStepInputTokens: number;
   hasSummarized: boolean;
+  canSummarizeAgain?: boolean;
 }) {
   const onFired = jest.fn();
   return {
@@ -23,6 +24,9 @@ function makeState(overrides: {
       threshold: overrides.threshold,
       getLastStepInputTokens: () => overrides.lastStepInputTokens,
       getHasSummarized: () => overrides.hasSummarized,
+      ...(overrides.canSummarizeAgain !== undefined
+        ? { getCanSummarizeAgain: () => overrides.canSummarizeAgain! }
+        : {}),
       onFired,
     },
     onFired,
@@ -107,6 +111,51 @@ describe("tokenExhaustedAfterSummarization", () => {
       expect(condition()).toBe(true);
       expect(onFired).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("returns false when another in-run compaction is available", () => {
+    const { state, onFired } = makeState({
+      threshold: 14400,
+      lastStepInputTokens: 20000,
+      hasSummarized: true,
+      canSummarizeAgain: true,
+    });
+
+    const condition = tokenExhaustedAfterSummarization(state);
+
+    expect(condition()).toBe(false);
+    expect(onFired).not.toHaveBeenCalled();
+  });
+
+  it("returns true when the repeated-compaction budget is exhausted", () => {
+    const { state, onFired } = makeState({
+      threshold: 14400,
+      lastStepInputTokens: 20000,
+      hasSummarized: true,
+      canSummarizeAgain: false,
+    });
+
+    const condition = tokenExhaustedAfterSummarization(state);
+
+    expect(condition()).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-evaluates repeated-compaction availability on every invocation", () => {
+    let canSummarizeAgain = true;
+    const onFired = jest.fn();
+    const condition = tokenExhaustedAfterSummarization({
+      threshold: 14400,
+      getLastStepInputTokens: () => 20000,
+      getHasSummarized: () => true,
+      getCanSummarizeAgain: () => canSummarizeAgain,
+      onFired,
+    });
+
+    expect(condition()).toBe(false);
+    canSummarizeAgain = false;
+    expect(condition()).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
   });
 
   it("does not call onFired on repeated invocations that return false", () => {

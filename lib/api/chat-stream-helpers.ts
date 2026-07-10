@@ -407,8 +407,14 @@ export async function runSummarizationStep(options: {
  */
 export class SummarizationTracker {
   hasSummarized = false;
-  private parts: UIMessagePart<any, any>[] = [];
-  private atStep: number | undefined;
+  private records: Array<{
+    part: UIMessagePart<any, any>;
+    atStep: number;
+  }> = [];
+
+  get summarizationCount(): number {
+    return this.records.length;
+  }
 
   /**
    * Record that summarization completed at the given step and accumulate
@@ -420,9 +426,23 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     this.hasSummarized = true;
-    this.atStep = stepNumber;
-    this.parts.push(createSummarizationCompletedPart());
+    const part = createSummarizationCompletedPart();
+    this.records.push({
+      part: {
+        ...part,
+        id: `summarization-status-${this.records.length + 1}`,
+      } as UIMessagePart<any, any>,
+      atStep: stepNumber,
+    });
 
+    this.recordSummarizationUsage(usage, usageTracker);
+  }
+
+  /** Account for a generated summary that was rejected as ineffective. */
+  recordSummarizationUsage(
+    usage: SummarizationUsage | undefined,
+    usageTracker: UsageTracker,
+  ): void {
     if (usage) {
       usageTracker.inputTokens += usage.inputTokens;
       usageTracker.outputTokens += usage.outputTokens;
@@ -443,12 +463,27 @@ export class SummarizationTracker {
   processMessageForSave<T extends { role: string; parts: any[] }>(
     message: T,
   ): T {
-    if (message.role !== "assistant" || this.parts.length === 0) {
+    if (message.role !== "assistant" || this.records.length === 0) {
       return message;
     }
     const parts = [...message.parts];
-    const idx = findSummarizationInsertIndex(parts, this.atStep ?? 0);
-    parts.splice(idx, 0, ...this.parts);
+    const insertions = this.records
+      .map((record, recordIndex) => ({
+        ...record,
+        recordIndex,
+        insertionIndex: findSummarizationInsertIndex(
+          message.parts,
+          record.atStep,
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          b.insertionIndex - a.insertionIndex || b.recordIndex - a.recordIndex,
+      );
+
+    for (const insertion of insertions) {
+      parts.splice(insertion.insertionIndex, 0, insertion.part);
+    }
     return { ...message, parts };
   }
 }

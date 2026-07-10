@@ -46,7 +46,7 @@ jest.doMock("@/lib/ai/providers", () => ({
   },
 }));
 
-const { checkAndSummarizeIfNeeded } =
+const { checkAndSummarizeIfNeeded, compactModelMessagesInRun } =
   require("../index") as typeof import("../index");
 const {
   isSummaryMessage,
@@ -189,6 +189,85 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(getSummarizationThresholdTokens(400_000)).toBe(
       400_000 - SUMMARIZATION_RESERVED_MAX_TOKENS,
     );
+  });
+
+  it("compacts live model history without persisting an in-flight cutoff", async () => {
+    mockGenerateText.mockResolvedValue({
+      text: "Runtime summary",
+      usage: { inputTokens: 120, outputTokens: 20 },
+    });
+    const modelMessages: ModelMessage[] = [
+      { role: "user", content: "durable user request" },
+      { role: "assistant", content: "new in-flight tool work" },
+    ];
+
+    const result = await compactModelMessagesInRun({
+      modelMessages,
+      transcriptModelMessages: modelMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "chat-runtime-compaction",
+      maxTokens: 128_000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+    });
+
+    expect(result?.summaryText).toBe("Runtime summary");
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining(modelMessages),
+      }),
+    );
+    expect((mockWriter.write as jest.Mock).mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          type: "data-summarization",
+          id: "summarization-status-2",
+          data: expect.objectContaining({ status: "started" }),
+        }),
+      ],
+    ]);
+  });
+
+  it("clears the transient in-run status when summary generation fails", async () => {
+    mockGenerateText.mockRejectedValue(new Error("provider failed"));
+    const modelMessages: ModelMessage[] = [
+      { role: "user", content: "live context" },
+    ];
+
+    const result = await compactModelMessagesInRun({
+      modelMessages,
+      transcriptModelMessages: modelMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "chat-runtime-failure",
+      maxTokens: 128_000,
+      compactionIndex: 3,
+      hasExistingSummary: false,
+    });
+
+    expect(result).toBeNull();
+    expect((mockWriter.write as jest.Mock).mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          id: "summarization-status-3",
+          data: expect.objectContaining({ status: "started" }),
+        }),
+      ],
+      [
+        expect.objectContaining({
+          id: "summarization-status-3",
+          data: { status: "completed", message: "" },
+          transient: true,
+        }),
+      ],
+    ]);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
   it("should allow a lower summarization threshold in development", () => {

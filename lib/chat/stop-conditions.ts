@@ -45,12 +45,20 @@ export function tokenExhaustedAfterSummarization(state: {
   threshold: number;
   getLastStepInputTokens: () => number;
   getHasSummarized: () => boolean;
+  /**
+   * Whether prepareStep can compact the rolling context again before the next
+   * provider request. Omitted for backward compatibility with callers that
+   * still support only one compaction per stream.
+   */
+  getCanSummarizeAgain?: () => boolean;
   onFired: () => void;
 }): StopCondition<any> {
   return () => {
     const lastStepInput = state.getLastStepInputTokens();
     const hasSummarized = state.getHasSummarized();
-    const shouldStop = hasSummarized && lastStepInput > state.threshold;
+    const canSummarizeAgain = state.getCanSummarizeAgain?.() ?? false;
+    const shouldStop =
+      hasSummarized && !canSummarizeAgain && lastStepInput > state.threshold;
     if (shouldStop) {
       state.onFired();
     }
