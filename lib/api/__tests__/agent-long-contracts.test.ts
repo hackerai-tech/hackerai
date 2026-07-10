@@ -517,6 +517,14 @@ describe("agent-long chat UI — completion reconciliation", () => {
 });
 
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
+  test("uses the authorized chat snapshot for run and approval session IDs", () => {
+    expect(cancelSrc).toMatch(
+      /const approvalSessionId\s*=\s*chat\.active_agent_approval_session_id;\s*const runId\s*=\s*chat\.active_trigger_run_id;/,
+    );
+    expect(cancelSrc).not.toMatch(/getActiveTriggerRun/);
+    expect(cancelSrc).toMatch(/expectedApprovalSessionId:\s*approvalSessionId/);
+  });
+
   test("runs.cancel is called before clearing the stored run ID", () => {
     const cancelCallIdx = cancelSrc.indexOf("runs.cancel(runId)");
     // Search for the actual call site after runs.cancel, not the import
@@ -742,7 +750,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(statusSrc).toMatch(/clearTerminalAgentRun/);
     expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
     expect(chatComponentSrc).toMatch(
-      /activeTriggerRunId[\s\S]*storedAgentApprovalRequest[\s\S]*clearAgentApprovalSession\(\)/,
+      /const storedAgentApprovalRequest\s*=\s*activeTriggerRunId\s*\?\s*getStoredAgentApprovalRequest\(chatDataForCurrentChat\)\s*:\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
     );
   });
 
@@ -1268,6 +1279,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(triggerOptionsRegionIdx).toBeGreaterThan(triggerOptionsIdx);
     expect(sessionRegionIdx).toBeGreaterThan(sessionStartIdx);
     expect(triggerIdx).toBeGreaterThan(triggerOptionsRegionIdx);
+    expect(triggerIdx).toBeGreaterThan(sessionRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
   });

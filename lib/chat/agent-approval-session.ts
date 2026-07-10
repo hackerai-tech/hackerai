@@ -9,6 +9,29 @@ type AgentApprovalResumeHandle = {
   approvalSessionPublicAccessToken?: unknown;
 };
 
+const APPROVAL_SESSION_REFRESH_TIMEOUT_MS = 30_000;
+
+const createRefreshAbortController = (signal?: AbortSignal) => {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
+
+  const timeoutId = setTimeout(abort, APPROVAL_SESSION_REFRESH_TIMEOUT_MS);
+
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", abort);
+    },
+  };
+};
+
 export async function sendAgentApprovalSessionInput({
   chatId,
   sessionId,
@@ -49,12 +72,18 @@ export async function sendAgentApprovalSessionInput({
   const resumeUrl = `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(
     chatId,
   )}`;
-  const response = await fetch(resumeUrl, {
-    method: "GET",
-    cache: "no-store",
-    credentials: "same-origin",
-    signal,
-  });
+  const refreshAbort = createRefreshAbortController(signal);
+  let response: Response;
+  try {
+    response = await fetch(resumeUrl, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: refreshAbort.controller.signal,
+    });
+  } finally {
+    refreshAbort.cleanup();
+  }
   if (response.status === 204) {
     throw new Error("The Agent run is no longer waiting for approval.");
   }

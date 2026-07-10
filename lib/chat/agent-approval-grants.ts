@@ -88,6 +88,43 @@ const NON_EXECUTABLE_SHELL_TOKENS = new Set([
   "while",
 ]);
 
+const NON_REUSABLE_COMMAND_WRAPPERS = new Set([
+  "ash",
+  "ash.exe",
+  "bash",
+  "bash.exe",
+  "busybox",
+  "busybox.exe",
+  "cmd",
+  "cmd.exe",
+  "command",
+  "csh",
+  "csh.exe",
+  "dash",
+  "dash.exe",
+  "doas",
+  "env",
+  "env.exe",
+  "eval",
+  "exec",
+  "fish",
+  "fish.exe",
+  "ksh",
+  "ksh.exe",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+  "pwsh.exe",
+  "sh",
+  "sh.exe",
+  "sudo",
+  "tcsh",
+  "tcsh.exe",
+  "xargs",
+  "zsh",
+  "zsh.exe",
+]);
+
 const isShellWhitespace = (character: string): boolean =>
   character === " " || character === "\t";
 
@@ -194,6 +231,17 @@ export const parseStaticCommandArgv = (command: string): string[] | null => {
   if (!executable) return null;
   if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(executable)) return null;
   if (NON_EXECUTABLE_SHELL_TOKENS.has(executable)) return null;
+  const executableBasename = executable
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    ?.toLowerCase();
+  if (
+    executableBasename &&
+    NON_REUSABLE_COMMAND_WRAPPERS.has(executableBasename)
+  ) {
+    return null;
+  }
 
   return argv;
 };
@@ -266,15 +314,13 @@ const normalizeWindowsPath = (
 export const normalizeAgentApprovalFilePath = (
   path: string,
 ): { path: string; pathFlavor: "posix" | "windows" } | null => {
-  const trimmedPath = path.trim();
-  if (!trimmedPath || trimmedPath.includes("\0")) return null;
+  if (!path || path !== path.trim() || path.includes("\0")) return null;
 
-  const isWindowsPath =
-    /^[A-Za-z]:/.test(trimmedPath) || trimmedPath.includes("\\");
-  if (isWindowsPath) return normalizeWindowsPath(trimmedPath);
+  const isWindowsPath = /^[A-Za-z]:/.test(path) || path.includes("\\");
+  if (isWindowsPath) return normalizeWindowsPath(path);
 
-  const absolute = trimmedPath.charAt(0) === "/";
-  const normalized = normalizePathSegments(trimmedPath.split("/"), absolute);
+  const absolute = path.charAt(0) === "/";
+  const normalized = normalizePathSegments(path.split("/"), absolute);
   return {
     path: absolute
       ? `/${normalized.join("/")}` || "/"

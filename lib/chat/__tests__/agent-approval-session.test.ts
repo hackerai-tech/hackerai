@@ -13,9 +13,28 @@ const response = (status: number, body?: unknown) =>
   }) as unknown as Response;
 
 afterEach(() => {
+  jest.useRealTimers();
   global.fetch = originalFetch;
   jest.restoreAllMocks();
 });
+
+const abortablePendingResponse = (
+  signal: AbortSignal | null | undefined,
+): Promise<Response> =>
+  new Promise((_, reject) => {
+    const rejectWithAbort = () => {
+      const error = new Error("Aborted");
+      error.name = "AbortError";
+      reject(error);
+    };
+
+    if (signal?.aborted) {
+      rejectWithAbort();
+      return;
+    }
+
+    signal?.addEventListener("abort", rejectWithAbort, { once: true });
+  });
 
 describe("sendAgentApprovalSessionInput", () => {
   it("refreshes an expired token through the owner-checked resume route", async () => {
@@ -102,6 +121,69 @@ describe("sendAgentApprovalSessionInput", () => {
         value: { decision: "approve" },
       }),
     ).rejects.toThrow("no longer waiting for approval");
+  });
+
+  it("links the refresh request to the caller abort signal", async () => {
+    const callerAbort = new AbortController();
+    let refreshSignal: AbortSignal | null | undefined;
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response(401))
+      .mockImplementationOnce((_input, init) => {
+        refreshSignal = init?.signal;
+        return abortablePendingResponse(refreshSignal);
+      });
+    global.fetch = fetchMock;
+
+    const send = sendAgentApprovalSessionInput({
+      chatId: "chat-1",
+      sessionId: "approval-session",
+      accessToken: "expired-token",
+      partId: "approval-part",
+      value: { decision: "approve" },
+      signal: callerAbort.signal,
+    });
+    const rejection = expect(send).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await Promise.resolve();
+
+    callerAbort.abort();
+
+    await rejection;
+    expect(refreshSignal).toBeInstanceOf(AbortSignal);
+    expect(refreshSignal?.aborted).toBe(true);
+  });
+
+  it("times out a stalled refresh request", async () => {
+    jest.useFakeTimers();
+    let refreshSignal: AbortSignal | null | undefined;
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response(401))
+      .mockImplementationOnce((_input, init) => {
+        refreshSignal = init?.signal;
+        return abortablePendingResponse(refreshSignal);
+      });
+    global.fetch = fetchMock;
+
+    const send = sendAgentApprovalSessionInput({
+      chatId: "chat-1",
+      sessionId: "approval-session",
+      accessToken: "expired-token",
+      partId: "approval-part",
+      value: { decision: "approve" },
+    });
+    const rejection = expect(send).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await Promise.resolve();
+
+    await jest.advanceTimersByTimeAsync(30_000);
+
+    await rejection;
+    expect(refreshSignal).toBeInstanceOf(AbortSignal);
+    expect(refreshSignal?.aborted).toBe(true);
   });
 
   it("cannot refresh a legacy session that has no chat identity", async () => {

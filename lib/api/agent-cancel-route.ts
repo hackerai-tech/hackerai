@@ -2,11 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import {
-  getChatById,
-  getActiveTriggerRun,
-  setActiveTriggerRun,
-} from "@/lib/db/actions";
+import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
@@ -34,7 +30,7 @@ export const createAgentCancelPost =
       }
 
       const approvalSessionId = chat.active_agent_approval_session_id;
-      const runId = await getActiveTriggerRun({ chatId });
+      const runId = chat.active_trigger_run_id;
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
         if (approvalSessionId) {
@@ -42,6 +38,7 @@ export const createAgentCancelPost =
             chatId,
             triggerRunId: null,
             approvalSessionId: null,
+            expectedApprovalSessionId: approvalSessionId,
             clearApprovalPending: true,
           });
         }
@@ -61,6 +58,9 @@ export const createAgentCancelPost =
         triggerRunId: null,
         approvalSessionId: null,
         expectedRunId: runId,
+        ...(approvalSessionId
+          ? { expectedApprovalSessionId: approvalSessionId }
+          : {}),
         clearApprovalPending: true,
       });
 

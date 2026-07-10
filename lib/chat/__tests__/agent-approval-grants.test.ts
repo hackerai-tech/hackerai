@@ -103,6 +103,31 @@ describe("agent approval grants", () => {
     ).toBe(false);
   });
 
+  it.each([
+    ["shell", "bash -c 'npm test && npm publish'"],
+    ["absolute shell", "/bin/bash -lc 'npm test'"],
+    ["Windows shell", String.raw`"C:\Windows\System32\cmd.exe" /c dir`],
+    ["evaluator", "eval 'npm test'"],
+    ["environment dispatcher", "env npm test"],
+    ["privilege dispatcher", "sudo npm test"],
+  ])("rejects a reusable %s wrapper", (_description, target) => {
+    expect(
+      deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+    ).toBeNull();
+  });
+
+  it("does not confuse a wrapper name with a sibling executable", () => {
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request("terminal_execute", "bashful test"),
+      ),
+    ).toMatchObject({
+      kind: "terminal_command",
+      executable: "bashful",
+      argv: ["bashful", "test"],
+    });
+  });
+
   it.each(["'npm test", '"npm test', "npm test 'unfinished", "npm test \\"])(
     "rejects malformed quoting in %s",
     (target) => {
@@ -143,6 +168,27 @@ describe("agent approval grants", () => {
           grant,
         ),
     ).toBe(false);
+  });
+
+  it("rejects surrounding path whitespace while preserving internal spaces", () => {
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request("file_write", " /workspace/report.txt"),
+      ),
+    ).toBeNull();
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request("file_write", "/workspace/report.txt "),
+      ),
+    ).toBeNull();
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request("file_write", "/workspace/project files/report.txt"),
+      ),
+    ).toMatchObject({
+      kind: "file_change",
+      path: "/workspace/project files/report.txt",
+    });
   });
 
   it("normalizes Windows paths while keeping sibling and traversal targets separate", () => {

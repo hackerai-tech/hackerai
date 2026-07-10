@@ -1262,6 +1262,7 @@ export const setActiveTriggerRun = mutation({
     triggerRunId: v.union(v.string(), v.null()),
     approvalSessionId: v.optional(v.union(v.string(), v.null())),
     expectedRunId: v.optional(v.string()),
+    expectedApprovalSessionId: v.optional(v.string()),
     clearApprovalPending: v.optional(v.boolean()),
   },
   returns: v.null(),
@@ -1275,6 +1276,12 @@ export const setActiveTriggerRun = mutation({
     if (
       args.expectedRunId !== undefined &&
       chat.active_trigger_run_id !== args.expectedRunId
+    ) {
+      return null;
+    }
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
     ) {
       return null;
     }

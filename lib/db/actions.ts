@@ -1365,12 +1365,14 @@ export async function setActiveTriggerRun({
   triggerRunId,
   approvalSessionId,
   expectedRunId,
+  expectedApprovalSessionId,
   clearApprovalPending,
 }: {
   chatId: string;
   triggerRunId: string | null;
   approvalSessionId?: string | null;
   expectedRunId?: string;
+  expectedApprovalSessionId?: string;
   clearApprovalPending?: boolean;
 }) {
   try {
@@ -1380,6 +1382,9 @@ export async function setActiveTriggerRun({
       triggerRunId,
       ...(approvalSessionId !== undefined ? { approvalSessionId } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
       ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
     });
   } catch (error) {

@@ -9,16 +9,29 @@ const getDescription = (value: unknown): string =>
 
 describe("agent tool schema descriptions", () => {
   test("terminal command approval wording is mode-specific", () => {
-    expect(getDescription(runTerminalCmdTool)).not.toContain(
-      "ask the user to approve it",
+    const fullAccessDescription = getDescription(runTerminalCmdTool);
+    expect(fullAccessDescription).not.toContain("ask the user to approve it");
+    expect(fullAccessDescription).toContain(
+      "Use command chaining and pipes for efficiency",
     );
+    expect(fullAccessDescription).toContain("append ` | cat` to the command");
 
     const approvalGatedTool = createRunTerminalCmdToolSchema({
       approvalGated: true,
     });
+    const approvalGatedDescription = getDescription(approvalGatedTool);
 
-    expect(getDescription(approvalGatedTool)).toContain(
+    expect(approvalGatedDescription).toContain(
       "The platform will pause execution after you call this tool and ask the user to approve it",
+    );
+    expect(approvalGatedDescription).toContain(
+      "Prefer one static command per tool call",
+    );
+    expect(approvalGatedDescription).not.toContain(
+      "Use command chaining and pipes for efficiency",
+    );
+    expect(approvalGatedDescription).not.toContain(
+      "append ` | cat` to the command",
     );
   });
 

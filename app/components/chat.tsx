@@ -610,29 +610,20 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
-  const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
-    chatDataForCurrentChat,
-  );
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const storedAgentApprovalRequest = activeTriggerRunId
+    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
+    : null;
   const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
   const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
 
   useEffect(() => {
-    if (
-      !hasLoadedCurrentChat ||
-      activeTriggerRunId ||
-      storedAgentApprovalRequest
-    ) {
+    if (!hasLoadedCurrentChat || activeTriggerRunId) {
       return;
     }
     clearAgentApprovalSession();
-  }, [
-    activeTriggerRunId,
-    clearAgentApprovalSession,
-    hasLoadedCurrentChat,
-    storedAgentApprovalRequest,
-  ]);
+  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
