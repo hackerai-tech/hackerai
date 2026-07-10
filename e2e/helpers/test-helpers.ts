@@ -3,6 +3,7 @@ import { ChatComponent } from "../page-objects";
 import { SidebarComponent } from "../page-objects/SidebarComponent";
 import path from "path";
 import { TEST_DATA, TIMEOUTS } from "../constants";
+import { assertAuthenticatedSession } from "./auth-preflight";
 
 /**
  * Common test helper functions to reduce duplication
@@ -71,6 +72,7 @@ export async function setupChat(
   await page.goto(options.refreshEntitlements ? "/?refresh=entitlements" : "/");
   const chat = new ChatComponent(page);
   await chat.waitForHydrated();
+  await assertAuthenticatedSession(page);
   if (options.refreshEntitlements) {
     await page
       .waitForURL((url) => url.searchParams.get("refresh") !== "entitlements", {
