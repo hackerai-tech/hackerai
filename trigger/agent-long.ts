@@ -153,6 +153,10 @@ import {
   type AgentLongStreamChunk,
 } from "@/lib/chat/agent-long-realtime-sanitizer";
 import {
+  createActiveRuntimeBudget,
+  type ActiveRuntimeBudget,
+} from "@/lib/chat/active-runtime-budget";
+import {
   BUDGET_EXHAUSTION_FINISH_REASON,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
@@ -172,7 +176,6 @@ const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
   AGENT_LONG_PAID_MAX_DURATION_SECONDS;
-const AGENT_APPROVAL_TIMEOUT = "6h";
 
 type TriggerSessionWaitResult<T> =
   { ok: true; output: T } | { ok: false; error?: unknown };
@@ -180,9 +183,7 @@ type TriggerSessionWaitResult<T> =
 type TriggerSessionsApi = {
   open(idOrExternalId: string): {
     in: {
-      wait<T>(options: {
-        timeout: string;
-      }): Promise<TriggerSessionWaitResult<T>>;
+      wait<T>(): Promise<TriggerSessionWaitResult<T>>;
     };
   };
   close(idOrExternalId: string, body?: { reason?: string }): Promise<unknown>;
@@ -289,9 +290,7 @@ const waitForApprovalInput = async (
   try {
     return await Promise.race([
       session.in
-        .wait<AgentToolApprovalInputRecord>({
-          timeout: AGENT_APPROVAL_TIMEOUT,
-        })
+        .wait<AgentToolApprovalInputRecord>()
         .then((result) => ({ status: "input", result }) as const),
       abortPromise,
     ]);
@@ -308,6 +307,7 @@ const buildAgentToolApprovalRequester = ({
   userId,
   runId,
   signal,
+  activeRuntimeBudget,
 }: {
   agentPermissionMode: AgentPermissionMode;
   approvalSessionId?: string;
@@ -316,6 +316,7 @@ const buildAgentToolApprovalRequester = ({
   userId: string;
   runId: string;
   signal: AbortSignal;
+  activeRuntimeBudget: Pick<ActiveRuntimeBudget, "pause" | "resume">;
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
@@ -435,16 +436,23 @@ const buildAgentToolApprovalRequester = ({
 
       const session = triggerSessions.open(approvalSessionId);
       while (!signal.aborted) {
-        const waitOutcome = await waitForApprovalInput(session, signal);
+        activeRuntimeBudget.pause();
+        let waitOutcome: TriggerSessionInputWaitOutcome;
+        try {
+          waitOutcome = await waitForApprovalInput(session, signal);
+        } finally {
+          activeRuntimeBudget.resume();
+        }
         if (waitOutcome.status === "aborted") break;
 
         const next = waitOutcome.result;
         if (!next.ok) {
-          metadata.set("approvalStatus", "timed_out");
+          metadata.set("approvalStatus", "session_closed");
+          shouldClearApprovalPending = true;
           return {
             approved: false,
             approvalId,
-            reason: "Approval timed out before the tool could run.",
+            reason: "The approval session closed before the tool could run.",
           };
         }
 
@@ -1416,7 +1424,7 @@ export const agentLongTask = task({
       chatId,
     });
 
-    let agentLongTimeout: ReturnType<typeof setTimeout> | undefined;
+    let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
 
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
@@ -1533,14 +1541,15 @@ export const agentLongTask = task({
             PREEMPTIVE_TIMEOUT_FINISH_REASON;
         }
       };
-      const agentLongTimeoutDelayMs = Math.max(
-        0,
-        agentLongMaxDurationMs - (Date.now() - taskStartTime),
-      );
-      agentLongTimeout = setTimeout(() => {
-        markAgentLongDurationExceeded();
-        userStopSignal.abort();
-      }, agentLongTimeoutDelayMs);
+      const runtimeBudget = createActiveRuntimeBudget({
+        maxDurationMs: agentLongMaxDurationMs,
+        initialElapsedMs: Date.now() - taskStartTime,
+        onExceeded: () => {
+          markAgentLongDurationExceeded();
+          userStopSignal.abort();
+        },
+      });
+      activeRuntimeBudget = runtimeBudget;
 
       // Rate limit check happens inside execute so a thrown ChatSDKError
       // (e.g. "exceeded daily messages") flows through createUIMessageStream's
@@ -1642,6 +1651,7 @@ export const agentLongTask = task({
               userId,
               runId: ctx.run.id,
               signal: userStopSignal.signal,
+              activeRuntimeBudget: runtimeBudget,
             });
             const {
               tools,
@@ -2123,6 +2133,7 @@ export const agentLongTask = task({
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               maxDurationMs: agentLongMaxDurationMs,
+              getActiveElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
               writer,
               abortController: userStopSignal,
               summarizationTracker,
@@ -2965,7 +2976,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
-      if (agentLongTimeout) clearTimeout(agentLongTimeout);
+      activeRuntimeBudget?.dispose();
       runCleanupMap.delete(ctx.run.id);
       if (payload.approvalSessionId && triggerSessions) {
         try {
@@ -2986,6 +2997,7 @@ export const agentLongTask = task({
             triggerRunId: null,
             approvalSessionId: null,
             expectedRunId: ctx.run.id,
+            clearApprovalPending: true,
           });
         } catch (error) {
           console.error(

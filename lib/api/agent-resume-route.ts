@@ -9,6 +9,10 @@ import {
 } from "@/lib/db/actions";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
+import {
+  AGENT_APPROVAL_TOKEN_EXPIRATION,
+  closeAgentApprovalSession,
+} from "@/lib/api/agent-approval-session";
 
 const TERMINAL_STATUSES = new Set([
   "COMPLETED",
@@ -71,11 +75,16 @@ export const createAgentResumeGet =
 
       if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
         stage = "clear_terminal_trigger_run";
+        await closeAgentApprovalSession(
+          chat.active_agent_approval_session_id,
+          "agent-run-terminal",
+        );
         await setActiveTriggerRun({
           chatId,
           triggerRunId: null,
           approvalSessionId: null,
           expectedRunId: runId,
+          clearApprovalPending: true,
         });
         return new NextResponse(null, { status: 204 });
       }
@@ -90,10 +99,9 @@ export const createAgentResumeGet =
           chat.active_agent_approval_session_id
             ? auth.createPublicToken({
                 scopes: {
-                  read: { sessions: chat.active_agent_approval_session_id },
                   write: { sessions: chat.active_agent_approval_session_id },
                 } as any,
-                expirationTime: "6h",
+                expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
               })
             : Promise.resolve(undefined),
         ]);

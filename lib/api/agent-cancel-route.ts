@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runs, sessions } from "@trigger.dev/sdk";
+import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import {
@@ -9,17 +9,7 @@ import {
 } from "@/lib/db/actions";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
-
-const closeApprovalSession = async (
-  approvalSessionId: string | undefined,
-): Promise<void> => {
-  if (!approvalSessionId) return;
-  try {
-    await sessions.close(approvalSessionId, { reason: "agent-run-canceled" });
-  } catch {
-    // Ignore: the session may already be closed or unavailable.
-  }
-};
+import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
 
 export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
@@ -45,7 +35,7 @@ export const createAgentCancelPost =
 
       const approvalSessionId = chat.active_agent_approval_session_id;
       const runId = await getActiveTriggerRun({ chatId });
-      await closeApprovalSession(approvalSessionId);
+      await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
         if (approvalSessionId) {
           await setActiveTriggerRun({

@@ -2,6 +2,7 @@ import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
 import {
   AGENT_API_ENDPOINT,
+  AGENT_RESUME_ENDPOINT,
   AGENT_STATUS_ENDPOINT,
   LEGACY_AGENT_RESUME_ENDPOINT,
   LEGACY_AGENT_STATUS_ENDPOINT,
@@ -37,6 +38,40 @@ type RunHandle = {
   chatId?: string;
   approvalSessionId?: string;
   approvalSessionPublicAccessToken?: string;
+};
+
+const getAgentResumeUrl = (chatId: string | undefined): string | undefined =>
+  chatId
+    ? `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`
+    : undefined;
+
+const refreshRunAccessToken = async ({
+  resumeUrl,
+  runId,
+  signal,
+}: {
+  resumeUrl: string;
+  runId: string;
+  signal: AbortSignal;
+}): Promise<string> => {
+  const response = await fetch(resumeUrl, {
+    method: "GET",
+    cache: "no-store",
+    credentials: "same-origin",
+    signal,
+  });
+  if (response.status === 204) {
+    throw new Error("The Agent run is no longer active.");
+  }
+  if (!response.ok) {
+    throw new Error(`Agent run token refresh failed: ${response.status}`);
+  }
+
+  const handle = (await response.json()) as Partial<RunHandle>;
+  if (handle.runId !== runId || typeof handle.publicAccessToken !== "string") {
+    throw new Error("Agent run token refresh returned a different run.");
+  }
+  return handle.publicAccessToken;
 };
 
 type AgentLongRealtimeCancel = () => Promise<void> | void;
@@ -169,7 +204,11 @@ const getStatusEndpointFromResumeUrl = (url: string): string => {
 const buildSSEResponseFromRun = (
   handle: RunHandle,
   signal?: AbortSignal,
-  options?: { chatId?: string; statusEndpoint?: string },
+  options?: {
+    chatId?: string;
+    statusEndpoint?: string;
+    resumeUrl?: string;
+  },
 ): Response => {
   const { runId, publicAccessToken } = handle;
   const encoder = new TextEncoder();
@@ -403,12 +442,24 @@ const buildSSEResponseFromRun = (
         }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
         void pollRunStatusWhenIdle({ beforeFirstEvent: true });
 
+        const resumeUrl = options?.resumeUrl;
+        const streamSignal = readAbortController.signal;
         const uiStream = readTriggerRunStream<unknown>(
           runId,
           AGENT_UI_STREAM_ID,
           {
             accessToken: publicAccessToken,
-            signal: readAbortController.signal,
+            ...(resumeUrl
+              ? {
+                  refreshAccessToken: () =>
+                    refreshRunAccessToken({
+                      resumeUrl,
+                      runId,
+                      signal: streamSignal,
+                    }),
+                }
+              : {}),
+            signal: streamSignal,
             timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
           },
         );
@@ -684,6 +735,7 @@ export const fetchAgentLongStream = async (
     const handle: RunHandle = await startResponse.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      resumeUrl: getAgentResumeUrl(chatId),
       statusEndpoint: AGENT_STATUS_ENDPOINT,
     });
   } finally {
@@ -717,6 +769,7 @@ export const resumeAgentLongStream = async (
     const handle: RunHandle = await response.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      resumeUrl: url,
       statusEndpoint: getStatusEndpointFromResumeUrl(url),
     });
   } finally {

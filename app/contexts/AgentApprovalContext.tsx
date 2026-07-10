@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { sendTriggerSessionInput } from "@/lib/chat/trigger-browser-realtime";
+import { sendAgentApprovalSessionInput } from "@/lib/chat/agent-approval-session";
 import type {
   AgentToolApprovalDecision,
   AgentToolApprovalGrant,
@@ -130,11 +130,20 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
       }));
 
       try {
-        await sendTriggerSessionInput({
+        await sendAgentApprovalSessionInput({
+          chatId: session.chatId,
           sessionId: session.sessionId,
           accessToken: session.publicAccessToken,
           partId: `agent-tool-approval:${approvalId}:${decision}:${grant}`,
           value: record,
+          onAccessTokenRefreshed: (publicAccessToken) => {
+            setAgentApprovalSession((currentSession) =>
+              currentSession?.sessionId === session.sessionId &&
+              currentSession.chatId === session.chatId
+                ? { ...currentSession, publicAccessToken }
+                : currentSession,
+            );
+          },
         });
         setToolApprovalSendStates((states) => ({
           ...states,

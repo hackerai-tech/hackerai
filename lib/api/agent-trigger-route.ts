@@ -50,6 +50,7 @@ import {
   stripLocalDesktopSourcePaths,
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
+import { AGENT_APPROVAL_TOKEN_EXPIRATION } from "@/lib/api/agent-approval-session";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -448,15 +449,12 @@ export const createAgentTriggerPost =
           },
         });
         runId = session.runId;
-        approvalSessionPublicAccessToken =
-          session.publicAccessToken ??
-          (await auth.createPublicToken({
-            scopes: {
-              read: { sessions: approvalSessionId },
-              write: { sessions: approvalSessionId },
-            } as any,
-            expirationTime: "6h",
-          }));
+        approvalSessionPublicAccessToken = await auth.createPublicToken({
+          scopes: {
+            write: { sessions: approvalSessionId },
+          } as any,
+          expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
+        });
       } else {
         const handle = await tasks.trigger<typeof agentLongTask>(
           AGENT_TRIGGER_TASK_ID,

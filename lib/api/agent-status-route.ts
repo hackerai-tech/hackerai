@@ -4,6 +4,8 @@ import { ApiError, runs } from "@trigger.dev/sdk";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
+import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
+import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 
 type AgentStatusRequestBody = {
   chatId?: unknown;
@@ -16,6 +18,15 @@ type TriggerRunStatus = {
 };
 
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
+const TERMINAL_RUN_STATUSES = new Set([
+  "COMPLETED",
+  "CANCELED",
+  "FAILED",
+  "CRASHED",
+  "SYSTEM_FAILURE",
+  "EXPIRED",
+  "TIMED_OUT",
+]);
 
 const isMissingTriggerRunError = (error: unknown): boolean =>
   error instanceof ApiError &&
@@ -31,6 +42,37 @@ const runBelongsToChatOwner = (
   return (
     metadata.chatId === expected.chatId && metadata.userId === expected.userId
   );
+};
+
+const clearTerminalAgentRun = async ({
+  chatId,
+  userId,
+  runId,
+}: {
+  chatId: string;
+  userId: string;
+  runId: string;
+}) => {
+  const chat = await getChatById({ id: chatId });
+  if (
+    !chat ||
+    chat.user_id !== userId ||
+    chat.active_trigger_run_id !== runId
+  ) {
+    return;
+  }
+
+  await closeAgentApprovalSession(
+    chat.active_agent_approval_session_id,
+    "agent-run-terminal",
+  );
+  await setActiveTriggerRun({
+    chatId,
+    triggerRunId: null,
+    approvalSessionId: null,
+    expectedRunId: runId,
+    clearApprovalPending: true,
+  });
 };
 
 export const createAgentStatusPost =
@@ -70,9 +112,18 @@ export const createAgentStatusPost =
         return new NextResponse("Forbidden", { status: 403 });
       }
 
+      if (run.status && TERMINAL_RUN_STATUSES.has(run.status)) {
+        await clearTerminalAgentRun({ chatId, userId, runId });
+      }
+
       return NextResponse.json({ status: run.status });
     } catch (error) {
       if (isMissingTriggerRunError(error)) {
+        if (chatId && userId && runId) {
+          await clearTerminalAgentRun({ chatId, userId, runId }).catch(
+            () => undefined,
+          );
+        }
         return new NextResponse("Run not found", { status: 404 });
       }
 

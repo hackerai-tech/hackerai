@@ -42,6 +42,11 @@ const statusSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentApprovalSessionSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-approval-session.ts"),
+  "utf8",
+);
+
 const routeSrc = fs.readFileSync(
   path.resolve(__dirname, "../agent-trigger-route.ts"),
   "utf8",
@@ -692,6 +697,46 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/shouldClearApprovalPending = true/);
     expect(taskSrc).toMatch(/setApprovalPending\(\s*true,\s*[\s\S]*approvalId/);
+  });
+
+  test("agent approval waits without a wall-clock expiry", () => {
+    expect(taskSrc).not.toMatch(/AGENT_APPROVAL_TIMEOUT/);
+    expect(taskSrc).toMatch(/\.wait<AgentToolApprovalInputRecord>\(\)/);
+    expect(taskSrc).toMatch(/activeRuntimeBudget\.pause\(\)/);
+    expect(taskSrc).toMatch(/activeRuntimeBudget\.resume\(\)/);
+    expect(taskSrc).toMatch(
+      /getActiveElapsedTimeMs:\s*runtimeBudget\.getElapsedTimeMs/,
+    );
+  });
+
+  test("approval tokens are short-lived and refreshable", () => {
+    expect(agentApprovalSessionSrc).toMatch(
+      /AGENT_APPROVAL_TOKEN_EXPIRATION\s*=\s*"15m"/,
+    );
+    expect(routeSrc).toMatch(
+      /expirationTime:\s*AGENT_APPROVAL_TOKEN_EXPIRATION/,
+    );
+    expect(resumeSrc).toMatch(
+      /expirationTime:\s*AGENT_APPROVAL_TOKEN_EXPIRATION/,
+    );
+    expect(routeSrc).not.toMatch(/session\.publicAccessToken\s*\?\?/);
+    expect(triggerBrowserRealtimeSrc).toMatch(/refreshAccessToken/);
+    expect(transportSrc).toMatch(/refreshRunAccessToken/);
+    expect(transportSrc).toMatch(/resumeUrl:\s*getAgentResumeUrl\(chatId\)/);
+  });
+
+  test("terminal approval cleanup compare-clears stale composer state", () => {
+    expect(taskSrc).toMatch(
+      /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,
+    );
+    expect(resumeSrc).toMatch(
+      /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
+    );
+    expect(statusSrc).toMatch(/clearTerminalAgentRun/);
+    expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
+    expect(chatComponentSrc).toMatch(
+      /activeTriggerRunId[\s\S]*storedAgentApprovalRequest[\s\S]*clearAgentApprovalSession\(\)/,
+    );
   });
 
   test("handled tool failures are visible in Trigger logs and metadata", () => {

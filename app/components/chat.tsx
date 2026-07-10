@@ -613,10 +613,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const storedAgentApprovalRequest = getStoredAgentApprovalRequest(
     chatDataForCurrentChat,
   );
-  const activeTriggerRunRef = useLatestRef(
-    (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      string | undefined,
-  );
+  const activeTriggerRunId = (chatDataForCurrentChat as any)
+    ?.active_trigger_run_id as string | undefined;
+  const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
+  const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (
+      !hasLoadedCurrentChat ||
+      activeTriggerRunId ||
+      storedAgentApprovalRequest
+    ) {
+      return;
+    }
+    clearAgentApprovalSession();
+  }, [
+    activeTriggerRunId,
+    clearAgentApprovalSession,
+    hasLoadedCurrentChat,
+    storedAgentApprovalRequest,
+  ]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
