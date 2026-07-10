@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
-import { useAgentApproval } from "@/app/contexts/AgentApprovalContext";
+import { useEffect, type ReactNode } from "react";
+import {
+  useAgentApproval,
+  type AgentApprovalSendState,
+} from "@/app/contexts/AgentApprovalContext";
 
 type ToolApprovalControlsProps = {
   approvalId?: string;
@@ -10,7 +13,29 @@ type ToolApprovalControlsProps = {
   target?: string;
   detail?: string;
   kind?: "terminal" | "file";
+  children?: (sendState: AgentApprovalSendState) => ReactNode;
 };
+
+export function getToolApprovalDisplayState({
+  sendState,
+  approvedAction,
+  deniedAction,
+}: {
+  sendState: AgentApprovalSendState;
+  approvedAction: string;
+  deniedAction: string;
+}) {
+  switch (sendState) {
+    case "sending":
+      return { action: "Approving", isShimmer: true };
+    case "approved":
+      return { action: approvedAction, isShimmer: true };
+    case "denied":
+      return { action: deniedAction, isShimmer: false };
+    default:
+      return { action: "Awaiting approval", isShimmer: false };
+  }
+}
 
 export function ToolApprovalControls({
   approvalId,
@@ -19,6 +44,7 @@ export function ToolApprovalControls({
   target,
   detail,
   kind,
+  children,
 }: ToolApprovalControlsProps) {
   const {
     setActiveToolApprovalRequest,
@@ -60,5 +86,5 @@ export function ToolApprovalControls({
     toolCallId,
   ]);
 
-  return null;
+  return children?.(sendState) ?? null;
 }

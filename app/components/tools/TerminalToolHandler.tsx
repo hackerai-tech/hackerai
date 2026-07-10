@@ -14,7 +14,10 @@ import {
   type ShellToolOutput,
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
-import { ToolApprovalControls } from "./ToolApprovalControls";
+import {
+  getToolApprovalDisplayState,
+  ToolApprovalControls,
+} from "./ToolApprovalControls";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -158,24 +161,35 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       );
     case "approval-requested":
       return (
-        <div key={toolCallId}>
-          <ToolBlock
-            icon={<Terminal />}
-            action="Awaiting approval"
-            target={blockTarget}
-            isClickable={!!sidebarContent}
-            onClick={handleOpenInSidebar}
-            onKeyDown={handleKeyDown}
-          />
-          <ToolApprovalControls
-            approvalId={part.approval?.id}
-            toolCallId={toolCallId}
-            title="The agent wants to run this terminal command."
-            target={blockTarget}
-            detail="Approve to continue, or deny to stop this command."
-            kind="terminal"
-          />
-        </div>
+        <ToolApprovalControls
+          key={toolCallId}
+          approvalId={part.approval?.id}
+          toolCallId={toolCallId}
+          title="The agent wants to run this terminal command."
+          target={blockTarget}
+          detail="Approve to continue, or deny to stop this command."
+          kind="terminal"
+        >
+          {(sendState) => {
+            const display = getToolApprovalDisplayState({
+              sendState,
+              approvedAction: blockAction(true),
+              deniedAction: "Command denied",
+            });
+
+            return (
+              <ToolBlock
+                icon={<Terminal />}
+                action={display.action}
+                target={blockTarget}
+                isShimmer={display.isShimmer}
+                isClickable={!!sidebarContent}
+                onClick={handleOpenInSidebar}
+                onKeyDown={handleKeyDown}
+              />
+            );
+          }}
+        </ToolApprovalControls>
       );
     case "output-available":
       return (

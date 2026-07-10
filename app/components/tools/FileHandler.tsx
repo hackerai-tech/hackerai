@@ -7,7 +7,10 @@ import { isSidebarFile } from "@/types/chat";
 import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
-import { ToolApprovalControls } from "./ToolApprovalControls";
+import {
+  getToolApprovalDisplayState,
+  ToolApprovalControls,
+} from "./ToolApprovalControls";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
@@ -280,31 +283,44 @@ export const FileHandler = memo(function FileHandler({
   const renderApprovalRequest = ({
     icon,
     target,
+    approvedAction,
   }: {
     icon: ReactNode;
     target?: string;
+    approvedAction: string;
   }) => (
-    <div key={part.toolCallId}>
-      <ToolBlock
-        icon={icon}
-        action="Awaiting approval"
-        target={target}
-        isClickable={isClickable}
-        onClick={isClickable ? handleOpenInSidebar : undefined}
-        onKeyDown={isClickable ? handleKeyDown : undefined}
-      />
-      <ToolApprovalControls
-        approvalId={part.approval?.id}
-        toolCallId={part.toolCallId}
-        title={
-          FILE_APPROVAL_TITLES[action ?? "write"] ??
-          "The agent wants to change this file."
-        }
-        target={target}
-        detail="Approve to continue, or deny to stop this file change."
-        kind="file"
-      />
-    </div>
+    <ToolApprovalControls
+      key={part.toolCallId}
+      approvalId={part.approval?.id}
+      toolCallId={part.toolCallId}
+      title={
+        FILE_APPROVAL_TITLES[action ?? "write"] ??
+        "The agent wants to change this file."
+      }
+      target={target}
+      detail="Approve to continue, or deny to stop this file change."
+      kind="file"
+    >
+      {(sendState) => {
+        const display = getToolApprovalDisplayState({
+          sendState,
+          approvedAction,
+          deniedAction: "File change denied",
+        });
+
+        return (
+          <ToolBlock
+            icon={icon}
+            action={display.action}
+            target={target}
+            isShimmer={display.isShimmer}
+            isClickable={isClickable}
+            onClick={isClickable ? handleOpenInSidebar : undefined}
+            onKeyDown={isClickable ? handleKeyDown : undefined}
+          />
+        );
+      }}
+    </ToolApprovalControls>
   );
 
   const renderViewAction = () => {
@@ -490,6 +506,7 @@ export const FileHandler = memo(function FileHandler({
         return renderApprovalRequest({
           icon: <FilePlus />,
           target: input?.path,
+          approvedAction: "Writing to",
         });
       case "output-available":
       case "output-error": {
@@ -583,6 +600,7 @@ export const FileHandler = memo(function FileHandler({
         return renderApprovalRequest({
           icon: <FileOutput />,
           target: input?.path,
+          approvedAction: "Appending to",
         });
       case "output-available":
       case "output-error": {
@@ -660,6 +678,7 @@ export const FileHandler = memo(function FileHandler({
         return renderApprovalRequest({
           icon: <FilePen />,
           target: input?.path,
+          approvedAction: "Editing",
         });
       case "output-available":
       case "output-error": {
