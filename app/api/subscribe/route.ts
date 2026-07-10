@@ -79,6 +79,53 @@ function getEnvironment(): string {
 
 const CHECKOUT_SESSION_PAGE_SIZE = 100;
 const MAX_CHECKOUT_SESSION_PAGES = 5;
+const WORKOS_UPDATE_RETRY_DELAY_MS = process.env.NODE_ENV === "test" ? 0 : 250;
+
+function isWorkOSRequestTimeout(error: unknown): boolean {
+  return error instanceof Error && /request timeout/i.test(error.message);
+}
+
+async function attachStripeCustomerToOrganization({
+  organizationId,
+  customerId,
+  userId,
+  requestId,
+}: {
+  organizationId: string;
+  customerId: string;
+  userId: string;
+  requestId: string;
+}): Promise<void> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await workos.organizations.updateOrganization({
+        organization: organizationId,
+        stripeCustomerId: customerId,
+      });
+      return;
+    } catch (error) {
+      if (!isWorkOSRequestTimeout(error) || attempt === 2) throw error;
+
+      logger.warn("Retrying timed-out WorkOS organization update", {
+        event: "billing.workos_organization_update_retry_scheduled",
+        request_id: requestId,
+        service: "hackerai-web",
+        environment: getEnvironment(),
+        route: "/api/subscribe",
+        user_id: userId,
+        organization_id: organizationId,
+        stripe_customer_id: customerId,
+        attempt,
+        next_attempt: attempt + 1,
+        retry_delay_ms: WORKOS_UPDATE_RETRY_DELAY_MS,
+        workos_error_name: error instanceof Error ? error.name : typeof error,
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, WORKOS_UPDATE_RETRY_DELAY_MS),
+      );
+    }
+  }
+}
 
 async function findReusableCheckoutSession({
   customerId,
@@ -119,6 +166,7 @@ async function findReusableCheckoutSession({
 }
 
 export const POST = async (req: NextRequest) => {
+  const requestId = req.headers.get("x-vercel-id") ?? "unknown";
   let shouldClearReferralCookies = false;
   const json = (body: unknown, init?: ResponseInit) => {
     const response = NextResponse.json(body, init);
@@ -370,9 +418,11 @@ export const POST = async (req: NextRequest) => {
     if (shouldAttachCustomerToOrganization) {
       // Update WorkOS organization with Stripe customer ID
       // This will allow WorkOS to automatically add entitlements to the access token
-      await workos.organizations.updateOrganization({
-        organization: organization.id,
-        stripeCustomerId: customer.id,
+      await attachStripeCustomerToOrganization({
+        organizationId: organization.id,
+        customerId: customer.id,
+        userId,
+        requestId,
       });
     }
 
@@ -472,7 +522,7 @@ export const POST = async (req: NextRequest) => {
       });
       logger.warn("Reused an open Stripe Checkout Session", {
         event: "billing.checkout_session_reused",
-        request_id: req.headers.get("x-vercel-id") ?? "unknown",
+        request_id: requestId,
         service: "hackerai-web",
         environment: getEnvironment(),
         route: "/api/subscribe",
@@ -592,7 +642,7 @@ export const POST = async (req: NextRequest) => {
       error instanceof Error ? error : undefined,
       {
         event: "billing.subscribe_request_failed",
-        request_id: req.headers.get("x-vercel-id") ?? "unknown",
+        request_id: requestId,
         service: "hackerai-web",
         environment: getEnvironment(),
         route: "/api/subscribe",

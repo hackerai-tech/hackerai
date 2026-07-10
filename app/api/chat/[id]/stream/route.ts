@@ -134,6 +134,8 @@ export async function GET(
           chatId,
           endpoint: "/api/chat/[id]/stream",
           abortController,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          userId,
         });
 
         // Abort on client disconnect (tab close, network error, etc.)
