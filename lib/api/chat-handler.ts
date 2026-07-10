@@ -10,6 +10,7 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   AGENT_MAX_STREAM_DURATION_MS,
   BUDGET_EXHAUSTION_FINISH_REASON,
+  getAgentAutoContinueStopSource,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
@@ -2025,15 +2026,31 @@ export const createChatHandler = () => {
                       await phLogger.flush();
                     }
 
+                    const autoContinueStopSource =
+                      getAgentAutoContinueStopSource({
+                        finishReason: state.streamFinishReason,
+                        stoppedDueToTokenExhaustion:
+                          state.stoppedDueToTokenExhaustion,
+                        stoppedDueToElapsedTimeout:
+                          state.stoppedDueToElapsedTimeout,
+                        stoppedDueToPostSummarizationIncomplete:
+                          state.stoppedDueToPostSummarizationIncomplete,
+                      });
                     if (
-                      (state.stoppedDueToTokenExhaustion ||
-                        state.stoppedDueToElapsedTimeout ||
-                        state.stoppedDueToPostSummarizationIncomplete ||
-                        state.streamFinishReason === "tool-calls") &&
+                      autoContinueStopSource &&
                       isAgentMode(mode) &&
                       !temporary
                     ) {
                       writeAutoContinue(writer);
+                      phLogger.info("Agent auto-continue signaled", {
+                        event: "agent_auto_continue_signaled",
+                        chat_id: chatId,
+                        assistant_id: assistantMessageId,
+                        finish_reason: state.streamFinishReason,
+                        stop_source: autoContinueStopSource,
+                        last_step_input_tokens: state.lastStepInputTokens,
+                        had_summarization: summarizationTracker.hasSummarized,
+                      });
                     }
                     shutdownPostHog(posthog);
                   } finally {

@@ -9,6 +9,7 @@ import {
 import {
   tokenExhaustedAfterSummarization,
   elapsedTimeExceeds,
+  getAgentAutoContinueStopSource,
 } from "../stop-conditions";
 
 function makeState(overrides: {
@@ -131,6 +132,51 @@ describe("tokenExhaustedAfterSummarization", () => {
     condition();
     condition();
     expect(onFired).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("getAgentAutoContinueStopSource", () => {
+  const baseState = {
+    finishReason: "stop",
+    stoppedDueToTokenExhaustion: false,
+    stoppedDueToElapsedTimeout: false,
+    stoppedDueToPostSummarizationIncomplete: false,
+  };
+
+  it.each([
+    {
+      scenario: "post-summarization token exhaustion",
+      overrides: { stoppedDueToTokenExhaustion: true },
+      expected: "post_summarization_token_exhaustion",
+    },
+    {
+      scenario: "elapsed timeout when enabled by the caller",
+      overrides: { stoppedDueToElapsedTimeout: true },
+      expected: "elapsed_timeout",
+    },
+    {
+      scenario: "incomplete post-summarization continuation",
+      overrides: { stoppedDueToPostSummarizationIncomplete: true },
+      expected: "post_summarization_incomplete",
+    },
+    {
+      scenario: "provider-direct context-limit finish reason",
+      overrides: { finishReason: "context-limit" },
+      expected: "context_limit_finish_reason",
+    },
+    {
+      scenario: "tool-call step limit",
+      overrides: { finishReason: "tool-calls" },
+      expected: "tool_calls_finish_reason",
+    },
+  ])("returns the stop source for $scenario", ({ overrides, expected }) => {
+    expect(getAgentAutoContinueStopSource({ ...baseState, ...overrides })).toBe(
+      expected,
+    );
+  });
+
+  it("does not auto-continue unrelated finish reasons", () => {
+    expect(getAgentAutoContinueStopSource(baseState)).toBeNull();
   });
 });
 
