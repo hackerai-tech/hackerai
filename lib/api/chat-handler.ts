@@ -288,6 +288,8 @@ export const createChatHandler = () => {
           chatId,
           endpoint,
           abortController: userStopSignal,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          userId,
         });
       }
 

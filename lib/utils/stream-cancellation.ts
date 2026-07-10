@@ -7,6 +7,7 @@ import {
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
 
 type PollOptions = {
   chatId: string;
@@ -22,6 +23,8 @@ type PreemptiveTimeoutOptions = {
   chatId: string;
   endpoint: ApiEndpoint;
   abortController: AbortController;
+  requestId?: string;
+  userId?: string;
   safetyBuffer?: number;
 };
 
@@ -258,7 +261,9 @@ export const createPreemptiveTimeout = ({
   chatId,
   endpoint,
   abortController,
-  safetyBuffer = 30,
+  requestId,
+  userId,
+  safetyBuffer = 60,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
   const maxDuration = endpoint === "/api/chat" ? 420 : 800;
@@ -272,14 +277,24 @@ export const createPreemptiveTimeout = ({
     triggerTime = Date.now();
     isPreemptive = true;
 
-    phLogger.info("Preemptive timeout triggered", {
-      chatId,
+    const fields = {
+      event: "chat.preemptive_timeout_triggered",
+      request_id: requestId ?? "unknown",
+      service: "hackerai-web",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+      user_id: userId,
+      chat_id: chatId,
       endpoint,
-      maxDuration,
-      safetyBuffer,
-      maxStreamTimeMs: maxStreamTime,
-      elapsedMs: triggerTime - startTime,
-      triggerTime: new Date(triggerTime).toISOString(),
+      max_duration_seconds: maxDuration,
+      safety_buffer_seconds: safetyBuffer,
+      max_stream_time_ms: maxStreamTime,
+      elapsed_ms: triggerTime - startTime,
+    };
+    logger.warn("Preemptive timeout triggered", fields);
+    phLogger.info("Preemptive timeout triggered", {
+      ...fields,
+      userId,
+      trigger_time: new Date(triggerTime).toISOString(),
     });
 
     abortController.abort();

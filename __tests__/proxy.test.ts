@@ -279,6 +279,42 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
   });
 
+  it("stops root Server Actions when session refresh has ended", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+        },
+      },
+    );
+    mockAuthkit.mockRejectedValue(endedSessionError);
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "POST",
+        hasSession: true,
+        headers: { "next-action": "billing-action" },
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      { status: 401 },
+    );
+    expect(mockNextResponseNext).not.toHaveBeenCalled();
+  });
+
   it("returns 401 when protected APIs hit thrown ended-session refresh errors", async () => {
     const endedSessionError = Object.assign(
       new Error("Failed to refresh session: Error: invalid_grant"),

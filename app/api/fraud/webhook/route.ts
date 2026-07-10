@@ -8,6 +8,7 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
+import { getRemainingRefundAmountCents } from "@/lib/billing/fraud-refund";
 
 const WEBHOOK_LOG_PREFIX = "[Fraud Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -160,16 +161,28 @@ async function reportChargeFraudulent(chargeId: string): Promise<void> {
  * the dispute fee + ratio impact).
  */
 async function refundChargeForEFW(
-  chargeId: string,
+  charge: Stripe.Charge,
   efwId: string,
 ): Promise<void> {
+  const remainingAmount = getRemainingRefundAmountCents(charge);
+  if (remainingAmount === 0) {
+    console.log(
+      `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): charge has no refundable balance`,
+    );
+    return;
+  }
+
   try {
     await stripe.refunds.create(
-      { charge: chargeId, reason: "fraudulent" },
+      {
+        charge: charge.id,
+        reason: "fraudulent",
+        amount: remainingAmount,
+      },
       { idempotencyKey: `efw-refund:${efwId}` },
     );
     console.log(
-      `[Fraud Webhook] Refunded charge ${chargeId} (early fraud warning ${efwId})`,
+      `[Fraud Webhook] Refunded ${remainingAmount} cents from charge ${charge.id} (early fraud warning ${efwId})`,
     );
   } catch (err) {
     if (err instanceof Stripe.errors.StripeError) {
@@ -180,14 +193,14 @@ async function refundChargeForEFW(
         code === "charge_pending"
       ) {
         console.log(
-          `[Fraud Webhook] Refund skipped for ${chargeId} (EFW ${efwId}): ${code}`,
+          `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): ${code}`,
         );
         return;
       }
     }
     // Transient or unexpected — bubble so Stripe retries the webhook.
     console.error(
-      `[Fraud Webhook] Refund failed for ${chargeId} (EFW ${efwId}):`,
+      `[Fraud Webhook] Refund failed for ${charge.id} (EFW ${efwId}):`,
       err,
     );
     throw err;
@@ -313,7 +326,7 @@ async function handleEarlyFraudWarning(
   const customerId = getCustomerIdFromCharge(charge);
 
   // Refund first. Throws on transient errors so Stripe retries the webhook.
-  await refundChargeForEFW(chargeId, warning.id);
+  await refundChargeForEFW(charge, warning.id);
 
   // Block the user
   if (customerId) {

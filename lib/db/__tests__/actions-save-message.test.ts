@@ -46,6 +46,7 @@ const loadSaveMessageWithMocks = async () => {
     getMessagesByChatId,
     saveChat,
     saveMessage,
+    setActiveTriggerRun,
   } = await import("../actions");
   return {
     deleteChatForBackend,
@@ -57,6 +58,7 @@ const loadSaveMessageWithMocks = async () => {
     mockQuery,
     saveChat,
     saveMessage,
+    setActiveTriggerRun,
   };
 };
 
@@ -332,6 +334,84 @@ describe("getChatById", () => {
       expect(errorSpy).toHaveBeenCalledTimes(1);
     } finally {
       warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("classifies and sanitizes Convex Cloudflare 5xx pages", async () => {
+    const { getChatById, mockPhEvent, mockQuery } =
+      await loadSaveMessageWithMocks();
+    const cloudflareError = new Error(`<!DOCTYPE html>
+      <html><head><title>haiusercontent.com | 520: Web server is returning an unknown error</title></head>
+      <body>Error code 520 Cloudflare Ray ID: <strong>a18f8f8c09cee629</strong> Your IP: 192.0.2.1</body></html>`);
+    mockQuery.mockRejectedValue(cloudflareError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await getChatById({ id: "chat-1" }).catch(
+        (error) => error,
+      );
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.getChatById",
+          db_error_message: "Convex upstream returned HTTP 520",
+          db_error_kind: "convex_upstream_http_error",
+          db_upstream_status_code: 520,
+          db_upstream_ray_id: "a18f8f8c09cee629",
+          db_retry_reason: "convex_upstream_http_5xx",
+        }),
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(thrown.metadata)).not.toContain("192.0.2.1");
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_error_message: "Convex upstream returned HTTP 520",
+          db_upstream_status_code: 520,
+          db_upstream_ray_id: "a18f8f8c09cee629",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("setActiveTriggerRun", () => {
+  it("preserves transient database failures with queryable run metadata", async () => {
+    const { mockMutation, setActiveTriggerRun } =
+      await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(new TypeError("fetch failed") as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        setActiveTriggerRun({
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+          expectedRunId: "run-0",
+        }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.setActiveTriggerRun",
+          db_retry_reason: "network_fetch_failed",
+          chat_id: "chat-1",
+          trigger_run_id: "run-1",
+          expected_run_id: "run-0",
+        }),
+      });
+    } finally {
       errorSpy.mockRestore();
     }
   });

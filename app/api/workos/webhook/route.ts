@@ -6,6 +6,7 @@ import { workos } from "@/app/api/workos";
 import { captureUserSignedUp } from "@/lib/analytics/user-signup";
 import { phLogger } from "@/lib/posthog/server";
 import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -21,7 +22,13 @@ export async function POST(req: NextRequest) {
   const signature = req.headers.get("workos-signature");
 
   if (!signature) {
-    console.error("[WorkOS Webhook] Missing workos-signature header");
+    logger.warn("Rejected WorkOS webhook without a signature", {
+      event: "workos.webhook_missing_signature",
+      request_id: req.headers.get("x-vercel-id") ?? "unknown",
+      service: "hackerai-web",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+      route: "/api/workos/webhook",
+    });
     return NextResponse.json(
       { error: "Missing workos-signature header" },
       { status: 400 },

@@ -476,6 +476,61 @@ describe("POST /api/subscribe", () => {
     );
   });
 
+  it("retries a timed-out WorkOS organization update once", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockGetOrganization.mockResolvedValue({ id: "org_team" } as never);
+    mockListCustomers.mockResolvedValue({
+      data: [
+        {
+          id: "cus_matched",
+          metadata: { workOSOrganizationId: "org_team" },
+        },
+      ],
+    } as never);
+    const timeout = Object.assign(new Error("Error: Request timeout"), {
+      name: "OauthException",
+    });
+    mockUpdateOrganization
+      .mockRejectedValueOnce(timeout as never)
+      .mockResolvedValueOnce(undefined as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { POST } = await import("../route");
+
+      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+
+      expect(response.status).toBe(200);
+      expect(mockUpdateOrganization).toHaveBeenCalledTimes(2);
+      expect(mockUpdateOrganization).toHaveBeenNthCalledWith(1, {
+        organization: "org_team",
+        stripeCustomerId: "cus_matched",
+      });
+      expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toMatchObject({
+        event: "billing.workos_organization_update_retry_scheduled",
+        request_id: "unknown",
+        service: "hackerai-web",
+        route: "/api/subscribe",
+        user_id: "user_123",
+        organization_id: "org_team",
+        stripe_customer_id: "cus_matched",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        workos_error_name: "OauthException",
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("records referral checkout linkage without copying referral data into Stripe metadata", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [],
