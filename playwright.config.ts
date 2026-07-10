@@ -5,6 +5,14 @@ import * as path from "path";
 // Load .env.e2e file for test environment variables
 dotenv.config({ path: path.join(__dirname, ".env.e2e") });
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3000";
+const parsedBaseURL = new URL(baseURL);
+const isLocalBaseURL = ["localhost", "127.0.0.1", "[::1]"].includes(
+  parsedBaseURL.hostname,
+);
+const localDevServerPort =
+  parsedBaseURL.port || (parsedBaseURL.protocol === "https:" ? "443" : "80");
+
 /**
  * See https://playwright.dev/docs/test-configuration.
  */
@@ -18,7 +26,7 @@ export default defineConfig({
   timeout: 60000,
 
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3000",
+    baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     navigationTimeout: 30000,
@@ -40,10 +48,12 @@ export default defineConfig({
   ],
 
   /* Run your local dev server before starting the tests */
-  webServer: {
-    command: "corepack pnpm exec next dev --webpack",
-    url: "http://localhost:3000",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120000,
-  },
+  webServer: isLocalBaseURL
+    ? {
+        command: `corepack pnpm exec next dev --webpack --port ${localDevServerPort}`,
+        url: baseURL,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120000,
+      }
+    : undefined,
 });
