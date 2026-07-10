@@ -438,7 +438,7 @@ export class SummarizationTracker {
     this.recordSummarizationUsage(usage, usageTracker);
   }
 
-  /** Account for a generated summary that was rejected as ineffective. */
+  /** Account for generated-summary usage, whether accepted or rejected. */
   recordSummarizationUsage(
     usage: SummarizationUsage | undefined,
     usageTracker: UsageTracker,

@@ -71,6 +71,7 @@ import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import {
   getSummarizationThresholdTokens,
   MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+  ROLLING_COMPACTION_MAX_SIZE_RATIO,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
@@ -135,7 +136,7 @@ export const isRollingCompactionEffective = (
   const previousBytes = getSerializedBytes(previousMessages);
   const compactedBytes = getSerializedBytes(compactedMessages);
   if (previousBytes === undefined || compactedBytes === undefined) return true;
-  return compactedBytes < previousBytes * 0.9;
+  return compactedBytes < previousBytes * ROLLING_COMPACTION_MAX_SIZE_RATIO;
 };
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import type { ModelMessage, UIMessage } from "ai";
+import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
 
 const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
@@ -98,6 +99,49 @@ const uiMessage = (id: string, text: string): UIMessage => ({
   parts: [{ type: "text", text }],
 });
 
+const createTestStreamContext = (
+  overrides: Record<string, unknown>,
+): Record<string, unknown> => ({
+  trackedProvider: {
+    languageModel: () => ({ modelId: "test-model" }),
+  },
+  currentSystemPrompt: "system",
+  tools: {},
+  mode: "agent",
+  endpoint: "agent",
+  userId: "user",
+  subscription: "pro",
+  chatId: "chat",
+  temporary: false,
+  fileTokens: {},
+  noteInjectionOpts: {
+    userId: "user",
+    subscription: "pro",
+    shouldIncludeNotes: false,
+    isTemporary: false,
+  },
+  systemPromptTokens: 100,
+  ctxSystemTokens: 100,
+  ctxMaxTokens: 128_000,
+  streamStartTime: Date.now(),
+  contextUsageOn: true,
+  isReasoningModel: false,
+  maxDurationMs: 60_000,
+  writer: { write: jest.fn() },
+  abortController: new AbortController(),
+  budgetMonitor: null,
+  sandboxManager: {
+    getSandboxType: () => undefined,
+    supportsInteractivePty: async () => true,
+  },
+  getTodoManager: () => ({ getAllTodos: () => [] }),
+  ensureSandbox: jest.fn(),
+  chatLogger: undefined,
+  usageRefundTracker: {},
+  getHardTimeoutReason: () => null,
+  ...overrides,
+});
+
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -157,47 +201,12 @@ describe("createAgentStream repeated compaction", () => {
     });
     const stream = (await createAgentStream(
       "test-model",
-      {
-        trackedProvider: {
-          languageModel: () => ({ modelId: "test-model" }),
-        },
-        currentSystemPrompt: "system",
-        tools: {},
-        mode: "agent",
-        endpoint: "agent",
-        userId: "user",
-        subscription: "pro",
+      createTestStreamContext({
         chatId: "chat",
-        temporary: false,
-        fileTokens: {},
-        noteInjectionOpts: {
-          userId: "user",
-          subscription: "pro",
-          shouldIncludeNotes: false,
-          isTemporary: false,
-        },
-        systemPromptTokens: 100,
-        ctxSystemTokens: 100,
-        ctxMaxTokens: 128_000,
-        streamStartTime: Date.now(),
-        contextUsageOn: true,
-        isReasoningModel: false,
-        maxDurationMs: 60_000,
         writer,
-        abortController: new AbortController(),
         summarizationTracker: tracker,
         usageTracker,
-        budgetMonitor: null,
-        sandboxManager: {
-          getSandboxType: () => undefined,
-          supportsInteractivePty: async () => true,
-        },
-        getTodoManager: () => ({ getAllTodos: () => [] }),
-        ensureSandbox: jest.fn(),
-        chatLogger: undefined,
-        usageRefundTracker: {},
-        getHardTimeoutReason: () => null,
-      } as any,
+      }) as any,
       state,
     )) as any;
 
@@ -289,7 +298,11 @@ describe("createAgentStream repeated compaction", () => {
       { toolResults: [], response: { messages: [step2] } },
       { toolResults: [], response: { messages: [step3] } },
     ];
-    for (let index = 4; index <= 8; index++) {
+    for (
+      let index = 4;
+      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+      index++
+    ) {
       const nextStep: ModelMessage = {
         role: "assistant",
         content: `large tool step ${index} `.repeat(1_000),
@@ -305,8 +318,12 @@ describe("createAgentStream repeated compaction", () => {
       });
     }
 
-    expect(tracker.summarizationCount).toBe(7);
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(7);
+    expect(tracker.summarizationCount).toBe(
+      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+    );
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+    );
     state.lastStepInputTokens = 300_000;
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
@@ -334,54 +351,23 @@ describe("createAgentStream repeated compaction", () => {
     );
     const stream = (await createAgentStream(
       "test-model",
-      {
-        trackedProvider: {
-          languageModel: () => ({ modelId: "test-model" }),
-        },
-        currentSystemPrompt: "system",
-        tools: {},
-        mode: "agent",
-        endpoint: "agent",
-        userId: "user",
-        subscription: "pro",
+      createTestStreamContext({
         chatId: "chat-failure",
-        temporary: false,
-        fileTokens: {},
-        noteInjectionOpts: {
-          userId: "user",
-          subscription: "pro",
-          shouldIncludeNotes: false,
-          isTemporary: false,
-        },
-        systemPromptTokens: 100,
-        ctxSystemTokens: 100,
         ctxMaxTokens: 200_000,
-        streamStartTime: Date.now(),
-        contextUsageOn: true,
-        isReasoningModel: false,
-        maxDurationMs: 60_000,
-        writer: { write: jest.fn() },
-        abortController: new AbortController(),
         summarizationTracker: tracker,
         usageTracker: {},
-        budgetMonitor: null,
-        sandboxManager: {
-          getSandboxType: () => undefined,
-          supportsInteractivePty: async () => true,
-        },
-        getTodoManager: () => ({ getAllTodos: () => [] }),
-        ensureSandbox: jest.fn(),
-        chatLogger: undefined,
-        usageRefundTracker: {},
-        getHardTimeoutReason: () => null,
-      } as any,
+      }) as any,
       state,
     )) as any;
 
     await stream.prepareStep({ steps: [], messages: initialRaw });
     const rawMessages = [...initialRaw];
     const steps: Array<Record<string, unknown>> = [];
-    for (let index = 1; index <= 8; index++) {
+    for (
+      let index = 1;
+      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+      index++
+    ) {
       const step: ModelMessage = {
         role: "assistant",
         content: `failed compaction step ${index}`,
@@ -391,7 +377,9 @@ describe("createAgentStream repeated compaction", () => {
       await stream.prepareStep({ steps, messages: rawMessages });
     }
 
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(8);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+    );
     expect(tracker.summarizationCount).toBe(0);
     expect(tracker.recordSummarization).not.toHaveBeenCalled();
     state.lastStepInputTokens = 300_000;
