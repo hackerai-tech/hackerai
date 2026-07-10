@@ -7,7 +7,24 @@ export { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-ca
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 
+export const OUTPUT_LIMIT_FINISH_REASON = "length";
+
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
+
+export function shouldAutoContinueAgentStream(state: {
+  finishReason?: string;
+  stoppedDueToTokenExhaustion: boolean;
+  stoppedDueToElapsedTimeout?: boolean;
+  stoppedDueToPostSummarizationIncomplete: boolean;
+}): boolean {
+  return (
+    state.stoppedDueToTokenExhaustion ||
+    state.stoppedDueToElapsedTimeout === true ||
+    state.stoppedDueToPostSummarizationIncomplete ||
+    state.finishReason === "tool-calls" ||
+    state.finishReason === OUTPUT_LIMIT_FINISH_REASON
+  );
+}
 
 export function tokenExhaustedAfterSummarization(state: {
   threshold: number;

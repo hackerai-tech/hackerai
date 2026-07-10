@@ -62,10 +62,7 @@ import {
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { isAnthropicModel } from "@/lib/ai/providers";
-import {
-  FREE_MAX_OUTPUT_TOKENS,
-  PAID_MAX_OUTPUT_TOKENS,
-} from "@/lib/rate-limit/free-config";
+import { MAX_OUTPUT_TOKENS } from "@/lib/rate-limit/free-config";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
@@ -295,7 +292,8 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -541,10 +539,7 @@ export async function createAgentStream(
       : getActiveTools();
 
   const initialActiveTools = await getActiveTools();
-  const maxOutputTokens =
-    ctx.subscription === "free"
-      ? FREE_MAX_OUTPUT_TOKENS
-      : PAID_MAX_OUTPUT_TOKENS;
+  const maxOutputTokens = MAX_OUTPUT_TOKENS;
   let streamHasImageViewResults = uiMessagesContainImageViewResult(
     state.finalMessages,
   );

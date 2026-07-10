@@ -9,6 +9,7 @@ import {
 import {
   tokenExhaustedAfterSummarization,
   elapsedTimeExceeds,
+  shouldAutoContinueAgentStream,
 } from "../stop-conditions";
 
 function makeState(overrides: {
@@ -132,6 +133,50 @@ describe("tokenExhaustedAfterSummarization", () => {
     condition();
     expect(onFired).toHaveBeenCalledTimes(2);
   });
+});
+
+describe("shouldAutoContinueAgentStream", () => {
+  const baseState = {
+    stoppedDueToTokenExhaustion: false,
+    stoppedDueToPostSummarizationIncomplete: false,
+  };
+
+  it.each([
+    {
+      scenario: "the provider reaches the output limit",
+      state: { ...baseState, finishReason: "length" },
+    },
+    {
+      scenario: "the provider reaches the tool-call step limit",
+      state: { ...baseState, finishReason: "tool-calls" },
+    },
+    {
+      scenario: "context is exhausted after summarization",
+      state: { ...baseState, stoppedDueToTokenExhaustion: true },
+    },
+    {
+      scenario: "the short stream reaches its elapsed timeout",
+      state: { ...baseState, stoppedDueToElapsedTimeout: true },
+    },
+    {
+      scenario: "post-summarization continuation is incomplete",
+      state: {
+        ...baseState,
+        stoppedDueToPostSummarizationIncomplete: true,
+      },
+    },
+  ])("returns true when $scenario", ({ state }) => {
+    expect(shouldAutoContinueAgentStream(state)).toBe(true);
+  });
+
+  it.each([undefined, "stop", "timeout", "budget-exhausted", "doom-loop"])(
+    "returns false for terminal finish reason %s",
+    (finishReason) => {
+      expect(
+        shouldAutoContinueAgentStream({ ...baseState, finishReason }),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("elapsedTimeExceeds", () => {

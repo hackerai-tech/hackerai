@@ -72,36 +72,6 @@ describe("FinishReasonNotice", () => {
       },
     );
 
-    it.each([
-      { finishReason: "context-limit" as const, autoContinueCount: 0 },
-      { finishReason: "context-limit" as const, autoContinueCount: 2 },
-      { finishReason: "context-limit" as const, autoContinueCount: 4 },
-      { finishReason: "length" as const, autoContinueCount: 0 },
-      { finishReason: "length" as const, autoContinueCount: 3 },
-      { finishReason: "length" as const, autoContinueCount: 4 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 0 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 2 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 4 },
-      { finishReason: "preemptive-timeout" as const, autoContinueCount: 0 },
-      {
-        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
-        autoContinueCount: 0,
-      },
-      {
-        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
-        autoContinueCount: 4,
-      },
-    ])(
-      "returns null in agent mode when autoContinueCount=$autoContinueCount < MAX for finishReason=$finishReason",
-      ({ finishReason, autoContinueCount }) => {
-        const { container } = renderNotice(
-          { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount },
-        );
-        expect(container.innerHTML).toBe("");
-      },
-    );
-
     it("returns null when finishReason is undefined", () => {
       const { container } = renderNotice(
         { finishReason: undefined, mode: "agent" },
@@ -131,7 +101,7 @@ describe("FinishReasonNotice", () => {
       },
       {
         finishReason: "length",
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
       {
         finishReason: "context-limit",
@@ -146,7 +116,7 @@ describe("FinishReasonNotice", () => {
         expectedText: "Paused after compacting the conversation",
       },
     ])(
-      "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
+      "renders notice for finishReason=$finishReason when no automatic continuation is active",
       ({ finishReason, expectedText }) => {
         renderNotice(
           { finishReason, mode: "agent" },
@@ -155,6 +125,19 @@ describe("FinishReasonNotice", () => {
         expect(screen.getByText(new RegExp(expectedText))).toBeInTheDocument();
       },
     );
+
+    it("renders an output-limit fallback in agent mode when the auto-continue signal is absent", () => {
+      renderNotice(
+        { finishReason: "length", mode: "agent" },
+        { isAutoResuming: false, autoContinueCount: 0 },
+      );
+
+      expect(
+        screen.getByText(
+          /The response reached its output limit before finishing.*Continue to resume where it stopped/i,
+        ),
+      ).toBeInTheDocument();
+    });
 
     it.each([
       {
@@ -165,7 +148,7 @@ describe("FinishReasonNotice", () => {
       {
         finishReason: "length",
         mode: "ask" as ChatMode,
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
     ])(
       "renders notice for finishReason=$finishReason in $mode mode with autoContinueCount=0 (auto-continue only applies to agent mode)",
@@ -322,7 +305,7 @@ describe("FinishReasonNotice", () => {
       );
 
       const innerDiv = screen
-        .getByText(/Reached the output limit for this turn/)
+        .getByText(/The response reached its output limit before finishing/)
         .closest("div.bg-muted");
       expect(innerDiv).toBeInTheDocument();
       expect(innerDiv).toHaveClass(

@@ -10,6 +10,7 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   AGENT_MAX_STREAM_DURATION_MS,
   BUDGET_EXHAUSTION_FINISH_REASON,
+  shouldAutoContinueAgentStream,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
@@ -189,7 +190,8 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      ReturnType<typeof createPreemptiveTimeout> | undefined;
+      | ReturnType<typeof createPreemptiveTimeout>
+      | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -413,7 +415,8 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
+        | PaidDailyFreeAllowanceReservation
+        | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -2026,10 +2029,15 @@ export const createChatHandler = () => {
                     }
 
                     if (
-                      (state.stoppedDueToTokenExhaustion ||
-                        state.stoppedDueToElapsedTimeout ||
-                        state.stoppedDueToPostSummarizationIncomplete ||
-                        state.streamFinishReason === "tool-calls") &&
+                      shouldAutoContinueAgentStream({
+                        finishReason: state.streamFinishReason,
+                        stoppedDueToTokenExhaustion:
+                          state.stoppedDueToTokenExhaustion,
+                        stoppedDueToElapsedTimeout:
+                          state.stoppedDueToElapsedTimeout,
+                        stoppedDueToPostSummarizationIncomplete:
+                          state.stoppedDueToPostSummarizationIncomplete,
+                      }) &&
                       isAgentMode(mode) &&
                       !temporary
                     ) {

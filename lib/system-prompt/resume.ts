@@ -1,4 +1,7 @@
-import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import {
+  OUTPUT_LIMIT_FINISH_REASON,
+  POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
 
 export const getResumeSection = (finishReason?: string): string => {
   if (finishReason === "tool-calls") {
@@ -8,9 +11,9 @@ The last user message in the conversation history contains the original task you
 If the user says "continue" or similar, resume executing that original task exactly where you left off. \
 Follow through on the last user command autonomously without restarting or asking for direction.
 </resume_context>`;
-  } else if (finishReason === "length") {
+  } else if (finishReason === OUTPUT_LIMIT_FINISH_REASON) {
     return `<resume_context>
-Your previous response was interrupted because the output tokens exceeded the model's context limit. \
+Your previous response was interrupted because it reached this turn's output token limit. \
 The conversation was cut off mid-generation. If the user says "continue" or similar, seamlessly continue \
 from where you left off. Pick up the thought, explanation, or task execution exactly where it stopped \
 without repeating what was already said or restarting from the beginning. IMPORTANT: Divide your response \
