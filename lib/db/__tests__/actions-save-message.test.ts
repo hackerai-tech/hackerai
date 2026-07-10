@@ -369,6 +369,11 @@ describe("getChatById", () => {
       });
       expect(mockQuery).toHaveBeenCalledTimes(3);
       expect(JSON.stringify(thrown.metadata)).not.toContain("192.0.2.1");
+      expect(thrown.message).not.toContain("192.0.2.1");
+      expect(thrown.cause).toBe(
+        "Database temporarily unavailable: chats.getChatById: Convex upstream returned HTTP 520",
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("192.0.2.1");
       expect(mockPhEvent).toHaveBeenCalledWith(
         "database_operation_failed",
         expect.objectContaining({
