@@ -40,6 +40,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -1419,6 +1420,23 @@ export async function setActiveAgentApprovalPending({
       "Failed to set active agent approval state",
     );
   }
+}
+
+export async function persistAgentApprovalGrant({
+  chatId,
+  userId,
+  grant,
+}: {
+  chatId: string;
+  userId: string;
+  grant: PersistedAgentApprovalTargetGrant;
+}) {
+  await getConvexClient().mutation(api.chats.persistAgentApprovalGrant, {
+    serviceKey,
+    chatId,
+    userId,
+    grant,
+  });
 }
 
 export async function getActiveTriggerRun({ chatId }: { chatId: string }) {

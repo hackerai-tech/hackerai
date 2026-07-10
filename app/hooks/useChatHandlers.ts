@@ -35,6 +35,7 @@ import {
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
+import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -93,6 +94,10 @@ export const useChatHandlers = ({
     sandboxPreference,
     agentPermissionMode,
     selectedModel,
+    sidebarOpen,
+    sidebarContent,
+    openSidebar,
+    closeSidebar,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
@@ -116,6 +121,8 @@ export const useChatHandlers = ({
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
+  const sidebarOpenRef = useLatestRef(sidebarOpen);
+  const sidebarContentRef = useLatestRef(sidebarContent);
 
   const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
     file.uploaded &&
@@ -456,6 +463,21 @@ export const useChatHandlers = ({
     // Without this, the SDK's regenerate() only removes the last assistant,
     // leaving old auto-continue chain messages visible in the UI.
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
+
+    const currentSidebarContent = sidebarContentRef.current;
+    if (sidebarOpenRef.current && currentSidebarContent) {
+      const nextSidebarContent = reconcileSidebarContentAfterRegeneration(
+        trimmedMessages,
+        currentSidebarContent,
+      );
+
+      if (!nextSidebarContent) {
+        closeSidebar();
+      } else if (nextSidebarContent !== currentSidebarContent) {
+        openSidebar(nextSidebarContent);
+      }
+    }
+
     setMessages(trimmedMessages);
 
     const shouldSendClientMessagesForRegenerate =

@@ -58,6 +58,23 @@ const activeAgentApprovalRequestValidator = v.object({
   createdAt: v.optional(v.number()),
 });
 
+const agentApprovalTargetGrantValidator = v.union(
+  v.object({
+    kind: v.literal("terminal_command"),
+    targetPrefix: v.string(),
+    executable: v.string(),
+    argv: v.array(v.string()),
+  }),
+  v.object({
+    kind: v.literal("file_change"),
+    targetPrefix: v.string(),
+    path: v.string(),
+    pathFlavor: v.union(v.literal("posix"), v.literal("windows")),
+  }),
+);
+
+const MAX_AGENT_APPROVAL_GRANTS_PER_CHAT = 100;
+
 const getErrorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
@@ -405,7 +422,11 @@ export const getChatByIdFromClient = query({
 
       // Drop legacy codex_thread_id from the response — preserved on the row
       // for old data but not exposed to clients.
-      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      const {
+        codex_thread_id: _legacy,
+        agent_approval_grants: _privateApprovalGrants,
+        ...chatPublic
+      } = chat;
 
       // Fetch branched_from_title if this chat is branched from another chat
       if (chatPublic.branched_from_chat_id) {
@@ -475,6 +496,9 @@ export const getChatById = query({
       active_agent_approval_pending: v.optional(v.boolean()),
       active_agent_approval_request: v.optional(
         activeAgentApprovalRequestValidator,
+      ),
+      agent_approval_grants: v.optional(
+        v.array(agentApprovalTargetGrantValidator),
       ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
@@ -1308,6 +1332,39 @@ export const setActiveAgentApprovalPending = mutation({
     await ctx.db.patch(chat._id, {
       active_agent_approval_pending: args.pending ? true : undefined,
       active_agent_approval_request: args.pending ? args.request : undefined,
+    });
+    return null;
+  },
+});
+
+export const persistAgentApprovalGrant = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    grant: agentApprovalTargetGrantValidator,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat || chat.user_id !== args.userId) return null;
+
+    const current = chat.agent_approval_grants ?? [];
+    const alreadyStored = current.some(
+      (grant) =>
+        grant.kind === args.grant.kind &&
+        grant.targetPrefix === args.grant.targetPrefix,
+    );
+    if (alreadyStored) return null;
+
+    await ctx.db.patch(chat._id, {
+      agent_approval_grants: [...current, args.grant].slice(
+        -MAX_AGENT_APPROVAL_GRANTS_PER_CHAT,
+      ),
     });
     return null;
   },

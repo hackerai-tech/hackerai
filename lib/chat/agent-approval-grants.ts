@@ -15,6 +15,7 @@ export type AgentApprovalTargetGrant =
       kind: "terminal_command";
       targetPrefix: string;
       executable: string;
+      argv: string[];
     }
   | {
       kind: "terminal_interaction";
@@ -28,6 +29,11 @@ export type AgentApprovalTargetGrant =
       path: string;
       pathFlavor: "posix" | "windows";
     };
+
+export type PersistedAgentApprovalTargetGrant = Exclude<
+  AgentApprovalTargetGrant,
+  { kind: "terminal_interaction" }
+>;
 
 type AgentApprovalGrantSelection = Pick<
   AgentToolApprovalInputRecord,
@@ -86,15 +92,22 @@ const isShellWhitespace = (character: string): boolean =>
   character === " " || character === "\t";
 
 /**
- * Returns the shell's first static executable token. Any syntax that could
- * introduce another command or dynamically alter parsing makes the command
- * ineligible for automatic approval reuse.
+ * Parses a static shell command into argv. Any syntax that could introduce
+ * another command or dynamically alter parsing makes the command ineligible
+ * for automatic approval reuse.
  */
-export const parseStaticExecutableToken = (command: string): string | null => {
+export const parseStaticCommandArgv = (command: string): string[] | null => {
   let quote: "single" | "double" | null = null;
-  let executable = "";
-  let executableStarted = false;
-  let executableFinished = false;
+  let token = "";
+  let tokenStarted = false;
+  const argv: string[] = [];
+
+  const finishToken = () => {
+    if (!tokenStarted) return;
+    argv.push(token);
+    token = "";
+    tokenStarted = false;
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index];
@@ -106,8 +119,8 @@ export const parseStaticExecutableToken = (command: string): string | null => {
     if (quote === "single") {
       if (character === "'") {
         quote = null;
-      } else if (!executableFinished) {
-        executable += character;
+      } else {
+        token += character;
       }
       continue;
     }
@@ -128,25 +141,25 @@ export const parseStaticExecutableToken = (command: string): string | null => {
           return null;
         }
         if (["$", "`", '"', "\\"].includes(nextCharacter)) {
-          if (!executableFinished) executable += nextCharacter;
+          token += nextCharacter;
           index += 1;
-        } else if (!executableFinished) {
-          executable += character;
+        } else {
+          token += character;
         }
         continue;
       }
-      if (!executableFinished) executable += character;
+      token += character;
       continue;
     }
 
     if (character === "'") {
       quote = "single";
-      if (!executableFinished) executableStarted = true;
+      tokenStarted = true;
       continue;
     }
     if (character === '"') {
       quote = "double";
-      if (!executableFinished) executableStarted = true;
+      tokenStarted = true;
       continue;
     }
     if (character === "\\") {
@@ -154,15 +167,13 @@ export const parseStaticExecutableToken = (command: string): string | null => {
       if (!nextCharacter || nextCharacter === "\n" || nextCharacter === "\r") {
         return null;
       }
-      if (!executableFinished) {
-        executableStarted = true;
-        executable += nextCharacter;
-      }
+      tokenStarted = true;
+      token += nextCharacter;
       index += 1;
       continue;
     }
     if (isShellWhitespace(character)) {
-      if (executableStarted) executableFinished = true;
+      finishToken();
       continue;
     }
     if (
@@ -173,17 +184,18 @@ export const parseStaticExecutableToken = (command: string): string | null => {
     }
     if (character.charCodeAt(0) < 32) return null;
 
-    if (!executableFinished) {
-      executableStarted = true;
-      executable += character;
-    }
+    tokenStarted = true;
+    token += character;
   }
 
-  if (quote || !executableStarted || !executable) return null;
+  if (quote) return null;
+  finishToken();
+  const executable = argv[0];
+  if (!executable) return null;
   if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(executable)) return null;
   if (NON_EXECUTABLE_SHELL_TOKENS.has(executable)) return null;
 
-  return executable;
+  return argv;
 };
 
 const normalizePathSegments = (
@@ -303,9 +315,15 @@ export const deriveAgentApprovalTargetGrant = (
   if (typeof request.target !== "string") return null;
 
   if (request.operation === "terminal_execute") {
-    const executable = parseStaticExecutableToken(request.target);
-    return executable
-      ? { kind: "terminal_command", targetPrefix: executable, executable }
+    const argv = parseStaticCommandArgv(request.target);
+    const executable = argv?.[0];
+    return executable && argv
+      ? {
+          kind: "terminal_command",
+          targetPrefix: JSON.stringify(argv),
+          executable,
+          argv,
+        }
       : null;
   }
 
@@ -336,9 +354,15 @@ export const deriveAgentApprovalTargetGrant = (
   if (request.kind === "terminal") {
     const interaction = parseTerminalInteraction(request.target);
     if (interaction) return { kind: "terminal_interaction", ...interaction };
-    const executable = parseStaticExecutableToken(request.target);
-    return executable
-      ? { kind: "terminal_command", targetPrefix: executable, executable }
+    const argv = parseStaticCommandArgv(request.target);
+    const executable = argv?.[0];
+    return executable && argv
+      ? {
+          kind: "terminal_command",
+          targetPrefix: JSON.stringify(argv),
+          executable,
+          argv,
+        }
       : null;
   }
   if (request.kind === "file") {
@@ -377,7 +401,10 @@ export const matchesAgentApprovalTargetGrant = (
     candidate.kind === "terminal_command" &&
     grant.kind === "terminal_command"
   ) {
-    return candidate.executable === grant.executable;
+    return (
+      candidate.argv.length === grant.argv.length &&
+      candidate.argv.every((argument, index) => argument === grant.argv[index])
+    );
   }
   if (
     candidate.kind === "terminal_interaction" &&
@@ -405,10 +432,10 @@ export const getAgentApprovalTargetGrantLabel = (
 ): string => {
   if (!grant) return "Yes, and don't ask again for similar actions";
   if (grant.kind === "terminal_command") {
-    return `Yes, and don't ask again for ${formatGrantValue(grant.executable)} commands during this run`;
+    return `Yes, and don't ask again for ${formatGrantValue(grant.argv.join(" "))} in this chat`;
   }
   if (grant.kind === "terminal_interaction") {
     return `Yes, and don't ask again for ${grant.action} actions in terminal session ${formatGrantValue(grant.sessionId)} during this run`;
   }
-  return `Yes, and don't ask again for changes to ${formatGrantValue(grant.path)} during this run`;
+  return `Yes, and don't ask again for changes to ${formatGrantValue(grant.path)} in this chat`;
 };

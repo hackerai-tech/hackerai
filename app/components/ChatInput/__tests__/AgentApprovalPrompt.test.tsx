@@ -58,7 +58,7 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
     expect(
       screen.getByRole("radio", {
-        name: /Yes, and don't ask again for ping commands during this run/,
+        name: /Yes, and don't ask again for "ping -c 4 hackerone.com" in this chat/,
       }),
     ).toBeInTheDocument();
     expect(
@@ -106,7 +106,7 @@ describe("AgentApprovalPrompt", () => {
         decision: "approve",
         grant: "target_prefix",
         targetKind: "terminal_command",
-        targetPrefix: "ping",
+        targetPrefix: '["ping","-c","4","hackerone.com"]',
       }),
     );
   });
@@ -252,7 +252,7 @@ describe("AgentApprovalPrompt", () => {
         decision: "approve",
         grant: "target_prefix",
         targetKind: "terminal_command",
-        targetPrefix: "ping",
+        targetPrefix: '["ping","-c","4","hackerone.com"]',
       }),
     );
   });
@@ -277,6 +277,57 @@ describe("AgentApprovalPrompt", () => {
         message: "Use curl instead",
       }),
     );
+  });
+
+  it("submits typed feedback once when Enter is pressed in the feedback input", async () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    const feedbackInput = screen.getByPlaceholderText(
+      "No, and tell Codex what to do differently",
+    );
+
+    fireEvent.focus(feedbackInput);
+    expect(screen.getByTestId("agent-approval-feedback-row")).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.change(feedbackInput, {
+      target: { value: "Use curl instead" },
+    });
+    fireEvent.keyDown(feedbackInput, {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    await waitFor(() => {
+      expect(mockSendToolApproval).toHaveBeenCalledTimes(1);
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "deny",
+        message: "Use curl instead",
+      });
+    });
+  });
+
+  it("preserves modified Enter behavior in the feedback input", () => {
+    render(<AgentApprovalPrompt request={request} />);
+
+    const feedbackInput = screen.getByPlaceholderText(
+      "No, and tell Codex what to do differently",
+    );
+
+    fireEvent.focus(feedbackInput);
+    fireEvent.change(feedbackInput, {
+      target: { value: "Use curl instead" },
+    });
+    fireEvent.keyDown(feedbackInput, {
+      key: "Enter",
+      code: "Enter",
+      shiftKey: true,
+    });
+
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
   it("does not capture approval keys from editable fields", () => {

@@ -32,6 +32,21 @@ const activeAgentApprovalRequestValidator = v.object({
   createdAt: v.optional(v.number()),
 });
 
+const agentApprovalTargetGrantValidator = v.union(
+  v.object({
+    kind: v.literal("terminal_command"),
+    targetPrefix: v.string(),
+    executable: v.string(),
+    argv: v.array(v.string()),
+  }),
+  v.object({
+    kind: v.literal("file_change"),
+    targetPrefix: v.string(),
+    path: v.string(),
+    pathFlavor: v.union(v.literal("posix"), v.literal("windows")),
+  }),
+);
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -44,6 +59,9 @@ export default defineSchema({
     active_agent_approval_pending: v.optional(v.boolean()),
     active_agent_approval_request: v.optional(
       activeAgentApprovalRequestValidator,
+    ),
+    agent_approval_grants: v.optional(
+      v.array(agentApprovalTargetGrantValidator),
     ),
     canceled_at: v.optional(v.number()),
     default_model_slug: v.optional(

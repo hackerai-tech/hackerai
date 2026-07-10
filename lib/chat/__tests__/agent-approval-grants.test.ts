@@ -13,7 +13,7 @@ const request = (operation: AgentToolApprovalOperation, target: string) => ({
 });
 
 describe("agent approval grants", () => {
-  it("matches an exact terminal executable token, not a sibling prefix", () => {
+  it("matches an exact static argv, not another command or executable", () => {
     const grant = deriveAgentApprovalTargetGrant(
       request("terminal_execute", "npm test"),
     );
@@ -21,15 +21,22 @@ describe("agent approval grants", () => {
     expect(grant).toMatchObject({
       kind: "terminal_command",
       executable: "npm",
-      targetPrefix: "npm",
+      argv: ["npm", "test"],
     });
     expect(
       grant &&
         matchesAgentApprovalTargetGrant(
-          request("terminal_execute", "npm run lint"),
+          request("terminal_execute", "npm test"),
           grant,
         ),
     ).toBe(true);
+    expect(
+      grant &&
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", "npm publish"),
+          grant,
+        ),
+    ).toBe(false);
     expect(
       grant &&
         matchesAgentApprovalTargetGrant(
@@ -47,11 +54,12 @@ describe("agent approval grants", () => {
     expect(grant).toMatchObject({
       kind: "terminal_command",
       executable: "npm",
+      argv: ["npm", "test"],
     });
     expect(
       grant &&
         matchesAgentApprovalTargetGrant(
-          request("terminal_execute", '"npm" run build'),
+          request("terminal_execute", '"npm" test'),
           grant,
         ),
     ).toBe(true);
@@ -220,7 +228,7 @@ describe("agent approval grants", () => {
     expect(grant).toMatchObject({
       kind: "terminal_command",
       executable: "npm",
-      targetPrefix: "npm",
+      argv: ["npm", "test"],
     });
     expect(
       grant &&

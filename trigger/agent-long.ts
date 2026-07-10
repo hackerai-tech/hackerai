@@ -68,6 +68,7 @@ import {
   getUserCustomization,
   setActiveTriggerRun,
   setActiveAgentApprovalPending,
+  persistAgentApprovalGrant,
   getMessagesByChatId,
   prepareForNewStream,
   setConvexUrl,
@@ -147,6 +148,7 @@ import {
   deriveApprovedAgentTargetGrant,
   matchesAgentApprovalTargetGrant as matchesApprovalTargetGrant,
   type AgentApprovalTargetGrant,
+  type PersistedAgentApprovalTargetGrant,
 } from "@/lib/chat/agent-approval-grants";
 import {
   sanitizeAgentLongRealtimeChunk,
@@ -308,6 +310,8 @@ const buildAgentToolApprovalRequester = ({
   runId,
   signal,
   activeRuntimeBudget,
+  initialTargetGrants = [],
+  persistTargetGrant,
 }: {
   agentPermissionMode: AgentPermissionMode;
   approvalSessionId?: string;
@@ -317,10 +321,16 @@ const buildAgentToolApprovalRequester = ({
   runId: string;
   signal: AbortSignal;
   activeRuntimeBudget: Pick<ActiveRuntimeBudget, "pause" | "resume">;
+  initialTargetGrants?: AgentApprovalTargetGrant[];
+  persistTargetGrant?: (
+    grant: PersistedAgentApprovalTargetGrant,
+  ) => Promise<void>;
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
-  const approvedTargetGrants: AgentApprovalTargetGrant[] = [];
+  const approvedTargetGrants: AgentApprovalTargetGrant[] = [
+    ...initialTargetGrants,
+  ];
   const setApprovalPending = async (
     pending: boolean,
     request?: AgentToolApprovalPendingRequest,
@@ -476,6 +486,27 @@ const buildAgentToolApprovalRequester = ({
               : null;
           if (approvedTargetGrant) {
             approvedTargetGrants.push(approvedTargetGrant);
+            if (
+              persistTargetGrant &&
+              approvedTargetGrant.kind !== "terminal_interaction"
+            ) {
+              try {
+                await persistTargetGrant(approvedTargetGrant);
+              } catch (error) {
+                triggerLogger.warn(
+                  "[agent-long] failed to persist approval grant",
+                  {
+                    chatId,
+                    userId,
+                    runId,
+                    approvalId,
+                    target_kind: approvedTargetGrant.kind,
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
+                  },
+                );
+              }
+            }
             metadata
               .set("approvalGrant", "target_prefix")
               .set("approvalTargetKind", approvedTargetGrant.kind)
@@ -1652,6 +1683,13 @@ export const agentLongTask = task({
               runId: ctx.run.id,
               signal: userStopSignal.signal,
               activeRuntimeBudget: runtimeBudget,
+              initialTargetGrants:
+                (chat?.agent_approval_grants as AgentApprovalTargetGrant[]) ??
+                [],
+              persistTargetGrant: temporary
+                ? undefined
+                : (grant) =>
+                    persistAgentApprovalGrant({ chatId, userId, grant }),
             });
             const {
               tools,

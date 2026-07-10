@@ -385,6 +385,12 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
                       setSelectedOptionId(option.id);
                       setFeedback(event.target.value);
                     }}
+                    onKeyDown={(event) => {
+                      if (!isPlainEnterKey(event)) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void submitOption(option.id);
+                    }}
                   />
                   {arrows}
                 </div>

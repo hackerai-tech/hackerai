@@ -210,7 +210,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
       expect(
         screen.getByRole("radio", {
-          name: /Yes, and don't ask again for ping commands during this run/,
+          name: /Yes, and don't ask again for "ping -c 4 hackerone.com" in this chat/,
         }),
       ).toBeInTheDocument();
       expect(
