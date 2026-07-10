@@ -144,6 +144,11 @@ import {
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
 import {
+  deriveApprovedAgentTargetGrant,
+  matchesAgentApprovalTargetGrant as matchesApprovalTargetGrant,
+  type AgentApprovalTargetGrant,
+} from "@/lib/chat/agent-approval-grants";
+import {
   sanitizeAgentLongRealtimeChunk,
   type AgentLongStreamChunk,
 } from "@/lib/chat/agent-long-realtime-sanitizer";
@@ -237,32 +242,6 @@ const isAgentToolApprovalInputRecord = (
   );
 };
 
-type AgentToolApprovalTargetGrant = {
-  kind: NonNullable<AgentToolApprovalInputRecord["targetKind"]>;
-  prefix: string;
-};
-
-const getApprovalGrantKindForRequest = (
-  request: AgentToolApprovalRequest,
-): AgentToolApprovalTargetGrant["kind"] => {
-  if (request.operation === "terminal_execute") return "terminal_command";
-  if (request.operation === "terminal_interact") return "terminal_interaction";
-  return "file_change";
-};
-
-const matchesApprovalTargetGrant = (
-  request: AgentToolApprovalRequest,
-  grant: AgentToolApprovalTargetGrant,
-): boolean => {
-  const target = request.target.trim();
-  const prefix = grant.prefix.trim();
-  if (!prefix) return false;
-  return (
-    grant.kind === getApprovalGrantKindForRequest(request) &&
-    target.startsWith(prefix)
-  );
-};
-
 const buildDeniedApprovalReason = (message: string | undefined): string => {
   const trimmed = message?.trim();
   if (!trimmed) return "The user denied approval for this operation.";
@@ -340,7 +319,7 @@ const buildAgentToolApprovalRequester = ({
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
-  const approvedTargetGrants: AgentToolApprovalTargetGrant[] = [];
+  const approvedTargetGrants: AgentApprovalTargetGrant[] = [];
   const setApprovalPending = async (
     pending: boolean,
     request?: AgentToolApprovalPendingRequest,
@@ -393,7 +372,7 @@ const buildAgentToolApprovalRequester = ({
           tool_name: request.toolName,
           operation: request.operation,
           target_kind: existingGrant.kind,
-          target_prefix: existingGrant.prefix,
+          target_prefix: existingGrant.targetPrefix,
         });
         return { approved: true, approvalId };
       }
@@ -483,19 +462,16 @@ const buildAgentToolApprovalRequester = ({
         shouldClearApprovalPending = true;
 
         if (next.output.decision === "approve") {
-          if (
-            next.output.grant === "target_prefix" &&
-            next.output.targetPrefix?.trim()
-          ) {
-            const targetKind = getApprovalGrantKindForRequest(request);
-            approvedTargetGrants.push({
-              kind: targetKind,
-              prefix: next.output.targetPrefix.trim(),
-            });
+          const approvedTargetGrant =
+            next.output.grant === "target_prefix"
+              ? deriveApprovedAgentTargetGrant(request, next.output)
+              : null;
+          if (approvedTargetGrant) {
+            approvedTargetGrants.push(approvedTargetGrant);
             metadata
               .set("approvalGrant", "target_prefix")
-              .set("approvalTargetKind", targetKind)
-              .set("approvalTargetPrefix", next.output.targetPrefix.trim());
+              .set("approvalTargetKind", approvedTargetGrant.kind)
+              .set("approvalTargetPrefix", approvedTargetGrant.targetPrefix);
           }
           triggerLogger.info("[agent-long] tool approval granted", {
             chatId,
@@ -504,9 +480,10 @@ const buildAgentToolApprovalRequester = ({
             approvalId,
             tool_name: request.toolName,
             operation: request.operation,
-            grant: next.output.grant,
-            target_kind: getApprovalGrantKindForRequest(request),
-            target_prefix: next.output.targetPrefix,
+            requested_grant: next.output.grant,
+            grant: approvedTargetGrant ? "target_prefix" : "full_access",
+            target_kind: approvedTargetGrant?.kind,
+            target_prefix: approvedTargetGrant?.targetPrefix,
           });
           return { approved: true, approvalId };
         }

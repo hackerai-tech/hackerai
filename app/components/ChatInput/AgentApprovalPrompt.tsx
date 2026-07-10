@@ -22,10 +22,11 @@ import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
-import type {
-  AgentToolApprovalDecision,
-  AgentToolApprovalGrantKind,
-} from "@/types";
+import type { AgentToolApprovalDecision } from "@/types";
+import {
+  deriveAgentApprovalTargetGrant,
+  getAgentApprovalTargetGrantLabel,
+} from "@/lib/chat/agent-approval-grants";
 
 type AgentApprovalPromptProps = {
   request: ActiveAgentToolApprovalRequest;
@@ -52,6 +53,10 @@ const APPROVAL_OPTIONS: Array<{
     index: 3,
   },
 ];
+
+const ONE_TIME_APPROVAL_OPTIONS = APPROVAL_OPTIONS.filter(
+  (option) => option.id !== "target_prefix",
+);
 
 const isPlainEnterKey = (event: {
   key: string;
@@ -103,20 +108,16 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   const isSending = sendState === "sending";
   const isSettled = sendState === "approved" || sendState === "denied";
   const canSubmit = !!session && !isSending && !isSettled;
+  const targetGrant = deriveAgentApprovalTargetGrant(request);
+  const approvalOptions = targetGrant
+    ? APPROVAL_OPTIONS
+    : ONE_TIME_APPROVAL_OPTIONS;
   const selectedOptionIndex = Math.max(
     0,
-    APPROVAL_OPTIONS.findIndex((option) => option.id === selectedOptionId),
+    approvalOptions.findIndex((option) => option.id === selectedOptionId),
   );
   const approvalTarget = request.target?.trim() ?? "";
-  const targetPrefix = getTargetPrefix({
-    target: approvalTarget,
-    kind: request.kind,
-  });
-  const targetKind = getTargetKind(request.kind);
-  const targetPrefixLabel = getTargetPrefixLabel({
-    prefix: targetPrefix,
-    kind: request.kind,
-  });
+  const targetPrefixLabel = getAgentApprovalTargetGrantLabel(targetGrant);
 
   const submitOption = useCallback(
     async (optionId: (typeof APPROVAL_OPTIONS)[number]["id"]) => {
@@ -130,11 +131,11 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
           approvalId: request.approvalId,
           toolCallId: request.toolCallId,
           decision: option.decision,
-          ...(option.id === "target_prefix" && targetPrefix && targetKind
+          ...(option.id === "target_prefix" && targetGrant
             ? {
                 grant: "target_prefix",
-                targetPrefix,
-                targetKind,
+                targetPrefix: targetGrant.targetPrefix,
+                targetKind: targetGrant.kind,
               }
             : {}),
           ...(option.id === "deny_feedback" && feedback.trim()
@@ -155,8 +156,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
       request.approvalId,
       request.toolCallId,
       sendToolApproval,
-      targetKind,
-      targetPrefix,
+      targetGrant,
     ],
   );
 
@@ -176,26 +176,29 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     }
   }, [request.approvalId, request.toolCallId, sendToolApproval]);
 
-  const selectOptionAtIndex = useCallback((index: number) => {
-    const nextOption = APPROVAL_OPTIONS[index];
-    if (!nextOption) return;
-    setSelectedOptionId(nextOption.id);
-    if (nextOption.id === "deny_feedback") {
-      feedbackInputRef.current?.focus();
-      return;
-    }
-    optionRefs.current[index]?.focus();
-  }, []);
+  const selectOptionAtIndex = useCallback(
+    (index: number) => {
+      const nextOption = approvalOptions[index];
+      if (!nextOption) return;
+      setSelectedOptionId(nextOption.id);
+      if (nextOption.id === "deny_feedback") {
+        feedbackInputRef.current?.focus();
+        return;
+      }
+      optionRefs.current[index]?.focus();
+    },
+    [approvalOptions],
+  );
 
   const moveSelectedOption = useCallback(
     (direction: 1 | -1) => {
       const nextIndex = Math.min(
         Math.max(selectedOptionIndex + direction, 0),
-        APPROVAL_OPTIONS.length - 1,
+        approvalOptions.length - 1,
       );
       selectOptionAtIndex(nextIndex);
     },
-    [selectOptionAtIndex, selectedOptionIndex],
+    [approvalOptions.length, selectOptionAtIndex, selectedOptionIndex],
   );
 
   const handlePromptKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
@@ -301,10 +304,10 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
         aria-label="Agent approval options"
         className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1"
       >
-        {APPROVAL_OPTIONS.map((option, optionIndex) => {
+        {approvalOptions.map((option, optionIndex) => {
           const selected = selectedOptionId === option.id;
           const canMoveUp = optionIndex > 0;
-          const canMoveDown = optionIndex < APPROVAL_OPTIONS.length - 1;
+          const canMoveDown = optionIndex < approvalOptions.length - 1;
           const label =
             option.id === "approve"
               ? "Yes"
@@ -413,7 +416,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               <span className={iconClassName} aria-hidden="true">
                 {option.index}
               </span>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              <span className="min-w-0 flex-1 break-words text-sm font-medium">
                 {label}
               </span>
               {arrows}
@@ -424,39 +427,3 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     </form>
   );
 }
-
-const getTargetKind = (
-  kind: ActiveAgentToolApprovalRequest["kind"],
-): AgentToolApprovalGrantKind | undefined => {
-  if (kind === "terminal") return "terminal_command";
-  if (kind === "file") return "file_change";
-  return undefined;
-};
-
-const getTargetPrefix = ({
-  target,
-  kind,
-}: {
-  target: string;
-  kind: ActiveAgentToolApprovalRequest["kind"];
-}): string => {
-  if (!target) return "";
-  if (kind === "terminal") return target.split(/\s+/)[0] ?? "";
-  return target;
-};
-
-const getTargetPrefixLabel = ({
-  prefix,
-  kind,
-}: {
-  prefix: string;
-  kind: ActiveAgentToolApprovalRequest["kind"];
-}): string => {
-  if (kind === "terminal" && prefix) {
-    return `Yes, and don't ask again for commands that start with ${prefix}`;
-  }
-  if (kind === "file" && prefix) {
-    return `Yes, and don't ask again for file changes to ${prefix}`;
-  }
-  return "Yes, and don't ask again for similar actions";
-};

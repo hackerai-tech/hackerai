@@ -27,6 +27,7 @@ const request = {
   target: "ping -c 4 hackerone.com",
   detail: "Approve to continue, or deny to stop this command.",
   kind: "terminal" as const,
+  operation: "terminal_execute" as const,
 };
 
 describe("AgentApprovalPrompt", () => {
@@ -57,7 +58,7 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
     expect(
       screen.getByRole("radio", {
-        name: /Yes, and don't ask again for commands that start with ping/,
+        name: /Yes, and don't ask again for ping commands during this run/,
       }),
     ).toBeInTheDocument();
     expect(
@@ -106,6 +107,50 @@ describe("AgentApprovalPrompt", () => {
         grant: "target_prefix",
         targetKind: "terminal_command",
         targetPrefix: "ping",
+      }),
+    );
+  });
+
+  it("does not offer reuse for a chained terminal command", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          target: "npm test && npm publish",
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("radio", { name: /don't ask again/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("labels and submits an exact PTY session and action scope", async () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          operation: "terminal_interact",
+          title: "The agent wants to interact with this terminal session.",
+          target: "send to a1b2c3d4: yes\n",
+        }}
+      />,
+    );
+
+    const sessionOption = screen.getByRole("radio", {
+      name: /don't ask again for send actions in terminal session a1b2c3d4 during this run/,
+    });
+    fireEvent.keyDown(sessionOption, { key: "Enter", code: "Enter" });
+
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "approve",
+        grant: "target_prefix",
+        targetKind: "terminal_interaction",
+        targetPrefix: "send:a1b2c3d4",
       }),
     );
   });
