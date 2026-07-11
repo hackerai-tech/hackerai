@@ -150,6 +150,7 @@ const deductAdditionalUsagePoints = async ({
   additionalCostPoints,
   extraUsageConfig,
   organizationId,
+  usageSettlementId,
 }: {
   monthly: MonthlyLimiter;
   userId: string;
@@ -157,6 +158,7 @@ const deductAdditionalUsagePoints = async ({
   additionalCostPoints: number;
   extraUsageConfig?: ExtraUsageConfig;
   organizationId?: string;
+  usageSettlementId?: string;
 }): Promise<UsageDeductionResult> => {
   const normalizedAdditionalCost = nonNegativePoints(additionalCostPoints);
   if (normalizedAdditionalCost <= 0) return emptyUsageDeductionResult();
@@ -209,12 +211,25 @@ const deductAdditionalUsagePoints = async ({
       const deductResult = await (async () => {
         try {
           return isTeamPool
-            ? await deductFromTeamBalance(
-                organizationId!,
-                userId,
-                fromExtraUsage,
-              )
-            : await deductFromBalance(userId, fromExtraUsage);
+            ? usageSettlementId
+              ? await deductFromTeamBalance(
+                  organizationId!,
+                  userId,
+                  fromExtraUsage,
+                  usageSettlementId,
+                )
+              : await deductFromTeamBalance(
+                  organizationId!,
+                  userId,
+                  fromExtraUsage,
+                )
+            : usageSettlementId
+              ? await deductFromBalance(
+                  userId,
+                  fromExtraUsage,
+                  usageSettlementId,
+                )
+              : await deductFromBalance(userId, fromExtraUsage);
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
           return {
@@ -698,6 +713,7 @@ export const deductUsageDelta = async (
   additionalCostPoints: number,
   extraUsageConfig?: ExtraUsageConfig,
   organizationId?: string,
+  usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -722,6 +738,7 @@ export const deductUsageDelta = async (
       additionalCostPoints,
       extraUsageConfig,
       organizationId,
+      usageSettlementId,
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
@@ -762,6 +779,7 @@ export const deductUsage = async (
     "pointsDeducted" | "extraUsagePointsDeducted"
   >,
   actualModelName?: string,
+  usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -924,6 +942,7 @@ export const deductUsage = async (
       additionalCostPoints: costDifference,
       extraUsageConfig,
       organizationId,
+      usageSettlementId,
     });
     lastKnownDeductionResult = buildDeductionResult(
       deltaResult.includedPointsDeducted,

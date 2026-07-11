@@ -48,6 +48,7 @@ describe("usageLogs", () => {
 
     await (logUsage as any).handler(ctx, {
       serviceKey: "test-service-key",
+      usage_settlement_id: "settlement-123",
       user_id: "user_1",
       model: "model-sonnet-4.6",
       type: "mixed",
@@ -68,6 +69,7 @@ describe("usageLogs", () => {
 
     const inserted = ctx.db.insert.mock.calls[0][1];
     expect(inserted).toMatchObject({
+      usage_settlement_id: "settlement-123",
       cost_dollars: 12,
       model_cost_dollars: 10,
       non_model_cost_dollars: 2,

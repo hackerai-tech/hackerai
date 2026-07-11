@@ -21,10 +21,7 @@ type ExtraUsagePurchaseRoute =
 type ExtraUsagePurchaseResult =
   "created" | "paid_seen" | "credited" | "already_processed" | "failed";
 type MaxModelExtraUsageReason =
-  | "available"
-  | "disabled"
-  | "empty"
-  | "monthly_cap_exhausted";
+  "available" | "disabled" | "empty" | "monthly_cap_exhausted";
 
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const PURCHASE_JSON_SECRET_PATTERN =
@@ -626,6 +623,7 @@ export const deductPoints = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    usageSettlementId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -647,6 +645,7 @@ export const deductPoints = mutation({
       convexLogger.warn("deduct_points_failed", {
         user_id: args.userId,
         amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
         reason: "no_settings",
         insufficient_funds: true,
       });
@@ -666,6 +665,7 @@ export const deductPoints = mutation({
       convexLogger.warn("deduct_points_failed", {
         user_id: args.userId,
         amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
         current_balance_points: currentBalancePoints,
         reason: "insufficient_balance",
         insufficient_funds: true,
@@ -698,6 +698,7 @@ export const deductPoints = mutation({
         convexLogger.warn("deduct_points_failed", {
           user_id: args.userId,
           amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
           monthly_spent_points: monthlySpentPoints,
           monthly_cap_points: monthlyCapPoints,
           reason: "monthly_cap_exceeded",
@@ -728,6 +729,7 @@ export const deductPoints = mutation({
     convexLogger.info("points_deducted", {
       user_id: args.userId,
       amount_points: args.amountPoints,
+      usage_settlement_id: args.usageSettlementId,
       previous_balance_points: currentBalancePoints,
       new_balance_points: newBalancePoints,
       monthly_spent_points: monthlySpentPoints,

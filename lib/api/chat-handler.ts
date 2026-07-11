@@ -988,6 +988,7 @@ export const createChatHandler = () => {
                       ? getUsageSettlementInitialDeduction(usageSettlementState)
                       : rateLimitInfo,
                     usageRecordArgs.accountingModel,
+                    usageTracker.usageSettlementId,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -1099,6 +1100,7 @@ export const createChatHandler = () => {
                     additionalCostPoints,
                     extraUsageConfig,
                     organizationId,
+                    usageTracker.usageSettlementId,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -1111,6 +1113,7 @@ export const createChatHandler = () => {
                     subscription,
                     selected_model: selectedModel,
                     additional_cost_points: additionalCostPoints,
+                    usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
                     error:

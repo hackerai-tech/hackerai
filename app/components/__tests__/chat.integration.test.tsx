@@ -226,6 +226,23 @@ describe("Chat Component Integration", () => {
       ).toBeInTheDocument();
     });
 
+    it("keeps the useChat message snapshot stable across unrelated renders", () => {
+      const { rerender } = render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const firstMessages = mockUseChat.mock.calls.at(-1)?.[0]?.messages;
+
+      rerender(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      expect(mockUseChat.mock.calls.at(-1)?.[0]?.messages).toBe(firstMessages);
+    });
+
     it("keeps an existing chat loading while Convex auth is still loading", () => {
       expect(
         getExistingChatLoadState({
