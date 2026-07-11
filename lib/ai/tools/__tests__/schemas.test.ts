@@ -31,6 +31,15 @@ describe("agent tool schema descriptions", () => {
     expect(approvalGatedDescription).toContain(
       "Prefer one static command per tool call",
     );
+    expect(approvalGatedDescription).toContain(
+      "HackerAI displays it in the approval prompt",
+    );
+    expect(approvalGatedDescription).toContain(
+      "Prefer a stable safe prefix over copying the complete command",
+    );
+    expect(approvalGatedDescription).toContain(
+      "Never provide prefix_rule for destructive commands",
+    );
     expect(approvalGatedDescription).not.toContain(
       "Use command chaining and pipes for efficiency",
     );
@@ -39,6 +48,14 @@ describe("agent tool schema descriptions", () => {
     );
     expect(getInputShape(approvalGatedTool)).toHaveProperty("justification");
     expect(getInputShape(approvalGatedTool)).toHaveProperty("prefix_rule");
+    expect(getInputShape(approvalGatedTool).justification).toHaveProperty(
+      "description",
+      "A concise, user-facing reason shown in HackerAI's approval prompt. Explain the intended outcome rather than repeating the command.",
+    );
+    expect(getInputShape(approvalGatedTool).prefix_rule).toHaveProperty(
+      "description",
+      expect.stringContaining("separate argv elements"),
+    );
     expect(getInputShape(runTerminalCmdTool)).not.toHaveProperty(
       "justification",
     );
