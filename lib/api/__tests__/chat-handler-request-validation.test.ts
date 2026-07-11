@@ -1,6 +1,29 @@
-import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
+import {
+  requireBooleanFlag,
+  requireChatMessagesArray,
+} from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
+  it("accepts only boolean request flags", () => {
+    expect(requireBooleanFlag("temporary", undefined)).toBe(false);
+    expect(requireBooleanFlag("temporary", false)).toBe(false);
+    expect(requireBooleanFlag("temporary", true)).toBe(true);
+
+    expect(() => requireBooleanFlag("temporary", "false")).toThrow(
+      expect.objectContaining({
+        type: "bad_request",
+        surface: "api",
+        statusCode: 400,
+        cause: "Invalid chat request: temporary must be a boolean.",
+        metadata: expect.objectContaining({
+          invalid_request_field: "temporary",
+          invalid_request_field_type: "string",
+          invalid_request_field_reason: "not_boolean",
+        }),
+      }),
+    );
+  });
+
   it("rejects non-array messages as a bad request", () => {
     expect(() => requireChatMessagesArray({ id: "not-array" })).toThrow(
       expect.objectContaining({

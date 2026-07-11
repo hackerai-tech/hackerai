@@ -492,12 +492,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
+  const temporaryChatAccessResolved =
+    subscriptionResolved || (!authLoading && !user);
 
   // Remove stale or manually forged temporary-chat state once the user's
   // subscription has been resolved. The API independently enforces this gate.
   useEffect(() => {
     if (
-      !subscriptionResolved ||
+      !temporaryChatAccessResolved ||
       temporaryChatSubscription !== "free" ||
       !temporaryChatsEnabled
     ) {
@@ -508,7 +510,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const url = new URL(window.location.href);
     url.searchParams.delete("temporary-chat");
     window.history.replaceState({}, "", url.toString());
-  }, [subscriptionResolved, temporaryChatsEnabled, temporaryChatSubscription]);
+  }, [
+    temporaryChatAccessResolved,
+    temporaryChatsEnabled,
+    temporaryChatSubscription,
+  ]);
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;

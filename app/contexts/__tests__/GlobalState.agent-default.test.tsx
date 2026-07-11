@@ -85,6 +85,29 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("clears a temporary chat URL request after unauthenticated auth resolves", async () => {
+    mockAuthUser([], {
+      user: null,
+      loading: false,
+      isAuthenticated: false,
+      organizationId: undefined,
+    });
+    window.history.pushState({}, "", "/?temporary-chat=true");
+
+    render(
+      <GlobalStateProvider>
+        <TemporaryChatProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(window.location.search).toBe("");
+  });
+
   it("preserves a temporary chat URL request for paid users", async () => {
     mockAuthUser(["pro-plan"]);
     window.history.pushState({}, "", "/?temporary-chat=true");
