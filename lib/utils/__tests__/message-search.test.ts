@@ -27,4 +27,16 @@ describe("splitTextBySearchTerm", () => {
       { text: "safe result", isMatch: false },
     ]);
   });
+
+  it("still processes a query at exactly the max length", () => {
+    const maxLengthQuery = "a".repeat(MAX_MESSAGE_SEARCH_QUERY_LENGTH);
+
+    expect(
+      splitTextBySearchTerm(`prefix ${maxLengthQuery} suffix`, maxLengthQuery),
+    ).toEqual([
+      { text: "prefix ", isMatch: false },
+      { text: maxLengthQuery, isMatch: true },
+      { text: " suffix", isMatch: false },
+    ]);
+  });
 });

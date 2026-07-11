@@ -862,6 +862,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
+    previousChatStatusRef.current = null;
+  }, [chatId]);
+  useEffect(() => {
     const previousStatus = previousChatStatusRef.current;
     if (previousStatus === status) return;
 
