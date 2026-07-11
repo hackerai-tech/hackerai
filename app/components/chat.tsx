@@ -56,7 +56,10 @@ import {
 } from "@/lib/chat/agent-long-heartbeat";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
-import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import {
+  addAuthenticatedExceptionStep,
+  captureUpgradeCtaImpression,
+} from "@/lib/analytics/client";
 import {
   FREE_AGENT_VALUE_NUDGE_ANALYTICS,
   FREE_AGENT_VALUE_NUDGE_PART_TYPE,
@@ -856,6 +859,31 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  const previousChatStatusRef = useRef<typeof status | null>(null);
+  useEffect(() => {
+    const previousStatus = previousChatStatusRef.current;
+    if (previousStatus === status) return;
+
+    addAuthenticatedExceptionStep("chat_status_changed", {
+      previous_status: previousStatus ?? "initial",
+      status,
+      mode: chatModeRef.current,
+      subscription: subscriptionRef.current,
+      transport: shouldUseAgentLong ? "trigger" : "browser",
+      existing_chat: isExistingChatRef.current,
+      temporary_chat: temporaryChatsEnabledRef.current,
+      message_count: messagesRef.current.length,
+    });
+    previousChatStatusRef.current = status;
+  }, [
+    chatModeRef,
+    isExistingChatRef,
+    shouldUseAgentLong,
+    status,
+    subscriptionRef,
+    temporaryChatsEnabledRef,
+  ]);
 
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;
