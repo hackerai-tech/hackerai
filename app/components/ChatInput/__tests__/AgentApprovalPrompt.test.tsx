@@ -90,6 +90,9 @@ describe("AgentApprovalPrompt", () => {
       screen.getByRole("button", { name: "More approval options" }),
       { key: "ArrowDown", code: "ArrowDown" },
     );
+    expect(
+      screen.queryByText("Commands starting with ping -c 4"),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       await screen.findByRole("menuitem", {
         name: "Allow this conversation: Commands starting with ping -c 4",

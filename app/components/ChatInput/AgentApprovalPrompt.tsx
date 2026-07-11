@@ -258,14 +258,11 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
                   Allow once
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  className="min-h-12 flex-col items-start gap-0.5 rounded-lg px-3 text-sm"
+                  className="min-h-10 rounded-lg px-3 text-sm"
                   aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
                   onSelect={() => void submitApproval(true)}
                 >
-                  <span>{reusableApprovalLabel}</span>
-                  <span className="max-w-60 truncate text-xs text-muted-foreground">
-                    {reusableApprovalDescription}
-                  </span>
+                  {reusableApprovalLabel}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
