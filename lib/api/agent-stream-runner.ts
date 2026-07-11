@@ -62,7 +62,7 @@ import {
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { isAnthropicModel } from "@/lib/ai/providers";
-import { MAX_OUTPUT_TOKENS } from "@/lib/rate-limit/free-config";
+import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import {

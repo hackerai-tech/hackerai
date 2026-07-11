@@ -129,7 +129,7 @@ describe("FinishReasonNotice", () => {
     it("renders an output-limit fallback in agent mode when the auto-continue signal is absent", () => {
       renderNotice(
         { finishReason: "length", mode: "agent" },
-        { isAutoResuming: false, autoContinueCount: 0 },
+        { isAutoResuming: false },
       );
 
       expect(
