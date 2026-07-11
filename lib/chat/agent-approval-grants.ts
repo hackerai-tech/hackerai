@@ -356,29 +356,37 @@ const parseTerminalInteraction = (
   };
 };
 
+const deriveTerminalCommandGrant = (
+  target: string,
+  prefixRule?: string[],
+): AgentApprovalTargetGrant | null => {
+  const argv = parseStaticCommandArgv(target);
+  const executable = argv?.[0];
+  const approvedArgv = prefixRule ?? argv;
+  const prefixMatchesCommand =
+    argv &&
+    approvedArgv &&
+    approvedArgv.length > 0 &&
+    approvedArgv.length <= argv.length &&
+    approvedArgv.every((argument, index) => argument === argv[index]);
+
+  return executable && argv && prefixMatchesCommand
+    ? {
+        kind: "terminal_command",
+        targetPrefix: JSON.stringify(approvedArgv),
+        executable,
+        argv: approvedArgv,
+      }
+    : null;
+};
+
 export const deriveAgentApprovalTargetGrant = (
   request: AgentApprovalGrantSource,
 ): AgentApprovalTargetGrant | null => {
   if (typeof request.target !== "string") return null;
 
   if (request.operation === "terminal_execute") {
-    const argv = parseStaticCommandArgv(request.target);
-    const executable = argv?.[0];
-    const approvedArgv = request.prefixRule ?? argv;
-    const prefixMatchesCommand =
-      argv &&
-      approvedArgv &&
-      approvedArgv.length > 0 &&
-      approvedArgv.length <= argv.length &&
-      approvedArgv.every((argument, index) => argument === argv[index]);
-    return executable && argv && prefixMatchesCommand
-      ? {
-          kind: "terminal_command",
-          targetPrefix: JSON.stringify(approvedArgv),
-          executable,
-          argv: approvedArgv,
-        }
-      : null;
+    return deriveTerminalCommandGrant(request.target, request.prefixRule);
   }
 
   if (request.operation === "terminal_interact") {
@@ -408,23 +416,7 @@ export const deriveAgentApprovalTargetGrant = (
   if (request.kind === "terminal") {
     const interaction = parseTerminalInteraction(request.target);
     if (interaction) return { kind: "terminal_interaction", ...interaction };
-    const argv = parseStaticCommandArgv(request.target);
-    const executable = argv?.[0];
-    const approvedArgv = request.prefixRule ?? argv;
-    const prefixMatchesCommand =
-      argv &&
-      approvedArgv &&
-      approvedArgv.length > 0 &&
-      approvedArgv.length <= argv.length &&
-      approvedArgv.every((argument, index) => argument === argv[index]);
-    return executable && argv && prefixMatchesCommand
-      ? {
-          kind: "terminal_command",
-          targetPrefix: JSON.stringify(approvedArgv),
-          executable,
-          argv: approvedArgv,
-        }
-      : null;
+    return deriveTerminalCommandGrant(request.target, request.prefixRule);
   }
   if (request.kind === "file") {
     const normalized = normalizeAgentApprovalFilePath(request.target);

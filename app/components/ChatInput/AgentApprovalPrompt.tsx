@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect } from "react";
-import { ChevronDown, Hand, Loader2 } from "lucide-react";
+import { ChevronDown, Hand } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -169,13 +169,11 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     return () => document.removeEventListener("keydown", handleDocumentKeyDown);
   }, [canSubmit, submitApproval]);
 
-  const allowLabel = isSending
-    ? "Approving"
-    : isApproved
-      ? "Approved"
-      : isDenied
-        ? "Denied"
-        : "Allow once";
+  const allowLabel = isApproved
+    ? "Approved"
+    : isDenied
+      ? "Denied"
+      : "Allow once";
 
   return (
     <form
@@ -232,7 +230,6 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
                 : "rounded-full px-4"
             }
           >
-            {isSending ? <Loader2 className="animate-spin" /> : null}
             {allowLabel}
           </Button>
 
