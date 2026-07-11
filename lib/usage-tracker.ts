@@ -80,6 +80,7 @@ export interface UsageCostRecord {
  * Shared between chat-handler.ts and agent-task.ts to avoid duplication.
  */
 export class UsageTracker {
+  /** Correlates this run's usage record with downstream settlement logs. */
   readonly usageSettlementId = uuidv4();
   inputTokens = 0;
   outputTokens = 0;

@@ -400,7 +400,11 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 42);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        42,
+        undefined,
+      );
     });
 
     it("should skip deduction for free tier", async () => {
@@ -899,7 +903,11 @@ describe("token-bucket async functions", () => {
         expect.objectContaining({ rate: 10 }),
       );
       // Should deduct the overflow (53) from extra usage
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 53);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        53,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 53,
@@ -940,7 +948,11 @@ describe("token-bucket async functions", () => {
         0.005,
       );
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 53);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        53,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 0,
@@ -1079,6 +1091,7 @@ describe("token-bucket async functions", () => {
         "org-123",
         "user-123",
         53,
+        undefined,
       );
       expect(result).toEqual({
         includedPointsDeducted: 17,
@@ -1153,7 +1166,11 @@ describe("token-bucket async functions", () => {
         expect.any(String),
         expect.objectContaining({ rate: 10 }),
       );
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        33,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 10,
         extraUsagePointsDeducted: 33,
@@ -1223,7 +1240,11 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 43);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        43,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 0,
         extraUsagePointsDeducted: 43,

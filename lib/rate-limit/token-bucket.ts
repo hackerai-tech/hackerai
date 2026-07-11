@@ -211,25 +211,17 @@ const deductAdditionalUsagePoints = async ({
       const deductResult = await (async () => {
         try {
           return isTeamPool
-            ? usageSettlementId
-              ? await deductFromTeamBalance(
-                  organizationId!,
-                  userId,
-                  fromExtraUsage,
-                  usageSettlementId,
-                )
-              : await deductFromTeamBalance(
-                  organizationId!,
-                  userId,
-                  fromExtraUsage,
-                )
-            : usageSettlementId
-              ? await deductFromBalance(
-                  userId,
-                  fromExtraUsage,
-                  usageSettlementId,
-                )
-              : await deductFromBalance(userId, fromExtraUsage);
+            ? await deductFromTeamBalance(
+                organizationId!,
+                userId,
+                fromExtraUsage,
+                usageSettlementId,
+              )
+            : await deductFromBalance(
+                userId,
+                fromExtraUsage,
+                usageSettlementId,
+              );
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
           return {

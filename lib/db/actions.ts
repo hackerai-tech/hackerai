@@ -1853,6 +1853,7 @@ export async function logUsageRecord({
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
+      usage_settlement_id: usageSettlementId,
       userId,
       organizationId,
       chatId,
