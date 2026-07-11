@@ -27,13 +27,23 @@ export const FinishReasonNotice = ({
   agentRunSpendCapPremiumContinuationAllowed,
   onContinue,
 }: FinishReasonNoticeProps) => {
-  const { isAutoResuming } = useDataStreamState();
+  const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const [hasContinued, setHasContinued] = useState(false);
+
+  if (!finishReason) return null;
+
+  if (isAutoContinuing) {
+    return (
+      <div className="mt-2 w-full" role="status" aria-live="polite">
+        <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
+          Continuing automatically…
+        </div>
+      </div>
+    );
+  }
 
   if (isAutoResuming) return null;
   if (hasContinued) return null;
-
-  if (!finishReason) return null;
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {

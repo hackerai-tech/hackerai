@@ -11,23 +11,29 @@ import type { ChatMode, SelectedModel } from "@/types/chat";
 
 function DataStreamSetter({
   isAutoResuming,
+  isAutoContinuing,
   autoContinueCount,
   children,
 }: {
   isAutoResuming?: boolean;
+  isAutoContinuing?: boolean;
   autoContinueCount?: number;
   children: React.ReactNode;
 }) {
-  const { setIsAutoResuming, setAutoContinueCount } = useDataStream();
+  const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
+    useDataStream();
 
   React.useEffect(() => {
     if (isAutoResuming !== undefined) setIsAutoResuming(isAutoResuming);
+    if (isAutoContinuing !== undefined) setIsAutoContinuing(isAutoContinuing);
     if (autoContinueCount !== undefined)
       setAutoContinueCount(autoContinueCount);
   }, [
     isAutoResuming,
+    isAutoContinuing,
     autoContinueCount,
     setIsAutoResuming,
+    setIsAutoContinuing,
     setAutoContinueCount,
   ]);
 
@@ -43,7 +49,11 @@ interface RenderNoticeProps {
 
 function renderNotice(
   props: RenderNoticeProps,
-  contextOverrides?: { isAutoResuming?: boolean; autoContinueCount?: number },
+  contextOverrides?: {
+    isAutoResuming?: boolean;
+    isAutoContinuing?: boolean;
+    autoContinueCount?: number;
+  },
 ) {
   return render(
     <DataStreamProvider>
@@ -55,6 +65,21 @@ function renderNotice(
 }
 
 describe("FinishReasonNotice", () => {
+  it("shows automatic continuation status without a manual Continue button", () => {
+    const onContinue = jest.fn();
+    renderNotice(
+      { finishReason: "length", mode: "agent", onContinue },
+      { isAutoResuming: false, isAutoContinuing: true },
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Continuing automatically…",
+    );
+    expect(
+      screen.queryByRole("button", { name: /continue/i }),
+    ).not.toBeInTheDocument();
+  });
+
   describe("suppression cases (should render nothing)", () => {
     it.each([
       { finishReason: "length", mode: "agent" as ChatMode },
