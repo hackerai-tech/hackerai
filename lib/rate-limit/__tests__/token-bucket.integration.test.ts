@@ -407,6 +407,39 @@ describe("token-bucket async functions", () => {
       );
     });
 
+    it("forwards a settlement ID to the extra usage deduction", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: -30,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        1000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        undefined,
+        undefined,
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "settlement-123",
+      );
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        42,
+        "settlement-123",
+      );
+    });
+
     it("should skip deduction for free tier", async () => {
       const { deductUsage } = getIsolatedModule();
 
@@ -1177,6 +1210,39 @@ describe("token-bucket async functions", () => {
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
+    });
+
+    it("forwards a settlement ID to the mid-run extra usage deduction", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      await deductUsageDelta(
+        "user-123",
+        "pro",
+        43,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        undefined,
+        "settlement-123",
+      );
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        33,
+        "settlement-123",
+      );
     });
 
     it("reports uncovered mid-run delta when extra usage cannot cover overflow", async () => {
