@@ -101,7 +101,7 @@ describe("FinishReasonNotice", () => {
       },
       {
         finishReason: "length",
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
       {
         finishReason: "context-limit",
@@ -126,6 +126,19 @@ describe("FinishReasonNotice", () => {
       },
     );
 
+    it("renders an output-limit fallback in agent mode when the auto-continue signal is absent", () => {
+      renderNotice(
+        { finishReason: "length", mode: "agent" },
+        { isAutoResuming: false },
+      );
+
+      expect(
+        screen.getByText(
+          /The response reached its output limit before finishing.*Continue to resume where it stopped/i,
+        ),
+      ).toBeInTheDocument();
+    });
+
     it.each([
       {
         finishReason: "context-limit",
@@ -135,7 +148,7 @@ describe("FinishReasonNotice", () => {
       {
         finishReason: "length",
         mode: "ask" as ChatMode,
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
     ])(
       "renders notice for finishReason=$finishReason in $mode mode with autoContinueCount=0 (auto-continue only applies to agent mode)",
@@ -292,7 +305,7 @@ describe("FinishReasonNotice", () => {
       );
 
       const innerDiv = screen
-        .getByText(/Reached the output limit for this turn/)
+        .getByText(/The response reached its output limit before finishing/)
         .closest("div.bg-muted");
       expect(innerDiv).toBeInTheDocument();
       expect(innerDiv).toHaveClass(

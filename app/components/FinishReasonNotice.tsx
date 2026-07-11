@@ -9,6 +9,7 @@ import {
 } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  OUTPUT_LIMIT_FINISH_REASON,
   POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import type { SelectedModel } from "@/types/chat";
@@ -43,8 +44,13 @@ export const FinishReasonNotice = ({
       return <>Reached the time limit for this turn.</>;
     }
 
-    if (finishReason === "length") {
-      return <>Reached the output limit for this turn.</>;
+    if (finishReason === OUTPUT_LIMIT_FINISH_REASON) {
+      return (
+        <>
+          The response reached its output limit before finishing. Continue to
+          resume where it stopped.
+        </>
+      );
     }
 
     if (finishReason === "context-limit") {

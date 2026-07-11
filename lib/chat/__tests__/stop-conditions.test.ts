@@ -214,6 +214,11 @@ describe("getAgentAutoContinueStopSource", () => {
       expected: "context_limit_finish_reason",
     },
     {
+      scenario: "provider output-limit finish reason",
+      overrides: { finishReason: "length" },
+      expected: "output_limit_finish_reason",
+    },
+    {
       scenario: "tool-call step limit",
       overrides: { finishReason: "tool-calls" },
       expected: "tool_calls_finish_reason",

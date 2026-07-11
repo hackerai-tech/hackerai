@@ -733,6 +733,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
   });
 
+  test("both Agent backends route provider finishes through the shared auto-continue helper", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
+      expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
+      expect(source).toMatch(/writeAutoContinue\(writer\)/);
+    }
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);

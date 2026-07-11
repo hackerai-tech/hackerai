@@ -7,6 +7,8 @@ export { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-ca
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 
+export const OUTPUT_LIMIT_FINISH_REASON = "length";
+
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 
 export type AgentAutoContinueStopSource =
@@ -14,6 +16,7 @@ export type AgentAutoContinueStopSource =
   | "elapsed_timeout"
   | "post_summarization_incomplete"
   | "context_limit_finish_reason"
+  | "output_limit_finish_reason"
   | "tool_calls_finish_reason";
 
 /**
@@ -36,6 +39,9 @@ export function getAgentAutoContinueStopSource(state: {
   }
   if (state.finishReason === TOKEN_EXHAUSTION_FINISH_REASON) {
     return "context_limit_finish_reason";
+  }
+  if (state.finishReason === OUTPUT_LIMIT_FINISH_REASON) {
+    return "output_limit_finish_reason";
   }
   if (state.finishReason === "tool-calls") return "tool_calls_finish_reason";
   return null;
