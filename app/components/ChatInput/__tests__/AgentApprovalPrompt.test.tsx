@@ -52,7 +52,7 @@ describe("AgentApprovalPrompt", () => {
     );
   });
 
-  it("renders three Codex-style options without option descriptions", () => {
+  it("renders three approval options without option descriptions", () => {
     render(<AgentApprovalPrompt request={request} />);
 
     expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
@@ -62,7 +62,9 @@ describe("AgentApprovalPrompt", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getByPlaceholderText("No, and tell Codex what to do differently"),
+      screen.getByPlaceholderText(
+        "No, and tell HackerAI what to do differently",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByText("Allow this command or file change to run."),
@@ -178,7 +180,7 @@ describe("AgentApprovalPrompt", () => {
       name: /don't ask again/,
     });
     const feedbackOption = screen.getByRole("radio", {
-      name: /tell Codex what to do differently/,
+      name: /tell HackerAI what to do differently/,
     });
 
     expect(approveOption).toHaveAttribute("aria-checked", "true");
@@ -261,7 +263,7 @@ describe("AgentApprovalPrompt", () => {
     render(<AgentApprovalPrompt request={request} />);
 
     const feedbackInput = screen.getByPlaceholderText(
-      "No, and tell Codex what to do differently",
+      "No, and tell HackerAI what to do differently",
     );
 
     fireEvent.change(feedbackInput, {
@@ -283,7 +285,7 @@ describe("AgentApprovalPrompt", () => {
     render(<AgentApprovalPrompt request={request} />);
 
     const feedbackInput = screen.getByPlaceholderText(
-      "No, and tell Codex what to do differently",
+      "No, and tell HackerAI what to do differently",
     );
 
     fireEvent.focus(feedbackInput);
@@ -314,7 +316,7 @@ describe("AgentApprovalPrompt", () => {
     render(<AgentApprovalPrompt request={request} />);
 
     const feedbackInput = screen.getByPlaceholderText(
-      "No, and tell Codex what to do differently",
+      "No, and tell HackerAI what to do differently",
     );
 
     fireEvent.focus(feedbackInput);

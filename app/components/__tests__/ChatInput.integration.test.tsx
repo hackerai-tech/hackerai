@@ -215,7 +215,7 @@ describe("ChatInput - Integration Tests", () => {
       ).toBeInTheDocument();
       expect(
         screen.getByPlaceholderText(
-          "No, and tell Codex what to do differently",
+          "No, and tell HackerAI what to do differently",
         ),
       ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();

@@ -313,7 +313,7 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
               ? "Yes"
               : option.id === "target_prefix"
                 ? targetPrefixLabel
-                : "No, and tell Codex what to do differently";
+                : "No, and tell HackerAI what to do differently";
           const rowClassName = `flex min-h-11 w-full items-center gap-2 rounded-xl px-2.5 text-left transition-colors ${
             selected
               ? "bg-foreground/10 text-foreground"
