@@ -60,6 +60,26 @@ export function captureAuthenticatedEvent(
   }
 }
 
+export function addAuthenticatedExceptionStep(
+  message: string,
+  properties: ClientAnalyticsProperties = {},
+) {
+  if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
+
+  const posthog = getReadyPostHogClient();
+  if (!posthog) {
+    void loadPostHogClient().catch(() => {});
+    return false;
+  }
+
+  try {
+    posthog.addExceptionStep(message, properties);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type CtaAnalyticsProperties = ClientAnalyticsProperties & {
   surface: string;
   source?: string;

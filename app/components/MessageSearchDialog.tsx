@@ -25,6 +25,11 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
+import {
+  MAX_MESSAGE_SEARCH_QUERY_LENGTH,
+  MIN_MESSAGE_SEARCH_QUERY_LENGTH,
+  splitTextBySearchTerm,
+} from "@/lib/utils/message-search";
 
 interface MessageSearchResult {
   id: string;
@@ -42,13 +47,7 @@ interface MessageSearchDialogProps {
 }
 
 type DateCategory =
-  | "Today"
-  | "Yesterday"
-  | "Previous 7 Days"
-  | "Previous 30 Days"
-  | "Older";
-
-const MIN_SEARCH_QUERY_LENGTH = 3;
+  "Today" | "Yesterday" | "Previous 7 Days" | "Previous 30 Days" | "Older";
 
 export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   isOpen,
@@ -65,7 +64,9 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const chatsQuery = useChats(shouldFetchChats);
   const chats = chatsQuery.results ?? [];
   const trimmedDebouncedQuery = debouncedQuery.trim();
-  const isSearchReady = trimmedDebouncedQuery.length >= MIN_SEARCH_QUERY_LENGTH;
+  const isSearchReady =
+    trimmedDebouncedQuery.length >= MIN_MESSAGE_SEARCH_QUERY_LENGTH &&
+    trimmedDebouncedQuery.length <= MAX_MESSAGE_SEARCH_QUERY_LENGTH;
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
@@ -280,22 +281,16 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const highlightSearchTerm = (text: string, searchTerm: string) => {
     if (!searchTerm.trim()) return text;
 
-    const regex = new RegExp(
-      `(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
-      "i",
-    );
-    const parts = text.split(regex);
-
-    return parts.map((part, index) =>
-      index % 2 === 1 ? (
+    return splitTextBySearchTerm(text, searchTerm).map((segment, index) =>
+      segment.isMatch ? (
         <mark
           key={index}
           className="bg-yellow-200 dark:bg-yellow-800 px-1 rounded"
         >
-          {part}
+          {segment.text}
         </mark>
       ) : (
-        part
+        segment.text
       ),
     );
   };
@@ -334,7 +329,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
               <Input
                 placeholder="Search messages..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                maxLength={MAX_MESSAGE_SEARCH_QUERY_LENGTH}
+                onChange={(e) =>
+                  setSearchQuery(
+                    e.target.value.slice(0, MAX_MESSAGE_SEARCH_QUERY_LENGTH),
+                  )
+                }
                 className="border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-base placeholder:text-muted-foreground"
                 autoFocus
               />
@@ -435,7 +435,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   <Search size={48} className="mx-auto mb-4 opacity-50" />
                   <p className="text-sm">Keep typing</p>
                   <p className="text-xs mt-2">
-                    Search starts at {MIN_SEARCH_QUERY_LENGTH} characters
+                    Search starts at {MIN_MESSAGE_SEARCH_QUERY_LENGTH}{" "}
+                    characters
                   </p>
                 </div>
               </div>
