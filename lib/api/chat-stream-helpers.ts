@@ -329,6 +329,7 @@ export function isContextUsageEnabled(
 }
 
 export interface SummarizationStepResult {
+  summarizationAttempted: boolean;
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
   contextUsage?: ContextUsageData;
@@ -357,31 +358,35 @@ export async function runSummarizationStep(options: {
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
 }): Promise<SummarizationStepResult> {
-  const { needsSummarization, summarizedMessages, summarizationUsage } =
-    await checkAndSummarizeIfNeeded({
-      uiMessages: options.messages,
-      subscription: options.subscription,
-      languageModel: options.languageModel,
-      mode: options.mode,
-      writer: options.writer,
-      chatId: options.chatId,
-      fileTokens: options.fileTokens,
-      todos: options.todos,
-      abortSignal: options.abortSignal,
-      ensureSandbox: options.ensureSandbox,
-      systemPromptTokens: options.systemPromptTokens,
-      providerInputTokens: options.providerInputTokens ?? 0,
-      chatSystemPrompt: options.chatSystemPrompt,
-      tools: options.tools,
-      providerOptions: options.providerOptions,
-      modelMessages: options.modelMessages,
-      transcriptMessages: options.transcriptMessages,
-      maxTokensOverride: options.ctxMaxTokens,
-      providerPromptPressure: options.providerPromptPressure,
-    });
+  const {
+    summarizationAttempted,
+    needsSummarization,
+    summarizedMessages,
+    summarizationUsage,
+  } = await checkAndSummarizeIfNeeded({
+    uiMessages: options.messages,
+    subscription: options.subscription,
+    languageModel: options.languageModel,
+    mode: options.mode,
+    writer: options.writer,
+    chatId: options.chatId,
+    fileTokens: options.fileTokens,
+    todos: options.todos,
+    abortSignal: options.abortSignal,
+    ensureSandbox: options.ensureSandbox,
+    systemPromptTokens: options.systemPromptTokens,
+    providerInputTokens: options.providerInputTokens ?? 0,
+    chatSystemPrompt: options.chatSystemPrompt,
+    tools: options.tools,
+    providerOptions: options.providerOptions,
+    modelMessages: options.modelMessages,
+    transcriptMessages: options.transcriptMessages,
+    maxTokensOverride: options.ctxMaxTokens,
+    providerPromptPressure: options.providerPromptPressure,
+  });
 
   if (!needsSummarization) {
-    return { needsSummarization: false };
+    return { summarizationAttempted, needsSummarization: false };
   }
 
   const contextUsage = isContextUsageEnabled(options.subscription, options.mode)
@@ -394,6 +399,7 @@ export async function runSummarizationStep(options: {
     : undefined;
 
   return {
+    summarizationAttempted,
     needsSummarization: true,
     summarizedMessages,
     contextUsage,
@@ -407,8 +413,14 @@ export async function runSummarizationStep(options: {
  */
 export class SummarizationTracker {
   hasSummarized = false;
-  private parts: UIMessagePart<any, any>[] = [];
-  private atStep: number | undefined;
+  private records: Array<{
+    part: UIMessagePart<any, any>;
+    atStep: number;
+  }> = [];
+
+  get summarizationCount(): number {
+    return this.records.length;
+  }
 
   /**
    * Record that summarization completed at the given step and accumulate
@@ -420,15 +432,35 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     this.hasSummarized = true;
-    this.atStep = stepNumber;
-    this.parts.push(createSummarizationCompletedPart());
+    const part = createSummarizationCompletedPart();
+    this.records.push({
+      part: {
+        ...part,
+        id: `summarization-status-${this.records.length + 1}`,
+      } as UIMessagePart<any, any>,
+      atStep: stepNumber,
+    });
 
+    this.recordSummarizationUsage(usage, usageTracker);
+  }
+
+  /** Account for generated-summary usage, whether accepted or rejected. */
+  recordSummarizationUsage(
+    usage: SummarizationUsage | undefined,
+    usageTracker: UsageTracker,
+  ): void {
     if (usage) {
       usageTracker.inputTokens += usage.inputTokens;
+      usageTracker.summarizationInputTokens += usage.inputTokens;
       usageTracker.outputTokens += usage.outputTokens;
       usageTracker.summarizationOutputTokens += usage.outputTokens;
-      usageTracker.cacheReadTokens += usage.cacheReadTokens || 0;
-      usageTracker.cacheWriteTokens += usage.cacheWriteTokens || 0;
+      usageTracker.totalTokens += usage.inputTokens + usage.outputTokens;
+      const cacheReadTokens = usage.cacheReadTokens || 0;
+      const cacheWriteTokens = usage.cacheWriteTokens || 0;
+      usageTracker.cacheReadTokens += cacheReadTokens;
+      usageTracker.summarizationCacheReadTokens += cacheReadTokens;
+      usageTracker.cacheWriteTokens += cacheWriteTokens;
+      usageTracker.summarizationCacheWriteTokens += cacheWriteTokens;
       if (usage.cost) {
         usageTracker.providerCost += usage.cost;
       }
@@ -443,12 +475,27 @@ export class SummarizationTracker {
   processMessageForSave<T extends { role: string; parts: any[] }>(
     message: T,
   ): T {
-    if (message.role !== "assistant" || this.parts.length === 0) {
+    if (message.role !== "assistant" || this.records.length === 0) {
       return message;
     }
     const parts = [...message.parts];
-    const idx = findSummarizationInsertIndex(parts, this.atStep ?? 0);
-    parts.splice(idx, 0, ...this.parts);
+    const insertions = this.records
+      .map((record, recordIndex) => ({
+        ...record,
+        recordIndex,
+        insertionIndex: findSummarizationInsertIndex(
+          message.parts,
+          record.atStep,
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          b.insertionIndex - a.insertionIndex || b.recordIndex - a.recordIndex,
+      );
+
+    for (const insertion of insertions) {
+      parts.splice(insertion.insertionIndex, 0, insertion.part);
+    }
     return { ...message, parts };
   }
 }

@@ -142,8 +142,8 @@ import {
 } from "@/lib/chat/agent-long-realtime-sanitizer";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  getAgentAutoContinueStopSource,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
-  shouldAutoContinueAgentStream,
 } from "@/lib/chat/stop-conditions";
 import {
   detectAssistantContentLoopFromParts,
@@ -592,8 +592,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -610,8 +609,7 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
-    | undefined,
+    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -2439,17 +2437,25 @@ export const agentLongTask = task({
                       // Don't auto-continue on elapsed timeout. Runs that hit
                       // their plan cap are large enough that the user should
                       // explicitly decide whether to continue.
-                      if (
-                        shouldAutoContinueAgentStream({
+                      const autoContinueStopSource =
+                        getAgentAutoContinueStopSource({
                           finishReason: state.streamFinishReason,
                           stoppedDueToTokenExhaustion:
                             state.stoppedDueToTokenExhaustion,
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
-                        }) &&
-                        !temporary
-                      ) {
+                        });
+                      if (autoContinueStopSource && !temporary) {
                         writeAutoContinue(writer);
+                        phLogger.info("Agent auto-continue signaled", {
+                          event: "agent_auto_continue_signaled",
+                          chat_id: chatId,
+                          assistant_id: assistantMessageId,
+                          finish_reason: state.streamFinishReason,
+                          stop_source: autoContinueStopSource,
+                          last_step_input_tokens: state.lastStepInputTokens,
+                          had_summarization: summarizationTracker.hasSummarized,
+                        });
                       }
                       posthog?.shutdown();
                     } finally {

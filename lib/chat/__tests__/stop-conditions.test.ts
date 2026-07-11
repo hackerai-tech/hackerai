@@ -9,13 +9,14 @@ import {
 import {
   tokenExhaustedAfterSummarization,
   elapsedTimeExceeds,
-  shouldAutoContinueAgentStream,
+  getAgentAutoContinueStopSource,
 } from "../stop-conditions";
 
 function makeState(overrides: {
   threshold: number;
   lastStepInputTokens: number;
   hasSummarized: boolean;
+  canSummarizeAgain?: boolean;
 }) {
   const onFired = jest.fn();
   return {
@@ -23,6 +24,9 @@ function makeState(overrides: {
       threshold: overrides.threshold,
       getLastStepInputTokens: () => overrides.lastStepInputTokens,
       getHasSummarized: () => overrides.hasSummarized,
+      ...(overrides.canSummarizeAgain !== undefined
+        ? { getCanSummarizeAgain: () => overrides.canSummarizeAgain! }
+        : {}),
       onFired,
     },
     onFired,
@@ -109,6 +113,51 @@ describe("tokenExhaustedAfterSummarization", () => {
     });
   });
 
+  it("returns false when another in-run compaction is available", () => {
+    const { state, onFired } = makeState({
+      threshold: 14400,
+      lastStepInputTokens: 20000,
+      hasSummarized: true,
+      canSummarizeAgain: true,
+    });
+
+    const condition = tokenExhaustedAfterSummarization(state);
+
+    expect(condition()).toBe(false);
+    expect(onFired).not.toHaveBeenCalled();
+  });
+
+  it("returns true when the repeated-compaction budget is exhausted", () => {
+    const { state, onFired } = makeState({
+      threshold: 14400,
+      lastStepInputTokens: 20000,
+      hasSummarized: true,
+      canSummarizeAgain: false,
+    });
+
+    const condition = tokenExhaustedAfterSummarization(state);
+
+    expect(condition()).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-evaluates repeated-compaction availability on every invocation", () => {
+    let canSummarizeAgain = true;
+    const onFired = jest.fn();
+    const condition = tokenExhaustedAfterSummarization({
+      threshold: 14400,
+      getLastStepInputTokens: () => 20000,
+      getHasSummarized: () => true,
+      getCanSummarizeAgain: () => canSummarizeAgain,
+      onFired,
+    });
+
+    expect(condition()).toBe(false);
+    canSummarizeAgain = false;
+    expect(condition()).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
+  });
+
   it("does not call onFired on repeated invocations that return false", () => {
     const { state, onFired } = makeState({
       threshold: 14400,
@@ -135,48 +184,54 @@ describe("tokenExhaustedAfterSummarization", () => {
   });
 });
 
-describe("shouldAutoContinueAgentStream", () => {
+describe("getAgentAutoContinueStopSource", () => {
   const baseState = {
+    finishReason: "stop",
     stoppedDueToTokenExhaustion: false,
+    stoppedDueToElapsedTimeout: false,
     stoppedDueToPostSummarizationIncomplete: false,
   };
 
   it.each([
     {
-      scenario: "the provider reaches the output limit",
-      state: { ...baseState, finishReason: "length" },
+      scenario: "post-summarization token exhaustion",
+      overrides: { stoppedDueToTokenExhaustion: true },
+      expected: "post_summarization_token_exhaustion",
     },
     {
-      scenario: "the provider reaches the tool-call step limit",
-      state: { ...baseState, finishReason: "tool-calls" },
+      scenario: "elapsed timeout when enabled by the caller",
+      overrides: { stoppedDueToElapsedTimeout: true },
+      expected: "elapsed_timeout",
     },
     {
-      scenario: "context is exhausted after summarization",
-      state: { ...baseState, stoppedDueToTokenExhaustion: true },
+      scenario: "incomplete post-summarization continuation",
+      overrides: { stoppedDueToPostSummarizationIncomplete: true },
+      expected: "post_summarization_incomplete",
     },
     {
-      scenario: "the short stream reaches its elapsed timeout",
-      state: { ...baseState, stoppedDueToElapsedTimeout: true },
+      scenario: "provider-direct context-limit finish reason",
+      overrides: { finishReason: "context-limit" },
+      expected: "context_limit_finish_reason",
     },
     {
-      scenario: "post-summarization continuation is incomplete",
-      state: {
-        ...baseState,
-        stoppedDueToPostSummarizationIncomplete: true,
-      },
+      scenario: "provider output-limit finish reason",
+      overrides: { finishReason: "length" },
+      expected: "output_limit_finish_reason",
     },
-  ])("returns true when $scenario", ({ state }) => {
-    expect(shouldAutoContinueAgentStream(state)).toBe(true);
+    {
+      scenario: "tool-call step limit",
+      overrides: { finishReason: "tool-calls" },
+      expected: "tool_calls_finish_reason",
+    },
+  ])("returns the stop source for $scenario", ({ overrides, expected }) => {
+    expect(getAgentAutoContinueStopSource({ ...baseState, ...overrides })).toBe(
+      expected,
+    );
   });
 
-  it.each([undefined, "stop", "timeout", "budget-exhausted", "doom-loop"])(
-    "returns false for terminal finish reason %s",
-    (finishReason) => {
-      expect(
-        shouldAutoContinueAgentStream({ ...baseState, finishReason }),
-      ).toBe(false);
-    },
-  );
+  it("does not auto-continue unrelated finish reasons", () => {
+    expect(getAgentAutoContinueStopSource(baseState)).toBeNull();
+  });
 });
 
 describe("elapsedTimeExceeds", () => {

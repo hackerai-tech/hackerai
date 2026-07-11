@@ -116,11 +116,11 @@ describe("FinishReasonNotice", () => {
         expectedText: "Paused after compacting the conversation",
       },
     ])(
-      "renders notice for finishReason=$finishReason when no automatic continuation is active",
+      "renders notice for finishReason=$finishReason when no auto-continuation is pending",
       ({ finishReason, expectedText }) => {
         renderNotice(
           { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+          { isAutoResuming: false, autoContinueCount: 0 },
         );
         expect(screen.getByText(new RegExp(expectedText))).toBeInTheDocument();
       },

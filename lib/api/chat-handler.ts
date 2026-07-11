@@ -10,7 +10,7 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   AGENT_MAX_STREAM_DURATION_MS,
   BUDGET_EXHAUSTION_FINISH_REASON,
-  shouldAutoContinueAgentStream,
+  getAgentAutoContinueStopSource,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
@@ -190,8 +190,7 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      | ReturnType<typeof createPreemptiveTimeout>
-      | undefined;
+      ReturnType<typeof createPreemptiveTimeout> | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -290,6 +289,8 @@ export const createChatHandler = () => {
           chatId,
           endpoint,
           abortController: userStopSignal,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          userId,
         });
       }
 
@@ -415,8 +416,7 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        | PaidDailyFreeAllowanceReservation
-        | undefined;
+        PaidDailyFreeAllowanceReservation | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -2028,8 +2028,8 @@ export const createChatHandler = () => {
                       await phLogger.flush();
                     }
 
-                    if (
-                      shouldAutoContinueAgentStream({
+                    const autoContinueStopSource =
+                      getAgentAutoContinueStopSource({
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
@@ -2037,11 +2037,22 @@ export const createChatHandler = () => {
                           state.stoppedDueToElapsedTimeout,
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
-                      }) &&
+                      });
+                    if (
+                      autoContinueStopSource &&
                       isAgentMode(mode) &&
                       !temporary
                     ) {
                       writeAutoContinue(writer);
+                      phLogger.info("Agent auto-continue signaled", {
+                        event: "agent_auto_continue_signaled",
+                        chat_id: chatId,
+                        assistant_id: assistantMessageId,
+                        finish_reason: state.streamFinishReason,
+                        stop_source: autoContinueStopSource,
+                        last_step_input_tokens: state.lastStepInputTokens,
+                        had_summarization: summarizationTracker.hasSummarized,
+                      });
                     }
                     shutdownPostHog(posthog);
                   } finally {

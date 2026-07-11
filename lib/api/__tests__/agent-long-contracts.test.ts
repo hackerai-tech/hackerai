@@ -733,9 +733,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(readerLoopIdx).toBeGreaterThan(immediateModelHeartbeatIdx);
   });
 
-  test("both Agent backends auto-continue provider output-limit finishes", () => {
+  test("both Agent backends route provider finishes through the shared auto-continue helper", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
-      expect(source).toMatch(/shouldAutoContinueAgentStream\(\{/);
+      expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
     }
@@ -787,6 +787,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(waitIdx).toBeGreaterThan(-1);
     expect(terminalErrorIdx).toBeGreaterThan(waitIdx);
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
+  });
+
+  test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
+      expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(/agent_auto_continue_signaled/);
+    }
   });
 
   test("provider stream errors with reasoning-only output can retry on fallback", () => {

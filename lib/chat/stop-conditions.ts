@@ -11,31 +11,60 @@ export const OUTPUT_LIMIT_FINISH_REASON = "length";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 
-export function shouldAutoContinueAgentStream(state: {
-  finishReason?: string;
+export type AgentAutoContinueStopSource =
+  | "post_summarization_token_exhaustion"
+  | "elapsed_timeout"
+  | "post_summarization_incomplete"
+  | "context_limit_finish_reason"
+  | "output_limit_finish_reason"
+  | "tool_calls_finish_reason";
+
+/**
+ * Returns why a completed Agent turn should signal the connected client to
+ * start a fresh continuation run. Callers opt into elapsed-time continuation
+ * by passing the corresponding stop flag.
+ */
+export function getAgentAutoContinueStopSource(state: {
+  finishReason: string | undefined;
   stoppedDueToTokenExhaustion: boolean;
   stoppedDueToElapsedTimeout?: boolean;
   stoppedDueToPostSummarizationIncomplete: boolean;
-}): boolean {
-  return (
-    state.stoppedDueToTokenExhaustion ||
-    state.stoppedDueToElapsedTimeout === true ||
-    state.stoppedDueToPostSummarizationIncomplete ||
-    state.finishReason === "tool-calls" ||
-    state.finishReason === OUTPUT_LIMIT_FINISH_REASON
-  );
+}): AgentAutoContinueStopSource | null {
+  if (state.stoppedDueToTokenExhaustion) {
+    return "post_summarization_token_exhaustion";
+  }
+  if (state.stoppedDueToElapsedTimeout) return "elapsed_timeout";
+  if (state.stoppedDueToPostSummarizationIncomplete) {
+    return "post_summarization_incomplete";
+  }
+  if (state.finishReason === TOKEN_EXHAUSTION_FINISH_REASON) {
+    return "context_limit_finish_reason";
+  }
+  if (state.finishReason === OUTPUT_LIMIT_FINISH_REASON) {
+    return "output_limit_finish_reason";
+  }
+  if (state.finishReason === "tool-calls") return "tool_calls_finish_reason";
+  return null;
 }
 
 export function tokenExhaustedAfterSummarization(state: {
   threshold: number;
   getLastStepInputTokens: () => number;
   getHasSummarized: () => boolean;
+  /**
+   * Whether prepareStep can compact the rolling context again before the next
+   * provider request. Omitted for backward compatibility with callers that
+   * still support only one compaction per stream.
+   */
+  getCanSummarizeAgain?: () => boolean;
   onFired: () => void;
 }): StopCondition<any> {
   return () => {
     const lastStepInput = state.getLastStepInputTokens();
     const hasSummarized = state.getHasSummarized();
-    const shouldStop = hasSummarized && lastStepInput > state.threshold;
+    const canSummarizeAgain = state.getCanSummarizeAgain?.() ?? false;
+    const shouldStop =
+      hasSummarized && !canSummarizeAgain && lastStepInput > state.threshold;
     if (shouldStop) {
       state.onFired();
     }

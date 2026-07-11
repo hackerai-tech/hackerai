@@ -37,10 +37,13 @@ export const writeUploadCompleteStatus = (
 // Summarization notifications
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,
+  compactionIndex?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
     data: {
       status: "started",
       message: "Automatically compacting context",
@@ -51,14 +54,32 @@ export const writeSummarizationStarted = (
 
 export const writeSummarizationCompleted = (
   writer: UIMessageStreamWriter,
+  compactionIndex?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
     data: {
       status: "completed",
       message: "Context automatically compacted",
     },
+  });
+};
+
+/** Clear the transient compacting indicator without persisting a success. */
+export const writeSummarizationCleared = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
+    data: { status: "completed", message: "" },
+    transient: true,
   });
 };
 

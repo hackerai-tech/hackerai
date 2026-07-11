@@ -77,9 +77,11 @@ function isUnsupportedRootPageRequest(
   if (!ROOT_PAGE_PATHS.has(pathname)) return false;
   if (request.method === "GET" || request.method === "HEAD") return false;
 
-  return !(
-    request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER)
-  );
+  return !isNextActionRequest(request);
+}
+
+function isNextActionRequest(request: NextRequest): boolean {
+  return request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER);
 }
 
 function isBrowserRequest(request: NextRequest): boolean {
@@ -128,6 +130,23 @@ function buildEndedSessionResponse(
   request: NextRequest,
   pathname: string,
 ): NextResponse {
+  // A Server Action still runs after middleware. Letting an ended session
+  // through on a public page means the action's `withAuth()` call has no
+  // AuthKit middleware context and throws a misleading 500 instead of a clean
+  // authentication response.
+  if (isNextActionRequest(request)) {
+    return withSessionCookieCleared(
+      NextResponse.json(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        { status: 401 },
+      ),
+    );
+  }
+
   if (isUnauthenticatedPath(pathname)) {
     return withSessionCookieCleared(
       withReferralCookie(request, NextResponse.next()),

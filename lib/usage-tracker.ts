@@ -94,26 +94,29 @@ export class UsageTracker {
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
+  /** Input tokens from summarization requests, preserved across model fallback. */
+  summarizationInputTokens = 0;
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
+  /** Cache tokens from summarization requests, preserved across model fallback. */
+  summarizationCacheReadTokens = 0;
+  summarizationCacheWriteTokens = 0;
 
   /**
    * Discard the model leg's accumulated usage before a fallback retry runs.
-   * Keeps nonModelCost (sandbox/tool spend already incurred) and summarization
-   * output tokens, so the final deduction only bills the fallback model.
+   * Keeps nonModelCost (sandbox/tool spend already incurred) and all
+   * summarization usage, so the final deduction only replaces the streamed
+   * model leg with the fallback model.
    */
   resetModelLeg() {
     this.providerCost -= this.modelProviderCost;
     this.modelProviderCost = 0;
-    this.inputTokens = 0;
-    // Preserve summarization's contribution to outputTokens so the
-    // streamOutputTokens getter (outputTokens - summarizationOutputTokens)
-    // never goes negative.
+    this.inputTokens = this.summarizationInputTokens;
     this.outputTokens = this.summarizationOutputTokens;
-    this.totalTokens = this.outputTokens;
+    this.totalTokens = this.inputTokens + this.outputTokens;
     this.lastStepInputTokens = 0;
-    this.cacheReadTokens = 0;
-    this.cacheWriteTokens = 0;
+    this.cacheReadTokens = this.summarizationCacheReadTokens;
+    this.cacheWriteTokens = this.summarizationCacheWriteTokens;
     this.modelStepCosts = [];
   }
 

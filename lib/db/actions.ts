@@ -196,6 +196,48 @@ const truncateDiagnosticString = (value: string): string =>
     ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
     : value;
 
+type UpstreamHttpError = {
+  statusCode: number;
+  rayId?: string;
+};
+
+const getUpstreamHttpError = (
+  message: string,
+): UpstreamHttpError | undefined => {
+  if (!/<(?:!DOCTYPE|html)\b/i.test(message)) return undefined;
+  if (!/cloudflare|cf-error-details|haiusercontent\.com/i.test(message)) {
+    return undefined;
+  }
+
+  const statusMatch =
+    message.match(/<title>[^<|]+\|\s*(5\d{2}):/i) ??
+    message.match(/Error code\s+(5\d{2})/i);
+  if (!statusMatch) return undefined;
+
+  return {
+    statusCode: Number(statusMatch[1]),
+    rayId: message.match(
+      /Cloudflare Ray ID:\s*(?:<[^>]+>)*\s*([a-z0-9]+)/i,
+    )?.[1],
+  };
+};
+
+const getDatabaseErrorDiagnostic = (error: unknown) => {
+  const rawMessage = stringifyError(error);
+  const upstreamHttpError = getUpstreamHttpError(rawMessage);
+  if (!upstreamHttpError) {
+    return {
+      message: truncateDiagnosticString(rawMessage),
+      upstreamHttpError: undefined,
+    };
+  }
+
+  return {
+    message: `Convex upstream returned HTTP ${upstreamHttpError.statusCode}`,
+    upstreamHttpError,
+  };
+};
+
 const getConvexRequestIdFromMessage = (message: string): string | undefined => {
   const match = message.match(/\[Request ID:\s*([^\]\s]+)\]/i);
   return match?.[1];
@@ -241,12 +283,17 @@ const getDatabaseFailureStage = (data: unknown): string | undefined =>
 const getRetryableDatabaseErrorReason = (
   error: unknown,
 ): string | undefined => {
+  const rawErrorMessage = stringifyError(error);
+  if (getUpstreamHttpError(rawErrorMessage)) {
+    return "convex_upstream_http_5xx";
+  }
+
   const dbErrorData = getErrorData(error);
   const dbErrorCode = getDatabaseErrorCode(dbErrorData);
   const dbCauseErrorCode = getDatabaseCauseErrorCode(dbErrorData);
   const errorText = [
     error instanceof Error ? error.name : undefined,
-    stringifyError(error),
+    rawErrorMessage,
     dbErrorCode,
     dbCauseErrorCode,
     getObjectString(dbErrorData, "causeName"),
@@ -373,7 +420,8 @@ const databaseError = (
   metadata: Record<string, unknown> = {},
 ) => {
   const dbErrorName = error instanceof Error ? error.name : typeof error;
-  const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
+  const { message: dbErrorMessage, upstreamHttpError } =
+    getDatabaseErrorDiagnostic(error);
   const dbErrorData = getErrorData(error);
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
@@ -424,6 +472,9 @@ const databaseError = (
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
     db_retry_reason: retryReason,
+    db_error_kind: upstreamHttpError ? "convex_upstream_http_error" : undefined,
+    db_upstream_status_code: upstreamHttpError?.statusCode,
+    db_upstream_ray_id: upstreamHttpError?.rayId,
     ...metadata,
   };
 
@@ -1372,10 +1423,11 @@ export async function setActiveTriggerRun({
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
     });
   } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      "Failed to set active trigger run",
-    );
+    throw databaseError("chats.setActiveTriggerRun", error, {
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      expected_run_id: expectedRunId,
+    });
   }
 }
 
