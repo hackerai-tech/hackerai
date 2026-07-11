@@ -36,6 +36,7 @@ function areTerminalPropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
   if (prev.part.approval?.id !== next.part.approval?.id) return false;
   // Compare message.parts length for streaming output updates
   if (prev.message.parts.length !== next.message.parts.length) return false;
@@ -62,6 +63,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       }
     : (input as {
         command: string;
+        justification?: string;
+        prefix_rule?: string[];
         is_background: boolean;
         interactive?: boolean;
       });
@@ -165,10 +168,13 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           key={toolCallId}
           approvalId={part.approval?.id}
           toolCallId={toolCallId}
-          title="The agent wants to run this terminal command."
+          title="Allow HackerAI to run this terminal command?"
           target={blockTarget}
+          justification={terminalInput?.justification}
+          prefixRule={terminalInput?.prefix_rule}
           detail="Approve to continue, or deny to stop this command."
           kind="terminal"
+          operation="terminal_execute"
         >
           {(sendState) => {
             const display = getToolApprovalDisplayState({

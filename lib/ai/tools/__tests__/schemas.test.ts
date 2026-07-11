@@ -7,6 +7,10 @@ import {
 const getDescription = (value: unknown): string =>
   (value as { description: string }).description;
 
+const getInputShape = (value: unknown): Record<string, unknown> =>
+  (value as { inputSchema: { shape: Record<string, unknown> } }).inputSchema
+    .shape;
+
 describe("agent tool schema descriptions", () => {
   test("terminal command approval wording is mode-specific", () => {
     const fullAccessDescription = getDescription(runTerminalCmdTool);
@@ -33,6 +37,12 @@ describe("agent tool schema descriptions", () => {
     expect(approvalGatedDescription).not.toContain(
       "append ` | cat` to the command",
     );
+    expect(getInputShape(approvalGatedTool)).toHaveProperty("justification");
+    expect(getInputShape(approvalGatedTool)).toHaveProperty("prefix_rule");
+    expect(getInputShape(runTerminalCmdTool)).not.toHaveProperty(
+      "justification",
+    );
+    expect(getInputShape(runTerminalCmdTool)).not.toHaveProperty("prefix_rule");
   });
 
   test("file approval wording is only included for approval-gated schemas", () => {

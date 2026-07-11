@@ -136,19 +136,19 @@ export const getAgentToolApprovalPromptTitle = ({
   fallback?: string;
 }): string | undefined => {
   if (operation === "terminal_execute") {
-    return "The agent wants to run this terminal command.";
+    return "Allow HackerAI to run this terminal command?";
   }
   if (operation === "terminal_interact") {
-    return "The agent wants to interact with this terminal session.";
+    return "Allow HackerAI to interact with this terminal session?";
   }
   if (operation === "file_write") {
-    return "The agent wants to create this file.";
+    return "Allow HackerAI to create this file?";
   }
   if (operation === "file_append") {
-    return "The agent wants to append to this file.";
+    return "Allow HackerAI to append to this file?";
   }
   if (operation === "file_edit") {
-    return "The agent wants to edit this file.";
+    return "Allow HackerAI to edit this file?";
   }
   return fallback;
 };
@@ -176,6 +176,8 @@ export type AgentToolApprovalRequest = {
   operation: AgentToolApprovalOperation;
   target: string;
   brief?: string;
+  justification?: string;
+  prefixRule?: string[];
 };
 
 export type AgentToolApprovalPendingRequest = {
@@ -183,6 +185,8 @@ export type AgentToolApprovalPendingRequest = {
   toolCallId: string;
   operation?: AgentToolApprovalOperation;
   target?: string;
+  justification?: string;
+  prefixRule?: string[];
   title?: string;
   detail?: string;
   kind?: AgentToolApprovalPromptKind;

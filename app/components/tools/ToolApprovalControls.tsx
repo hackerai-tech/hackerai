@@ -5,14 +5,18 @@ import {
   useAgentApproval,
   type AgentApprovalSendState,
 } from "@/app/contexts/AgentApprovalContext";
+import type { AgentToolApprovalOperation } from "@/types";
 
 type ToolApprovalControlsProps = {
   approvalId?: string;
   toolCallId: string;
   title: string;
   target?: string;
+  justification?: string;
+  prefixRule?: string[];
   detail?: string;
   kind?: "terminal" | "file";
+  operation?: AgentToolApprovalOperation;
   children?: (sendState: AgentApprovalSendState) => ReactNode;
 };
 
@@ -42,8 +46,11 @@ export function ToolApprovalControls({
   toolCallId,
   title,
   target,
+  justification,
+  prefixRule,
   detail,
   kind,
+  operation,
   children,
 }: ToolApprovalControlsProps) {
   const {
@@ -67,8 +74,11 @@ export function ToolApprovalControls({
       toolCallId,
       title,
       target,
+      justification,
+      prefixRule,
       detail,
       kind,
+      operation,
     });
 
     return () => {
@@ -79,7 +89,10 @@ export function ToolApprovalControls({
     clearActiveToolApprovalRequest,
     detail,
     isSettled,
+    justification,
     kind,
+    operation,
+    prefixRule,
     setActiveToolApprovalRequest,
     target,
     title,

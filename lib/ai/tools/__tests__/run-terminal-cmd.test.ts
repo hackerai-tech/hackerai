@@ -129,6 +129,7 @@ function makeContext(opts: {
   sandbox: unknown | null;
   ptySessionManager?: PtySessionManager;
   chatId?: string;
+  requestToolApproval?: import("@/types").AgentToolApprovalRequester;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -169,6 +170,7 @@ function makeContext(opts: {
     modelName: "configured-model",
     getCurrentModelName: () => "active-model",
     subscription: "pro",
+    requestToolApproval: opts.requestToolApproval,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -207,6 +209,49 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
     mockPhEvent.mockClear();
+  });
+
+  test("forwards the user-facing justification and reusable argv prefix", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("ok\n");
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+    }));
+    const { context } = makeContext({
+      sandbox: nonE2B,
+      requestToolApproval,
+    });
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "ping -c 4 hackerone.com",
+      brief: "check reachability",
+      justification: "Check whether the target host is reachable.",
+      prefix_rule: ["ping", "-c", "4"],
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith({
+      toolCallId: "call-1",
+      toolName: "run_terminal_cmd",
+      operation: "terminal_execute",
+      target: "ping -c 4 hackerone.com",
+      brief: "check reachability",
+      justification: "Check whether the target host is reachable.",
+      prefixRule: ["ping", "-c", "4"],
+    });
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {

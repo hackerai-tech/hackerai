@@ -17,7 +17,7 @@ export const createRunTerminalCmdToolSchema = ({
   approvalGated?: boolean;
 } = {}) => {
   const commandCompositionGuidance = approvalGated
-    ? `1. Prefer one static command per tool call so an exact command can be approved and reused:
+    ? `1. Prefer one static command per tool call so a safe argv prefix can be approved and reused:
    - Do not chain commands or use shell operators such as \`&&\`, \`|\`, \`;\`, redirects, or substitutions
    - Use separate tool calls for multi-step workflows`
     : `1. Use command chaining and pipes for efficiency:
@@ -43,6 +43,7 @@ export const createRunTerminalCmdToolSchema = ({
     description: `Execute a command on behalf of the user.
 If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
 Commands run in the selected sandbox environment.${approvalGated ? " The platform will pause execution after you call this tool and ask the user to approve it; do not ask in chat instead of calling the tool when a command is needed." : ""}
+${approvalGated ? "For every approval-gated command, provide a concise justification. Provide prefix_rule only when there is a narrow, useful argv prefix the user can safely reuse for this conversation." : ""}
 In using these tools, adhere to the following guidelines:
 ${commandCompositionGuidance}
 2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
@@ -60,6 +61,25 @@ ${largeOutputGuidance}
     inputSchema: z.object({
       command: z.string().describe("The shell command to execute"),
       brief: toolBriefSchema,
+      ...(approvalGated
+        ? {
+            justification: z
+              .string()
+              .max(240)
+              .optional()
+              .describe(
+                "A concise, user-facing reason why this command is needed. Explain the intended outcome rather than repeating the command.",
+              ),
+            prefix_rule: z
+              .array(z.string().min(1).max(256))
+              .min(1)
+              .max(16)
+              .optional()
+              .describe(
+                'A reusable argv prefix the user may approve for this conversation. It must exactly match the beginning of the command\'s parsed argv. Choose the narrowest useful stable prefix, such as ["git", "status"] or ["ping", "-c", "4"]. Omit it for shell wrappers, compound commands, or actions that should only be approved once.',
+              ),
+          }
+        : {}),
       is_background: z
         .boolean()
         .optional()

@@ -150,6 +150,13 @@ export const getStoredAgentApprovalRequest = (
     ...(typeof approvalRequest.target === "string"
       ? { target: approvalRequest.target }
       : {}),
+    ...(typeof approvalRequest.justification === "string"
+      ? { justification: approvalRequest.justification }
+      : {}),
+    ...(Array.isArray(approvalRequest.prefixRule) &&
+    approvalRequest.prefixRule.every((part) => typeof part === "string")
+      ? { prefixRule: approvalRequest.prefixRule as string[] }
+      : {}),
     ...(detail ? { detail } : {}),
     ...(kind ? { kind } : {}),
     ...(typeof approvalRequest.createdAt === "number"

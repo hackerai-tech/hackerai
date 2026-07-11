@@ -87,10 +87,13 @@ const AgentApprovalSetter = () => {
     setActiveToolApprovalRequest({
       approvalId: "approval-1",
       toolCallId: "tool-1",
-      title: "The agent wants to run this terminal command.",
+      title: "Allow HackerAI to run this terminal command?",
       target: "ping -c 4 hackerone.com",
+      justification: "Check whether the target host is reachable.",
+      prefixRule: ["ping", "-c", "4"],
       detail: "Approve to continue, or deny to stop this command.",
       kind: "terminal",
+      operation: "terminal_execute",
     });
   }, [setActiveToolApprovalRequest, setAgentApprovalSession, setChatMode]);
 
@@ -207,16 +210,15 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         await screen.findByTestId("agent-approval-prompt"),
       ).toBeInTheDocument();
-      expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
       expect(
-        screen.getByRole("radio", {
-          name: /Yes, and don't ask again for "ping -c 4 hackerone.com" in this chat/,
-        }),
+        screen.getByRole("button", { name: "Allow once" }),
       ).toBeInTheDocument();
       expect(
-        screen.getByPlaceholderText(
-          "No, and tell HackerAI what to do differently",
-        ),
+        screen.getByRole("button", { name: "More approval options" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+      expect(
+        screen.getByText("Check whether the target host is reachable."),
       ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
@@ -234,17 +236,20 @@ describe("ChatInput - Integration Tests", () => {
             storedApprovalRequest={{
               approvalId: "stored-approval-1",
               toolCallId: "tool-1",
-              title: "The agent wants to run this terminal command.",
+              title: "Allow HackerAI to run this terminal command?",
               target: "ping -c 4 hackerone.com",
               detail: "Approve to continue, or deny to stop this command.",
               kind: "terminal",
+              operation: "terminal_execute",
             }}
           />
         </TestWrapper>,
       );
 
       expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
-      expect(screen.getByRole("radio", { name: "Yes" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Allow once" }),
+      ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });

@@ -26,6 +26,8 @@ const activeAgentApprovalRequestValidator = v.object({
     ),
   ),
   target: v.optional(v.string()),
+  justification: v.optional(v.string()),
+  prefixRule: v.optional(v.array(v.string())),
   title: v.optional(v.string()),
   detail: v.optional(v.string()),
   kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),

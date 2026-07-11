@@ -8,6 +8,7 @@ type AgentApprovalGrantSource = {
   operation?: AgentToolApprovalOperation;
   target?: string;
   kind?: AgentToolApprovalPromptKind;
+  prefixRule?: string[];
 };
 
 export type AgentApprovalTargetGrant =
@@ -363,12 +364,19 @@ export const deriveAgentApprovalTargetGrant = (
   if (request.operation === "terminal_execute") {
     const argv = parseStaticCommandArgv(request.target);
     const executable = argv?.[0];
-    return executable && argv
+    const approvedArgv = request.prefixRule ?? argv;
+    const prefixMatchesCommand =
+      argv &&
+      approvedArgv &&
+      approvedArgv.length > 0 &&
+      approvedArgv.length <= argv.length &&
+      approvedArgv.every((argument, index) => argument === argv[index]);
+    return executable && argv && prefixMatchesCommand
       ? {
           kind: "terminal_command",
-          targetPrefix: JSON.stringify(argv),
+          targetPrefix: JSON.stringify(approvedArgv),
           executable,
-          argv,
+          argv: approvedArgv,
         }
       : null;
   }
@@ -402,12 +410,19 @@ export const deriveAgentApprovalTargetGrant = (
     if (interaction) return { kind: "terminal_interaction", ...interaction };
     const argv = parseStaticCommandArgv(request.target);
     const executable = argv?.[0];
-    return executable && argv
+    const approvedArgv = request.prefixRule ?? argv;
+    const prefixMatchesCommand =
+      argv &&
+      approvedArgv &&
+      approvedArgv.length > 0 &&
+      approvedArgv.length <= argv.length &&
+      approvedArgv.every((argument, index) => argument === argv[index]);
+    return executable && argv && prefixMatchesCommand
       ? {
           kind: "terminal_command",
-          targetPrefix: JSON.stringify(argv),
+          targetPrefix: JSON.stringify(approvedArgv),
           executable,
-          argv,
+          argv: approvedArgv,
         }
       : null;
   }
@@ -440,6 +455,19 @@ export const matchesAgentApprovalTargetGrant = (
   request: AgentApprovalGrantSource,
   grant: AgentApprovalTargetGrant,
 ): boolean => {
+  if (
+    request.operation === "terminal_execute" &&
+    grant.kind === "terminal_command"
+  ) {
+    if (typeof request.target !== "string") return false;
+    const argv = parseStaticCommandArgv(request.target);
+    return (
+      !!argv &&
+      grant.argv.length <= argv.length &&
+      grant.argv.every((argument, index) => argument === argv[index])
+    );
+  }
+
   const candidate = deriveAgentApprovalTargetGrant(request);
   if (!candidate || candidate.kind !== grant.kind) return false;
 
@@ -448,8 +476,8 @@ export const matchesAgentApprovalTargetGrant = (
     grant.kind === "terminal_command"
   ) {
     return (
-      candidate.argv.length === grant.argv.length &&
-      candidate.argv.every((argument, index) => argument === grant.argv[index])
+      grant.argv.length <= candidate.argv.length &&
+      grant.argv.every((argument, index) => argument === candidate.argv[index])
     );
   }
   if (
@@ -468,20 +496,4 @@ export const matchesAgentApprovalTargetGrant = (
   }
 
   return false;
-};
-
-const formatGrantValue = (value: string): string =>
-  /^[A-Za-z0-9_./:@+-]+$/.test(value) ? value : JSON.stringify(value);
-
-export const getAgentApprovalTargetGrantLabel = (
-  grant: AgentApprovalTargetGrant | null,
-): string => {
-  if (!grant) return "Yes, and don't ask again for similar actions";
-  if (grant.kind === "terminal_command") {
-    return `Yes, and don't ask again for ${formatGrantValue(grant.argv.join(" "))} in this chat`;
-  }
-  if (grant.kind === "terminal_interaction") {
-    return `Yes, and don't ask again for ${grant.action} actions in terminal session ${formatGrantValue(grant.sessionId)} during this run`;
-  }
-  return `Yes, and don't ask again for changes to ${formatGrantValue(grant.path)} in this chat`;
 };

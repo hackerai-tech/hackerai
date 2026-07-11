@@ -27,10 +27,16 @@ interface FileHandlerProps {
 }
 
 const FILE_APPROVAL_TITLES: Partial<Record<FileInput["action"], string>> = {
-  write: "The agent wants to create this file.",
-  append: "The agent wants to append to this file.",
-  edit: "The agent wants to edit this file.",
+  write: "Allow HackerAI to create this file?",
+  append: "Allow HackerAI to append to this file?",
+  edit: "Allow HackerAI to edit this file?",
 };
+
+const FILE_APPROVAL_OPERATIONS = {
+  write: "file_write",
+  append: "file_append",
+  edit: "file_edit",
+} as const;
 
 interface FileViewOutput {
   action?: "view";
@@ -295,11 +301,16 @@ export const FileHandler = memo(function FileHandler({
       toolCallId={part.toolCallId}
       title={
         FILE_APPROVAL_TITLES[action ?? "write"] ??
-        "The agent wants to change this file."
+        "Allow HackerAI to change this file?"
       }
       target={target}
       detail="Approve to continue, or deny to stop this file change."
       kind="file"
+      operation={
+        action === "write" || action === "append" || action === "edit"
+          ? FILE_APPROVAL_OPERATIONS[action]
+          : undefined
+      }
     >
       {(sendState) => {
         const display = getToolApprovalDisplayState({

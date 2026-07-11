@@ -7,9 +7,14 @@ import {
   matchesAgentApprovalTargetGrant,
 } from "../agent-approval-grants";
 
-const request = (operation: AgentToolApprovalOperation, target: string) => ({
+const request = (
+  operation: AgentToolApprovalOperation,
+  target: string,
+  prefixRule?: string[],
+) => ({
   operation,
   target,
+  ...(prefixRule ? { prefixRule } : {}),
 });
 
 describe("agent approval grants", () => {
@@ -44,6 +49,54 @@ describe("agent approval grants", () => {
           grant,
         ),
     ).toBe(false);
+  });
+
+  it("matches a validated argv prefix across commands in the conversation", () => {
+    const grant = deriveAgentApprovalTargetGrant(
+      request("terminal_execute", "ping -c 4 hackerone.com", [
+        "ping",
+        "-c",
+        "4",
+      ]),
+    );
+
+    expect(grant).toMatchObject({
+      kind: "terminal_command",
+      executable: "ping",
+      argv: ["ping", "-c", "4"],
+      targetPrefix: '["ping","-c","4"]',
+    });
+    expect(
+      grant &&
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", "ping -c 4 example.com"),
+          grant,
+        ),
+    ).toBe(true);
+    expect(
+      grant &&
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", "ping -f example.com"),
+          grant,
+        ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["empty", []],
+    ["not a command prefix", ["ping", "example.com"]],
+    ["different executable", ["curl"]],
+    ["longer than the command", ["ping", "-c", "4", "example.com", "extra"]],
+  ])("rejects a %s model-proposed prefix rule", (_description, prefixRule) => {
+    expect(
+      deriveAgentApprovalTargetGrant(
+        request(
+          "terminal_execute",
+          "ping -c 4 example.com",
+          prefixRule as string[],
+        ),
+      ),
+    ).toBeNull();
   });
 
   it("parses a quoted executable as the same static token", () => {
@@ -263,7 +316,7 @@ describe("agent approval grants", () => {
 
   it("derives the approved scope from the pending request, not tampered client fields", () => {
     const grant = deriveApprovedAgentTargetGrant(
-      request("terminal_execute", "npm test"),
+      request("terminal_execute", "npm test -- --runInBand", ["npm", "test"]),
       {
         grant: "target_prefix",
         targetKind: "file_change",

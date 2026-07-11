@@ -15,6 +15,7 @@ const mockSendAgentApprovalSessionInput = jest.fn(
       resolveApprovalInput = resolve;
     }),
 );
+const approvalPrefixRule = ["ping", "-c", "4"];
 
 jest.mock("@/lib/chat/agent-approval-session", () => ({
   sendAgentApprovalSessionInput: () => mockSendAgentApprovalSessionInput(),
@@ -30,7 +31,11 @@ import {
 } from "../ToolApprovalControls";
 
 function ApprovalStatusHarness() {
-  const { setAgentApprovalSession, sendToolApproval } = useAgentApproval();
+  const {
+    activeToolApprovalRequest,
+    setAgentApprovalSession,
+    sendToolApproval,
+  } = useAgentApproval();
 
   useEffect(() => {
     setAgentApprovalSession({
@@ -45,12 +50,20 @@ function ApprovalStatusHarness() {
       <ToolApprovalControls
         approvalId="approval-1"
         toolCallId="tool-1"
-        title="Approve command"
+        title="Allow HackerAI to run this terminal command?"
+        target="ping -c 4 hackerone.com"
+        justification="Check whether the target host is reachable."
+        prefixRule={approvalPrefixRule}
+        kind="terminal"
+        operation="terminal_execute"
       >
         {(sendState) => (
           <span data-testid="approval-row-state">{sendState}</span>
         )}
       </ToolApprovalControls>
+      <span data-testid="active-approval-request">
+        {JSON.stringify(activeToolApprovalRequest)}
+      </span>
       <button
         type="button"
         onClick={() =>
@@ -96,6 +109,29 @@ describe("ToolApprovalControls", () => {
 
     expect(screen.getByTestId("approval-row-state")).toHaveTextContent(
       "approved",
+    );
+  });
+
+  it("forwards live approval metadata to the ChatInput prompt", async () => {
+    render(
+      <AgentApprovalProvider>
+        <ApprovalStatusHarness />
+      </AgentApprovalProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("active-approval-request")).toHaveTextContent(
+        JSON.stringify({
+          approvalId: "approval-1",
+          toolCallId: "tool-1",
+          title: "Allow HackerAI to run this terminal command?",
+          target: "ping -c 4 hackerone.com",
+          justification: "Check whether the target host is reachable.",
+          prefixRule: ["ping", "-c", "4"],
+          kind: "terminal",
+          operation: "terminal_execute",
+        }),
+      ),
     );
   });
 

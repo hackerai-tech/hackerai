@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
@@ -52,6 +52,16 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
+type RunTerminalCmdInput = {
+  command: string;
+  brief?: string;
+  justification?: string;
+  prefix_rule?: string[];
+  is_background: boolean;
+  timeout?: number;
+  interactive: boolean;
+};
+
 const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
   pid
     ? `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated (PID: ${pid}).`
@@ -67,7 +77,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   } = context;
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
-  });
+    // The conditional schema adds approval-only fields, but both branches
+    // normalize to the same execution input handled below.
+  }) as unknown as Tool<RunTerminalCmdInput, unknown>;
 
   return tool({
     ...runTerminalCmdTool,
@@ -75,16 +87,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       {
         command,
         brief,
+        justification,
+        prefix_rule,
         is_background,
         timeout,
         interactive,
-      }: {
-        command: string;
-        brief?: string;
-        is_background: boolean;
-        timeout?: number;
-        interactive: boolean;
-      },
+      }: RunTerminalCmdInput,
       { toolCallId, abortSignal },
     ) => {
       // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
@@ -146,6 +154,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         operation: "terminal_execute",
         target: command,
         brief,
+        justification,
+        prefixRule: prefix_rule,
       });
       if (approval && !approval.approved) {
         return {

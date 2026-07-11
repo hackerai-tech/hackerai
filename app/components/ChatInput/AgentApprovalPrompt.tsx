@@ -1,62 +1,25 @@
 "use client";
 
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
-import {
-  ArrowDown,
-  ArrowUp,
-  CornerDownLeft,
-  Loader2,
-  Pencil,
-} from "lucide-react";
+import { useCallback, useEffect } from "react";
+import { ChevronDown, Hand, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Button } from "@/components/ui/button";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
-import type { AgentToolApprovalDecision } from "@/types";
+import { Button } from "@/components/ui/button";
 import {
-  deriveAgentApprovalTargetGrant,
-  getAgentApprovalTargetGrantLabel,
-} from "@/lib/chat/agent-approval-grants";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { deriveAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
 
 type AgentApprovalPromptProps = {
   request: ActiveAgentToolApprovalRequest;
 };
-
-const APPROVAL_OPTIONS: Array<{
-  id: "approve" | "target_prefix" | "deny_feedback";
-  decision: AgentToolApprovalDecision;
-  index: number;
-}> = [
-  {
-    id: "approve",
-    decision: "approve",
-    index: 1,
-  },
-  {
-    id: "target_prefix",
-    decision: "approve",
-    index: 2,
-  },
-  {
-    id: "deny_feedback",
-    decision: "deny",
-    index: 3,
-  },
-];
-
-const ONE_TIME_APPROVAL_OPTIONS = APPROVAL_OPTIONS.filter(
-  (option) => option.id !== "target_prefix",
-);
 
 const isPlainEnterKey = (event: {
   key: string;
@@ -95,51 +58,60 @@ const isEditableKeyTarget = (target: EventTarget | null) => {
   return true;
 };
 
+const getApprovalCategory = (request: ActiveAgentToolApprovalRequest) => {
+  if (request.operation === "terminal_execute") return "Terminal command";
+  if (request.operation === "terminal_interact") return "Terminal access";
+  if (request.kind === "file") return "File change";
+  return request.kind === "terminal" ? "Terminal command" : "Agent action";
+};
+
+const getReusableApprovalDescription = (
+  grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
+): string => {
+  if (grant.kind === "terminal_command") {
+    return `Commands starting with ${grant.argv.join(" ")}`;
+  }
+  if (grant.kind === "terminal_interaction") {
+    return `${grant.action} actions in this terminal session`;
+  }
+  return `Changes to ${grant.path}`;
+};
+
 export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   const { session, sendToolApproval, toolApprovalSendStates } =
     useAgentApproval();
-  const formRef = useRef<HTMLFormElement | null>(null);
-  const optionRefs = useRef<Array<HTMLElement | null>>([]);
-  const feedbackInputRef = useRef<HTMLInputElement | null>(null);
-  const [selectedOptionId, setSelectedOptionId] =
-    useState<(typeof APPROVAL_OPTIONS)[number]["id"]>("approve");
-  const [feedback, setFeedback] = useState("");
   const sendState = toolApprovalSendStates[request.approvalId] ?? "idle";
   const isSending = sendState === "sending";
-  const isSettled = sendState === "approved" || sendState === "denied";
+  const isApproved = sendState === "approved";
+  const isDenied = sendState === "denied";
+  const isSettled = isApproved || isDenied;
   const canSubmit = !!session && !isSending && !isSettled;
   const targetGrant = deriveAgentApprovalTargetGrant(request);
-  const approvalOptions = targetGrant
-    ? APPROVAL_OPTIONS
-    : ONE_TIME_APPROVAL_OPTIONS;
-  const selectedOptionIndex = Math.max(
-    0,
-    approvalOptions.findIndex((option) => option.id === selectedOptionId),
-  );
+  const reusableApprovalLabel =
+    targetGrant?.kind === "terminal_interaction"
+      ? "Allow for this run"
+      : "Allow this conversation";
+  const reusableApprovalDescription = targetGrant
+    ? getReusableApprovalDescription(targetGrant)
+    : "";
   const approvalTarget = request.target?.trim() ?? "";
-  const targetPrefixLabel = getAgentApprovalTargetGrantLabel(targetGrant);
+  const justification =
+    request.justification?.trim() || request.detail?.trim() || "";
 
-  const submitOption = useCallback(
-    async (optionId: (typeof APPROVAL_OPTIONS)[number]["id"]) => {
+  const submitApproval = useCallback(
+    async (reuseForConversation: boolean) => {
       if (!canSubmit) return;
-      const option =
-        APPROVAL_OPTIONS.find(
-          (approvalOption) => approvalOption.id === optionId,
-        ) ?? APPROVAL_OPTIONS[0];
       try {
         await sendToolApproval({
           approvalId: request.approvalId,
           toolCallId: request.toolCallId,
-          decision: option.decision,
-          ...(option.id === "target_prefix" && targetGrant
+          decision: "approve",
+          ...(reuseForConversation && targetGrant
             ? {
                 grant: "target_prefix",
                 targetPrefix: targetGrant.targetPrefix,
                 targetKind: targetGrant.kind,
               }
-            : {}),
-          ...(option.id === "deny_feedback" && feedback.trim()
-            ? { message: feedback.trim() }
             : {}),
         });
       } catch (error) {
@@ -152,7 +124,6 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     },
     [
       canSubmit,
-      feedback,
       request.approvalId,
       request.toolCallId,
       sendToolApproval,
@@ -160,7 +131,8 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     ],
   );
 
-  const submitSkip = useCallback(async () => {
+  const denyApproval = useCallback(async () => {
+    if (!canSubmit) return;
     try {
       await sendToolApproval({
         approvalId: request.approvalId,
@@ -174,261 +146,134 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
           : "Failed to send approval response.",
       );
     }
-  }, [request.approvalId, request.toolCallId, sendToolApproval]);
-
-  const selectOptionAtIndex = useCallback(
-    (index: number) => {
-      const nextOption = approvalOptions[index];
-      if (!nextOption) return;
-      setSelectedOptionId(nextOption.id);
-      if (nextOption.id === "deny_feedback") {
-        feedbackInputRef.current?.focus();
-        return;
-      }
-      optionRefs.current[index]?.focus();
-    },
-    [approvalOptions],
-  );
-
-  const moveSelectedOption = useCallback(
-    (direction: 1 | -1) => {
-      const nextIndex = Math.min(
-        Math.max(selectedOptionIndex + direction, 0),
-        approvalOptions.length - 1,
-      );
-      selectOptionAtIndex(nextIndex);
-    },
-    [approvalOptions.length, selectOptionAtIndex, selectedOptionIndex],
-  );
-
-  const handlePromptKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      moveSelectedOption(event.key === "ArrowDown" ? 1 : -1);
-      return;
-    }
-
-    if (!isPlainEnterKey(event)) return;
-    if (
-      event.target instanceof HTMLElement &&
-      event.target.closest("[data-agent-approval-native-enter='true']")
-    ) {
-      return;
-    }
-
-    event.preventDefault();
-    void submitOption(selectedOptionId);
-  };
+  }, [canSubmit, request.approvalId, request.toolCallId, sendToolApproval]);
 
   useEffect(() => {
     const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!canSubmit || event.defaultPrevented) return;
-      if (
-        event.target instanceof Node &&
-        formRef.current?.contains(event.target)
-      ) {
+      if (!canSubmit || event.defaultPrevented || !isPlainEnterKey(event)) {
         return;
       }
       if (isEditableKeyTarget(event.target)) return;
-
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        moveSelectedOption(event.key === "ArrowDown" ? 1 : -1);
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("button, [role='menu']")
+      ) {
         return;
       }
 
-      if (!isPlainEnterKey(event)) return;
       event.preventDefault();
-      void submitOption(selectedOptionId);
+      void submitApproval(false);
     };
 
     document.addEventListener("keydown", handleDocumentKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleDocumentKeyDown);
-    };
-  }, [canSubmit, moveSelectedOption, selectedOptionId, submitOption]);
+    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
+  }, [canSubmit, submitApproval]);
 
-  const actionControls = (
-    <div
-      className="flex shrink-0 items-center justify-end gap-2 pl-2"
-      data-testid="agent-approval-actions"
-    >
-      <Button
-        type="button"
-        variant="ghost"
-        disabled={!canSubmit}
-        size="sm"
-        data-agent-approval-native-enter="true"
-        onClick={() => void submitSkip()}
-      >
-        Skip
-      </Button>
-      <Button
-        type="submit"
-        disabled={!canSubmit}
-        size="sm"
-        data-agent-approval-native-enter="true"
-      >
-        {isSending ? <Loader2 className="animate-spin" /> : null}
-        {isSettled ? "Submitted" : "Submit"}
-        {!isSending && !isSettled ? <CornerDownLeft /> : null}
-      </Button>
-    </div>
-  );
+  const allowLabel = isSending
+    ? "Approving"
+    : isApproved
+      ? "Approved"
+      : isDenied
+        ? "Denied"
+        : "Allow once";
 
   return (
     <form
-      ref={formRef}
-      className="order-2 flex flex-col gap-2 rounded-[22px] border border-black/8 bg-input-chat px-3 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1"
-      onKeyDown={handlePromptKeyDown}
+      className="order-2 flex min-w-0 flex-col gap-4 rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
       onSubmit={(event) => {
         event.preventDefault();
-        void submitOption(selectedOptionId);
+        void submitApproval(false);
       }}
       data-testid="agent-approval-prompt"
     >
-      <div className="flex flex-col gap-1 px-1">
-        <div className="text-[15px] font-medium leading-5 text-foreground">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Hand className="size-4" aria-hidden="true" />
+        <span>{getApprovalCategory(request)}</span>
+      </div>
+
+      <div className="min-w-0 space-y-1.5">
+        <div className="text-[15px] font-medium leading-5 text-foreground sm:text-base">
           {request.title}
         </div>
+        {justification ? (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {justification}
+          </p>
+        ) : null}
       </div>
 
       {approvalTarget ? (
-        <div className="max-h-20 overflow-auto rounded-xl bg-black/5 px-3 py-2 font-mono text-sm leading-5 text-muted-foreground dark:bg-white/5">
+        <div className="max-h-24 overflow-auto rounded-lg bg-black/5 px-3 py-2 font-mono text-sm leading-5 text-muted-foreground dark:bg-white/5">
           {request.target}
         </div>
       ) : null}
 
       <div
-        role="radiogroup"
-        aria-label="Agent approval options"
-        className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1"
+        className="flex items-center justify-end gap-2"
+        data-testid="agent-approval-actions"
       >
-        {approvalOptions.map((option, optionIndex) => {
-          const selected = selectedOptionId === option.id;
-          const canMoveUp = optionIndex > 0;
-          const canMoveDown = optionIndex < approvalOptions.length - 1;
-          const label =
-            option.id === "approve"
-              ? "Yes"
-              : option.id === "target_prefix"
-                ? targetPrefixLabel
-                : "No, and tell HackerAI what to do differently";
-          const rowClassName = `flex min-h-11 w-full items-center gap-2 rounded-xl px-2.5 text-left transition-colors ${
-            selected
-              ? "bg-foreground/10 text-foreground"
-              : "text-muted-foreground hover:bg-foreground/5"
-          } ${canSubmit ? "" : "cursor-not-allowed opacity-60"}`;
-          const iconClassName = `flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-sm font-medium ${
-            selected
-              ? "border-foreground bg-foreground text-background"
-              : "border-border"
-          }`;
-          const arrows = selected ? (
-            <span
-              className="ml-auto flex shrink-0 items-center gap-1"
-              aria-hidden="true"
-              data-testid={`agent-approval-option-${option.id}-arrows`}
-            >
-              <ArrowUp
-                className={`size-4 ${
-                  canMoveUp ? "text-foreground/70" : "text-foreground/25"
-                }`}
-              />
-              <ArrowDown
-                className={`size-4 ${
-                  canMoveDown ? "text-foreground/70" : "text-foreground/25"
-                }`}
-              />
-            </span>
-          ) : null;
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!canSubmit}
+          className="rounded-full bg-transparent shadow-none"
+          onClick={() => void denyApproval()}
+        >
+          Deny
+        </Button>
 
-          if (option.id === "deny_feedback") {
-            return (
-              <Fragment key={option.id}>
-                <div
-                  ref={(node) => {
-                    optionRefs.current[optionIndex] = node;
-                  }}
-                  role="radio"
-                  aria-checked={selected}
-                  aria-label={label}
-                  tabIndex={canSubmit ? 0 : -1}
-                  className={`${rowClassName} min-w-0`}
-                  data-testid="agent-approval-feedback-row"
-                  onClick={() => {
-                    setSelectedOptionId(option.id);
-                    feedbackInputRef.current?.focus();
-                  }}
-                  onKeyDown={(event) => {
-                    if (!isPlainEnterKey(event)) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setSelectedOptionId(option.id);
-                    feedbackInputRef.current?.focus();
-                  }}
+        <div className="flex items-center">
+          <Button
+            type="submit"
+            disabled={!canSubmit}
+            className={
+              targetGrant
+                ? "rounded-l-full rounded-r-none px-4"
+                : "rounded-full px-4"
+            }
+          >
+            {isSending ? <Loader2 className="animate-spin" /> : null}
+            {allowLabel}
+          </Button>
+
+          {targetGrant ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  disabled={!canSubmit}
+                  className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
+                  aria-label="More approval options"
                 >
-                  <span className={iconClassName} aria-hidden="true">
-                    <Pencil className="h-3.5 w-3.5" />
+                  <ChevronDown aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="end"
+                sideOffset={6}
+                className="min-w-56 rounded-xl p-1.5"
+              >
+                <DropdownMenuItem
+                  className="min-h-10 rounded-lg px-3 text-sm"
+                  onSelect={() => void submitApproval(false)}
+                >
+                  Allow once
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="min-h-12 flex-col items-start gap-0.5 rounded-lg px-3 text-sm"
+                  aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
+                  onSelect={() => void submitApproval(true)}
+                >
+                  <span>{reusableApprovalLabel}</span>
+                  <span className="max-w-60 truncate text-xs text-muted-foreground">
+                    {reusableApprovalDescription}
                   </span>
-                  <input
-                    ref={feedbackInputRef}
-                    type="text"
-                    value={feedback}
-                    disabled={!canSubmit}
-                    className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground"
-                    aria-label={label}
-                    placeholder={label}
-                    data-agent-approval-native-enter="true"
-                    onFocus={() => setSelectedOptionId(option.id)}
-                    onChange={(event) => {
-                      setSelectedOptionId(option.id);
-                      setFeedback(event.target.value);
-                    }}
-                    onKeyDown={(event) => {
-                      if (!isPlainEnterKey(event)) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void submitOption(option.id);
-                    }}
-                  />
-                  {arrows}
-                </div>
-                {actionControls}
-              </Fragment>
-            );
-          }
-
-          return (
-            <button
-              key={option.id}
-              ref={(node) => {
-                optionRefs.current[optionIndex] = node;
-              }}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              disabled={!canSubmit}
-              className={`${rowClassName} col-span-2`}
-              onClick={() => setSelectedOptionId(option.id)}
-              onKeyDown={(event) => {
-                if (!isPlainEnterKey(event)) return;
-                event.preventDefault();
-                event.stopPropagation();
-                setSelectedOptionId(option.id);
-                void submitOption(option.id);
-              }}
-            >
-              <span className={iconClassName} aria-hidden="true">
-                {option.index}
-              </span>
-              <span className="min-w-0 flex-1 break-words text-sm font-medium">
-                {label}
-              </span>
-              {arrows}
-            </button>
-          );
-        })}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
       </div>
     </form>
   );

@@ -263,6 +263,8 @@ const buildPendingApprovalRequest = ({
     toolCallId: request.toolCallId,
     operation: request.operation,
     target: request.target,
+    ...(request.justification ? { justification: request.justification } : {}),
+    ...(request.prefixRule ? { prefixRule: request.prefixRule } : {}),
     createdAt: Date.now(),
   };
 };
