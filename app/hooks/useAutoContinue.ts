@@ -58,6 +58,7 @@ export function useAutoContinue({
     part.__chatId === undefined || part.__chatId === chatId;
 
   const clearAutoContinueLifecycle = useCallback(() => {
+    pendingAutoContinueRef.current = false;
     autoContinueRunScheduledRef.current = false;
     autoContinueRunStartedRef.current = false;
     setIsAutoContinuing(false);
@@ -145,6 +146,12 @@ export function useAutoContinue({
   ]);
 
   useEffect(() => {
+    if (status === "error") {
+      clearAutoContinueLifecycle();
+      setIsAutoResuming(false);
+      return;
+    }
+
     if (status === "submitted" || status === "streaming") {
       if (autoContinueRunScheduledRef.current) {
         autoContinueRunStartedRef.current = true;
@@ -153,7 +160,7 @@ export function useAutoContinue({
     if (status === "streaming") {
       setIsAutoResuming(false);
     }
-  }, [status, setIsAutoResuming]);
+  }, [status, clearAutoContinueLifecycle, setIsAutoResuming]);
 
   useEffect(() => {
     if (

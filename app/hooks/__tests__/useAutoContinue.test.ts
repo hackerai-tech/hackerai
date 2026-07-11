@@ -361,6 +361,33 @@ describe("useAutoContinue", () => {
     expect(result.current.isAutoContinuing).toBe(false);
   });
 
+  it("clears automatic continuation and its pending signal on error", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+    expect(result.current.isAutoContinuing).toBe(true);
+
+    params = { ...params, status: "error" };
+    rerender(params);
+
+    expect(result.current.isAutoContinuing).toBe(false);
+    expect(result.current.isAutoResuming).toBe(false);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("resets isAutoResuming to false when status transitions to streaming", () => {
     let params = buildParams({ status: "streaming" });
 
