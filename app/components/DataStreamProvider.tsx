@@ -17,6 +17,7 @@ export type ScopedDataUIPart = DataUIPart<any> & {
 interface DataStreamStateValue {
   dataStream: ScopedDataUIPart[];
   isAutoResuming: boolean;
+  isAutoContinuing: boolean;
   autoContinueCount: number;
 }
 
@@ -24,6 +25,7 @@ interface DataStreamStateValue {
 interface DataStreamDispatchValue {
   setDataStream: React.Dispatch<React.SetStateAction<ScopedDataUIPart[]>>;
   setIsAutoResuming: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsAutoContinuing: React.Dispatch<React.SetStateAction<boolean>>;
   setAutoContinueCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
@@ -39,17 +41,33 @@ export function DataStreamProvider({
 }) {
   const [dataStream, setDataStream] = useState<ScopedDataUIPart[]>([]);
   const [isAutoResuming, setIsAutoResuming] = useState<boolean>(false);
+  const [isAutoContinuing, setIsAutoContinuing] = useState<boolean>(false);
   const [autoContinueCount, setAutoContinueCount] = useState<number>(0);
 
   const stateValue = useMemo(
-    () => ({ dataStream, isAutoResuming, autoContinueCount }),
-    [dataStream, isAutoResuming, autoContinueCount],
+    () => ({
+      dataStream,
+      isAutoResuming,
+      isAutoContinuing,
+      autoContinueCount,
+    }),
+    [dataStream, isAutoResuming, isAutoContinuing, autoContinueCount],
   );
 
   const dispatchValue = useMemo(
-    () => ({ setDataStream, setIsAutoResuming, setAutoContinueCount }),
+    () => ({
+      setDataStream,
+      setIsAutoResuming,
+      setIsAutoContinuing,
+      setAutoContinueCount,
+    }),
     // setState functions from useState are stable — this memo runs once
-    [setDataStream, setIsAutoResuming, setAutoContinueCount],
+    [
+      setDataStream,
+      setIsAutoResuming,
+      setIsAutoContinuing,
+      setAutoContinueCount,
+    ],
   );
 
   return (
@@ -61,7 +79,7 @@ export function DataStreamProvider({
   );
 }
 
-/** Subscribe to stream state (dataStream, isAutoResuming, autoContinueCount).
+/** Subscribe to stream state (dataStream, resume state, autoContinueCount).
  *  Components using this will re-render on every state change. */
 export function useDataStreamState() {
   const context = useContext(DataStreamStateContext);
