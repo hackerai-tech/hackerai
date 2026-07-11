@@ -74,6 +74,7 @@ import {
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
+import { getLatestCompletedToolTransaction } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
@@ -334,8 +335,7 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -883,8 +883,17 @@ export async function createAgentStream(
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
+              const lastStepResponseMessages =
+                (
+                  lastStep as
+                    { response?: { messages?: ModelMessage[] } } | undefined
+                )?.response?.messages ?? [];
+              const retainedToolTransaction = getLatestCompletedToolTransaction(
+                lastStepResponseMessages,
+              );
               const nextBaseMessages: ModelMessage[] = [
                 ...compactedModelMessages,
+                ...retainedToolTransaction,
                 { role: "user", content: continuationPrompt },
               ];
               const effectiveCompaction = isRollingCompactionEffective(
@@ -939,6 +948,7 @@ export async function createAgentStream(
                       ctx.summarizationTracker.summarizationCount,
                     persistence: "run_scoped",
                     raw_message_count: rawModelMessages.length,
+                    retained_tool_message_count: retainedToolTransaction.length,
                   }),
                 );
                 rollingContextCheckpoint = {

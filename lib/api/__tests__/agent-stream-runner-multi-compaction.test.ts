@@ -334,6 +334,146 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
 
+  it("retains the latest completed tool pair across rolling compaction", async () => {
+    const summary = uiMessage(
+      "summary-tool-pair",
+      "Continue the remaining rounds.",
+    );
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Continue the remaining rounds.",
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    mockGetProviderPromptPressure
+      .mockReturnValueOnce({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      })
+      .mockReturnValue(null);
+
+    const tracker = {
+      hasSummarized: true,
+      summarizationCount: 1,
+      recordSummarization() {
+        this.summarizationCount++;
+      },
+      recordSummarizationUsage: jest.fn(),
+    };
+    const largeOldUserContent = "old context ".repeat(4_000);
+    const initialRaw: ModelMessage[] = [
+      { role: "user", content: largeOldUserContent },
+    ];
+    const toolCall = {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "round-1",
+          toolName: "run_terminal_cmd",
+          input: { command: "printf 'ROUND_1_BEGIN\\nROUND_1_END\\n'" },
+        },
+      ],
+    } as ModelMessage;
+    const toolResult = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "round-1",
+          toolName: "run_terminal_cmd",
+          output: {
+            type: "text",
+            value: "ROUND_1_BEGIN\nROUND_1_END",
+          },
+        },
+      ],
+    } as ModelMessage;
+    const state = initAgentStreamState(
+      [uiMessage("original-tool-pair", largeOldUserContent)],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    state.lastStepInputTokens = 300_000;
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        chatId: "chat-tool-pair",
+        summarizationTracker: tracker,
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+
+    const countToolParts = (
+      messages: ModelMessage[],
+      type: "tool-call" | "tool-result",
+    ) =>
+      messages.reduce((count, message) => {
+        if (!Array.isArray(message.content)) return count;
+        return (
+          count +
+          message.content.filter((part) => {
+            const record = part as Record<string, unknown>;
+            return record.type === type && record.toolCallId === "round-1";
+          }).length
+        );
+      }, 0);
+    const findToolPartMessageIndex = (
+      messages: ModelMessage[],
+      type: "tool-call" | "tool-result",
+    ) =>
+      messages.findIndex(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content.some((part) => {
+            const record = part as Record<string, unknown>;
+            return record.type === type && record.toolCallId === "round-1";
+          }),
+      );
+
+    const compacted = await stream.prepareStep({
+      steps: [
+        {
+          toolResults: [],
+          response: { messages: [toolCall, toolResult] },
+        },
+      ],
+      messages: [...initialRaw, toolCall, toolResult],
+    });
+
+    expect(countToolParts(compacted.messages, "tool-call")).toBe(1);
+    expect(countToolParts(compacted.messages, "tool-result")).toBe(1);
+    expect(findToolPartMessageIndex(compacted.messages, "tool-result")).toBe(
+      findToolPartMessageIndex(compacted.messages, "tool-call") + 1,
+    );
+    expect(JSON.stringify(compacted.messages)).toContain("ROUND_1_END");
+    expect(compacted.messages.at(-1)?.role).toBe("user");
+
+    state.lastStepInputTokens = 0;
+    const newerAssistantMessage: ModelMessage = {
+      role: "assistant",
+      content: "Round 1 is complete; continue with Round 2.",
+    };
+    const rebased = await stream.prepareStep({
+      steps: [
+        {
+          toolResults: [],
+          response: { messages: [toolCall, toolResult] },
+        },
+        {
+          toolResults: [],
+          response: { messages: [newerAssistantMessage] },
+        },
+      ],
+      messages: [...initialRaw, toolCall, toolResult, newerAssistantMessage],
+    });
+
+    expect(countToolParts(rebased.messages, "tool-call")).toBe(1);
+    expect(countToolParts(rebased.messages, "tool-result")).toBe(1);
+    expect(rebased.messages).toContainEqual(newerAssistantMessage);
+    expect(JSON.stringify(rebased.messages)).not.toContain(largeOldUserContent);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+  });
+
   it("stops cleanly when the attempt budget is exhausted with no accepted summary", async () => {
     mockRunSummarizationStep.mockResolvedValue({
       summarizationAttempted: true,

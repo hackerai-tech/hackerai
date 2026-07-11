@@ -404,6 +404,80 @@ export const compactModelMessagesForSummarization = <T extends ModelMessage>(
   return changed ? compacted : messages;
 };
 
+const getToolPartIds = (
+  message: ModelMessage,
+  partType: "tool-call" | "tool-result",
+): string[] => {
+  if (!Array.isArray(message.content)) return [];
+
+  return message.content.flatMap((part) => {
+    const partRecord = part as Record<string, unknown>;
+    return partRecord.type === partType &&
+      typeof partRecord.toolCallId === "string"
+      ? [partRecord.toolCallId]
+      : [];
+  });
+};
+
+/**
+ * Return the newest complete assistant tool-call plus matching tool-result
+ * transaction. Keeping this structure beside a generated summary prevents a
+ * model from repeating successful work when the summary omits its completion.
+ */
+export const getLatestCompletedToolTransaction = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  for (
+    let assistantIndex = messages.length - 1;
+    assistantIndex >= 0;
+    assistantIndex--
+  ) {
+    const assistantMessage = messages[assistantIndex];
+    if (assistantMessage.role !== "assistant") continue;
+
+    const toolCallIds = getToolPartIds(assistantMessage, "tool-call");
+    if (toolCallIds.length === 0) continue;
+
+    const expectedToolCallIds = new Set(toolCallIds);
+    const completedToolCallIds = new Set<string>();
+    const toolMessages: ModelMessage[] = [];
+
+    for (
+      let messageIndex = assistantIndex + 1;
+      messageIndex < messages.length;
+      messageIndex++
+    ) {
+      const message = messages[messageIndex];
+      if (message.role !== "tool") break;
+
+      const resultIds = getToolPartIds(message, "tool-result");
+      if (resultIds.length === 0) continue;
+      if (
+        resultIds.some((toolCallId) => !expectedToolCallIds.has(toolCallId))
+      ) {
+        return [];
+      }
+
+      resultIds.forEach((toolCallId) => completedToolCallIds.add(toolCallId));
+      toolMessages.push(message);
+    }
+
+    if (
+      toolMessages.length === 0 ||
+      toolCallIds.some((toolCallId) => !completedToolCallIds.has(toolCallId))
+    ) {
+      return [];
+    }
+
+    return compactModelMessagesForSummarization([
+      assistantMessage,
+      ...toolMessages,
+    ]);
+  }
+
+  return [];
+};
+
 const stringifySummaryMessages = (messages: ModelMessage[]): string => {
   try {
     return JSON.stringify(messages);
