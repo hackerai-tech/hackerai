@@ -84,6 +84,7 @@ import {
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   assertFreeAgentGates,
+  assertTemporaryChatAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
@@ -259,6 +260,10 @@ export const createChatHandler = () => {
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
+      assertTemporaryChatAccess({
+        isTemporary: temporary === true,
+        subscription,
+      });
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
           freeUsageSubject,

@@ -84,6 +84,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     !loading && user && !isCheckingProPlan && subscription === "free",
   );
   const showVisibleUpgradeCta = showEmptyStateHeader && showUpgradeCta;
+  const canUseTemporaryChats =
+    !loading && Boolean(user) && !isCheckingProPlan && subscription !== "free";
 
   React.useEffect(() => {
     if (!showVisibleUpgradeCta) return;
@@ -146,7 +148,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               <div className="flex gap-[40px]"></div>
               <div className="flex gap-2 items-center">
                 {/* Temporary Chat Toggle - Desktop */}
-                {!loading && user && (
+                {canUseTemporaryChats && (
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -226,7 +228,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             </div>
             <div className="flex items-center gap-2">
               {/* Temporary Chat Toggle - Mobile */}
-              {!loading && user && (
+              {canUseTemporaryChats && (
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>

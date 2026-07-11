@@ -1046,6 +1046,22 @@ export function assertFreeAgentGates(args: {
 }
 
 /**
+ * Temporary chats are a paid-plan feature. Enforce this at the API boundary so
+ * free users cannot bypass the client-side entitlement check.
+ */
+export function assertTemporaryChatAccess(args: {
+  isTemporary: boolean;
+  subscription: SubscriptionTier;
+}): void {
+  if (!args.isTemporary || args.subscription !== "free") return;
+
+  throw new ChatSDKError(
+    "forbidden:chat",
+    "Temporary chats are available on paid plans. Upgrade to Pro to use this feature.",
+  );
+}
+
+/**
  * Build the extra-usage config for paid users with `extra_usage_enabled`.
  * Falls back to an optimistic config if the balance lookup fails so a
  * transient Convex error doesn't silently disable extra usage and force

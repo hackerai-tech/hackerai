@@ -14,6 +14,7 @@ import {
 } from "@/lib/db/actions";
 import {
   assertFreeAgentGates,
+  assertTemporaryChatAccess,
   buildExtraUsageConfig,
 } from "@/lib/api/chat-stream-helpers";
 import {
@@ -196,6 +197,10 @@ export const createAgentTriggerPost =
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
+      assertTemporaryChatAccess({
+        isTemporary: temporary === true,
+        subscription,
+      });
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
       const triggerRegion = getTriggerRegionForVercelRequest(req, userLocation);
