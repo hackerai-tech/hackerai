@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
-import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { Button } from "@/components/ui/button";
 import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
 import {
@@ -27,24 +26,11 @@ export const FinishReasonNotice = ({
   agentRunSpendCapPremiumContinuationAllowed,
   onContinue,
 }: FinishReasonNoticeProps) => {
-  const { isAutoResuming, autoContinueCount } = useDataStreamState();
+  const { isAutoResuming } = useDataStreamState();
   const [hasContinued, setHasContinued] = useState(false);
 
   if (isAutoResuming) return null;
   if (hasContinued) return null;
-
-  // Suppress for auto-continuable reasons in agent mode when more auto-continues will fire
-  if (
-    mode === "agent" &&
-    autoContinueCount < MAX_AUTO_CONTINUES &&
-    (finishReason === "context-limit" ||
-      finishReason === "length" ||
-      finishReason === "preemptive-timeout" ||
-      finishReason === "tool-calls" ||
-      finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON)
-  ) {
-    return null;
-  }
 
   if (!finishReason) return null;
 

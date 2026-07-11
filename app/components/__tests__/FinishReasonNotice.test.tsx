@@ -72,36 +72,6 @@ describe("FinishReasonNotice", () => {
       },
     );
 
-    it.each([
-      { finishReason: "context-limit" as const, autoContinueCount: 0 },
-      { finishReason: "context-limit" as const, autoContinueCount: 2 },
-      { finishReason: "context-limit" as const, autoContinueCount: 4 },
-      { finishReason: "length" as const, autoContinueCount: 0 },
-      { finishReason: "length" as const, autoContinueCount: 3 },
-      { finishReason: "length" as const, autoContinueCount: 4 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 0 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 2 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 4 },
-      { finishReason: "preemptive-timeout" as const, autoContinueCount: 0 },
-      {
-        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
-        autoContinueCount: 0,
-      },
-      {
-        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
-        autoContinueCount: 4,
-      },
-    ])(
-      "returns null in agent mode when autoContinueCount=$autoContinueCount < MAX for finishReason=$finishReason",
-      ({ finishReason, autoContinueCount }) => {
-        const { container } = renderNotice(
-          { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount },
-        );
-        expect(container.innerHTML).toBe("");
-      },
-    );
-
     it("returns null when finishReason is undefined", () => {
       const { container } = renderNotice(
         { finishReason: undefined, mode: "agent" },
@@ -146,11 +116,11 @@ describe("FinishReasonNotice", () => {
         expectedText: "Paused after compacting the conversation",
       },
     ])(
-      "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
+      "renders notice for finishReason=$finishReason when no auto-continuation is pending",
       ({ finishReason, expectedText }) => {
         renderNotice(
           { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+          { isAutoResuming: false, autoContinueCount: 0 },
         );
         expect(screen.getByText(new RegExp(expectedText))).toBeInTheDocument();
       },

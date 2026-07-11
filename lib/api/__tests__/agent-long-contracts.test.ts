@@ -781,6 +781,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
+      expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(/agent_auto_continue_signaled/);
+    }
+  });
+
   test("provider stream errors with reasoning-only output can retry on fallback", () => {
     const helperImportIdx = taskSrc.indexOf("shouldRetryAgentLongWithFallback");
     const partsIdx = taskSrc.indexOf(
