@@ -73,19 +73,6 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
-export const resolveAgentApprovalWorkerVersion = (
-  env: {
-    AGENT_APPROVAL_TRIGGER_VERSION?: string;
-    TRIGGER_VERSION?: string;
-  } = {
-    AGENT_APPROVAL_TRIGGER_VERSION: process.env.AGENT_APPROVAL_TRIGGER_VERSION,
-    TRIGGER_VERSION: process.env.TRIGGER_VERSION,
-  },
-) =>
-  env.AGENT_APPROVAL_TRIGGER_VERSION?.trim() ||
-  env.TRIGGER_VERSION?.trim() ||
-  undefined;
-
 type AgentTriggerRequestBody = {
   messages: UIMessage[];
   chatId: string;
@@ -516,10 +503,10 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
-      // Lock approval Sessions to the deployed worker so an older worker cannot
-      // handle protocol v2. The dedicated override wins over the existing
-      // production TRIGGER_VERSION variable.
-      const approvalWorkerVersion = resolveAgentApprovalWorkerVersion();
+      // Set this Vercel env var to the deployed Trigger worker version during
+      // the protocol-v2 rollout so Sessions cannot schedule an older worker.
+      const approvalWorkerVersion =
+        process.env.AGENT_APPROVAL_TRIGGER_VERSION?.trim() || undefined;
       const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
