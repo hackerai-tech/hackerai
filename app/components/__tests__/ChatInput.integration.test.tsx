@@ -260,6 +260,44 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
 
       expect(mockOnStop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
+
+    it("restores the approval prompt when stopping the Agent fails", async () => {
+      const failedStop = jest.fn(async () => false);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={failedStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("Reconnecting to the Agent approval session..."),
+        ).toBeInTheDocument(),
+      );
+      expect(failedStop).toHaveBeenCalledTimes(1);
     });
 
     it("renders retry and stop controls when stored approval reconnection fails", () => {

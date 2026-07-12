@@ -299,8 +299,9 @@ describe("useChatHandlers regenerate model", () => {
       }),
     );
 
+    let stopped: boolean | undefined;
     await act(async () => {
-      await result.current.handleStop();
+      stopped = await result.current.handleStop();
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -311,5 +312,39 @@ describe("useChatHandlers regenerate model", () => {
       }),
     );
     expect(stop).toHaveBeenCalledTimes(1);
+    expect(stopped).toBe(true);
+  });
+
+  it("reports a failed Trigger cancellation to approval UI callers", async () => {
+    mockTemporaryChatsEnabled = false;
+    const fetchMock = jest.fn(
+      async () => ({ ok: false, status: 500 }) as Response,
+    );
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: fetchMock,
+    });
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [],
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+
+    let stopped: boolean | undefined;
+    await act(async () => {
+      stopped = await result.current.handleStop();
+    });
+
+    expect(stopped).toBe(false);
   });
 });

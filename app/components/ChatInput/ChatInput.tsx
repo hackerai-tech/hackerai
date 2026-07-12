@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -35,7 +35,7 @@ import {
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
-  onStop: () => void;
+  onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
@@ -166,7 +166,36 @@ export const ChatInput = ({
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
-  const showAgentApprovalPrompt = !!approvalRequest;
+  const approvalRequestKey = approvalRequest
+    ? `${approvalRequest.approvalId}:${approvalRequest.toolCallId}`
+    : null;
+  const [stoppedApprovalRequestKey, setStoppedApprovalRequestKey] = useState<
+    string | null
+  >(null);
+  const showAgentApprovalPrompt =
+    !!approvalRequest && approvalRequestKey !== stoppedApprovalRequestKey;
+
+  const handleApprovalStop = async () => {
+    const requestKey = approvalRequestKey;
+    if (requestKey) {
+      setStoppedApprovalRequestKey(requestKey);
+    }
+
+    try {
+      const stopped = await onStop();
+      if (stopped === false && requestKey) {
+        setStoppedApprovalRequestKey((current) =>
+          current === requestKey ? null : current,
+        );
+      }
+    } catch {
+      if (requestKey) {
+        setStoppedApprovalRequestKey((current) =>
+          current === requestKey ? null : current,
+        );
+      }
+    }
+  };
 
   const draftId =
     isNewChat && (!hasMessages || temporaryChatsEnabled)
@@ -353,7 +382,7 @@ export const ChatInput = ({
             request={approvalRequest}
             hasConnectionError={status === "error"}
             onRetryConnection={onReconnect}
-            onStop={onStop}
+            onStop={() => void handleApprovalStop()}
           />
         ) : (
           <div
