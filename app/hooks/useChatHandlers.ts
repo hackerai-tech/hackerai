@@ -453,6 +453,8 @@ export const useChatHandlers = ({
     if (streamStopResult.status === "rejected") {
       console.error("Error in handleStop:", streamStopResult.reason);
     }
+
+    return triggerCancelResult.status === "fulfilled";
   };
 
   const handleRegenerate = async () => {
