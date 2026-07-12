@@ -1,7 +1,6 @@
 import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
@@ -323,12 +322,12 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard and Pro are mode-aware; Max maps to Opus in both
- * modes.
+ * key instead). Standard maps to DeepSeek, Pro to GLM, and Max to Opus in
+ * both modes; media-aware promotion happens in `selectModel`.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
+  _mode: ChatMode,
 ): ModelName | null {
   if (tier === "auto") return null;
   switch (tier) {
