@@ -84,6 +84,7 @@ import {
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   assertFreeAgentGates,
+  assertTemporaryChatAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
@@ -152,7 +153,10 @@ import {
   getProviderStatusCode,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
-import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
+import {
+  requireBooleanFlag,
+  requireChatMessagesArray,
+} from "@/lib/api/chat-request-validation";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -214,7 +218,7 @@ export const createChatHandler = () => {
         todos,
         chatId,
         regenerate,
-        temporary,
+        temporary: rawTemporary,
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
@@ -226,13 +230,14 @@ export const createChatHandler = () => {
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
-        temporary?: boolean;
+        temporary?: unknown;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
       } = await req.json();
+      const temporary = requireBooleanFlag("temporary", rawTemporary);
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
@@ -244,7 +249,7 @@ export const createChatHandler = () => {
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,
-        isTemporary: !!temporary,
+        isTemporary: temporary,
         isRegenerate: !!regenerate,
       });
       const requestMessages = requireChatMessagesArray(messages);
@@ -259,6 +264,10 @@ export const createChatHandler = () => {
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
+      assertTemporaryChatAccess({
+        isTemporary: temporary,
+        subscription,
+      });
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
           freeUsageSubject,
@@ -315,7 +324,7 @@ export const createChatHandler = () => {
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
         Array.isArray(todos) ? todos : [],
-        { isTemporary: !!temporary, regenerate },
+        { isTemporary: temporary, regenerate },
       );
 
       const extraUsageConfig = await buildExtraUsageConfig({
@@ -381,7 +390,7 @@ export const createChatHandler = () => {
           getEmptyProcessedMessagesMetadata(truncatedMessages, {
             regenerate: !!regenerate,
             isAutoContinue: !!isAutoContinue,
-            isTemporary: !!temporary,
+            isTemporary: temporary,
             sandboxPreference,
           }),
         );
@@ -556,7 +565,7 @@ export const createChatHandler = () => {
       let subscriberStopped = false;
       const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
-        isTemporary: !!temporary,
+        isTemporary: temporary,
         abortController: userStopSignal,
         onStop: () => {
           subscriberStopped = true;
