@@ -100,6 +100,16 @@ const AgentApprovalSetter = () => {
   return null;
 };
 
+const AgentModeSetter = () => {
+  const { setChatMode } = useGlobalState();
+
+  useEffect(() => {
+    setChatMode("agent");
+  }, [setChatMode]);
+
+  return null;
+};
+
 describe("ChatInput - Integration Tests", () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
@@ -194,6 +204,57 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
+    it("does not show a late approval after the composer stop button is clicked", async () => {
+      let resolveStop: ((stopped: boolean) => void) | undefined;
+      const pendingStop = new Promise<boolean>((resolve) => {
+        resolveStop = resolve;
+      });
+      const stop = jest.fn(() => pendingStop);
+      const approvalRequest = {
+        approvalId: "late-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "curl https://hackerai.co",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute",
+      };
+      const renderChatInput = (
+        status: "ready" | "streaming",
+        storedApprovalRequest: typeof approvalRequest | null,
+      ) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={stop}
+            status={status}
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={storedApprovalRequest}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderChatInput("streaming", null));
+
+      fireEvent.click(screen.getByLabelText("Stop generation"));
+      rerender(renderChatInput("streaming", approvalRequest));
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+
+      await act(async () => resolveStop?.(true));
+      rerender(renderChatInput("ready", null));
+      rerender(renderChatInput("ready", approvalRequest));
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+    });
+
     it("replaces the composer with an approval selector while awaiting approval", async () => {
       render(
         <TestWrapper>

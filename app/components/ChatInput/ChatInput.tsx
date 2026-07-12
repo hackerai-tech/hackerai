@@ -166,34 +166,24 @@ export const ChatInput = ({
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
-  const approvalRequestKey = approvalRequest
-    ? `${approvalRequest.approvalId}:${approvalRequest.toolCallId}`
-    : null;
-  const [stoppedApprovalRequestKey, setStoppedApprovalRequestKey] = useState<
-    string | null
-  >(null);
-  const showAgentApprovalPrompt =
-    !!approvalRequest && approvalRequestKey !== stoppedApprovalRequestKey;
+  const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
-  const handleApprovalStop = async () => {
-    const requestKey = approvalRequestKey;
-    if (requestKey) {
-      setStoppedApprovalRequestKey(requestKey);
+  useEffect(() => {
+    if (!isGenerating && !approvalRequest) {
+      setIsStoppingAgent(false);
     }
+  }, [approvalRequest, isGenerating]);
 
+  const handleAgentStop = async () => {
+    setIsStoppingAgent(true);
     try {
       const stopped = await onStop();
-      if (stopped === false && requestKey) {
-        setStoppedApprovalRequestKey((current) =>
-          current === requestKey ? null : current,
-        );
+      if (stopped === false) {
+        setIsStoppingAgent(false);
       }
     } catch {
-      if (requestKey) {
-        setStoppedApprovalRequestKey((current) =>
-          current === requestKey ? null : current,
-        );
-      }
+      setIsStoppingAgent(false);
     }
   };
 
@@ -382,7 +372,7 @@ export const ChatInput = ({
             request={approvalRequest}
             hasConnectionError={status === "error"}
             onRetryConnection={onReconnect}
-            onStop={() => void handleApprovalStop()}
+            onStop={() => void handleAgentStop()}
           />
         ) : (
           <div
@@ -400,7 +390,7 @@ export const ChatInput = ({
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
-              onStop={onStop}
+              onStop={() => void handleAgentStop()}
               onSubmit={handleSubmit}
               status={status}
               isUploadingFiles={isUploadingFiles}
