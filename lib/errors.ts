@@ -1,22 +1,26 @@
-export type ErrorType =
-  | "bad_request"
-  | "unauthorized"
-  | "forbidden"
-  | "not_found"
-  | "rate_limit"
-  | "offline";
+export const ERROR_TYPES = [
+  "bad_request",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "rate_limit",
+  "offline",
+] as const;
+export type ErrorType = (typeof ERROR_TYPES)[number];
 
-export type Surface =
-  | "chat"
-  | "auth"
-  | "api"
-  | "stream"
-  | "database"
-  | "history"
-  | "vote"
-  | "document"
-  | "sandbox"
-  | "suggestions";
+export const ERROR_SURFACES = [
+  "chat",
+  "auth",
+  "api",
+  "stream",
+  "database",
+  "history",
+  "vote",
+  "document",
+  "sandbox",
+  "suggestions",
+] as const;
+export type Surface = (typeof ERROR_SURFACES)[number];
 
 export type ErrorCode = `${ErrorType}:${Surface}`;
 
@@ -85,6 +89,22 @@ export class ChatSDKError extends Error {
 }
 
 const STREAM_ERROR_PREFIX = "__HACKERAI_CHAT_SDK_ERROR__:";
+const MALFORMED_STREAM_ERROR_MESSAGE =
+  "Something went wrong while receiving the response. Please try again.";
+
+function isErrorCode(value: unknown): value is ErrorCode {
+  if (typeof value !== "string") return false;
+  const [type, surface, extra] = value.split(":");
+  return (
+    extra === undefined &&
+    (ERROR_TYPES as readonly string[]).includes(type) &&
+    (ERROR_SURFACES as readonly string[]).includes(surface)
+  );
+}
+
+function createMalformedStreamError(): ChatSDKError {
+  return new ChatSDKError("bad_request:stream", MALFORMED_STREAM_ERROR_MESSAGE);
+}
 
 /**
  * UI message streams only carry error text. Preserve the structured error
@@ -124,14 +144,7 @@ export function deserializeChatSDKErrorFromStream(
       cause?: unknown;
       metadata?: unknown;
     };
-    if (
-      typeof parsed.code !== "string" ||
-      !/^(bad_request|unauthorized|forbidden|not_found|rate_limit|offline):(chat|auth|api|stream|database|history|vote|document|sandbox|suggestions)$/.test(
-        parsed.code,
-      )
-    ) {
-      return null;
-    }
+    if (!isErrorCode(parsed.code)) return createMalformedStreamError();
 
     return new ChatSDKError(
       parsed.code as ErrorCode,
@@ -141,7 +154,7 @@ export function deserializeChatSDKErrorFromStream(
         : undefined,
     );
   } catch {
-    return null;
+    return createMalformedStreamError();
   }
 }
 

@@ -1,5 +1,9 @@
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
-import { isChatMode, isSubscriptionTier } from "@/types/chat";
+import {
+  isChatMode,
+  isPaidIndividualSubscription,
+  isSubscriptionTier,
+} from "@/types/chat";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import { isAgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
@@ -90,7 +94,7 @@ export function parseRateLimitWarning(
     const modeRaw = typeof rawData.mode === "string" ? rawData.mode : null;
     const costLimitDollars = rawData.costLimitDollars;
     if (
-      subscription === "free" ||
+      !isPaidIndividualSubscription(subscription) ||
       !isChatMode(modeRaw) ||
       !isNumber(costLimitDollars) ||
       costLimitDollars <= 0

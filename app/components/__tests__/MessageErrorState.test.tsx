@@ -179,6 +179,29 @@ describe("MessageErrorState", () => {
     );
   });
 
+  it("keeps the allowance explanation grammatical without cost metadata", () => {
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: {
+          type: "paid_daily_free_allowance",
+          available: true,
+          requestsRemaining: 1,
+        },
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} mode="agent" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByText(/some of free usage today/i)).toBeVisible();
+  });
+
   it("does not show the free-request CTA when allowance is unavailable", () => {
     const error = new ChatSDKError(
       "rate_limit:chat",

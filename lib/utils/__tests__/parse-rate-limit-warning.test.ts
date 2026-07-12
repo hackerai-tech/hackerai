@@ -37,6 +37,21 @@ describe("parseRateLimitWarning", () => {
     ).toBeNull();
   });
 
+  it("rejects paid daily allowance notices for team subscriptions", () => {
+    expect(
+      parseRateLimitWarning(
+        {
+          warningType: "paid-daily-free-allowance",
+          subscription: "team",
+          mode: "agent",
+          resetTime: "2026-06-30T00:00:00.000Z",
+          costLimitDollars: 0.25,
+        },
+        { hasUserDismissed: false },
+      ),
+    ).toBeNull();
+  });
+
   it("parses Pro Agent per-run spend-cap warnings", () => {
     const parsed = parseRateLimitWarning(
       {

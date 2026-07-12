@@ -67,4 +67,26 @@ describe("ChatSDKError stream serialization", () => {
       },
     });
   });
+
+  it.each([
+    "__HACKERAI_CHAT_SDK_ERROR__:{",
+    '__HACKERAI_CHAT_SDK_ERROR__:{"code":"future:surface"}',
+  ])("returns a friendly error for malformed payload %s", (payload) => {
+    const parsed = deserializeChatSDKErrorFromStream(new Error(payload));
+
+    expect(parsed).toBeInstanceOf(ChatSDKError);
+    expect(parsed).toMatchObject({
+      type: "bad_request",
+      surface: "stream",
+      cause:
+        "Something went wrong while receiving the response. Please try again.",
+    });
+    expect(parsed?.cause).not.toContain("__HACKERAI_CHAT_SDK_ERROR__");
+  });
+
+  it("ignores ordinary unstructured errors", () => {
+    expect(
+      deserializeChatSDKErrorFromStream(new Error("ordinary failure")),
+    ).toBeNull();
+  });
 });

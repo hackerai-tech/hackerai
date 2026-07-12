@@ -241,7 +241,7 @@ export const MessageErrorState = ({
             Your paid-plan limit is used up, but you still have
             {allowanceCostRemaining !== undefined
               ? ` up to $${allowanceCostRemaining.toFixed(2)}`
-              : ""}{" "}
+              : " some"}{" "}
             of free usage today. Continue this request in{" "}
             {mode === "agent"
               ? "Agent"
