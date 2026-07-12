@@ -37,7 +37,11 @@ import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
-import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import {
+  fetchWithErrorHandlers,
+  convertToUIMessages,
+  type MessageRecord,
+} from "@/lib/utils";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -60,14 +64,7 @@ import {
 } from "@/lib/chat/agent-long-heartbeat";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
-import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
-import {
-  FREE_AGENT_VALUE_NUDGE_ANALYTICS,
-  FREE_AGENT_VALUE_NUDGE_PART_TYPE,
-  hasShownFreeAgentValueNudge,
-  markFreeAgentValueNudgeShown,
-} from "@/lib/chat/free-agent-value-nudge";
-import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { addAuthenticatedExceptionStep } from "@/lib/analytics/client";
 import {
   normalizeSelectedModelForSubscription,
   type Todo,
@@ -203,6 +200,18 @@ export function getExistingChatLoadState({
     !hasPaginatedMessageResults;
 
   return { isInitialExistingChatLoad, isChatNotFound };
+}
+
+export function useServerMessages(
+  paginatedMessageResults: MessageRecord[] | undefined,
+): ChatMessage[] {
+  return useMemo(
+    () =>
+      paginatedMessageResults && paginatedMessageResults.length > 0
+        ? convertToUIMessages([...paginatedMessageResults].reverse())
+        : [],
+    [paginatedMessageResults],
+  );
 }
 
 type AgentLongPartialSaveMessage = {
@@ -634,10 +643,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
-  const serverMessages: ChatMessage[] =
-    paginatedMessageResults && paginatedMessageResults.length > 0
-      ? convertToUIMessages([...paginatedMessageResults].reverse())
-      : [];
+  const serverMessages = useServerMessages(paginatedMessageResults);
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
@@ -649,7 +655,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
-  const shownFreeAgentValueNudgeChatsRef = useRef<Set<string>>(new Set());
   const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
   activeChatIdRef.current = chatId;
 
@@ -818,33 +823,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
           break;
         }
-        case FREE_AGENT_VALUE_NUDGE_PART_TYPE: {
-          if (
-            hasShownFreeAgentValueNudge(
-              shownFreeAgentValueNudgeChatsRef.current,
-              chatId,
-            )
-          ) {
-            break;
-          }
-
-          markFreeAgentValueNudgeShown(
-            shownFreeAgentValueNudgeChatsRef.current,
-            chatId,
-          );
-          captureUpgradeCtaImpression(FREE_AGENT_VALUE_NUDGE_ANALYTICS);
-          toast.info("Agent worked locally", {
-            description:
-              "Upgrade for cloud Agent, longer runs, stronger models, files, and higher limits.",
-            duration: 10000,
-            action: {
-              label: "Upgrade",
-              onClick: () =>
-                redirectToPricing(FREE_AGENT_VALUE_NUDGE_ANALYTICS),
-            },
-          });
-          break;
-        }
         case "data-upload-status": {
           const uploadData = dataPart.data as {
             message: string;
@@ -970,6 +948,34 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  const previousChatStatusRef = useRef<typeof status | null>(null);
+  useEffect(() => {
+    previousChatStatusRef.current = null;
+  }, [chatId]);
+  useEffect(() => {
+    const previousStatus = previousChatStatusRef.current;
+    if (previousStatus === status) return;
+
+    addAuthenticatedExceptionStep("chat_status_changed", {
+      previous_status: previousStatus ?? "initial",
+      status,
+      mode: chatModeRef.current,
+      subscription: subscriptionRef.current,
+      transport: shouldUseAgentLong ? "trigger" : "browser",
+      existing_chat: isExistingChatRef.current,
+      temporary_chat: temporaryChatsEnabledRef.current,
+      message_count: messagesRef.current.length,
+    });
+    previousChatStatusRef.current = status;
+  }, [
+    chatModeRef,
+    isExistingChatRef,
+    shouldUseAgentLong,
+    status,
+    subscriptionRef,
+    temporaryChatsEnabledRef,
+  ]);
 
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;

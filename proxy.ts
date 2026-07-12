@@ -9,8 +9,12 @@ import {
   isValidReferralCode,
 } from "@/lib/referrals/config";
 
-const AUTHKIT_BYPASS_PATHS = new Set(["/api/health/trigger-agent-mode"]);
-const ROOT_PAGE_POST_PATHS = new Set(["/", "/index"]);
+const AUTHKIT_BYPASS_PATHS = new Set([
+  "/api/health/trigger-agent-mode",
+  "/robots.txt",
+  "/sitemap.xml",
+]);
+const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
 
 const UNAUTHENTICATED_PATHS = new Set([
@@ -66,15 +70,18 @@ function shouldBypassAuthkit(pathname: string): boolean {
   return AUTHKIT_BYPASS_PATHS.has(pathname);
 }
 
-function isUnsupportedRootPagePost(
+function isUnsupportedRootPageRequest(
   request: NextRequest,
   pathname: string,
 ): boolean {
-  return (
-    request.method === "POST" &&
-    ROOT_PAGE_POST_PATHS.has(pathname) &&
-    !request.headers.has(NEXT_ACTION_HEADER)
-  );
+  if (!ROOT_PAGE_PATHS.has(pathname)) return false;
+  if (request.method === "GET" || request.method === "HEAD") return false;
+
+  return !isNextActionRequest(request);
+}
+
+function isNextActionRequest(request: NextRequest): boolean {
+  return request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER);
 }
 
 function isBrowserRequest(request: NextRequest): boolean {
@@ -123,6 +130,23 @@ function buildEndedSessionResponse(
   request: NextRequest,
   pathname: string,
 ): NextResponse {
+  // A Server Action still runs after middleware. Letting an ended session
+  // through on a public page means the action's `withAuth()` call has no
+  // AuthKit middleware context and throws a misleading 500 instead of a clean
+  // authentication response.
+  if (isNextActionRequest(request)) {
+    return withSessionCookieCleared(
+      NextResponse.json(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        { status: 401 },
+      ),
+    );
+  }
+
   if (isUnauthenticatedPath(pathname)) {
     return withSessionCookieCleared(
       withReferralCookie(request, NextResponse.next()),
@@ -157,13 +181,18 @@ function buildEndedSessionResponse(
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
-  if (isUnsupportedRootPagePost(request, pathname)) {
+  if (isUnsupportedRootPageRequest(request, pathname)) {
     return NextResponse.json(
       {
         code: "method_not_allowed",
-        message: "POST is not supported for this route.",
+        message: `${request.method} is not supported for this route.`,
       },
-      { status: 405, headers: { Allow: "GET, HEAD" } },
+      {
+        status: 405,
+        headers: {
+          Allow: request.method === "POST" ? "GET, HEAD" : "GET, HEAD, POST",
+        },
+      },
     );
   }
 

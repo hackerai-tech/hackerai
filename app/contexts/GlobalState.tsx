@@ -501,6 +501,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("temporary-chat") === "true";
   });
+  const temporaryChatSubscription =
+    subscriptionFromEntitlements !== null &&
+    subscriptionFromEntitlements !== "free"
+      ? subscriptionFromEntitlements
+      : subscription;
+  const temporaryChatAccessResolved =
+    subscriptionResolved || (!authLoading && !user);
+
+  // Remove stale or manually forged temporary-chat state once the user's
+  // subscription has been resolved. The API independently enforces this gate.
+  useEffect(() => {
+    if (
+      !temporaryChatAccessResolved ||
+      temporaryChatSubscription !== "free" ||
+      !temporaryChatsEnabled
+    ) {
+      return;
+    }
+
+    setTemporaryChatsEnabled(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("temporary-chat");
+    window.history.replaceState({}, "", url.toString());
+  }, [
+    temporaryChatAccessResolved,
+    temporaryChatsEnabled,
+    temporaryChatSubscription,
+  ]);
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
@@ -978,19 +1006,29 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   };
 
   // Custom setter for temporary chats that also updates URL
-  const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
-    setTemporaryChatsEnabled(enabled);
-
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      if (enabled) {
-        url.searchParams.set("temporary-chat", "true");
-      } else {
-        url.searchParams.delete("temporary-chat");
+  const setTemporaryChatsEnabledWithUrl = useCallback(
+    (enabled: boolean) => {
+      if (
+        enabled &&
+        (!subscriptionResolved || temporaryChatSubscription === "free")
+      ) {
+        return;
       }
-      window.history.replaceState({}, "", url.toString());
-    }
-  }, []);
+
+      setTemporaryChatsEnabled(enabled);
+
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (enabled) {
+          url.searchParams.set("temporary-chat", "true");
+        } else {
+          url.searchParams.delete("temporary-chat");
+        }
+        window.history.replaceState({}, "", url.toString());
+      }
+    },
+    [subscriptionResolved, temporaryChatSubscription],
+  );
 
   // Custom setter for team welcome dialog that also updates URL
   const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {

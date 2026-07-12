@@ -14,69 +14,43 @@ describe("usage-settlement", () => {
     pointsDeducted: 1_000,
   };
 
-  it("does not settle small deltas while known balance can cover the run", () => {
-    const state = createUsageSettlementState(baseRateLimitInfo, {
-      enabled: true,
-      hasBalance: true,
-      balanceDollars: 10,
-    });
+  it("does not settle cost already covered by the upfront deduction", () => {
+    const state = createUsageSettlementState(baseRateLimitInfo);
 
     expect(
       shouldSettleUsageMidRun({
         state,
-        currentCostDollars: 0.25,
+        currentCostDollars: 0.05,
       }),
     ).toBe(false);
   });
 
-  it("does not settle larger deltas while included monthly cushion can cover them", () => {
-    const state = createUsageSettlementState(baseRateLimitInfo, {
-      enabled: true,
-      hasBalance: false,
-      balanceDollars: 0,
-    });
+  it("settles a positive delta below the former minimum threshold", () => {
+    const state = createUsageSettlementState(baseRateLimitInfo);
+
+    expect(
+      shouldSettleUsageMidRun({
+        state,
+        currentCostDollars: 0.08,
+      }),
+    ).toBe(true);
+    expect(getUnsettledUsagePoints(state, 0.08)).toBe(120);
+  });
+
+  it("settles without trusting the remaining balance captured at run start", () => {
+    const state = createUsageSettlementState(baseRateLimitInfo);
 
     expect(
       shouldSettleUsageMidRun({
         state,
         currentCostDollars: 5,
       }),
-    ).toBe(false);
-  });
-
-  it("settles when accumulated cost exceeds known included and extra balance cushion", () => {
-    const state = createUsageSettlementState(
-      {
-        ...baseRateLimitInfo,
-        remaining: 0,
-        monthly: {
-          remaining: 0,
-          limit: 250_000,
-          resetTime: new Date(),
-        },
-      },
-      {
-        enabled: true,
-        hasBalance: true,
-        balanceDollars: 0.57,
-      },
-    );
-
-    expect(
-      shouldSettleUsageMidRun({
-        state,
-        currentCostDollars: 8.71,
-      }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 8.71)).toBe(120_940);
+    expect(getUnsettledUsagePoints(state, 5)).toBe(69_000);
   });
 
   it("updates cumulative settled totals after a mid-run deduction", () => {
-    const state = createUsageSettlementState(baseRateLimitInfo, {
-      enabled: true,
-      hasBalance: true,
-      balanceDollars: 1,
-    });
+    const state = createUsageSettlementState(baseRateLimitInfo);
 
     const cumulative = addUsageDeductionDelta(state, {
       includedPointsDeducted: 2_000,
@@ -95,29 +69,12 @@ describe("usage-settlement", () => {
     });
   });
 
-  it("subtracts initial and mid-run extra usage from known monthly cap cushion", () => {
-    const state = createUsageSettlementState(
-      {
-        ...baseRateLimitInfo,
-        remaining: 0,
-        monthly: {
-          remaining: 0,
-          limit: 250_000,
-          resetTime: new Date(),
-        },
-        extraUsagePointsDeducted: 2_000,
-      },
-      {
-        enabled: true,
-        hasBalance: true,
-        balanceDollars: 2,
-        monthlyRemainingDollars: 0.9,
-      },
-    );
+  it("settles only the new delta after an earlier step was deducted", () => {
+    const state = createUsageSettlementState(baseRateLimitInfo);
 
     addUsageDeductionDelta(state, {
-      includedPointsDeducted: 0,
-      extraUsagePointsDeducted: 3_000,
+      includedPointsDeducted: 2_500,
+      extraUsagePointsDeducted: 0,
       uncoveredPoints: 0,
       usageDeductionFailed: false,
     });
@@ -125,8 +82,17 @@ describe("usage-settlement", () => {
     expect(
       shouldSettleUsageMidRun({
         state,
-        currentCostDollars: 1.2,
+        currentCostDollars: 0.25,
+      }),
+    ).toBe(false);
+    expect(getUnsettledUsagePoints(state, 0.25)).toBe(0);
+
+    expect(
+      shouldSettleUsageMidRun({
+        state,
+        currentCostDollars: 0.3,
       }),
     ).toBe(true);
+    expect(getUnsettledUsagePoints(state, 0.3)).toBe(700);
   });
 });

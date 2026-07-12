@@ -1,5 +1,4 @@
 import { describe, expect, it, jest } from "@jest/globals";
-import { FREE_AGENT_VALUE_NUDGE_PART_TYPE } from "../../chat/free-agent-value-nudge";
 
 (globalThis as any).Request = class Request {};
 (globalThis as any).Response = class Response {};
@@ -13,6 +12,7 @@ const {
   captureFreeAgentValueReached,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
@@ -180,11 +180,9 @@ describe("captureAgentBudgetAbort", () => {
 describe("captureFreeAgentValueReached", () => {
   it("captures a free successful agent value event with user properties", () => {
     const capture = jest.fn();
-    const writer = { write: jest.fn() };
 
     captureFreeAgentValueReached({
       posthog: { capture } as any,
-      writer: writer as any,
       userId: "user_123",
       chatId: "chat_123",
       endpoint: "/api/agent-long",
@@ -219,11 +217,6 @@ describe("captureFreeAgentValueReached", () => {
           last_free_agent_value_reached_at: expect.any(String),
         }),
       }),
-    });
-    expect(writer.write).toHaveBeenCalledWith({
-      type: FREE_AGENT_VALUE_NUDGE_PART_TYPE,
-      data: { reached: true },
-      transient: true,
     });
   });
 
@@ -265,11 +258,9 @@ describe("captureFreeAgentValueReached", () => {
 describe("captureAgentCompletionAnalytics", () => {
   it("captures both agent completion and free value events for successful free agent runs", () => {
     const capture = jest.fn();
-    const writer = { write: jest.fn() };
 
     captureAgentCompletionAnalytics({
       posthog: { capture } as any,
-      writer: writer as any,
       userId: "user_123",
       chatId: "chat_123",
       endpoint: "/api/agent-long",
@@ -304,11 +295,6 @@ describe("captureAgentCompletionAnalytics", () => {
         outcome: "success",
         tool_call_count: 1,
       }),
-    });
-    expect(writer.write).toHaveBeenCalledWith({
-      type: FREE_AGENT_VALUE_NUDGE_PART_TYPE,
-      data: { reached: true },
-      transient: true,
     });
   });
 
@@ -422,6 +408,88 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+  });
+});
+
+describe("captureUsageSettlement", () => {
+  it("captures one queryable event for an actual provider-step settlement", () => {
+    const capture = jest.fn();
+
+    captureUsageSettlement({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "team",
+      organizationId: "org_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      model: "anthropic/claude-opus",
+      requestId: "run_123",
+      usageSettlementId: "settlement_123",
+      settlementSequence: 2,
+      currentCostDollars: 1.75,
+      requestedDeltaPoints: 12_500,
+      deduction: {
+        includedPointsDeducted: 2_500,
+        extraUsagePointsDeducted: 8_000,
+        uncoveredPoints: 2_000,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "monthly_cap_exceeded",
+      },
+      forced: false,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-usage_settlement",
+      properties: {
+        user_id: "user_123",
+        subscription: "team",
+        subscription_tier: "team",
+        organization_id: "org_123",
+        chat_id: "chat_123",
+        request_id: "run_123",
+        usage_settlement_id: "settlement_123",
+        endpoint: "/api/agent-long",
+        mode: "agent",
+        model: "anthropic/claude-opus",
+        settlement_sequence: 2,
+        current_cost_dollars: 1.75,
+        requested_delta_points: 12_500,
+        included_points_deducted: 2_500,
+        extra_usage_points_deducted: 8_000,
+        uncovered_points: 2_000,
+        usage_deduction_failed: true,
+        usage_deduction_failure_reason: "monthly_cap_exceeded",
+        forced: false,
+        settlement_event_version: 1,
+      },
+    });
+  });
+
+  it("does nothing without a PostHog client", () => {
+    expect(() =>
+      captureUsageSettlement({
+        posthog: null,
+        userId: "user_123",
+        subscription: "pro",
+        chatId: "chat_123",
+        endpoint: "/api/chat",
+        mode: "agent",
+        model: "agent-model",
+        usageSettlementId: "settlement_123",
+        settlementSequence: 1,
+        currentCostDollars: 0.1,
+        requestedDeltaPoints: 1_400,
+        deduction: {
+          includedPointsDeducted: 1_400,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 0,
+          usageDeductionFailed: false,
+        },
+        forced: false,
+      }),
+    ).not.toThrow();
   });
 });
 

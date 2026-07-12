@@ -9,6 +9,16 @@ describe("UsageTracker", () => {
     jest.clearAllMocks();
   });
 
+  describe("usage settlement correlation", () => {
+    it("uses one stable identifier for the tracker lifetime", () => {
+      expect(tracker.usageSettlementId).toEqual(expect.any(String));
+      expect(tracker.usageSettlementId).toBe(tracker.usageSettlementId);
+      expect(new UsageTracker().usageSettlementId).not.toBe(
+        tracker.usageSettlementId,
+      );
+    });
+  });
+
   describe("accumulateStep", () => {
     it("should sum tokens across multiple steps", () => {
       tracker.accumulateStep({
@@ -589,6 +599,7 @@ describe("UsageTracker", () => {
       });
 
       expect(localMockLog).toHaveBeenCalledWith({
+        usageSettlementId: expect.any(String),
         userId: "user-123",
         organizationId: undefined,
         chatId: undefined,
@@ -750,6 +761,27 @@ describe("UsageTracker", () => {
       expect(usage.nonModelCostDollars).toBeCloseTo(0.05);
       expect(usage.costDollars).toBeCloseTo(0.05016);
       expect(usage.costSource).toBe("provider");
+    });
+
+    it("preserves summarization usage across fallback reset", () => {
+      tracker.inputTokens = 1_200;
+      tracker.summarizationInputTokens = 200;
+      tracker.outputTokens = 140;
+      tracker.summarizationOutputTokens = 40;
+      tracker.totalTokens = 1_340;
+      tracker.cacheReadTokens = 90;
+      tracker.summarizationCacheReadTokens = 20;
+      tracker.cacheWriteTokens = 50;
+      tracker.summarizationCacheWriteTokens = 10;
+
+      tracker.resetModelLeg();
+
+      expect(tracker.inputTokens).toBe(200);
+      expect(tracker.outputTokens).toBe(40);
+      expect(tracker.totalTokens).toBe(240);
+      expect(tracker.cacheReadTokens).toBe(20);
+      expect(tracker.cacheWriteTokens).toBe(10);
+      expect(tracker.streamOutputTokens).toBe(0);
     });
 
     it("labels post-run overflow as mixed when final deduction uses extra usage", () => {

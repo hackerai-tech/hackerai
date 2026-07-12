@@ -10,6 +10,7 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   AGENT_MAX_STREAM_DURATION_MS,
   BUDGET_EXHAUSTION_FINISH_REASON,
+  getAgentAutoContinueStopSource,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
@@ -68,6 +69,7 @@ import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
   createChatLogger,
   shutdownPostHog,
   type ChatLogger,
@@ -83,6 +85,7 @@ import {
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   assertFreeAgentGates,
+  assertTemporaryChatAccess,
   buildExtraUsageConfig,
   estimatePreflightInputTokens,
   getRetryFallbackModel,
@@ -151,7 +154,10 @@ import {
   getProviderStatusCode,
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
-import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
+import {
+  requireBooleanFlag,
+  requireChatMessagesArray,
+} from "@/lib/api/chat-request-validation";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -213,7 +219,7 @@ export const createChatHandler = () => {
         todos,
         chatId,
         regenerate,
-        temporary,
+        temporary: rawTemporary,
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
@@ -225,13 +231,14 @@ export const createChatHandler = () => {
         chatId: string;
         todos?: Todo[];
         regenerate?: boolean;
-        temporary?: boolean;
+        temporary?: unknown;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
       } = await req.json();
+      const temporary = requireBooleanFlag("temporary", rawTemporary);
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
@@ -243,7 +250,7 @@ export const createChatHandler = () => {
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
         mode,
-        isTemporary: !!temporary,
+        isTemporary: temporary,
         isRegenerate: !!regenerate,
       });
       const requestMessages = requireChatMessagesArray(messages);
@@ -258,6 +265,10 @@ export const createChatHandler = () => {
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
+      assertTemporaryChatAccess({
+        isTemporary: temporary,
+        subscription,
+      });
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
           freeUsageSubject,
@@ -288,6 +299,8 @@ export const createChatHandler = () => {
           chatId,
           endpoint,
           abortController: userStopSignal,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          userId,
         });
       }
 
@@ -312,7 +325,7 @@ export const createChatHandler = () => {
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
         Array.isArray(todos) ? todos : [],
-        { isTemporary: !!temporary, regenerate },
+        { isTemporary: temporary, regenerate },
       );
 
       const extraUsageConfig = await buildExtraUsageConfig({
@@ -378,7 +391,7 @@ export const createChatHandler = () => {
           getEmptyProcessedMessagesMetadata(truncatedMessages, {
             regenerate: !!regenerate,
             isAutoContinue: !!isAutoContinue,
-            isTemporary: !!temporary,
+            isTemporary: temporary,
             sandboxPreference,
           }),
         );
@@ -553,7 +566,7 @@ export const createChatHandler = () => {
       let subscriberStopped = false;
       const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
-        isTemporary: !!temporary,
+        isTemporary: temporary,
         abortController: userStopSignal,
         onStop: () => {
           subscriberStopped = true;
@@ -856,7 +869,8 @@ export const createChatHandler = () => {
             const usageSettlementState =
               subscription === "free" || paidDailyFreeAllowanceReservation
                 ? null
-                : createUsageSettlementState(rateLimitInfo, extraUsageConfig);
+                : createUsageSettlementState(rateLimitInfo);
+            let usageSettlementSequence = 0;
 
             const deductAccumulatedUsage = async () => {
               try {
@@ -985,6 +999,7 @@ export const createChatHandler = () => {
                       ? getUsageSettlementInitialDeduction(usageSettlementState)
                       : rateLimitInfo,
                     usageRecordArgs.accountingModel,
+                    usageTracker.usageSettlementId,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -1068,7 +1083,7 @@ export const createChatHandler = () => {
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force }) => {
+              async ({ currentCostDollars, force, model }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1085,6 +1100,7 @@ export const createChatHandler = () => {
                   currentCostDollars,
                 );
                 if (additionalCostPoints <= 0) return;
+                usageSettlementSequence += 1;
 
                 let deductionResult: Awaited<
                   ReturnType<typeof deductUsageDelta>
@@ -1096,6 +1112,7 @@ export const createChatHandler = () => {
                     additionalCostPoints,
                     extraUsageConfig,
                     organizationId,
+                    usageTracker.usageSettlementId,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -1108,10 +1125,11 @@ export const createChatHandler = () => {
                     subscription,
                     selected_model: selectedModel,
                     additional_cost_points: additionalCostPoints,
+                    usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
-                    error:
-                      error instanceof Error ? error.message : String(error),
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
                   });
                   deductionResult = {
                     includedPointsDeducted: 0,
@@ -1121,6 +1139,24 @@ export const createChatHandler = () => {
                     usageDeductionFailureReason: "deduction_failed",
                   };
                 }
+
+                captureUsageSettlement({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  model,
+                  requestId: req.headers.get("x-vercel-id") ?? undefined,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  settlementSequence: usageSettlementSequence,
+                  currentCostDollars,
+                  requestedDeltaPoints: additionalCostPoints,
+                  deduction: deductionResult,
+                  forced: force,
+                });
 
                 usageRefundTracker.addDeductions(deductionResult);
                 const cumulativeDeduction = addUsageDeductionDelta(
@@ -1503,7 +1539,6 @@ export const createChatHandler = () => {
                                   : "success";
                                 captureAgentCompletionAnalytics({
                                   posthog,
-                                  writer,
                                   userId,
                                   chatId,
                                   endpoint,
@@ -1731,7 +1766,6 @@ export const createChatHandler = () => {
                     const outcome = isAborted ? "aborted" : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
-                      writer,
                       userId,
                       chatId,
                       endpoint,
@@ -2025,15 +2059,31 @@ export const createChatHandler = () => {
                       await phLogger.flush();
                     }
 
+                    const autoContinueStopSource =
+                      getAgentAutoContinueStopSource({
+                        finishReason: state.streamFinishReason,
+                        stoppedDueToTokenExhaustion:
+                          state.stoppedDueToTokenExhaustion,
+                        stoppedDueToElapsedTimeout:
+                          state.stoppedDueToElapsedTimeout,
+                        stoppedDueToPostSummarizationIncomplete:
+                          state.stoppedDueToPostSummarizationIncomplete,
+                      });
                     if (
-                      (state.stoppedDueToTokenExhaustion ||
-                        state.stoppedDueToElapsedTimeout ||
-                        state.stoppedDueToPostSummarizationIncomplete ||
-                        state.streamFinishReason === "tool-calls") &&
+                      autoContinueStopSource &&
                       isAgentMode(mode) &&
                       !temporary
                     ) {
                       writeAutoContinue(writer);
+                      phLogger.info("Agent auto-continue signaled", {
+                        event: "agent_auto_continue_signaled",
+                        chat_id: chatId,
+                        assistant_id: assistantMessageId,
+                        finish_reason: state.streamFinishReason,
+                        stop_source: autoContinueStopSource,
+                        last_step_input_tokens: state.lastStepInputTokens,
+                        had_summarization: summarizationTracker.hasSummarized,
+                      });
                     }
                     shutdownPostHog(posthog);
                   } finally {

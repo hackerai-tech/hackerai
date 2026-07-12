@@ -98,6 +98,7 @@ import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
@@ -160,6 +161,7 @@ import {
 } from "@/lib/chat/active-runtime-budget";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  getAgentAutoContinueStopSource,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
@@ -1938,7 +1940,8 @@ export const agentLongTask = task({
             const usageSettlementState =
               subscription === "free"
                 ? null
-                : createUsageSettlementState(rateLimitInfo, extraUsageConfig);
+                : createUsageSettlementState(rateLimitInfo);
+            let usageSettlementSequence = 0;
 
             const deductAccumulatedUsage = async () => {
               try {
@@ -1989,6 +1992,7 @@ export const agentLongTask = task({
                       ? getUsageSettlementInitialDeduction(usageSettlementState)
                       : rateLimitInfo,
                     usageRecordArgs.accountingModel,
+                    usageTracker.usageSettlementId,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -2065,7 +2069,7 @@ export const agentLongTask = task({
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force }) => {
+              async ({ currentCostDollars, force, model }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -2082,6 +2086,7 @@ export const agentLongTask = task({
                   currentCostDollars,
                 );
                 if (additionalCostPoints <= 0) return;
+                usageSettlementSequence += 1;
 
                 let deductionResult: Awaited<
                   ReturnType<typeof deductUsageDelta>
@@ -2093,6 +2098,7 @@ export const agentLongTask = task({
                     additionalCostPoints,
                     extraUsageConfig,
                     organizationId,
+                    usageTracker.usageSettlementId,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -2105,10 +2111,11 @@ export const agentLongTask = task({
                     subscription,
                     selected_model: selectedModel,
                     additional_cost_points: additionalCostPoints,
+                    usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
-                    error:
-                      error instanceof Error ? error.message : String(error),
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
                   });
                   deductionResult = {
                     includedPointsDeducted: 0,
@@ -2118,6 +2125,24 @@ export const agentLongTask = task({
                     usageDeductionFailureReason: "deduction_failed",
                   };
                 }
+
+                captureUsageSettlement({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  model,
+                  requestId: ctx.run.id,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  settlementSequence: usageSettlementSequence,
+                  currentCostDollars,
+                  requestedDeltaPoints: additionalCostPoints,
+                  deduction: deductionResult,
+                  forced: force,
+                });
 
                 usageRefundTracker.addDeductions(deductionResult);
                 const cumulativeDeduction = addUsageDeductionDelta(
@@ -2489,7 +2514,6 @@ export const agentLongTask = task({
                                       : "success";
                                   captureAgentCompletionAnalytics({
                                     posthog,
-                                    writer,
                                     userId,
                                     chatId,
                                     endpoint,
@@ -2621,7 +2645,6 @@ export const agentLongTask = task({
                           : "success";
                       captureAgentCompletionAnalytics({
                         posthog,
-                        writer,
                         userId,
                         chatId,
                         endpoint,
@@ -2830,13 +2853,25 @@ export const agentLongTask = task({
                       // Don't auto-continue on elapsed timeout. Runs that hit
                       // their plan cap are large enough that the user should
                       // explicitly decide whether to continue.
-                      if (
-                        (state.stoppedDueToTokenExhaustion ||
-                          state.stoppedDueToPostSummarizationIncomplete ||
-                          state.streamFinishReason === "tool-calls") &&
-                        !temporary
-                      ) {
+                      const autoContinueStopSource =
+                        getAgentAutoContinueStopSource({
+                          finishReason: state.streamFinishReason,
+                          stoppedDueToTokenExhaustion:
+                            state.stoppedDueToTokenExhaustion,
+                          stoppedDueToPostSummarizationIncomplete:
+                            state.stoppedDueToPostSummarizationIncomplete,
+                        });
+                      if (autoContinueStopSource && !temporary) {
                         writeAutoContinue(writer);
+                        phLogger.info("Agent auto-continue signaled", {
+                          event: "agent_auto_continue_signaled",
+                          chat_id: chatId,
+                          assistant_id: assistantMessageId,
+                          finish_reason: state.streamFinishReason,
+                          stop_source: autoContinueStopSource,
+                          last_step_input_tokens: state.lastStepInputTokens,
+                          had_summarization: summarizationTracker.hasSummarized,
+                        });
                       }
                       posthog?.shutdown();
                     } finally {

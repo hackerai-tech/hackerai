@@ -29,9 +29,8 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
-import type { UIMessageStreamWriter } from "ai";
-import { writeFreeAgentValueNudge } from "@/lib/utils/stream-writer-utils";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
@@ -1171,7 +1170,6 @@ export type AgentRunOutcome = "success" | "aborted" | "error";
 
 type AgentCompletionAnalyticsArgs = {
   posthog: PostHog | null;
-  writer?: UIMessageStreamWriter;
   userId: string;
   chatId: string;
   endpoint: ChatApiEndpoint;
@@ -1228,7 +1226,6 @@ export function captureAgentRun({
 
 export function captureFreeAgentValueReached({
   posthog,
-  writer,
   userId,
   chatId,
   endpoint,
@@ -1239,7 +1236,6 @@ export function captureFreeAgentValueReached({
   chatLogger,
 }: {
   posthog: PostHog | null;
-  writer?: UIMessageStreamWriter;
   userId: string;
   chatId: string;
   endpoint: ChatApiEndpoint;
@@ -1249,14 +1245,8 @@ export function captureFreeAgentValueReached({
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
 }) {
-  if (mode !== "agent" || subscription !== "free") return;
+  if (!posthog || mode !== "agent" || subscription !== "free") return;
   if (outcome !== "success") return;
-
-  if (writer) {
-    writeFreeAgentValueNudge(writer);
-  }
-
-  if (!posthog) return;
 
   const now = new Date().toISOString();
   const toolCallCount = chatLogger?.getToolCalls().length ?? 0;
@@ -1382,6 +1372,73 @@ export function captureUsageCost({
         subscription_tier: subscription,
         last_usage_cost_at: new Date().toISOString(),
       },
+    },
+  });
+}
+
+/**
+ * Capture one event for each positive provider-step settlement attempt. This
+ * complements the request-level hackerai-usage_cost aggregate with the exact
+ * wallet outcome that determined whether the next provider step could start.
+ */
+export function captureUsageSettlement({
+  posthog,
+  userId,
+  subscription,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  model,
+  requestId,
+  usageSettlementId,
+  settlementSequence,
+  currentCostDollars,
+  requestedDeltaPoints,
+  deduction,
+  forced,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  subscription: string;
+  organizationId?: string;
+  chatId: string;
+  endpoint: ChatApiEndpoint;
+  mode: ChatMode;
+  model: string;
+  requestId?: string;
+  usageSettlementId: string;
+  settlementSequence: number;
+  currentCostDollars: number;
+  requestedDeltaPoints: number;
+  deduction: UsageDeductionResult;
+  forced: boolean;
+}) {
+  if (!posthog) return;
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-usage_settlement",
+    properties: {
+      user_id: userId,
+      subscription,
+      subscription_tier: subscription,
+      ...(organizationId && { organization_id: organizationId }),
+      chat_id: chatId,
+      ...(requestId && { request_id: requestId }),
+      usage_settlement_id: usageSettlementId,
+      endpoint,
+      mode,
+      model,
+      settlement_sequence: settlementSequence,
+      current_cost_dollars: currentCostDollars,
+      requested_delta_points: requestedDeltaPoints,
+      included_points_deducted: deduction.includedPointsDeducted,
+      extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
+      uncovered_points: deduction.uncoveredPoints,
+      usage_deduction_failed: deduction.usageDeductionFailed,
+      usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
+      forced,
+      settlement_event_version: 1,
     },
   });
 }

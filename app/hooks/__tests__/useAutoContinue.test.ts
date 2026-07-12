@@ -16,8 +16,15 @@ type DataStreamEntry = { type: string; data?: unknown; __chatId?: string };
 
 function useTestHarness(params: UseAutoContinueParams) {
   const autoContinue = useAutoContinue(params);
-  const { setDataStream, isAutoResuming, autoContinueCount } = useDataStream();
-  return { ...autoContinue, setDataStream, isAutoResuming, autoContinueCount };
+  const { setDataStream, isAutoResuming, isAutoContinuing, autoContinueCount } =
+    useDataStream();
+  return {
+    ...autoContinue,
+    setDataStream,
+    isAutoResuming,
+    isAutoContinuing,
+    autoContinueCount,
+  };
 }
 
 function createWrapper() {
@@ -75,6 +82,7 @@ describe("useAutoContinue", () => {
     pushAutoContinue(result);
 
     expect(result.current.isAutoResuming).toBe(true);
+    expect(result.current.isAutoContinuing).toBe(true);
   });
 
   it("ignores data-auto-continue from another chat", () => {
@@ -100,6 +108,7 @@ describe("useAutoContinue", () => {
     });
 
     expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.current.isAutoContinuing).toBe(false);
   });
 
   it("sends message with full body when signal arrives during streaming then status becomes ready", () => {
@@ -255,6 +264,7 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(MAX_AUTO_CONTINUES);
     expect(result.current.isAutoResuming).toBe(false);
+    expect(result.current.isAutoContinuing).toBe(false);
   });
 
   it("increments autoContinueCount in context after each auto-continue", () => {
@@ -305,12 +315,79 @@ describe("useAutoContinue", () => {
     });
 
     expect(result.current.autoContinueCount).toBe(1);
+    expect(result.current.isAutoContinuing).toBe(true);
 
     act(() => {
       result.current.resetAutoContinueCount();
     });
 
     expect(result.current.autoContinueCount).toBe(0);
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it("keeps automatic continuation active until the follow-up run settles", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    params = { ...params, status: "submitted" };
+    rerender(params);
+    expect(result.current.isAutoContinuing).toBe(true);
+
+    params = { ...params, status: "streaming" };
+    rerender(params);
+    expect(result.current.isAutoContinuing).toBe(true);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(249);
+    });
+    expect(result.current.isAutoContinuing).toBe(true);
+
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it("clears automatic continuation and its pending signal on error", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    pushAutoContinue(result);
+    expect(result.current.isAutoContinuing).toBe(true);
+
+    params = { ...params, status: "error" };
+    rerender(params);
+
+    expect(result.current.isAutoContinuing).toBe(false);
+    expect(result.current.isAutoResuming).toBe(false);
+
+    params = { ...params, status: "ready" };
+    rerender(params);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("resets isAutoResuming to false when status transitions to streaming", () => {

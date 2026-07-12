@@ -1,15 +1,17 @@
 import {
+  afterEach,
+  beforeEach,
   describe,
   expect,
   it,
-  beforeEach,
-  afterEach,
   jest,
 } from "@jest/globals";
 
 const mockCreateRedisSubscriber = jest.fn();
 const mockGetCancellationStatus = jest.fn();
+const mockPhInfo = jest.fn();
 const mockPhLoggerWarn = jest.fn();
+const mockLoggerWarn = jest.fn();
 
 jest.mock("@/lib/utils/redis-pubsub", () => ({
   createRedisSubscriber: mockCreateRedisSubscriber,
@@ -24,8 +26,14 @@ jest.mock("@/lib/db/actions", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     warn: mockPhLoggerWarn,
-    info: jest.fn(),
+    info: mockPhInfo,
     error: jest.fn(),
+  },
+}));
+
+jest.mock("@/lib/logger", () => ({
+  logger: {
+    warn: mockLoggerWarn,
   },
 }));
 
@@ -97,5 +105,59 @@ describe("createCancellationSubscriber", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
 
     await subscriber.stop();
+  });
+});
+
+describe("createPreemptiveTimeout", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("aborts with a one-minute cleanup buffer and emits correlated logs", async () => {
+    const { createPreemptiveTimeout } = await import("../stream-cancellation");
+    const abortController = new AbortController();
+    const abortSpy = jest.spyOn(abortController, "abort");
+
+    const timeout = createPreemptiveTimeout({
+      chatId: "chat-1",
+      endpoint: "/api/chat",
+      abortController,
+      requestId: "iad1::request-1",
+      userId: "user-1",
+    });
+
+    jest.advanceTimersByTime(359_999);
+    expect(abortSpy).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(1);
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Preemptive timeout triggered",
+      expect.objectContaining({
+        event: "chat.preemptive_timeout_triggered",
+        request_id: "iad1::request-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        endpoint: "/api/chat",
+        max_duration_seconds: 420,
+        safety_buffer_seconds: 60,
+        max_stream_time_ms: 360_000,
+      }),
+    );
+    expect(mockPhInfo).toHaveBeenCalledWith(
+      "Preemptive timeout triggered",
+      expect.objectContaining({
+        event: "chat.preemptive_timeout_triggered",
+        request_id: "iad1::request-1",
+        userId: "user-1",
+      }),
+    );
+
+    timeout.clear();
   });
 });

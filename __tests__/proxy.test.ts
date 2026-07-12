@@ -93,6 +93,21 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
   });
 
+  it.each(["/robots.txt", "/sitemap.xml"])(
+    "bypasses AuthKit for the public SEO route %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(createRequest({ pathname }));
+
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects non-action root POSTs before AuthKit", async () => {
     const { default: proxy } = await import("../proxy");
 
@@ -111,6 +126,27 @@ describe("proxy", () => {
         message: "POST is not supported for this route.",
       },
       { status: 405, headers: { Allow: "GET, HEAD" } },
+    );
+  });
+
+  it("rejects nonstandard root methods before AuthKit", async () => {
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "GESP",
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "method_not_allowed",
+        message: "GESP is not supported for this route.",
+      },
+      { status: 405, headers: { Allow: "GET, HEAD, POST" } },
     );
   });
 
@@ -241,6 +277,42 @@ describe("proxy", () => {
     expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it("stops root Server Actions when session refresh has ended", async () => {
+    const endedSessionError = Object.assign(
+      new Error("Failed to refresh session: Error: invalid_grant"),
+      {
+        name: "TokenRefreshError",
+        cause: {
+          error: "invalid_grant",
+          errorDescription: "Session has already ended.",
+        },
+      },
+    );
+    mockAuthkit.mockRejectedValue(endedSessionError);
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "POST",
+        hasSession: true,
+        headers: { "next-action": "billing-action" },
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "json" });
+    expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      { status: 401 },
+    );
+    expect(mockNextResponseNext).not.toHaveBeenCalled();
   });
 
   it("returns 401 when protected APIs hit thrown ended-session refresh errors", async () => {

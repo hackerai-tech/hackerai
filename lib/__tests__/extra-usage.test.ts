@@ -213,7 +213,11 @@ describe("extra-usage", () => {
           autoReloadTriggered: false,
         });
 
-        const result = await deductFromBalance("user-123", 2000);
+        const result = await deductFromBalance(
+          "user-123",
+          2000,
+          "settlement-123",
+        );
 
         expect(result).toEqual({
           success: true,
@@ -223,7 +227,14 @@ describe("extra-usage", () => {
           autoReloadTriggered: false,
           autoReloadResult: undefined,
         });
-        expect(mockAction).toHaveBeenCalled();
+        expect(mockAction).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            userId: "user-123",
+            amountPoints: 2000,
+            usageSettlementId: "settlement-123",
+          }),
+        );
       });
 
       it("should return auto-reload info when triggered", async () => {

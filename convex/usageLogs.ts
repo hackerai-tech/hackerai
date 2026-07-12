@@ -38,6 +38,7 @@ const cleanModelName = (model: string): string =>
 export const logUsage = mutation({
   args: {
     serviceKey: v.string(),
+    usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
@@ -140,6 +141,7 @@ export const logUsage = mutation({
     const now = Date.now();
 
     await ctx.db.insert("usage_logs", {
+      usage_settlement_id: args.usage_settlement_id,
       user_id: args.user_id,
       organization_id: args.organization_id,
       chat_id: args.chat_id,

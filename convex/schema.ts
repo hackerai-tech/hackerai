@@ -310,6 +310,19 @@ export default defineSchema({
     // broken saved card does not keep retrying.
     auto_reload_consecutive_failures: v.optional(v.number()),
     auto_reload_disabled_reason: v.optional(v.string()),
+    // One durable, entity-scoped auto-reload operation. Parallel billing
+    // actions reuse this operation (and its Stripe idempotency keys) instead
+    // of creating separate invoices from the same low-balance snapshot.
+    auto_reload_operation_id: v.optional(v.string()),
+    auto_reload_operation_executor_id: v.optional(v.string()),
+    auto_reload_operation_started_at: v.optional(v.number()),
+    auto_reload_operation_lease_expires_at: v.optional(v.number()),
+    auto_reload_operation_amount_dollars: v.optional(v.number()),
+    auto_reload_operation_stripe_invoice_id: v.optional(v.string()),
+    // Briefly suppress duplicate card attempts after a definitive decline so
+    // parallel Agent steps all observe the same failure.
+    auto_reload_retry_after: v.optional(v.number()),
+    auto_reload_last_failure_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
@@ -375,6 +388,14 @@ export default defineSchema({
     override_monthly_cap_dollars: v.optional(v.number()),
     auto_reload_consecutive_failures: v.optional(v.number()),
     auto_reload_disabled_reason: v.optional(v.string()),
+    auto_reload_operation_id: v.optional(v.string()),
+    auto_reload_operation_executor_id: v.optional(v.string()),
+    auto_reload_operation_started_at: v.optional(v.number()),
+    auto_reload_operation_lease_expires_at: v.optional(v.number()),
+    auto_reload_operation_amount_dollars: v.optional(v.number()),
+    auto_reload_operation_stripe_invoice_id: v.optional(v.string()),
+    auto_reload_retry_after: v.optional(v.number()),
+    auto_reload_last_failure_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_org", ["organization_id"]),
 
@@ -636,6 +657,7 @@ export default defineSchema({
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
@@ -688,6 +710,7 @@ export default defineSchema({
     // rows still pass validation.
     byok: v.optional(v.boolean()),
   })
+    .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"])
     .index("by_org", ["organization_id"]),

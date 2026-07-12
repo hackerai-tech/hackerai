@@ -62,13 +62,16 @@ import {
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { isAnthropicModel } from "@/lib/ai/providers";
-import {
-  FREE_MAX_OUTPUT_TOKENS,
-  PAID_MAX_OUTPUT_TOKENS,
-} from "@/lib/rate-limit/free-config";
+import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
-import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import {
+  getSummarizationThresholdTokens,
+  MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+  ROLLING_COMPACTION_MAX_SIZE_RATIO,
+} from "@/lib/chat/summarization/constants";
+import { compactModelMessagesInRun } from "@/lib/chat/summarization";
+import { getLatestCompletedToolTransaction } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
@@ -76,6 +79,10 @@ import {
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
+import {
+  writeSummarizationCleared,
+  writeSummarizationCompleted,
+} from "@/lib/utils/stream-writer-utils";
 import {
   extractOpenRouterMetadata,
   mergeOpenRouterMetadata,
@@ -99,6 +106,36 @@ import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 const GLM_AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+
+export type RollingModelContextCheckpoint = {
+  /** Latest compacted provider context, excluding later raw SDK responses. */
+  baseMessages: ModelMessage[];
+  /** Number of raw SDK messages covered by baseMessages. */
+  rawMessageCursor: number;
+};
+
+/**
+ * AI SDK prepareStep overrides apply to one request only. Rebase its cumulative
+ * raw history onto our latest compacted checkpoint for every later request.
+ */
+export const buildRollingModelMessages = (
+  rawMessages: ModelMessage[],
+  checkpoint?: RollingModelContextCheckpoint,
+): ModelMessage[] => {
+  if (!checkpoint) return rawMessages;
+  const cursor = Math.min(checkpoint.rawMessageCursor, rawMessages.length);
+  return [...checkpoint.baseMessages, ...rawMessages.slice(cursor)];
+};
+
+export const isRollingCompactionEffective = (
+  previousMessages: ModelMessage[],
+  compactedMessages: ModelMessage[],
+): boolean => {
+  const previousBytes = getSerializedBytes(previousMessages);
+  const compactedBytes = getSerializedBytes(compactedMessages);
+  if (previousBytes === undefined || compactedBytes === undefined) return true;
+  return compactedBytes < previousBytes * ROLLING_COMPACTION_MAX_SIZE_RATIO;
+};
 
 // ---------------------------------------------------------------------------
 // Mutable state — the runner updates these in place; callers read them back.
@@ -390,6 +427,7 @@ export type AgentStreamContext = {
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     force: boolean;
+    model: string;
   }) => Promise<void>;
 
   /**
@@ -453,6 +491,15 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
+  const summarizationThreshold = getSummarizationThresholdTokens(
+    getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
+  );
+  let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
+  let compactionAttemptCount = 0;
+  let lastCompactionRawMessageCount = -1;
+  const canSummarizeAgain = () =>
+    !ctx.temporary &&
+    compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
   type AbortStepLike = {
     usage?: unknown;
     response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
@@ -542,10 +589,7 @@ export async function createAgentStream(
       : getActiveTools();
 
   const initialActiveTools = await getActiveTools();
-  const maxOutputTokens =
-    ctx.subscription === "free"
-      ? FREE_MAX_OUTPUT_TOKENS
-      : PAID_MAX_OUTPUT_TOKENS;
+  const maxOutputTokens = MAX_OUTPUT_TOKENS;
   let streamHasImageViewResults = uiMessagesContainImageViewResult(
     state.finalMessages,
   );
@@ -662,6 +706,11 @@ export async function createAgentStream(
     providerOptions: initialProviderOptions,
 
     prepareStep: async ({ steps, messages }) => {
+      const rawModelMessages = messages as ModelMessage[];
+      let rollingModelMessages = buildRollingModelMessages(
+        rawModelMessages,
+        rollingContextCheckpoint,
+      );
       try {
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
@@ -679,87 +728,266 @@ export async function createAgentStream(
         const effectiveModelInfo = getEffectiveModelInfo();
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
+        const providerPromptPressure =
+          getProviderPromptPressure(rollingModelMessages);
+        const shouldCheckDurableSummary =
+          ctx.summarizationTracker.summarizationCount === 0 &&
+          steps.length === 0;
+        const shouldCompactInRun =
+          !shouldCheckDurableSummary &&
+          (providerPromptPressure !== null ||
+            state.lastStepInputTokens > summarizationThreshold);
 
-        if (!ctx.temporary && !ctx.summarizationTracker.hasSummarized) {
-          const providerPromptPressure = getProviderPromptPressure(messages);
-          const result = await runSummarizationStep({
-            messages: state.finalMessages,
-            modelMessages: messages,
-            subscription: ctx.subscription,
-            languageModel: effectiveModelInfo.languageModel,
-            mode: ctx.mode,
-            writer: ctx.writer,
-            chatId: ctx.chatId,
-            fileTokens: ctx.fileTokens,
-            todos: ctx.getTodoManager().getAllTodos(),
-            abortSignal: ctx.abortController.signal,
-            ensureSandbox: ctx.ensureSandbox,
-            systemPromptTokens: ctx.systemPromptTokens,
-            ctxSystemTokens: ctx.ctxSystemTokens,
-            ctxMaxTokens: ctx.ctxMaxTokens,
-            providerInputTokens: state.lastStepInputTokens,
-            chatSystemPrompt: ctx.currentSystemPrompt,
-            tools: ctx.tools,
-            providerOptions: getStepProviderOptions(
-              effectiveModelInfo.modelName,
-            ),
-            transcriptMessages: state.transcriptSourceMessages,
-            providerPromptPressure,
-          });
-
-          if (result.needsSummarization && result.summarizedMessages) {
-            ctx.summarizationTracker.recordSummarization(
-              steps.length,
-              result.summarizationUsage,
-              ctx.usageTracker,
-            );
-            if (result.contextUsage) {
-              state.ctxUsage = result.contextUsage;
-            }
-            state.transcriptSourceMessages = undefined;
-            const activeTools = await getActiveToolsForRecovery(loopRecovery);
-            const providerOptions = getStepProviderOptions(
-              effectiveModelInfo.modelName,
-            );
-            let summarizedModelMessages = await convertToModelMessages(
-              result.summarizedMessages,
-              {
-                tools: createPromptSerializationTools(ctx.tools),
-              },
-            );
-            state.postSummarizationContinuationActive = true;
-            state.postSummarizationToolCallCount = 0;
-            state.postSummarizationText = "";
-            const continuationPrompt = loopRecovery.nudge
-              ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
-              : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-            summarizedModelMessages = [
-              ...summarizedModelMessages,
-              { role: "user", content: continuationPrompt },
-            ];
-            const preparedMessages = prepareProviderMessages(
-              summarizedModelMessages,
-              effectiveModelInfo.modelName,
-            );
-            recordProviderRequestDiagnostics({
-              modelName: effectiveModelInfo.modelName,
-              requestedSlug: effectiveModelInfo.requestedSlug,
-              stepIndex: steps.length + 1,
-              source: "summarized_prepare_step",
-              messages: preparedMessages,
-              providerOptions,
-              activeTools,
+        if (
+          canSummarizeAgain() &&
+          (shouldCheckDurableSummary || shouldCompactInRun)
+        ) {
+          if (shouldCheckDurableSummary) {
+            const result = await runSummarizationStep({
+              messages: state.finalMessages,
+              modelMessages: rawModelMessages,
+              subscription: ctx.subscription,
+              languageModel: effectiveModelInfo.languageModel,
+              mode: ctx.mode,
+              writer: ctx.writer,
+              chatId: ctx.chatId,
+              fileTokens: ctx.fileTokens,
+              todos: ctx.getTodoManager().getAllTodos(),
+              abortSignal: ctx.abortController.signal,
+              ensureSandbox: ctx.ensureSandbox,
+              systemPromptTokens: ctx.systemPromptTokens,
+              ctxSystemTokens: ctx.ctxSystemTokens,
+              ctxMaxTokens: ctx.ctxMaxTokens,
+              providerInputTokens: state.lastStepInputTokens,
+              chatSystemPrompt: ctx.currentSystemPrompt,
+              tools: ctx.tools,
+              providerOptions: getStepProviderOptions(
+                effectiveModelInfo.modelName,
+              ),
+              transcriptMessages: state.transcriptSourceMessages,
+              providerPromptPressure,
             });
-            return {
-              model: effectiveModelInfo.languageModel,
-              activeTools,
-              providerOptions,
-              messages: preparedMessages,
-            };
+
+            if (result.summarizationAttempted) {
+              compactionAttemptCount++;
+              lastCompactionRawMessageCount = rawModelMessages.length;
+            }
+
+            if (result.needsSummarization && result.summarizedMessages) {
+              ctx.summarizationTracker.recordSummarization(
+                steps.length,
+                result.summarizationUsage,
+                ctx.usageTracker,
+              );
+              if (result.contextUsage) {
+                state.ctxUsage = result.contextUsage;
+              }
+              state.finalMessages = result.summarizedMessages;
+              state.transcriptSourceMessages = undefined;
+              const activeTools = await getActiveToolsForRecovery(loopRecovery);
+              const providerOptions = getStepProviderOptions(
+                effectiveModelInfo.modelName,
+              );
+              let summarizedModelMessages = await convertToModelMessages(
+                result.summarizedMessages,
+                {
+                  tools: createPromptSerializationTools(ctx.tools),
+                },
+              );
+              state.postSummarizationContinuationActive = true;
+              state.postSummarizationToolCallCount = 0;
+              state.postSummarizationText = "";
+              const continuationPrompt = loopRecovery.nudge
+                ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
+                : POST_SUMMARIZATION_CONTINUATION_PROMPT;
+              summarizedModelMessages = [
+                ...summarizedModelMessages,
+                { role: "user", content: continuationPrompt },
+              ];
+              rollingContextCheckpoint = {
+                baseMessages: summarizedModelMessages,
+                rawMessageCursor: rawModelMessages.length,
+              };
+              const preparedMessages = prepareProviderMessages(
+                summarizedModelMessages,
+                effectiveModelInfo.modelName,
+              );
+              recordProviderRequestDiagnostics({
+                modelName: effectiveModelInfo.modelName,
+                requestedSlug: effectiveModelInfo.requestedSlug,
+                stepIndex: steps.length + 1,
+                source: "summarized_prepare_step",
+                messages: preparedMessages,
+                providerOptions,
+                activeTools,
+              });
+              return {
+                model: effectiveModelInfo.languageModel,
+                activeTools,
+                providerOptions,
+                messages: preparedMessages,
+              };
+            }
+          } else if (
+            rawModelMessages.length === lastCompactionRawMessageCount
+          ) {
+            // Never repeatedly summarize the same raw source cursor. A later
+            // provider step advances the cursor and can become eligible again.
+          } else {
+            compactionAttemptCount++;
+            lastCompactionRawMessageCount = rawModelMessages.length;
+            const inRunResult = await compactModelMessagesInRun({
+              modelMessages: rollingModelMessages,
+              transcriptModelMessages: rawModelMessages,
+              subscription: ctx.subscription,
+              languageModel: effectiveModelInfo.languageModel,
+              mode: ctx.mode,
+              writer: ctx.writer,
+              chatId: ctx.chatId,
+              todos: ctx.getTodoManager().getAllTodos(),
+              abortSignal: ctx.abortController.signal,
+              ensureSandbox: ctx.ensureSandbox,
+              systemPromptTokens: ctx.systemPromptTokens,
+              providerInputTokens: state.lastStepInputTokens,
+              chatSystemPrompt: ctx.currentSystemPrompt,
+              tools: ctx.tools,
+              providerOptions: getStepProviderOptions(
+                effectiveModelInfo.modelName,
+              ),
+              maxTokens: ctx.ctxMaxTokens,
+              providerPromptPressure,
+              compactionIndex: ctx.summarizationTracker.summarizationCount + 1,
+              hasExistingSummary:
+                ctx.summarizationTracker.hasSummarized ||
+                state.finalMessages.some((message) =>
+                  message.parts.some(
+                    (part) =>
+                      part.type === "text" &&
+                      part.text.includes("<context_summary>"),
+                  ),
+                ),
+            });
+
+            if (!inRunResult) {
+              // The helper clears its transient UI state. A later raw cursor
+              // may retry while the bounded attempt budget remains.
+            } else {
+              const compactedModelMessages = await convertToModelMessages(
+                [inRunResult.summaryMessage],
+                { tools: createPromptSerializationTools(ctx.tools) },
+              );
+              const continuationPrompt = loopRecovery.nudge
+                ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
+                : POST_SUMMARIZATION_CONTINUATION_PROMPT;
+              const lastStepResponseMessages =
+                (
+                  lastStep as
+                    { response?: { messages?: ModelMessage[] } } | undefined
+                )?.response?.messages ?? [];
+              const retainedToolTransaction = getLatestCompletedToolTransaction(
+                lastStepResponseMessages,
+              );
+              const nextBaseMessages: ModelMessage[] = [
+                ...compactedModelMessages,
+                ...retainedToolTransaction,
+                { role: "user", content: continuationPrompt },
+              ];
+              const effectiveCompaction = isRollingCompactionEffective(
+                rollingModelMessages,
+                nextBaseMessages,
+              );
+
+              if (!effectiveCompaction) {
+                ctx.summarizationTracker.recordSummarizationUsage(
+                  inRunResult.summarizationUsage,
+                  ctx.usageTracker,
+                );
+                writeSummarizationCleared(
+                  ctx.writer,
+                  ctx.summarizationTracker.summarizationCount + 1,
+                );
+                console.warn(
+                  JSON.stringify({
+                    level: "warn",
+                    event: "agent_in_run_context_compaction_ineffective",
+                    service: "chat-handler",
+                    timestamp: new Date().toISOString(),
+                    chat_id: ctx.chatId ?? undefined,
+                    mode: ctx.mode,
+                    compaction_attempt: compactionAttemptCount,
+                    summarization_count:
+                      ctx.summarizationTracker.summarizationCount,
+                    raw_message_count: rawModelMessages.length,
+                  }),
+                );
+              } else {
+                ctx.summarizationTracker.recordSummarization(
+                  steps.length,
+                  inRunResult.summarizationUsage,
+                  ctx.usageTracker,
+                );
+                writeSummarizationCompleted(
+                  ctx.writer,
+                  ctx.summarizationTracker.summarizationCount,
+                );
+                console.info(
+                  JSON.stringify({
+                    level: "info",
+                    event: "agent_in_run_context_compaction_completed",
+                    service: "chat-handler",
+                    timestamp: new Date().toISOString(),
+                    chat_id: ctx.chatId ?? undefined,
+                    mode: ctx.mode,
+                    subscription: ctx.subscription,
+                    compaction_attempt: compactionAttemptCount,
+                    summarization_count:
+                      ctx.summarizationTracker.summarizationCount,
+                    persistence: "run_scoped",
+                    raw_message_count: rawModelMessages.length,
+                    retained_tool_message_count: retainedToolTransaction.length,
+                  }),
+                );
+                rollingContextCheckpoint = {
+                  baseMessages: nextBaseMessages,
+                  rawMessageCursor: rawModelMessages.length,
+                };
+                rollingModelMessages = nextBaseMessages;
+                state.postSummarizationContinuationActive = true;
+                state.postSummarizationToolCallCount = 0;
+                state.postSummarizationText = "";
+
+                const activeTools =
+                  await getActiveToolsForRecovery(loopRecovery);
+                const providerOptions = getStepProviderOptions(
+                  effectiveModelInfo.modelName,
+                );
+                const preparedMessages = prepareProviderMessages(
+                  nextBaseMessages,
+                  effectiveModelInfo.modelName,
+                );
+                recordProviderRequestDiagnostics({
+                  modelName: effectiveModelInfo.modelName,
+                  requestedSlug: effectiveModelInfo.requestedSlug,
+                  stepIndex: steps.length + 1,
+                  source: "summarized_prepare_step",
+                  messages: preparedMessages,
+                  providerOptions,
+                  activeTools,
+                });
+                return {
+                  model: effectiveModelInfo.languageModel,
+                  activeTools,
+                  providerOptions,
+                  messages: preparedMessages,
+                };
+              }
+            }
           }
         }
 
-        let currentMessages = messages as Array<Record<string, unknown>>;
+        let currentMessages = rollingModelMessages as Array<
+          Record<string, unknown>
+        >;
         const modelPrune = pruneModelMessages(currentMessages);
         if (modelPrune.prunedCount > 0) {
           currentMessages = modelPrune.messages;
@@ -809,23 +1037,28 @@ export async function createAgentStream(
         } else {
           console.error("[agent-stream] prepareStep error:", error);
         }
-        return ctx.currentSystemPrompt
-          ? {
-              providerOptions: getStepProviderOptions(),
-              system: ctx.currentSystemPrompt,
-            }
-          : {};
+        const providerOptions = getStepProviderOptions();
+        const fallbackMessages = prepareProviderMessages(
+          rollingModelMessages,
+        ) as typeof messages;
+        return {
+          providerOptions,
+          messages: fallbackMessages,
+          ...(ctx.currentSystemPrompt
+            ? { system: ctx.currentSystemPrompt }
+            : undefined),
+        };
       }
     },
 
     stopWhen: [
       stepCountIs(getMaxStepsForUser(ctx.mode, ctx.subscription)),
       tokenExhaustedAfterSummarization({
-        threshold: getSummarizationThresholdTokens(
-          getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
-        ),
+        threshold: summarizationThreshold,
         getLastStepInputTokens: () => state.lastStepInputTokens,
-        getHasSummarized: () => ctx.summarizationTracker.hasSummarized,
+        getHasSummarized: () =>
+          ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
+        getCanSummarizeAgain: canSummarizeAgain,
         onFired: () => {
           state.stoppedDueToTokenExhaustion = true;
         },
@@ -897,6 +1130,12 @@ export async function createAgentStream(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
+        if (usage.inputTokens) {
+          state.ctxUsage = {
+            ...state.ctxUsage,
+            usedTokens: usage.inputTokens,
+          };
+        }
       }
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
@@ -917,6 +1156,7 @@ export async function createAgentStream(
         force:
           budgetDecision?.type === "abort" ||
           budgetDecision?.type === "abort-agent-run-spend-cap",
+        model: response?.modelId ?? modelName,
       });
       if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;

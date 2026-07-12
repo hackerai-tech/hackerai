@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { TIMEOUTS } from "../constants";
 import {
+  assertLocalAuthCallbackMatchesApp,
+  E2EAuthConfigurationError,
+} from "../helpers/auth-preflight";
+import {
   getTestUsersRecord,
   type TestUser as TestUserFromConfig,
 } from "../../scripts/test-users-config";
@@ -169,6 +173,10 @@ export async function authenticateUser(
       await page.context().storageState({ path: getStorageStatePath(user) });
       return;
     } catch (error) {
+      if (error instanceof E2EAuthConfigurationError) {
+        throw error;
+      }
+
       lastError = error as Error;
       console.warn(
         `Login attempt ${attempt + 1} failed for ${user.email}:`,
@@ -190,6 +198,8 @@ export async function authenticateUser(
 }
 
 async function performLogin(page: Page, user: TestUser): Promise<void> {
+  await assertLocalAuthCallbackMatchesApp(page);
+
   // Navigate to login page
   await page.goto("/login");
 

@@ -36,7 +36,7 @@ console.log(`[trigger-dev] using Trigger.dev branch: ${triggerBranch}`);
 
 const child = spawn(
   "trigger",
-  ["dev", "--branch", triggerBranch, ...process.argv.slice(2)],
+  ["dev", "start", "--branch", triggerBranch, ...process.argv.slice(2)],
   {
     stdio: "inherit",
     shell: process.platform === "win32",

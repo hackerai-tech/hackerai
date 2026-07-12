@@ -7,6 +7,7 @@ import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
+import { v4 as uuidv4 } from "uuid";
 
 interface StepUsage {
   inputTokens?: number;
@@ -79,6 +80,8 @@ export interface UsageCostRecord {
  * Shared between chat-handler.ts and agent-task.ts to avoid duplication.
  */
 export class UsageTracker {
+  /** Correlates this run's usage record with downstream settlement logs. */
+  readonly usageSettlementId = uuidv4();
   inputTokens = 0;
   outputTokens = 0;
   totalTokens = 0;
@@ -94,26 +97,29 @@ export class UsageTracker {
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
+  /** Input tokens from summarization requests, preserved across model fallback. */
+  summarizationInputTokens = 0;
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
+  /** Cache tokens from summarization requests, preserved across model fallback. */
+  summarizationCacheReadTokens = 0;
+  summarizationCacheWriteTokens = 0;
 
   /**
    * Discard the model leg's accumulated usage before a fallback retry runs.
-   * Keeps nonModelCost (sandbox/tool spend already incurred) and summarization
-   * output tokens, so the final deduction only bills the fallback model.
+   * Keeps nonModelCost (sandbox/tool spend already incurred) and all
+   * summarization usage, so the final deduction only replaces the streamed
+   * model leg with the fallback model.
    */
   resetModelLeg() {
     this.providerCost -= this.modelProviderCost;
     this.modelProviderCost = 0;
-    this.inputTokens = 0;
-    // Preserve summarization's contribution to outputTokens so the
-    // streamOutputTokens getter (outputTokens - summarizationOutputTokens)
-    // never goes negative.
+    this.inputTokens = this.summarizationInputTokens;
     this.outputTokens = this.summarizationOutputTokens;
-    this.totalTokens = this.outputTokens;
+    this.totalTokens = this.inputTokens + this.outputTokens;
     this.lastStepInputTokens = 0;
-    this.cacheReadTokens = 0;
-    this.cacheWriteTokens = 0;
+    this.cacheReadTokens = this.summarizationCacheReadTokens;
+    this.cacheWriteTokens = this.summarizationCacheWriteTokens;
     this.modelStepCosts = [];
   }
 
@@ -403,6 +409,7 @@ export class UsageTracker {
   }) {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
+      usageSettlementId: this.usageSettlementId,
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,

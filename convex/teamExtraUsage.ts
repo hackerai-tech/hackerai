@@ -14,6 +14,86 @@ import {
 } from "./lib/extraUsagePricing";
 import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
 
+const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
+const AUTO_RELOAD_OPERATION_LEASE_MS = 2 * 60_000;
+
+type AutoReloadChargeEvaluation =
+  { allowed: true; amountCents: number } | { allowed: false; reason: string };
+
+const evaluateTeamAutoReloadCharge = ({
+  balancePoints,
+  thresholdPoints,
+  reloadAmountDollars,
+  requestedAmountPoints,
+  monthlyRemainingPoints,
+}: {
+  balancePoints: number;
+  thresholdPoints: number;
+  reloadAmountDollars: number;
+  requestedAmountPoints: number;
+  monthlyRemainingPoints?: number;
+}): AutoReloadChargeEvaluation => {
+  if (reloadAmountDollars <= 0) {
+    return { allowed: false, reason: "reload_amount_not_configured" };
+  }
+
+  if (
+    requestedAmountPoints > 0
+      ? balancePoints >= requestedAmountPoints
+      : balancePoints > thresholdPoints
+  ) {
+    return { allowed: false, reason: "not_needed" };
+  }
+
+  if (
+    monthlyRemainingPoints !== undefined &&
+    requestedAmountPoints > monthlyRemainingPoints
+  ) {
+    return { allowed: false, reason: "monthly_cap_exceeded" };
+  }
+
+  const targetBalancePoints = Math.max(
+    dollarsToPoints(reloadAmountDollars),
+    requestedAmountPoints,
+  );
+  const desiredTopUpPoints = Math.max(0, targetBalancePoints - balancePoints);
+  const capHeadroomPoints =
+    monthlyRemainingPoints === undefined
+      ? undefined
+      : Math.max(0, monthlyRemainingPoints - balancePoints);
+  const desiredCents = Math.ceil(
+    Number((pointsToDollars(desiredTopUpPoints) * 100).toFixed(6)),
+  );
+  const desiredChargeCents =
+    requestedAmountPoints > 0 && desiredCents > 0
+      ? Math.max(100, desiredCents)
+      : desiredCents;
+  let maxAllowedCents = desiredChargeCents;
+  if (capHeadroomPoints !== undefined) {
+    maxAllowedCents = Math.ceil(
+      Number((pointsToDollars(capHeadroomPoints) * 100).toFixed(6)),
+    );
+    while (
+      maxAllowedCents > 0 &&
+      dollarsToPoints(maxAllowedCents / 100) > capHeadroomPoints
+    ) {
+      maxAllowedCents--;
+    }
+  }
+
+  const amountCents = Math.min(desiredChargeCents, maxAllowedCents);
+  const creditedPoints = dollarsToPoints(amountCents / 100);
+  if (
+    amountCents < 100 ||
+    (requestedAmountPoints > 0 &&
+      balancePoints + creditedPoints < requestedAmountPoints)
+  ) {
+    return { allowed: false, reason: "amount_to_charge_below_minimum" };
+  }
+
+  return { allowed: true, amountCents };
+};
+
 // =============================================================================
 // Internal helpers
 // =============================================================================
@@ -93,6 +173,7 @@ export const addTeamCredits = mutation({
     stripeCustomerId: v.optional(v.string()),
     stripeCheckoutSessionId: v.optional(v.string()),
     stripePaymentIntentId: v.optional(v.string()),
+    stripeInvoiceId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(),
@@ -173,6 +254,7 @@ export const addTeamCredits = mutation({
       sourceEventId:
         args.stripeCheckoutSessionId ??
         args.stripePaymentIntentId ??
+        args.stripeInvoiceId ??
         args.idempotencyKey ??
         `team_extra_usage:${args.organizationId}:${Date.now()}`,
       idempotencyKey:
@@ -185,6 +267,7 @@ export const addTeamCredits = mutation({
       stripeCustomerId: args.stripeCustomerId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
+      stripeInvoiceId: args.stripeInvoiceId,
       description: args.revenueSource ?? "team_extra_usage_purchase",
     });
 
@@ -218,6 +301,7 @@ export const deductTeamPoints = mutation({
     organizationId: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    usageSettlementId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -367,6 +451,7 @@ export const deductTeamPoints = mutation({
       organization_id: args.organizationId,
       user_id: args.userId,
       amount_points: args.amountPoints,
+      usage_settlement_id: args.usageSettlementId,
       new_balance_points: newBalancePoints,
       team_monthly_spent: teamMonthlySpent,
       member_monthly_spent: memberMonthlySpent,
@@ -382,6 +467,261 @@ export const deductTeamPoints = mutation({
       memberDisabled: false,
       poolDisabled: false,
     };
+  },
+});
+
+/** Atomically coalesce parallel Stripe auto-reloads for one organization. */
+export const claimTeamAutoReloadOperation = internalMutation({
+  args: {
+    organizationId: v.string(),
+    candidateOperationId: v.string(),
+    candidateExecutorId: v.string(),
+    requestedAmountPoints: v.number(),
+  },
+  returns: v.object({
+    status: v.union(
+      v.literal("operation"),
+      v.literal("not_needed"),
+      v.literal("blocked"),
+      v.literal("cooldown"),
+    ),
+    operationId: v.optional(v.string()),
+    amountDollars: v.optional(v.number()),
+    stripeInvoiceId: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+    executorId: v.optional(v.string()),
+    claimed: v.optional(v.boolean()),
+    paymentAllowed: v.optional(v.boolean()),
+    paymentBlockedReason: v.optional(v.string()),
+    reason: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const team = await ctx.db
+      .query("team_extra_usage")
+      .withIndex("by_org", (q) => q.eq("organization_id", args.organizationId))
+      .first();
+
+    const now = Date.now();
+    const requestedAmountPoints = Math.max(
+      0,
+      Math.round(args.requestedAmountPoints),
+    );
+    const currentMonth = currentMonthString();
+    const monthlySpentPoints =
+      team?.monthly_reset_date === currentMonth
+        ? (team.monthly_spent_points ?? 0)
+        : 0;
+    const monthlyCapPoints = team?.monthly_cap_points;
+    const monthlyRemainingPoints =
+      monthlyCapPoints === undefined
+        ? undefined
+        : Math.max(0, monthlyCapPoints - monthlySpentPoints);
+    if (
+      team?.auto_reload_operation_id &&
+      team.auto_reload_operation_amount_dollars !== undefined
+    ) {
+      const leaseExpired =
+        (team.auto_reload_operation_lease_expires_at ?? 0) <= now;
+      if (leaseExpired) {
+        await ctx.db.patch(team._id, {
+          auto_reload_operation_executor_id: args.candidateExecutorId,
+          auto_reload_operation_lease_expires_at:
+            now + AUTO_RELOAD_OPERATION_LEASE_MS,
+          updated_at: now,
+        });
+      }
+      const evaluation =
+        team.enabled && team.auto_reload_enabled
+          ? evaluateTeamAutoReloadCharge({
+              balancePoints: team.balance_points ?? 0,
+              thresholdPoints: team.auto_reload_threshold_points ?? 0,
+              reloadAmountDollars: team.auto_reload_amount_dollars ?? 0,
+              requestedAmountPoints,
+              monthlyRemainingPoints,
+            })
+          : ({ allowed: false, reason: "auto_reload_disabled" } as const);
+      const operationAmountCents = Math.round(
+        team.auto_reload_operation_amount_dollars * 100,
+      );
+      const balancePoints = team.balance_points ?? 0;
+      const operationBalancePoints =
+        balancePoints +
+        dollarsToPoints(team.auto_reload_operation_amount_dollars);
+      const operationSatisfiesNeed =
+        requestedAmountPoints > 0
+          ? operationBalancePoints >= requestedAmountPoints
+          : operationBalancePoints > (team.auto_reload_threshold_points ?? 0);
+      const paymentAllowed =
+        evaluation.allowed &&
+        operationAmountCents <= evaluation.amountCents &&
+        operationSatisfiesNeed;
+      const paymentBlockedReason = !evaluation.allowed
+        ? evaluation.reason
+        : operationAmountCents > evaluation.amountCents
+          ? "reload_amount_changed"
+          : !operationSatisfiesNeed
+            ? "reload_amount_insufficient"
+            : undefined;
+      return {
+        status: "operation" as const,
+        operationId: team.auto_reload_operation_id,
+        amountDollars: team.auto_reload_operation_amount_dollars,
+        stripeInvoiceId: team.auto_reload_operation_stripe_invoice_id,
+        startedAt: team.auto_reload_operation_started_at,
+        executorId: leaseExpired ? args.candidateExecutorId : undefined,
+        claimed: leaseExpired,
+        paymentAllowed,
+        paymentBlockedReason,
+      };
+    }
+
+    if (
+      !team ||
+      !(team.enabled ?? false) ||
+      !(team.auto_reload_enabled ?? false)
+    ) {
+      return { status: "blocked" as const, reason: "auto_reload_disabled" };
+    }
+
+    if ((team.auto_reload_retry_after ?? 0) > now) {
+      return {
+        status: "cooldown" as const,
+        reason: team.auto_reload_last_failure_reason ?? "payment_failed",
+      };
+    }
+
+    const balancePoints = team.balance_points ?? 0;
+    const thresholdPoints = team.auto_reload_threshold_points ?? 0;
+    const reloadAmountDollars = team.auto_reload_amount_dollars ?? 0;
+    const evaluation = evaluateTeamAutoReloadCharge({
+      balancePoints,
+      thresholdPoints,
+      reloadAmountDollars,
+      requestedAmountPoints,
+      monthlyRemainingPoints,
+    });
+    if (!evaluation.allowed) {
+      return {
+        status:
+          evaluation.reason === "not_needed"
+            ? ("not_needed" as const)
+            : ("blocked" as const),
+        reason: evaluation.reason,
+      };
+    }
+
+    const amountCents = evaluation.amountCents;
+    const amountDollars = amountCents / 100;
+    await ctx.db.patch(team._id, {
+      auto_reload_operation_id: args.candidateOperationId,
+      auto_reload_operation_executor_id: args.candidateExecutorId,
+      auto_reload_operation_started_at: now,
+      auto_reload_operation_lease_expires_at:
+        now + AUTO_RELOAD_OPERATION_LEASE_MS,
+      auto_reload_operation_amount_dollars: amountDollars,
+      auto_reload_operation_stripe_invoice_id: undefined,
+      updated_at: now,
+    });
+
+    return {
+      status: "operation" as const,
+      operationId: args.candidateOperationId,
+      amountDollars,
+      startedAt: now,
+      executorId: args.candidateExecutorId,
+      claimed: true,
+      paymentAllowed: true,
+    };
+  },
+});
+
+export const recordTeamAutoReloadInvoice = internalMutation({
+  args: {
+    organizationId: v.string(),
+    operationId: v.string(),
+    executorId: v.string(),
+    stripeInvoiceId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const team = await ctx.db
+      .query("team_extra_usage")
+      .withIndex("by_org", (q) => q.eq("organization_id", args.organizationId))
+      .first();
+    if (
+      !team ||
+      team.auto_reload_operation_id !== args.operationId ||
+      team.auto_reload_operation_executor_id !== args.executorId
+    ) {
+      return false;
+    }
+    await ctx.db.patch(team._id, {
+      auto_reload_operation_stripe_invoice_id: args.stripeInvoiceId,
+      updated_at: Date.now(),
+    });
+    return true;
+  },
+});
+
+export const completeTeamAutoReloadOperation = internalMutation({
+  args: {
+    organizationId: v.string(),
+    operationId: v.string(),
+    executorId: v.string(),
+    outcome: v.union(
+      v.literal("success"),
+      v.literal("released"),
+      v.literal("executor_released"),
+      v.literal("definitive_failure"),
+    ),
+    failureReason: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const team = await ctx.db
+      .query("team_extra_usage")
+      .withIndex("by_org", (q) => q.eq("organization_id", args.organizationId))
+      .first();
+    if (
+      !team ||
+      team.auto_reload_operation_id !== args.operationId ||
+      team.auto_reload_operation_executor_id !== args.executorId
+    ) {
+      return false;
+    }
+
+    const now = Date.now();
+    if (args.outcome === "executor_released") {
+      await ctx.db.patch(team._id, {
+        auto_reload_operation_executor_id: undefined,
+        auto_reload_operation_lease_expires_at: 0,
+        updated_at: now,
+      });
+      return true;
+    }
+
+    await ctx.db.patch(team._id, {
+      auto_reload_operation_id: undefined,
+      auto_reload_operation_executor_id: undefined,
+      auto_reload_operation_started_at: undefined,
+      auto_reload_operation_lease_expires_at: undefined,
+      auto_reload_operation_amount_dollars: undefined,
+      auto_reload_operation_stripe_invoice_id: undefined,
+      ...(args.outcome === "success"
+        ? {
+            auto_reload_retry_after: undefined,
+            auto_reload_last_failure_reason: undefined,
+          }
+        : args.outcome === "definitive_failure"
+          ? {
+              auto_reload_retry_after: now + AUTO_RELOAD_RETRY_COOLDOWN_MS,
+              auto_reload_last_failure_reason:
+                args.failureReason ?? "payment_failed",
+            }
+          : {}),
+      updated_at: now,
+    });
+    return true;
   },
 });
 
@@ -497,6 +837,7 @@ export const getTeamExtraUsageStateForBackend = query({
     autoReloadThresholdDollars: v.optional(v.number()),
     autoReloadThresholdPoints: v.optional(v.number()),
     autoReloadAmountDollars: v.optional(v.number()),
+    autoReloadOperationPending: v.boolean(),
     memberDisabled: v.boolean(),
     monthlyCapDollars: v.optional(v.number()),
     monthlySpentDollars: v.number(),
@@ -557,6 +898,7 @@ export const getTeamExtraUsageStateForBackend = query({
         : undefined,
       autoReloadThresholdPoints: thresholdPoints,
       autoReloadAmountDollars: team?.auto_reload_amount_dollars,
+      autoReloadOperationPending: !!team?.auto_reload_operation_id,
       memberDisabled: member?.disabled ?? false,
       monthlyCapDollars:
         teamCapPoints === undefined
@@ -723,6 +1065,8 @@ export const updateTeamExtraUsageSettings = mutation({
       if (args.autoReloadEnabled) {
         updateData.auto_reload_disabled_reason = undefined;
         updateData.auto_reload_consecutive_failures = 0;
+        updateData.auto_reload_retry_after = undefined;
+        updateData.auto_reload_last_failure_reason = undefined;
       }
     }
     if (args.autoReloadThresholdDollars !== undefined) {
