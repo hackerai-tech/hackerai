@@ -36,6 +36,7 @@ import {
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
+import { v4 as uuidv4 } from "uuid";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -275,6 +276,30 @@ export const useChatHandlers = ({
     return normalizedMessages;
   };
 
+  const stopActiveRunForReplacement = async (): Promise<void> => {
+    const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
+      cancelTriggerRun(),
+      stopActiveStream({ skipSave: true }),
+    ]);
+
+    if (triggerCancelResult.status === "rejected") {
+      console.error(
+        "Failed to cancel trigger.dev run before replacement:",
+        triggerCancelResult.reason,
+      );
+      toast.error("Could not restart the Agent run. Please try again.");
+      throw triggerCancelResult.reason;
+    }
+    if (streamStopResult.status === "rejected") {
+      throw streamStopResult.reason;
+    }
+  };
+
+  const hasActiveRunToReplace = () =>
+    status === "streaming" ||
+    status === "submitted" ||
+    Boolean(activeTriggerRunRef?.current);
+
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
 
@@ -460,9 +485,10 @@ export const useChatHandlers = ({
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -517,6 +543,7 @@ export const useChatHandlers = ({
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
             temporary: false,
@@ -534,6 +561,7 @@ export const useChatHandlers = ({
             messages: trimmedMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,
@@ -549,9 +577,10 @@ export const useChatHandlers = ({
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
@@ -580,6 +609,7 @@ export const useChatHandlers = ({
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
             temporary: false,
@@ -598,6 +628,7 @@ export const useChatHandlers = ({
             messages: messagesToLastUser,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,
@@ -617,9 +648,10 @@ export const useChatHandlers = ({
     setIsAutoResuming(false);
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
@@ -717,6 +749,7 @@ export const useChatHandlers = ({
             messages: [],
             todos: cleanedTodosForEdit,
             regenerate: true,
+            agentRunRequestId,
             temporary: false,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,
@@ -757,6 +790,7 @@ export const useChatHandlers = ({
             messages: messagesUpToEdit,
             todos: cleanedTodosForEdit,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,

@@ -192,6 +192,32 @@ describe("Agent approval lifecycle guards", () => {
     );
   });
 
+  it("replaces an ordinary stream cancellation with a new Agent run", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      canceled_at: Date.now(),
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "replacement-run",
+        approvalSessionId: "replacement-session",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_trigger_run_id: "replacement-run",
+        active_agent_approval_session_id: "replacement-session",
+        canceled_at: undefined,
+      }),
+    );
+  });
+
   it("returns the approval session paired with each active Trigger run", async () => {
     const take = jest.fn<any>().mockResolvedValue([
       {

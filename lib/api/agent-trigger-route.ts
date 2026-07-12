@@ -84,6 +84,7 @@ type AgentTriggerRequestBody = {
   selectedModel?: string;
   isAutoContinue?: boolean;
   limitRescue?: LimitRescueRequest;
+  agentRunRequestId?: string;
 };
 
 type AgentTriggerRequestParseResult =
@@ -123,6 +124,18 @@ const parseAgentTriggerRequestBody = async (
       response: new NextResponse("messages must be an array", { status: 400 }),
     };
   }
+  if (
+    body.agentRunRequestId !== undefined &&
+    (typeof body.agentRunRequestId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(body.agentRunRequestId))
+  ) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid Agent run request ID", {
+        status: 400,
+      }),
+    };
+  }
 
   return {
     ok: true,
@@ -147,6 +160,10 @@ const parseAgentTriggerRequestBody = async (
       limitRescue: isLimitRescueRequest(body.limitRescue)
         ? body.limitRescue
         : undefined,
+      agentRunRequestId:
+        typeof body.agentRunRequestId === "string"
+          ? body.agentRunRequestId
+          : undefined,
     },
   };
 };
@@ -159,7 +176,7 @@ const getLastRequestMessageId = (messages: UIMessage[]): string | undefined => {
   return undefined;
 };
 
-const buildAgentRunDedupeKeyParts = ({
+export const buildAgentRunDedupeKeyParts = ({
   userId,
   chatId,
   requestMessages,
@@ -167,6 +184,7 @@ const buildAgentRunDedupeKeyParts = ({
   isAutoContinue,
   existingChatUpdateTime,
   triggerRequestedAt,
+  agentRunRequestId,
 }: {
   userId: string;
   chatId: string;
@@ -175,6 +193,7 @@ const buildAgentRunDedupeKeyParts = ({
   isAutoContinue?: boolean;
   existingChatUpdateTime?: number;
   triggerRequestedAt: number;
+  agentRunRequestId?: string;
 }) => {
   const operation = regenerate
     ? "regenerate"
@@ -182,6 +201,7 @@ const buildAgentRunDedupeKeyParts = ({
       ? "auto-continue"
       : "send";
   const turnKey =
+    (regenerate ? agentRunRequestId : undefined) ??
     getLastRequestMessageId(requestMessages) ??
     (existingChatUpdateTime !== undefined
       ? `chat-update:${existingChatUpdateTime}`
@@ -325,6 +345,7 @@ export const createAgentTriggerPost =
         selectedModel: rawSelectedModel,
         isAutoContinue,
         limitRescue,
+        agentRunRequestId,
       } = parsedBody.body;
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
@@ -494,6 +515,7 @@ export const createAgentTriggerPost =
         isAutoContinue,
         existingChatUpdateTime: existingChat?.update_time,
         triggerRequestedAt,
+        agentRunRequestId,
       });
       const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
         triggerDedupeKeyParts,

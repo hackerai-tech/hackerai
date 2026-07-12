@@ -50,7 +50,11 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
   uploadSandboxFiles: jest.fn(),
 }));
 
-const { buildAgentApprovalSessionId, finalizeStartedAgentRun } =
+const {
+  buildAgentApprovalSessionId,
+  buildAgentRunDedupeKeyParts,
+  finalizeStartedAgentRun,
+} =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
 
 describe("Agent trigger route lifecycle", () => {
@@ -180,5 +184,31 @@ describe("Agent trigger route lifecycle", () => {
       }),
     ).not.toBe(v2WorkerA);
     expect(v2WorkerA).toMatch(/^agent-approval:v2:chat-1:/);
+  });
+
+  it("uses a new Session identity for each regeneration attempt", () => {
+    const input = {
+      userId: "user-1",
+      chatId: "chat-1",
+      requestMessages: [],
+      regenerate: true,
+      existingChatUpdateTime: 123,
+      triggerRequestedAt: 456,
+    };
+    const firstAttempt = buildAgentRunDedupeKeyParts({
+      ...input,
+      agentRunRequestId: "attempt-1",
+    });
+    const retryOfFirstAttempt = buildAgentRunDedupeKeyParts({
+      ...input,
+      agentRunRequestId: "attempt-1",
+    });
+    const secondAttempt = buildAgentRunDedupeKeyParts({
+      ...input,
+      agentRunRequestId: "attempt-2",
+    });
+
+    expect(retryOfFirstAttempt).toEqual(firstAttempt);
+    expect(secondAttempt).not.toEqual(firstAttempt);
   });
 });

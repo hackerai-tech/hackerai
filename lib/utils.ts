@@ -41,8 +41,33 @@ export async function fetchWithErrorHandlers(
     const response = await fetch(input, init);
 
     if (!response.ok) {
-      const { code, cause, metadata } = await response.json();
-      throw new ChatSDKError(code as ErrorCode, cause, metadata);
+      let errorBody: unknown;
+      try {
+        errorBody = await response.clone().json();
+      } catch {
+        errorBody = await response.text();
+      }
+      const errorRecord =
+        errorBody && typeof errorBody === "object"
+          ? (errorBody as Record<string, unknown>)
+          : null;
+      const code =
+        typeof errorRecord?.code === "string"
+          ? (errorRecord.code as ErrorCode)
+          : "bad_request:api";
+      const cause =
+        typeof errorRecord?.cause === "string"
+          ? errorRecord.cause
+          : typeof errorRecord?.message === "string"
+            ? errorRecord.message
+            : typeof errorBody === "string" && errorBody.trim()
+              ? errorBody.trim()
+              : `Request failed with status ${response.status}`;
+      const metadata =
+        errorRecord?.metadata && typeof errorRecord.metadata === "object"
+          ? (errorRecord.metadata as Record<string, unknown>)
+          : undefined;
+      throw new ChatSDKError(code, cause, metadata);
     }
 
     return response;

@@ -102,5 +102,12 @@ export function handleAgentRouteError({
       ...serializeRouteError(error),
     }),
   );
-  return new NextResponse(fallbackMessage, { status: 500 });
+  return NextResponse.json(
+    {
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: fallbackMessage,
+    },
+    { status: 500 },
+  );
 }

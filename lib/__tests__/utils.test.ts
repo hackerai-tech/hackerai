@@ -1,9 +1,74 @@
-import { describe, it, expect } from "@jest/globals";
-import { cn, convertToUIMessages } from "../utils";
+import { afterEach, describe, it, expect, jest } from "@jest/globals";
+import { cn, convertToUIMessages, fetchWithErrorHandlers } from "../utils";
 import type { MessageRecord } from "../utils";
 import type { Id } from "@/convex/_generated/dataModel";
 
+const originalFetch = globalThis.fetch;
+
+const setFetchResponse = (response: Partial<Response>) => {
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: jest.fn(async () => response as Response),
+  });
+};
+
 describe("utils", () => {
+  afterEach(() => {
+    if (originalFetch) {
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: originalFetch,
+      });
+    } else {
+      Reflect.deleteProperty(globalThis, "fetch");
+    }
+  });
+
+  describe("fetchWithErrorHandlers", () => {
+    it("turns a plain-text error response into a structured Chat error", async () => {
+      setFetchResponse({
+        ok: false,
+        status: 500,
+        clone: () =>
+          ({
+            json: async () => {
+              throw new SyntaxError("Not JSON");
+            },
+          }) as Response,
+        text: async () => "Failed to start agent run",
+      });
+
+      await expect(fetchWithErrorHandlers("/api/agent")).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "api",
+        cause: "Failed to start agent run",
+      });
+    });
+
+    it("preserves structured API error details", async () => {
+      setFetchResponse({
+        ok: false,
+        status: 404,
+        clone: () =>
+          ({
+            json: async () => ({
+              code: "not_found:chat",
+              cause: "The chat no longer exists",
+              metadata: { chatId: "chat-1" },
+            }),
+          }) as Response,
+        text: async () => "",
+      });
+
+      await expect(fetchWithErrorHandlers("/api/agent")).rejects.toMatchObject({
+        type: "not_found",
+        surface: "chat",
+        cause: "The chat no longer exists",
+        metadata: { chatId: "chat-1" },
+      });
+    });
+  });
+
   describe("cn", () => {
     it("should merge class names correctly", () => {
       const result = cn("px-4", "py-2", "bg-blue-500");

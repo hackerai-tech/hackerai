@@ -686,6 +686,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /approvalProtocolVersion:\s*AGENT_APPROVAL_PROTOCOL_VERSION/,
     );
     expect(routeSrc).toMatch(/approvalWorkerVersion/);
+    expect(routeSrc).toMatch(/agentRunRequestId/);
     expect(routeSrc).toMatch(/worker:\$\{approvalWorkerVersion/);
     expect(routeSrc).not.toMatch(/randomUUID/);
   });

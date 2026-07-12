@@ -1354,14 +1354,9 @@ export const setActiveTriggerRun = mutation({
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
 
-    // Preserve the legacy cancellation guard for deletion paths that have not
-    // yet adopted the durable deletion fence.
-    if (chat.canceled_at !== undefined && args.triggerRunId !== null) {
-      return "deleting" as const;
-    }
-
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
       ...(args.approvalSessionId !== undefined
         ? {
             active_agent_approval_session_id:
