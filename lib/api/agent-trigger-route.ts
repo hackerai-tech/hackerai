@@ -30,10 +30,12 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import type {
   Todo,
+  LimitRescueRequest,
   SandboxPreference,
   SelectedModel,
   SubscriptionTier,
 } from "@/types";
+import { isLimitRescueRequest } from "@/types";
 import { resolveAgentRunSpendCapContinuationModel } from "@/lib/chat/agent-run-spend-cap";
 import { HybridSandboxManager } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import {
@@ -70,6 +72,7 @@ type AgentTriggerRequestBody = {
   sandboxPreference?: SandboxPreference;
   selectedModel?: string;
   isAutoContinue?: boolean;
+  limitRescue?: LimitRescueRequest;
 };
 
 type AgentTriggerRequestParseResult =
@@ -125,6 +128,9 @@ const parseAgentTriggerRequestBody = async (
       selectedModel:
         typeof body.selectedModel === "string" ? body.selectedModel : undefined,
       isAutoContinue: body.isAutoContinue === true,
+      limitRescue: isLimitRescueRequest(body.limitRescue)
+        ? body.limitRescue
+        : undefined,
     },
   };
 };
@@ -188,6 +194,7 @@ export const createAgentTriggerPost =
         sandboxPreference,
         selectedModel: rawSelectedModel,
         isAutoContinue,
+        limitRescue,
       } = parsedBody.body;
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
@@ -371,6 +378,7 @@ export const createAgentTriggerPost =
           temporary,
           isAutoContinue,
           regenerate,
+          limitRescue,
           isNewChat,
           endpoint,
           convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,

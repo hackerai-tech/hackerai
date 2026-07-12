@@ -141,11 +141,11 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
-  PAID_DAILY_FREE_ALLOWANCE_MODEL,
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
   createPaidDailyFreeAllowanceUsageLogContext,
+  getPaidDailyFreeAllowanceModel,
   getRateLimitErrorCapReason,
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
@@ -195,8 +195,7 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      | ReturnType<typeof createPreemptiveTimeout>
-      | undefined;
+      ReturnType<typeof createPreemptiveTimeout> | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -427,8 +426,7 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        | PaidDailyFreeAllowanceReservation
-        | undefined;
+        PaidDailyFreeAllowanceReservation | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -517,7 +515,7 @@ export const createChatHandler = () => {
         }
 
         paidDailyFreeAllowanceReservation = allowanceReservation;
-        selectedModel = PAID_DAILY_FREE_ALLOWANCE_MODEL;
+        selectedModel = getPaidDailyFreeAllowanceModel(mode);
         chatLogger.setChat(chatLogContext, selectedModel);
         rateLimitInfo =
           createPaidDailyFreeAllowanceRateLimitInfo(allowanceReservation);
@@ -597,6 +595,13 @@ export const createChatHandler = () => {
               mode,
               rateLimitInfo,
               extraUsageConfig,
+              ...(paidDailyFreeAllowanceReservation && {
+                paidDailyFreeAllowance: {
+                  costLimitDollars:
+                    paidDailyFreeAllowanceReservation.status.costLimitDollars,
+                  resetTime: paidDailyFreeAllowanceReservation.status.resetTime,
+                },
+              }),
             });
 
             const {

@@ -26,6 +26,36 @@ describe("sendRateLimitWarnings", () => {
     },
   };
 
+  it("announces when Agent uses the paid daily free allowance", () => {
+    const writer = makeWriter();
+
+    sendRateLimitWarnings(writer, {
+      subscription: "pro",
+      mode: "agent",
+      rateLimitInfo: {
+        remaining: 0,
+        limit: 0,
+        resetTime,
+      },
+      paidDailyFreeAllowance: {
+        costLimitDollars: 0.25,
+        resetTime,
+      },
+    });
+
+    expect(writer.write).toHaveBeenCalledWith({
+      type: "data-rate-limit-warning",
+      data: {
+        warningType: "paid-daily-free-allowance",
+        resetTime: resetTime.toISOString(),
+        subscription: "pro",
+        mode: "agent",
+        costLimitDollars: 0.25,
+      },
+      transient: true,
+    });
+  });
+
   it("shows extra usage active when the included bucket is empty and credits can cover overflow", () => {
     const writer = makeWriter();
 

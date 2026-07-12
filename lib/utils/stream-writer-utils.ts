@@ -152,6 +152,14 @@ export type RateLimitWarningData =
       midStream?: boolean;
     }
   | {
+      // Paid users continuing on the daily free fallback allowance.
+      warningType: "paid-daily-free-allowance";
+      resetTime: string;
+      subscription: SubscriptionTier;
+      mode: ChatMode;
+      costLimitDollars: number;
+    }
+  | {
       // Legacy Pro Agent per-run spend-cap warning.
       warningType: "agent-run-spend-cap";
       resetTime: string;
