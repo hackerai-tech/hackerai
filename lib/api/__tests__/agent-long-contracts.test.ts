@@ -656,6 +656,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(triggerIdx).toBeGreaterThan(authIdx);
   });
 
+  test("carries paid daily allowance rescue through the Agent task", () => {
+    expect(routeSrc).toMatch(/isLimitRescueRequest\(body\.limitRescue\)/);
+    expect(routeSrc).toMatch(/limitRescue,\s*isNewChat/);
+    expect(taskSrc).toMatch(/limitRescue\?:\s*LimitRescueRequest/);
+    expect(taskSrc).toMatch(/reservePaidDailyFreeAllowanceRequest/);
+    expect(taskSrc).toMatch(/getPaidDailyFreeAllowanceModel\(mode\)/);
+    expect(taskSrc).toMatch(/createPaidDailyFreeAllowanceBudgetSnapshot/);
+    expect(taskSrc).toMatch(/recordPaidDailyFreeAllowanceCost/);
+    expect(taskSrc).toMatch(/serializeChatSDKErrorForStream/);
+  });
+
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
     expect(routeSrc).toMatch(/idempotencyKeys/);
     expect(routeSrc).toMatch(/buildAgentRunDedupeKeyParts/);

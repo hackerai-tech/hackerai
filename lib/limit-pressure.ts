@@ -1,6 +1,10 @@
-import type { SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 
-export const PAID_DAILY_FREE_ASK_CTA_TEXT = "Use free Ask today";
+export function getPaidDailyFreeAllowanceCtaText(mode?: ChatMode): string {
+  if (mode === "agent") return "Use free Agent today";
+  if (mode === "ask") return "Use free Ask today";
+  return "Use today's free allowance";
+}
 
 export type LimitCapReason =
   | "daily_requests_exhausted"

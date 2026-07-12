@@ -60,6 +60,34 @@ describe("RateLimitWarning", () => {
     expect(screen.getByText(/free Agent requests/i)).toBeInTheDocument();
   });
 
+  it("explains when a paid Agent run uses the daily free allowance", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "paid-daily-free-allowance",
+          resetTime: new Date(Date.now() + 60_000),
+          subscription: "pro",
+          mode: "agent",
+          costLimitDollars: 0.25,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/this Agent response/i)).toHaveTextContent(
+      "today's free $0.25 allowance",
+    );
+    expect(screen.getByText(/this Agent response/i)).toHaveTextContent(
+      "low-cost model",
+    );
+    expect(
+      screen.getByRole("button", { name: /view usage/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /upgrade plan/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders legacy Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
     render(
       <RateLimitWarning

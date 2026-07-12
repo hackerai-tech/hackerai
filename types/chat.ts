@@ -115,10 +115,25 @@ export const SUBSCRIPTION_TIERS: readonly SubscriptionTier[] = [
   "team",
 ];
 
+export const PAID_INDIVIDUAL_SUBSCRIPTION_TIERS = [
+  "pro",
+  "pro-plus",
+  "ultra",
+] as const satisfies readonly SubscriptionTier[];
+
 export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   return (
     typeof value === "string" &&
     (SUBSCRIPTION_TIERS as readonly string[]).includes(value)
+  );
+}
+
+export function isPaidIndividualSubscription(
+  value: unknown,
+): value is (typeof PAID_INDIVIDUAL_SUBSCRIPTION_TIERS)[number] {
+  return (
+    typeof value === "string" &&
+    (PAID_INDIVIDUAL_SUBSCRIPTION_TIERS as readonly string[]).includes(value)
   );
 }
 

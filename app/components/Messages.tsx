@@ -45,10 +45,7 @@ interface MessagesProps {
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
   paginationStatus?:
-    | "LoadingFirstPage"
-    | "CanLoadMore"
-    | "LoadingMore"
-    | "Exhausted";
+    "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
   isTemporaryChat?: boolean;
   isMobile?: boolean;
@@ -366,6 +363,7 @@ export const Messages = ({
               error={error}
               onRetry={onRetry}
               onReconnect={onReconnect}
+              mode={mode}
             />
           )}
         </div>

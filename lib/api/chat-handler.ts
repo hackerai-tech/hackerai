@@ -141,11 +141,11 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
-  PAID_DAILY_FREE_ALLOWANCE_MODEL,
   capturePaidDailyFreeAllowanceServerEvent,
   createPaidDailyFreeAllowanceBudgetSnapshot,
   createPaidDailyFreeAllowanceRateLimitInfo,
   createPaidDailyFreeAllowanceUsageLogContext,
+  getPaidDailyFreeAllowanceModel,
   getRateLimitErrorCapReason,
 } from "@/lib/api/paid-daily-free-allowance-rescue";
 import {
@@ -515,7 +515,7 @@ export const createChatHandler = () => {
         }
 
         paidDailyFreeAllowanceReservation = allowanceReservation;
-        selectedModel = PAID_DAILY_FREE_ALLOWANCE_MODEL;
+        selectedModel = getPaidDailyFreeAllowanceModel(mode);
         chatLogger.setChat(chatLogContext, selectedModel);
         rateLimitInfo =
           createPaidDailyFreeAllowanceRateLimitInfo(allowanceReservation);
@@ -595,6 +595,13 @@ export const createChatHandler = () => {
               mode,
               rateLimitInfo,
               extraUsageConfig,
+              ...(paidDailyFreeAllowanceReservation && {
+                paidDailyFreeAllowance: {
+                  costLimitDollars:
+                    paidDailyFreeAllowanceReservation.status.costLimitDollars,
+                  resetTime: paidDailyFreeAllowanceReservation.status.resetTime,
+                },
+              }),
             });
 
             const {

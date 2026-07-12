@@ -36,7 +36,7 @@ import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
-import { ChatSDKError } from "@/lib/errors";
+import { ChatSDKError, deserializeChatSDKErrorFromStream } from "@/lib/errors";
 import {
   fetchWithErrorHandlers,
   convertToUIMessages,
@@ -937,14 +937,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      if (error instanceof ChatSDKError) {
+      const structuredStreamError = deserializeChatSDKErrorFromStream(error);
+      const displayError = structuredStreamError ?? error;
+      if (displayError instanceof ChatSDKError) {
         const errorMessage =
-          typeof error.cause === "string" ? error.cause : error.message;
-        if (error.type !== "rate_limit") {
+          typeof displayError.cause === "string"
+            ? displayError.cause
+            : displayError.message;
+        if (displayError.type !== "rate_limit") {
           toast.error(errorMessage);
         }
-      } else if (isMobile && error.name !== "AbortError") {
-        toast.error(error.message || "An error occurred.");
+      } else if (isMobile && displayError.name !== "AbortError") {
+        toast.error(displayError.message || "An error occurred.");
       }
     },
   });

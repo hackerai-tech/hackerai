@@ -1,5 +1,9 @@
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
-import { isChatMode, isSubscriptionTier } from "@/types/chat";
+import {
+  isChatMode,
+  isPaidIndividualSubscription,
+  isSubscriptionTier,
+} from "@/types/chat";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import { isAgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 
@@ -7,6 +11,7 @@ const WARNING_TYPES = [
   "sliding-window",
   "token-bucket",
   "extra-usage-active",
+  "paid-daily-free-allowance",
   "agent-run-spend-cap",
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
@@ -82,6 +87,26 @@ export function parseRateLimitWarning(
       resetTime,
       mode: modeRaw,
       subscription,
+    };
+  }
+
+  if (warningType === "paid-daily-free-allowance") {
+    const modeRaw = typeof rawData.mode === "string" ? rawData.mode : null;
+    const costLimitDollars = rawData.costLimitDollars;
+    if (
+      !isPaidIndividualSubscription(subscription) ||
+      !isChatMode(modeRaw) ||
+      !isNumber(costLimitDollars) ||
+      costLimitDollars <= 0
+    ) {
+      return null;
+    }
+    return {
+      warningType: "paid-daily-free-allowance",
+      resetTime,
+      subscription,
+      mode: modeRaw,
+      costLimitDollars,
     };
   }
 

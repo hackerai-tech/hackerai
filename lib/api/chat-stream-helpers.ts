@@ -132,9 +132,30 @@ export function sendRateLimitWarnings(
       rateLimitSkipped?: boolean;
     };
     extraUsageConfig?: ExtraUsageConfig;
+    paidDailyFreeAllowance?: {
+      costLimitDollars: number;
+      resetTime: Date;
+    };
   },
 ): void {
-  const { subscription, mode, rateLimitInfo, extraUsageConfig } = options;
+  const {
+    subscription,
+    mode,
+    rateLimitInfo,
+    extraUsageConfig,
+    paidDailyFreeAllowance,
+  } = options;
+
+  if (paidDailyFreeAllowance) {
+    writeRateLimitWarning(writer, {
+      warningType: "paid-daily-free-allowance",
+      resetTime: paidDailyFreeAllowance.resetTime.toISOString(),
+      subscription,
+      mode,
+      costLimitDollars: paidDailyFreeAllowance.costLimitDollars,
+    });
+    return;
+  }
 
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)

@@ -3,8 +3,8 @@ import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { ChatSDKError } from "@/lib/errors";
-import { PAID_DAILY_FREE_ASK_CTA_TEXT } from "@/lib/limit-pressure";
+import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
+import { getPaidDailyFreeAllowanceCtaText } from "@/lib/limit-pressure";
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
@@ -107,7 +107,7 @@ describe("MessageErrorState", () => {
 
     render(
       <TestWrapper>
-        <MessageErrorState error={error} onRetry={onRetry} />
+        <MessageErrorState error={error} onRetry={onRetry} mode="ask" />
       </TestWrapper>,
     );
 
@@ -117,13 +117,13 @@ describe("MessageErrorState", () => {
     expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
 
     const freeRequestButton = screen.getByRole("button", {
-      name: PAID_DAILY_FREE_ASK_CTA_TEXT,
+      name: getPaidDailyFreeAllowanceCtaText("ask"),
     });
     expect(freeRequestButton).toBeVisible();
     expect(capturePaidDailyFreeAllowanceImpression).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+        cta_text: getPaidDailyFreeAllowanceCtaText("ask"),
         allowance_requests_remaining: 1,
         allowance_cost_remaining_dollars: 0.25,
       }),
@@ -134,12 +134,72 @@ describe("MessageErrorState", () => {
     expect(capturePaidDailyFreeAllowanceClick).toHaveBeenCalledWith(
       expect.objectContaining({
         surface: "message_error_state",
-        cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+        cta_text: getPaidDailyFreeAllowanceCtaText("ask"),
       }),
     );
     expect(onRetry).toHaveBeenCalledWith({
       limitRescue: { type: "paid_daily_free_allowance" },
     });
+  });
+
+  it("offers the daily allowance for a structured Agent stream error", () => {
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: {
+          type: "paid_daily_free_allowance",
+          available: true,
+          requestsRemaining: 1,
+          costRemainingDollars: 0.25,
+        },
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={new Error(serializeChatSDKErrorForStream(error))}
+          onRetry={jest.fn()}
+          mode="agent"
+        />
+      </TestWrapper>,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: getPaidDailyFreeAllowanceCtaText("agent"),
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/up to \$0\.25 of free usage today/i),
+    ).toHaveTextContent(
+      "Continue this request in Agent mode with our low-cost model",
+    );
+  });
+
+  it("keeps the allowance explanation grammatical without cost metadata", () => {
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: {
+          type: "paid_daily_free_allowance",
+          available: true,
+          requestsRemaining: 1,
+        },
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} mode="agent" />
+      </TestWrapper>,
+    );
+
+    expect(screen.getByText(/some of free usage today/i)).toBeVisible();
   });
 
   it("does not show the free-request CTA when allowance is unavailable", () => {
@@ -163,7 +223,9 @@ describe("MessageErrorState", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: PAID_DAILY_FREE_ASK_CTA_TEXT }),
+      screen.queryByRole("button", {
+        name: getPaidDailyFreeAllowanceCtaText("ask"),
+      }),
     ).toBeNull();
   });
 });
