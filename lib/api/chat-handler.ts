@@ -1509,7 +1509,6 @@ export const createChatHandler = () => {
                                   : "success";
                                 captureAgentCompletionAnalytics({
                                   posthog,
-                                  writer,
                                   userId,
                                   chatId,
                                   endpoint,
@@ -1737,7 +1736,6 @@ export const createChatHandler = () => {
                     const outcome = isAborted ? "aborted" : "success";
                     captureAgentCompletionAnalytics({
                       posthog,
-                      writer,
                       userId,
                       chatId,
                       endpoint,
