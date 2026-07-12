@@ -218,6 +218,7 @@ export const deductTeamPoints = mutation({
     organizationId: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    usageSettlementId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -367,6 +368,7 @@ export const deductTeamPoints = mutation({
       organization_id: args.organizationId,
       user_id: args.userId,
       amount_points: args.amountPoints,
+      usage_settlement_id: args.usageSettlementId,
       new_balance_points: newBalancePoints,
       team_monthly_spent: teamMonthlySpent,
       member_monthly_spent: memberMonthlySpent,

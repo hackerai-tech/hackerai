@@ -9,6 +9,16 @@ describe("UsageTracker", () => {
     jest.clearAllMocks();
   });
 
+  describe("usage settlement correlation", () => {
+    it("uses one stable identifier for the tracker lifetime", () => {
+      expect(tracker.usageSettlementId).toEqual(expect.any(String));
+      expect(tracker.usageSettlementId).toBe(tracker.usageSettlementId);
+      expect(new UsageTracker().usageSettlementId).not.toBe(
+        tracker.usageSettlementId,
+      );
+    });
+  });
+
   describe("accumulateStep", () => {
     it("should sum tokens across multiple steps", () => {
       tracker.accumulateStep({
@@ -589,6 +599,7 @@ describe("UsageTracker", () => {
       });
 
       expect(localMockLog).toHaveBeenCalledWith({
+        usageSettlementId: expect.any(String),
         userId: "user-123",
         organizationId: undefined,
         chatId: undefined,

@@ -548,6 +548,7 @@ export const deductWithAutoReload = action({
     serviceKey: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    usageSettlementId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -605,6 +606,7 @@ export const deductWithAutoReload = action({
       convexLogger.error("extra_usage_balance_backend_query_failed", {
         user_id: args.userId,
         amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
         operation: "get_extra_usage_balance",
         convex_function: "extraUsage.getExtraUsageBalanceForBackend",
         duration_ms: Date.now() - balanceLookupStartedAt,
@@ -660,6 +662,7 @@ export const deductWithAutoReload = action({
         convexLogger.error("extra_usage_stripe_customer_lookup_failed", {
           user_id: args.userId,
           amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
           operation: "get_stripe_customer",
           duration_ms: Date.now() - stripeLookupStartedAt,
           error: serializeErrorForLog(error),
@@ -755,6 +758,7 @@ export const deductWithAutoReload = action({
           convexLogger.error("extra_usage_auto_reload_lookup_failed", {
             user_id: args.userId,
             amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
             operation: "prepare_auto_reload_payment",
             duration_ms: Date.now() - stripeLookupStartedAt,
             error: serializeErrorForLog(error),
@@ -799,6 +803,7 @@ export const deductWithAutoReload = action({
         convexLogger.error("extra_usage_auto_reload_outcome_record_failed", {
           user_id: args.userId,
           amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
           operation: "record_auto_reload_outcome",
           auto_reload_success: autoReloadResult.success,
           auto_reload_failure_reason: autoReloadResult.reason,
@@ -823,11 +828,13 @@ export const deductWithAutoReload = action({
         serviceKey: args.serviceKey,
         userId: args.userId,
         amountPoints: args.amountPoints,
+        usageSettlementId: args.usageSettlementId,
       });
     } catch (error) {
       convexLogger.error("extra_usage_deduct_points_failed", {
         user_id: args.userId,
         amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
         operation: "deduct_points",
         convex_function: "extraUsage.deductPoints",
         auto_reload_triggered: autoReloadTriggered,
@@ -842,6 +849,7 @@ export const deductWithAutoReload = action({
     convexLogger.info("deduct_with_auto_reload", {
       user_id: args.userId,
       amount_points: args.amountPoints,
+      usage_settlement_id: args.usageSettlementId,
       success: deductResult.success,
       new_balance_dollars: deductResult.newBalanceDollars,
       insufficient_funds: deductResult.insufficientFunds,

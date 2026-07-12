@@ -33,7 +33,11 @@ import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
-import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import {
+  fetchWithErrorHandlers,
+  convertToUIMessages,
+  type MessageRecord,
+} from "@/lib/utils";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -133,6 +137,18 @@ export function getExistingChatLoadState({
     !hasPaginatedMessageResults;
 
   return { isInitialExistingChatLoad, isChatNotFound };
+}
+
+export function useServerMessages(
+  paginatedMessageResults: MessageRecord[] | undefined,
+): ChatMessage[] {
+  return useMemo(
+    () =>
+      paginatedMessageResults && paginatedMessageResults.length > 0
+        ? convertToUIMessages([...paginatedMessageResults].reverse())
+        : [],
+    [paginatedMessageResults],
+  );
 }
 
 type AgentLongPartialSaveMessage = {
@@ -543,10 +559,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
-  const serverMessages: ChatMessage[] =
-    paginatedMessageResults && paginatedMessageResults.length > 0
-      ? convertToUIMessages([...paginatedMessageResults].reverse())
-      : [];
+  const serverMessages = useServerMessages(paginatedMessageResults);
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);

@@ -558,6 +558,34 @@ describe("forwardChunk", () => {
     );
     warnSpy.mockRestore();
   });
+
+  it("ignores a late stream chunk after the bridge stops", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+    handler({
+      data: {
+        type: "command",
+        commandId: "cmd-late",
+        command: "test",
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(capturedChannel?.onmessage).toBeDefined();
+
+    await bridge.stop();
+    const publishCountAfterStop = mockSubscription.publish.mock.calls.length;
+
+    await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+
+    expect(mockSubscription.publish).toHaveBeenCalledTimes(
+      publishCountAfterStop,
+    );
+  });
 });
 
 // ── pty_data publish ordering ─────────────────────────────────────────

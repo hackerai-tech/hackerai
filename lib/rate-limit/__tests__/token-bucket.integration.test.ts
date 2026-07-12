@@ -400,7 +400,44 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 42);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        42,
+        undefined,
+      );
+    });
+
+    it("forwards a settlement ID to the extra usage deduction", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: -30,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        1000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        undefined,
+        undefined,
+        0,
+        undefined,
+        undefined,
+        undefined,
+        "settlement-123",
+      );
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        42,
+        "settlement-123",
+      );
     });
 
     it("should skip deduction for free tier", async () => {
@@ -899,7 +936,11 @@ describe("token-bucket async functions", () => {
         expect.objectContaining({ rate: 10 }),
       );
       // Should deduct the overflow (53) from extra usage
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 53);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        53,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 53,
@@ -940,7 +981,11 @@ describe("token-bucket async functions", () => {
         0.005,
       );
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 53);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        53,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 17,
         extraUsagePointsDeducted: 0,
@@ -1079,6 +1124,7 @@ describe("token-bucket async functions", () => {
         "org-123",
         "user-123",
         53,
+        undefined,
       );
       expect(result).toEqual({
         includedPointsDeducted: 17,
@@ -1153,13 +1199,50 @@ describe("token-bucket async functions", () => {
         expect.any(String),
         expect.objectContaining({ rate: 10 }),
       );
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        33,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 10,
         extraUsagePointsDeducted: 33,
         uncoveredPoints: 0,
         usageDeductionFailed: false,
       });
+    });
+
+    it("forwards a settlement ID to the mid-run extra usage deduction", async () => {
+      const { deductUsageDelta } = getIsolatedModule();
+
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      await deductUsageDelta(
+        "user-123",
+        "pro",
+        43,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        undefined,
+        "settlement-123",
+      );
+
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        33,
+        "settlement-123",
+      );
     });
 
     it("reports uncovered mid-run delta when extra usage cannot cover overflow", async () => {
@@ -1223,7 +1306,11 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 43);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        43,
+        undefined,
+      );
       expect(result).toEqual({
         includedPointsDeducted: 0,
         extraUsagePointsDeducted: 43,

@@ -592,6 +592,7 @@ export default defineSchema({
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
@@ -644,6 +645,7 @@ export default defineSchema({
     // rows still pass validation.
     byok: v.optional(v.boolean()),
   })
+    .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"])
     .index("by_org", ["organization_id"]),

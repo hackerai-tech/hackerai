@@ -1597,6 +1597,7 @@ export const agentLongTask = task({
                       ? getUsageSettlementInitialDeduction(usageSettlementState)
                       : rateLimitInfo,
                     usageRecordArgs.accountingModel,
+                    usageTracker.usageSettlementId,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -1701,6 +1702,7 @@ export const agentLongTask = task({
                     additionalCostPoints,
                     extraUsageConfig,
                     organizationId,
+                    usageTracker.usageSettlementId,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -1713,6 +1715,7 @@ export const agentLongTask = task({
                     subscription,
                     selected_model: selectedModel,
                     additional_cost_points: additionalCostPoints,
+                    usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
                     error:

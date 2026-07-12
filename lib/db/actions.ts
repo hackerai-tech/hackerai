@@ -1766,6 +1766,7 @@ export async function getNotes({
 }
 
 export async function logUsageRecord({
+  usageSettlementId,
   userId,
   organizationId,
   chatId,
@@ -1792,6 +1793,7 @@ export async function logUsageRecord({
   nonModelCostDollars,
   costSource,
 }: {
+  usageSettlementId?: string;
   userId: string;
   organizationId?: string;
   chatId?: string;
@@ -1821,6 +1823,7 @@ export async function logUsageRecord({
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
+      usage_settlement_id: usageSettlementId,
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
@@ -1850,6 +1853,7 @@ export async function logUsageRecord({
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
+      usage_settlement_id: usageSettlementId,
       userId,
       organizationId,
       chatId,

@@ -129,6 +129,7 @@ export class DesktopSandboxBridge {
   private subscription: Subscription | null = null;
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
+  private isStoppingOrStopped = true;
   private config: DesktopBridgeConfig;
 
   constructor(config: DesktopBridgeConfig) {
@@ -140,6 +141,7 @@ export class DesktopSandboxBridge {
   }
 
   private terminateClient(): void {
+    this.isStoppingOrStopped = true;
     const client = this.client;
     this.client = null;
     this.connectionId = null;
@@ -151,6 +153,7 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
+    this.isStoppingOrStopped = false;
     const osInfo = await this.getOsInfo();
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
@@ -745,6 +748,7 @@ export class DesktopSandboxBridge {
   }
 
   private async publishResult(message: SandboxMessage): Promise<void> {
+    if (this.isStoppingOrStopped) return;
     if (!this.subscription) {
       throw new Error(
         "[DesktopSandboxBridge] Cannot publish result: subscription is null",
@@ -939,6 +943,7 @@ export class DesktopSandboxBridge {
   }
 
   async stop(): Promise<void> {
+    this.isStoppingOrStopped = true;
     if (this.connectionId) {
       try {
         await this.config.disconnectDesktop({

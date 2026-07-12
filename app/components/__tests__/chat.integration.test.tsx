@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { render, screen } from "@testing-library/react";
+import { render, renderHook, screen } from "@testing-library/react";
 
 // ===== IMPORTANT: Mock all dependencies BEFORE importing Chat =====
 // These mocks are hoisted by Jest
@@ -173,7 +173,7 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 
 // ===== NOW import components =====
-import { Chat, getExistingChatLoadState } from "../chat";
+import { Chat, getExistingChatLoadState, useServerMessages } from "../chat";
 import { ChatLayout } from "../ChatLayout";
 import { TestWrapper } from "../testUtils";
 
@@ -224,6 +224,18 @@ describe("Chat Component Integration", () => {
       expect(
         container.querySelector(".flex.bg-background"),
       ).toBeInTheDocument();
+    });
+
+    it("keeps the useChat message snapshot stable across unrelated renders", () => {
+      const { result, rerender } = renderHook(() =>
+        useServerMessages(undefined),
+      );
+      const firstMessages = result.current;
+      expect(Array.isArray(firstMessages)).toBe(true);
+
+      rerender();
+
+      expect(result.current).toBe(firstMessages);
     });
 
     it("keeps an existing chat loading while Convex auth is still loading", () => {

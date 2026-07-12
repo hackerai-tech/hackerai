@@ -7,6 +7,7 @@ import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
+import { v4 as uuidv4 } from "uuid";
 
 interface StepUsage {
   inputTokens?: number;
@@ -79,6 +80,8 @@ export interface UsageCostRecord {
  * Shared between chat-handler.ts and agent-task.ts to avoid duplication.
  */
 export class UsageTracker {
+  /** Correlates this run's usage record with downstream settlement logs. */
+  readonly usageSettlementId = uuidv4();
   inputTokens = 0;
   outputTokens = 0;
   totalTokens = 0;
@@ -406,6 +409,7 @@ export class UsageTracker {
   }) {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
+      usageSettlementId: this.usageSettlementId,
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,

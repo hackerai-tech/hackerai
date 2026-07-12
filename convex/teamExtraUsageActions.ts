@@ -272,6 +272,7 @@ export const deductWithAutoReloadForTeam = action({
     organizationId: v.string(),
     userId: v.string(),
     amountPoints: v.number(),
+    usageSettlementId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -340,6 +341,7 @@ export const deductWithAutoReloadForTeam = action({
       organizationId: args.organizationId,
       userId: args.userId,
       amountPoints: args.amountPoints,
+      usageSettlementId: args.usageSettlementId,
     });
 
     let deductResult = deductWithoutReload;
@@ -521,6 +523,7 @@ export const deductWithAutoReloadForTeam = action({
           organizationId: args.organizationId,
           userId: args.userId,
           amountPoints: args.amountPoints,
+          usageSettlementId: args.usageSettlementId,
         },
       );
     }
@@ -529,6 +532,7 @@ export const deductWithAutoReloadForTeam = action({
       organization_id: args.organizationId,
       user_id: args.userId,
       amount_points: args.amountPoints,
+      usage_settlement_id: args.usageSettlementId,
       success: deductResult.success,
       new_balance_dollars: deductResult.newBalanceDollars,
       insufficient_funds: deductResult.insufficientFunds,
