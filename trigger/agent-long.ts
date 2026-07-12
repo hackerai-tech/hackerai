@@ -50,6 +50,7 @@ import {
   acquireFreeRunConcurrencyLock,
   checkFreeMonthlyCostLimit,
   checkRateLimit,
+  checkRateLimitCapacity,
   deductUsage,
   deductUsageDelta,
   addUsageDeductionDelta,
@@ -70,6 +71,7 @@ import {
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
   getMessagesByChatId,
+  getChatById,
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
@@ -120,14 +122,23 @@ import type {
   SandboxPreference,
   SelectedModel,
   AgentPermissionMode,
+  AgentApprovalSandboxIdentity,
   AgentToolApprovalInputRecord,
   AgentToolApprovalPendingRequest,
   AgentToolApprovalRequest,
   AgentToolApprovalRequester,
   RateLimitInfo,
+  SandboxManager,
   ToolFailureLogEvent,
 } from "@/types";
-import { canUseExtraUsage, normalizeMaxModelForSubscription } from "@/types";
+import {
+  AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
+  canUseExtraUsage,
+  getAgentApprovalConnectionSandboxIdentity,
+  getAgentApprovalTargetPrefixForSandbox,
+  normalizeMaxModelForSubscription,
+  serializeSandboxScopedAgentApprovalTargetPrefix,
+} from "@/types";
 import {
   createAgentStream,
   initAgentStreamState,
@@ -160,6 +171,10 @@ import {
   type ActiveRuntimeBudget,
 } from "@/lib/chat/active-runtime-budget";
 import {
+  AgentApprovalAuthorizationError,
+  verifyAgentToolApprovalInputAuthorization,
+} from "@/lib/chat/agent-approval-authorization";
+import {
   BUDGET_EXHAUSTION_FINISH_REASON,
   getAgentAutoContinueStopSource,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
@@ -174,6 +189,7 @@ import {
   omitTrailingStepStartAssistantMessage,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
+import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 2 * 60 * 60;
@@ -233,6 +249,7 @@ const isAgentToolApprovalInputRecord = (
   const record = value as Partial<AgentToolApprovalInputRecord>;
   return (
     record.type === "agent-tool-approval" &&
+    record.protocolVersion === AGENT_TOOL_APPROVAL_PROTOCOL_VERSION &&
     typeof record.approvalId === "string" &&
     typeof record.toolCallId === "string" &&
     (record.decision === "approve" || record.decision === "deny") &&
@@ -243,9 +260,30 @@ const isAgentToolApprovalInputRecord = (
       record.targetKind === "terminal_command" ||
       record.targetKind === "terminal_interaction" ||
       record.targetKind === "file_change") &&
-    (record.message === undefined || typeof record.message === "string")
+    (record.message === undefined || typeof record.message === "string") &&
+    typeof record.authorization === "object" &&
+    record.authorization !== null
   );
 };
+
+const isApprovalInputForRequest = (
+  value: unknown,
+  approvalId: string,
+  toolCallId: string,
+): boolean => {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.type === "agent-tool-approval" &&
+    record.approvalId === approvalId &&
+    record.toolCallId === toolCallId
+  );
+};
+
+const APPROVAL_PROTOCOL_DENIED_REASON =
+  "This approval response is incompatible with the current Agent worker. The operation was not run. Refresh HackerAI and start a new Agent request.";
+const APPROVAL_AUTHORIZATION_DENIED_REASON =
+  "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
 
 const buildDeniedApprovalReason = (message: string | undefined): string => {
   const trimmed = message?.trim();
@@ -305,6 +343,33 @@ const waitForApprovalInput = async (
   }
 };
 
+type SandboxScopedAgentApprovalTargetGrant = {
+  sandboxIdentity: AgentApprovalSandboxIdentity;
+  grant: AgentApprovalTargetGrant;
+};
+
+const restoreSandboxScopedAgentApprovalTargetGrant = (
+  grant: PersistedAgentApprovalTargetGrant,
+  sandboxIdentity: AgentApprovalSandboxIdentity,
+): AgentApprovalTargetGrant | null => {
+  const targetPrefix = getAgentApprovalTargetPrefixForSandbox({
+    persistedTargetPrefix: grant.targetPrefix,
+    sandboxIdentity,
+  });
+  return targetPrefix === null ? null : { ...grant, targetPrefix };
+};
+
+const scopePersistedAgentApprovalTargetGrant = (
+  grant: PersistedAgentApprovalTargetGrant,
+  sandboxIdentity: AgentApprovalSandboxIdentity,
+): PersistedAgentApprovalTargetGrant => ({
+  ...grant,
+  targetPrefix: serializeSandboxScopedAgentApprovalTargetPrefix({
+    sandboxIdentity,
+    targetPrefix: grant.targetPrefix,
+  }),
+});
+
 const buildAgentToolApprovalRequester = ({
   agentPermissionMode,
   approvalSessionId,
@@ -316,6 +381,10 @@ const buildAgentToolApprovalRequester = ({
   activeRuntimeBudget,
   initialTargetGrants = [],
   persistTargetGrant,
+  resolveSandboxIdentity,
+  beforeSuspend,
+  revalidateAfterSuspend,
+  onPostWaitAuthorizationDenied,
 }: {
   agentPermissionMode: AgentPermissionMode;
   approvalSessionId?: string;
@@ -325,16 +394,21 @@ const buildAgentToolApprovalRequester = ({
   runId: string;
   signal: AbortSignal;
   activeRuntimeBudget: Pick<ActiveRuntimeBudget, "pause" | "resume">;
-  initialTargetGrants?: AgentApprovalTargetGrant[];
+  initialTargetGrants?: PersistedAgentApprovalTargetGrant[];
   persistTargetGrant?: (
     grant: PersistedAgentApprovalTargetGrant,
+    sandboxIdentity: AgentApprovalSandboxIdentity,
   ) => Promise<void>;
+  resolveSandboxIdentity: () => Promise<AgentApprovalSandboxIdentity>;
+  beforeSuspend?: () => Promise<void>;
+  revalidateAfterSuspend: (
+    input: AgentToolApprovalInputRecord,
+  ) => Promise<void>;
+  onPostWaitAuthorizationDenied: () => void;
 }): AgentToolApprovalRequester | undefined => {
   if (agentPermissionMode !== "ask_approval") return undefined;
   let approvalQueue: Promise<void> = Promise.resolve();
-  const approvedTargetGrants: AgentApprovalTargetGrant[] = [
-    ...initialTargetGrants,
-  ];
+  const approvedTargetGrants: SandboxScopedAgentApprovalTargetGrant[] = [];
   const setApprovalPending = async (
     pending: boolean,
     request?: AgentToolApprovalPendingRequest,
@@ -371,9 +445,24 @@ const buildAgentToolApprovalRequester = ({
     let shouldClearApprovalPending = false;
     try {
       const approvalId = generateId();
-      const existingGrant = approvedTargetGrants.find((grant) =>
-        matchesApprovalTargetGrant(request, grant),
-      );
+      const sandboxIdentity = await resolveSandboxIdentity();
+      const existingGrant =
+        approvedTargetGrants.find(
+          (scopedGrant) =>
+            scopedGrant.sandboxIdentity === sandboxIdentity &&
+            matchesApprovalTargetGrant(request, scopedGrant.grant),
+        )?.grant ??
+        initialTargetGrants
+          .map((grant) =>
+            restoreSandboxScopedAgentApprovalTargetGrant(
+              grant,
+              sandboxIdentity,
+            ),
+          )
+          .find(
+            (grant): grant is AgentApprovalTargetGrant =>
+              grant !== null && matchesApprovalTargetGrant(request, grant),
+          );
       if (existingGrant) {
         metadata
           .set("approvalStatus", "auto_approved")
@@ -426,17 +515,19 @@ const buildAgentToolApprovalRequester = ({
       );
       approvalPendingMarked = true;
 
+      metadata
+        .set("approvalStatus", "pending")
+        .set("approvalId", approvalId)
+        .set("approvalToolCallId", request.toolCallId)
+        .set("approvalToolName", request.toolName)
+        .set("approvalOperation", request.operation);
+      await metadata.flush();
+
       writer.write({
         type: "tool-approval-request",
         toolCallId: request.toolCallId,
         approvalId,
       } as AgentLongUiStreamPart);
-
-      metadata
-        .set("approvalStatus", "pending")
-        .set("approvalId", approvalId)
-        .set("approvalToolName", request.toolName)
-        .set("approvalOperation", request.operation);
 
       triggerLogger.info("[agent-long] waiting for tool approval", {
         chatId,
@@ -449,6 +540,30 @@ const buildAgentToolApprovalRequester = ({
       });
 
       const session = triggerSessions.open(approvalSessionId);
+      if (beforeSuspend) {
+        try {
+          await beforeSuspend();
+        } catch (error) {
+          metadata.set("approvalStatus", "pre_suspend_check_failed");
+          shouldClearApprovalPending = true;
+          triggerLogger.warn(
+            "[agent-long] approval suspension preparation failed",
+            {
+              chatId,
+              userId,
+              runId,
+              approvalId,
+              error_name: error instanceof Error ? error.name : "UnknownError",
+            },
+          );
+          onPostWaitAuthorizationDenied();
+          return {
+            approved: false,
+            approvalId,
+            reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
+          };
+        }
+      }
       while (!signal.aborted) {
         activeRuntimeBudget.pause();
         let waitOutcome: TriggerSessionInputWaitOutcome;
@@ -470,7 +585,25 @@ const buildAgentToolApprovalRequester = ({
           };
         }
 
-        if (!isAgentToolApprovalInputRecord(next.output)) continue;
+        if (!isAgentToolApprovalInputRecord(next.output)) {
+          if (
+            isApprovalInputForRequest(
+              next.output,
+              approvalId,
+              request.toolCallId,
+            )
+          ) {
+            metadata.set("approvalStatus", "unsupported_protocol");
+            shouldClearApprovalPending = true;
+            onPostWaitAuthorizationDenied();
+            return {
+              approved: false,
+              approvalId,
+              reason: APPROVAL_PROTOCOL_DENIED_REASON,
+            };
+          }
+          continue;
+        }
         if (
           next.output.approvalId !== approvalId ||
           next.output.toolCallId !== request.toolCallId
@@ -484,18 +617,77 @@ const buildAgentToolApprovalRequester = ({
         shouldClearApprovalPending = true;
 
         if (next.output.decision === "approve") {
+          try {
+            await revalidateAfterSuspend(next.output);
+          } catch (error) {
+            const authorizationError =
+              error instanceof AgentApprovalAuthorizationError ? error : null;
+            metadata
+              .set("approvalStatus", "authorization_denied")
+              .set(
+                "approvalAuthorizationFailure",
+                authorizationError?.code ?? "revalidation_failed",
+              );
+            triggerLogger.warn(
+              "[agent-long] post-wait approval authorization denied",
+              {
+                chatId,
+                userId,
+                runId,
+                approvalId,
+                failure: authorizationError?.code ?? "revalidation_failed",
+                error_name:
+                  error instanceof Error ? error.name : "UnknownError",
+              },
+            );
+            onPostWaitAuthorizationDenied();
+            return {
+              approved: false,
+              approvalId,
+              reason:
+                authorizationError?.code === "unsupported_protocol"
+                  ? APPROVAL_PROTOCOL_DENIED_REASON
+                  : APPROVAL_AUTHORIZATION_DENIED_REASON,
+            };
+          }
+
+          const currentSandboxIdentity = await resolveSandboxIdentity();
+          if (currentSandboxIdentity !== sandboxIdentity) {
+            metadata.set("approvalStatus", "sandbox_changed");
+            triggerLogger.warn(
+              "[agent-long] sandbox changed while approval was pending",
+              {
+                chatId,
+                userId,
+                runId,
+                approvalId,
+                requested_sandbox_identity: sandboxIdentity,
+                current_sandbox_identity: currentSandboxIdentity,
+              },
+            );
+            return {
+              approved: false,
+              approvalId,
+              reason:
+                "The selected sandbox changed while this approval was pending. The operation was not run. Retry it to approve in the current sandbox.",
+            };
+          }
+
           const approvedTargetGrant =
             next.output.grant === "target_prefix"
               ? deriveApprovedAgentTargetGrant(request, next.output)
               : null;
           if (approvedTargetGrant) {
-            approvedTargetGrants.push(approvedTargetGrant);
+            approvedTargetGrants.push({
+              sandboxIdentity,
+              grant: approvedTargetGrant,
+            });
             if (
               persistTargetGrant &&
               approvedTargetGrant.kind !== "terminal_interaction"
             ) {
               try {
-                await persistTargetGrant(approvedTargetGrant);
+                await persistTargetGrant(approvedTargetGrant, sandboxIdentity);
               } catch (error) {
                 triggerLogger.warn(
                   "[agent-long] failed to persist approval grant",
@@ -1312,6 +1504,7 @@ export type AgentLongPayload = {
   sandboxPreference?: SandboxPreference;
   agentPermissionMode?: AgentPermissionMode;
   approvalSessionId?: string;
+  approvalProtocolVersion?: number;
   selectedModel?: SelectedModel;
   userLocation: Geo;
   temporary?: boolean;
@@ -1376,6 +1569,7 @@ export const agentLongTask = task({
       sandboxPreference,
       agentPermissionMode = "full_access",
       approvalSessionId,
+      approvalProtocolVersion,
       selectedModel: rawSelectedModelOverride,
       userLocation,
       temporary,
@@ -1387,6 +1581,16 @@ export const agentLongTask = task({
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
+
+    if (
+      agentPermissionMode === "ask_approval" &&
+      approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION
+    ) {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "This Agent approval request uses an unsupported protocol version. Refresh HackerAI and start a new Agent request.",
+      );
+    }
 
     // Stable across retries so a failed-then-retried run upserts the same
     // message record rather than creating a duplicate.
@@ -1678,6 +1882,108 @@ export const agentLongTask = task({
                 );
               });
             };
+            const revalidateAfterApprovalSuspend = async (
+              input: AgentToolApprovalInputRecord,
+            ) => {
+              const authorization = verifyAgentToolApprovalInputAuthorization({
+                input,
+                expected: {
+                  userId,
+                  chatId,
+                  runId: ctx.run.id,
+                  approvalSessionId: approvalSessionId!,
+                  approvalId: input.approvalId,
+                  toolCallId: input.toolCallId,
+                },
+              });
+
+              if (
+                authorization.subscription !== subscription ||
+                authorization.organizationId !== organizationId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the run start.",
+                );
+              }
+
+              await assertUserCanMakeCostIncurringRequest(userId);
+
+              if (!temporary) {
+                const currentChat = await getChatById({ id: chatId });
+                const pendingRequest =
+                  currentChat?.active_agent_approval_request;
+                if (
+                  !currentChat ||
+                  currentChat.user_id !== userId ||
+                  currentChat.active_trigger_run_id !== ctx.run.id ||
+                  currentChat.active_agent_approval_session_id !==
+                    approvalSessionId ||
+                  pendingRequest?.approvalId !== input.approvalId ||
+                  pendingRequest?.toolCallId !== input.toolCallId
+                ) {
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The chat is no longer waiting for this approval.",
+                  );
+                }
+              }
+
+              const currentUserCustomization = await getUserCustomization({
+                userId,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId,
+                subscription: authorization.subscription,
+                userCustomization: currentUserCustomization,
+                organizationId: authorization.organizationId,
+                failClosedOnLookupError: true,
+              });
+              const currentlyAllowedModel = normalizeMaxModelForSubscription(
+                selectedModelOverride,
+                authorization.subscription,
+                { extraUsageConfig: currentExtraUsageConfig },
+              );
+              if (currentlyAllowedModel !== selectedModelOverride) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The selected model is no longer authorized.",
+                );
+              }
+
+              await checkRateLimitCapacity(
+                userId,
+                mode,
+                authorization.subscription,
+                currentExtraUsageConfig,
+                selectedModel,
+                authorization.organizationId,
+                freeQuotaSubject,
+              );
+              if (authorization.subscription === "free") {
+                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                const lock = await acquireFreeRunConcurrencyLock(
+                  freeUsageSubject,
+                  FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
+                );
+                releaseFreeRunLock = lock.release;
+              }
+            };
+            let approvalSandboxManager: SandboxManager | undefined;
+            const resolveApprovalSandboxIdentity = async () => {
+              if (!sandboxPreference || sandboxPreference === "e2b") {
+                return "e2b" as const;
+              }
+              if (!approvalSandboxManager) {
+                throw new Error("Sandbox manager is unavailable for approval");
+              }
+              const { sandbox } = await approvalSandboxManager.getSandbox();
+              return isCentrifugoSandbox(sandbox)
+                ? getAgentApprovalConnectionSandboxIdentity(
+                    sandbox.getConnectionId(),
+                  )
+                : ("e2b" as const);
+            };
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode,
               approvalSessionId,
@@ -1688,12 +1994,24 @@ export const agentLongTask = task({
               signal: userStopSignal.signal,
               activeRuntimeBudget: runtimeBudget,
               initialTargetGrants:
-                (chat?.agent_approval_grants as AgentApprovalTargetGrant[]) ??
+                (chat?.agent_approval_grants as PersistedAgentApprovalTargetGrant[]) ??
                 [],
               persistTargetGrant: temporary
                 ? undefined
-                : (grant) =>
-                    persistAgentApprovalGrant({ chatId, userId, grant }),
+                : (grant, sandboxIdentity) =>
+                    persistAgentApprovalGrant({
+                      chatId,
+                      userId,
+                      grant: scopePersistedAgentApprovalTargetGrant(
+                        grant,
+                        sandboxIdentity,
+                      ),
+                    }),
+              resolveSandboxIdentity: resolveApprovalSandboxIdentity,
+              beforeSuspend:
+                subscription === "free" ? releaseFreeRunLockOnce : undefined,
+              revalidateAfterSuspend: revalidateAfterApprovalSuspend,
+              onPostWaitAuthorizationDenied: () => userStopSignal.abort(),
             });
             const {
               tools,
@@ -1730,6 +2048,7 @@ export const agentLongTask = task({
               onToolFailure,
               requestToolApproval,
             );
+            approvalSandboxManager = sandboxManager;
 
             const sendFileMetadataToStream = (
               fileMetadata: Array<{

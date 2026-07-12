@@ -103,6 +103,7 @@ const AgentApprovalSetter = () => {
 describe("ChatInput - Integration Tests", () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
+  const mockOnReconnect = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -224,7 +225,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
-    it("renders a stored approval selector after the live request state is gone", () => {
+    it("renders recovery controls while a stored approval reconnects", () => {
       render(
         <TestWrapper>
           <ChatInput
@@ -248,10 +249,55 @@ describe("ChatInput - Integration Tests", () => {
 
       expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
       expect(
-        screen.getByRole("button", { name: "Allow once" }),
+        screen.getByText("Reconnecting to the Agent approval session..."),
       ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Allow once" }),
+      ).not.toBeInTheDocument();
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+      expect(mockOnStop).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders retry and stop controls when stored approval reconnection fails", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="error"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.getByText("Could not reconnect to the Agent approval session."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Retry connection" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop agent" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+      expect(mockOnReconnect).toHaveBeenCalledTimes(1);
     });
   });
 

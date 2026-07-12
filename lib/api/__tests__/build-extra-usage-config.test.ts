@@ -148,6 +148,20 @@ describe("buildExtraUsageConfig — team users", () => {
     });
   });
 
+  it("fails closed on a team-state lookup error during post-wait authorization", async () => {
+    mockGetTeamState.mockResolvedValue(null);
+
+    await expect(
+      buildExtraUsageConfig({
+        userId: USER_ID,
+        subscription: "team",
+        userCustomization: null,
+        organizationId: ORG_ID,
+        failClosedOnLookupError: true,
+      }),
+    ).rejects.toMatchObject({ type: "rate_limit" });
+  });
+
   it("returns config with autoReload-only when balance is 0 but auto-reload is on", async () => {
     mockGetTeamState.mockResolvedValue({
       enabled: true,
@@ -268,6 +282,19 @@ describe("buildExtraUsageConfig — individual paid users (pro / pro-plus / ultr
       hasBalance: true,
       autoReloadEnabled: false,
     });
+  });
+
+  it("fails closed on a personal balance lookup error during post-wait authorization", async () => {
+    mockGetUserBalance.mockResolvedValue(null);
+
+    await expect(
+      buildExtraUsageConfig({
+        userId: USER_ID,
+        subscription: "pro",
+        userCustomization: { extra_usage_enabled: true } as any,
+        failClosedOnLookupError: true,
+      }),
+    ).rejects.toMatchObject({ type: "rate_limit" });
   });
 
   it("keeps enabled-but-empty balance context for billing telemetry", async () => {

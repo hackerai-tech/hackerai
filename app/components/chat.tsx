@@ -1700,6 +1700,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
+    activeTriggerRunRef,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -1908,6 +1909,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                           <ChatInput
                             onSubmit={handleSubmit}
                             onStop={handleStop}
+                            onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
                             isCentered={true}
@@ -1943,6 +1945,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
                     hasMessages={hasMessages}

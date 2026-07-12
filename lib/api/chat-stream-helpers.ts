@@ -1119,8 +1119,15 @@ export async function buildExtraUsageConfig(args: {
   subscription: SubscriptionTier;
   userCustomization: UserCustomization | null | undefined;
   organizationId?: string;
+  failClosedOnLookupError?: boolean;
 }): Promise<ExtraUsageConfig | undefined> {
-  const { userId, subscription, userCustomization, organizationId } = args;
+  const {
+    userId,
+    subscription,
+    userCustomization,
+    organizationId,
+    failClosedOnLookupError = false,
+  } = args;
   if (subscription === "free") return undefined;
 
   // Team users: extra usage is org-funded and admin-controlled. Personal
@@ -1129,6 +1136,12 @@ export async function buildExtraUsageConfig(args: {
     if (!organizationId) return undefined;
     const state = await getTeamExtraUsageState(organizationId, userId);
     if (!state) {
+      if (failClosedOnLookupError) {
+        throw new ChatSDKError(
+          "rate_limit:chat",
+          "Current team billing authorization could not be verified. Start a new Agent request and try again.",
+        );
+      }
       console.warn(
         `[chat-handler] getTeamExtraUsageState returned null for org ${organizationId}, using optimistic extra usage config`,
       );
@@ -1157,6 +1170,12 @@ export async function buildExtraUsageConfig(args: {
   const balanceInfo = await getExtraUsageBalance(userId);
 
   if (!balanceInfo) {
+    if (failClosedOnLookupError) {
+      throw new ChatSDKError(
+        "rate_limit:chat",
+        "Current extra usage authorization could not be verified. Start a new Agent request and try again.",
+      );
+    }
     console.warn(
       `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
     );

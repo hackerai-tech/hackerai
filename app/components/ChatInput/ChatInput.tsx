@@ -36,6 +36,7 @@ import {
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void;
+  onReconnect?: () => void;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
@@ -114,6 +115,7 @@ const uploadedFileToDraftAttachment = (
 export const ChatInput = ({
   onSubmit,
   onStop,
+  onReconnect,
   onSendNow,
   status,
   isCentered = false,
@@ -350,6 +352,9 @@ export const ChatInput = ({
           <AgentApprovalPrompt
             key={approvalRequest.approvalId}
             request={approvalRequest}
+            hasConnectionError={status === "error"}
+            onRetryConnection={onReconnect}
+            onStop={onStop}
           />
         ) : (
           <div

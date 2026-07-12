@@ -1,17 +1,8 @@
-import { AGENT_RESUME_ENDPOINT } from "@/lib/api/agent-endpoints";
-import {
-  isTriggerSessionInputAuthorizationError,
-  sendTriggerSessionInput,
-} from "@/lib/chat/trigger-browser-realtime";
+import { AGENT_APPROVAL_ENDPOINT } from "@/lib/api/agent-endpoints";
 
-type AgentApprovalResumeHandle = {
-  approvalSessionId?: unknown;
-  approvalSessionPublicAccessToken?: unknown;
-};
+const APPROVAL_SESSION_SEND_TIMEOUT_MS = 30_000;
 
-const APPROVAL_SESSION_REFRESH_TIMEOUT_MS = 30_000;
-
-const createRefreshAbortController = (signal?: AbortSignal) => {
+const createSendAbortController = (signal?: AbortSignal) => {
   const controller = new AbortController();
   const abort = () => controller.abort();
 
@@ -21,8 +12,7 @@ const createRefreshAbortController = (signal?: AbortSignal) => {
     signal?.addEventListener("abort", abort, { once: true });
   }
 
-  const timeoutId = setTimeout(abort, APPROVAL_SESSION_REFRESH_TIMEOUT_MS);
-
+  const timeoutId = setTimeout(abort, APPROVAL_SESSION_SEND_TIMEOUT_MS);
   return {
     controller,
     cleanup: () => {
@@ -35,11 +25,9 @@ const createRefreshAbortController = (signal?: AbortSignal) => {
 export async function sendAgentApprovalSessionInput({
   chatId,
   sessionId,
-  accessToken,
   partId,
   value,
   signal,
-  onAccessTokenRefreshed,
 }: {
   chatId?: string;
   sessionId: string;
@@ -49,58 +37,31 @@ export async function sendAgentApprovalSessionInput({
   signal?: AbortSignal;
   onAccessTokenRefreshed?: (accessToken: string) => void;
 }): Promise<void> {
-  const append = (token: string) =>
-    sendTriggerSessionInput({
-      sessionId,
-      accessToken: token,
-      partId,
-      value,
-      signal,
-    });
-
-  let authorizationError: unknown;
-  try {
-    await append(accessToken);
-    return;
-  } catch (error) {
-    if (!isTriggerSessionInputAuthorizationError(error)) throw error;
-    authorizationError = error;
+  if (!chatId) {
+    throw new Error("Agent approval is missing its chat identity.");
   }
 
-  if (!chatId) throw authorizationError;
-
-  const resumeUrl = `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(
-    chatId,
-  )}`;
-  const refreshAbort = createRefreshAbortController(signal);
+  const sendAbort = createSendAbortController(signal);
   let response: Response;
   try {
-    response = await fetch(resumeUrl, {
-      method: "GET",
+    response = await fetch(AGENT_APPROVAL_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chatId,
+        approvalSessionId: sessionId,
+        partId,
+        value,
+      }),
       cache: "no-store",
       credentials: "same-origin",
-      signal: refreshAbort.controller.signal,
+      signal: sendAbort.controller.signal,
     });
   } finally {
-    refreshAbort.cleanup();
+    sendAbort.cleanup();
   }
-  if (response.status === 204) {
-    throw new Error("The Agent run is no longer waiting for approval.");
-  }
+
   if (!response.ok) {
-    throw new Error(
-      `Agent approval session refresh failed: ${response.status}`,
-    );
+    throw new Error(`Agent approval request failed: ${response.status}`);
   }
-
-  const handle = (await response.json()) as AgentApprovalResumeHandle;
-  if (handle.approvalSessionId !== sessionId) {
-    throw new Error("Agent approval session changed before approval was sent.");
-  }
-  if (typeof handle.approvalSessionPublicAccessToken !== "string") {
-    throw new Error("Agent approval session refresh returned no access token.");
-  }
-
-  onAccessTokenRefreshed?.(handle.approvalSessionPublicAccessToken);
-  await append(handle.approvalSessionPublicAccessToken);
 }

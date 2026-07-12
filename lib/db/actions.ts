@@ -57,6 +57,7 @@ const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
   "token_threshold" | "provider_input_threshold" | "provider_pressure";
@@ -621,15 +622,21 @@ export async function getChatById({ id }: { id: string }) {
 export async function deleteChatForBackend({
   chatId,
   userId,
+  expectedTriggerRunId,
+  expectedApprovalSessionId,
 }: {
   chatId: string;
   userId: string;
+  expectedTriggerRunId: string | null;
+  expectedApprovalSessionId: string | null;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
+    return await getConvexClient().mutation(api.chats.deleteChatForBackend, {
       serviceKey,
       chatId,
       userId,
+      expectedTriggerRunId,
+      expectedApprovalSessionId,
     });
   } catch (error) {
     throw databaseError("chats.deleteChatForBackend", error, {
@@ -654,6 +661,42 @@ export async function getActiveTriggerRunsForUser({
     );
   } catch (error) {
     throw databaseError("chats.getActiveTriggerRunsForUser", error, {
+      user_id: userId,
+    });
+  }
+}
+
+export async function fenceAndGetActiveAgentResourcesForUser({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    for (let batch = 0; batch < MAX_CHAT_DELETION_FENCE_BATCHES; batch++) {
+      const result = await getConvexClient().mutation(
+        api.chats.fenceChatsForDeletion,
+        {
+          serviceKey,
+          userId,
+        },
+      );
+
+      if (!result.hasMore) {
+        return await getConvexClient().query(
+          api.chats.getActiveAgentResourcesForUser,
+          {
+            serviceKey,
+            userId,
+          },
+        );
+      }
+    }
+
+    throw new Error(
+      "Chat deletion fencing is taking longer than expected. Please retry deletion.",
+    );
+  } catch (error) {
+    throw databaseError("chats.fenceAndGetActiveAgentResourcesForUser", error, {
       user_id: userId,
     });
   }
@@ -1427,7 +1470,7 @@ export async function setActiveTriggerRun({
   clearApprovalPending?: boolean;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
+    return await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
       serviceKey,
       chatId,
       triggerRunId,

@@ -53,6 +53,7 @@ interface UseChatHandlersProps {
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
+  activeTriggerRunRef?: RefObject<string | undefined>;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -72,6 +73,7 @@ export const useChatHandlers = ({
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
+  activeTriggerRunRef,
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
@@ -161,25 +163,29 @@ export const useChatHandlers = ({
   const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
     sanitizeForConvexValue(parts) as ChatMessage["parts"];
 
-  // Mirrors the transport routing rule in app/components/chat.tsx. Persistent
-  // chats only; temporary chats use the legacy Redis pub/sub cancel path.
+  // A persisted active run takes precedence over the current UI mode. This
+  // matters while restoring an approval before mode initialization completes.
   const shouldCancelTriggerRun = () =>
-    !temporaryChatsEnabledRef.current &&
-    shouldUseAgentLongForAgent({
-      mode: chatModeRef.current,
-      subscription: subscriptionRef.current,
-      isTauri: isTauriEnvironment(),
-    });
+    Boolean(activeTriggerRunRef?.current) ||
+    (!temporaryChatsEnabledRef.current &&
+      shouldUseAgentLongForAgent({
+        mode: chatModeRef.current,
+        subscription: subscriptionRef.current,
+        isTauri: isTauriEnvironment(),
+      }));
 
-  const cancelTriggerRun = () => {
+  const cancelTriggerRun = async (): Promise<void> => {
     if (!shouldCancelTriggerRun()) return;
-    fetch(AGENT_CANCEL_ENDPOINT, {
+    const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId }),
-    }).catch((error) => {
-      console.error("Failed to cancel trigger.dev run:", error);
     });
+    if (!response.ok) {
+      throw new Error(
+        `Agent cancellation failed with status ${response.status}`,
+      );
+    }
   };
 
   /**
@@ -328,7 +334,9 @@ export const useChatHandlers = ({
       } else if (queueBehavior === "stop-and-send") {
         // Cancel the trigger.dev run for Agent streams so the prior
         // run stops burning compute instead of finishing in the background.
-        cancelTriggerRun();
+        void cancelTriggerRun().catch((error) => {
+          console.error("Failed to cancel trigger.dev run:", error);
+        });
 
         await stopActiveStream();
         // Continue to send the new message immediately below (don't return)
@@ -430,15 +438,20 @@ export const useChatHandlers = ({
     // Clear any active status indicators immediately
     onStopCallback?.();
 
-    // Fire the trigger.dev cancel in parallel with stopActiveStream so the
-    // Trigger.dev API round-trip overlaps the Convex cancel/save instead of
-    // sequencing after it.
-    cancelTriggerRun();
+    const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
+      cancelTriggerRun(),
+      stopActiveStream(),
+    ]);
 
-    try {
-      await stopActiveStream();
-    } catch (error) {
-      console.error("Error in handleStop:", error);
+    if (triggerCancelResult.status === "rejected") {
+      console.error(
+        "Failed to cancel trigger.dev run:",
+        triggerCancelResult.reason,
+      );
+      toast.error("Could not stop the Agent run. Please try again.");
+    }
+    if (streamStopResult.status === "rejected") {
+      console.error("Error in handleStop:", streamStopResult.reason);
     }
   };
 

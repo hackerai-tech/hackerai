@@ -133,4 +133,45 @@ describe("useChatHandlers regenerate model", () => {
       }),
     );
   });
+
+  it("cancels a restored Trigger run even when the current mode is ask", async () => {
+    mockTemporaryChatsEnabled = false;
+    const fetchMock = jest.fn(
+      async () => ({ ok: true, status: 204 }) as Response,
+    );
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: fetchMock,
+    });
+    const stop = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [],
+        sendMessage: mockSendMessage,
+        stop,
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleStop();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agent/cancel",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ chatId: "chat-1" }),
+      }),
+    );
+    expect(stop).toHaveBeenCalledTimes(1);
+    Reflect.deleteProperty(globalThis, "fetch");
+  });
 });

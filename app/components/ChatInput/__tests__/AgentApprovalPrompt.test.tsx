@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockSendToolApproval = jest.fn(() => Promise.resolve());
+const mockOnRetryConnection = jest.fn();
+const mockOnStop = jest.fn();
+let mockSession: {
+  chatId: string;
+  sessionId: string;
+  publicAccessToken: string;
+} | null;
 
 jest.mock("@/app/contexts/AgentApprovalContext", () => ({
   useAgentApproval: () => ({
-    session: {
-      chatId: "approval-chat",
-      sessionId: "agent-approval-session",
-      publicAccessToken: "public-token",
-    },
+    session: mockSession,
     sendToolApproval: mockSendToolApproval,
     toolApprovalSendStates: {},
   }),
@@ -32,13 +35,30 @@ const request = {
   operation: "terminal_execute" as const,
 };
 
+const renderPrompt = (props?: { hasConnectionError?: boolean }) =>
+  render(
+    <AgentApprovalPrompt
+      request={request}
+      hasConnectionError={props?.hasConnectionError}
+      onRetryConnection={mockOnRetryConnection}
+      onStop={mockOnStop}
+    />,
+  );
+
 describe("AgentApprovalPrompt", () => {
   beforeEach(() => {
     mockSendToolApproval.mockClear();
+    mockOnRetryConnection.mockClear();
+    mockOnStop.mockClear();
+    mockSession = {
+      chatId: "approval-chat",
+      sessionId: "agent-approval-session",
+      publicAccessToken: "public-token",
+    };
   });
 
   it("renders a compact approval card instead of selectable option rows", () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     expect(screen.getByText("Terminal command")).toBeInTheDocument();
     expect(screen.getByText(request.title)).toBeInTheDocument();
@@ -56,7 +76,7 @@ describe("AgentApprovalPrompt", () => {
   });
 
   it("approves once when Enter is pressed", async () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     fireEvent.keyDown(document.body, { key: "Enter", code: "Enter" });
 
@@ -70,7 +90,7 @@ describe("AgentApprovalPrompt", () => {
   });
 
   it("approves once from the primary action", async () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
 
@@ -84,7 +104,7 @@ describe("AgentApprovalPrompt", () => {
   });
 
   it("approves the validated command prefix for this conversation", async () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     fireEvent.keyDown(
       screen.getByRole("button", { name: "More approval options" }),
@@ -119,6 +139,8 @@ describe("AgentApprovalPrompt", () => {
           target: "npm test && npm publish",
           prefixRule: ["npm", "test"],
         }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
       />,
     );
 
@@ -128,7 +150,7 @@ describe("AgentApprovalPrompt", () => {
   });
 
   it("denies from the secondary action", async () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
 
@@ -145,7 +167,11 @@ describe("AgentApprovalPrompt", () => {
     render(
       <>
         <input aria-label="Outside input" />
-        <AgentApprovalPrompt request={request} />
+        <AgentApprovalPrompt
+          request={request}
+          onRetryConnection={mockOnRetryConnection}
+          onStop={mockOnStop}
+        />
       </>,
     );
 
@@ -157,8 +183,114 @@ describe("AgentApprovalPrompt", () => {
     expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["button", <button key="button">Outside button</button>],
+    ["select", <select key="select" aria-label="Outside select" />],
+    ["summary", <summary key="summary">Outside summary</summary>],
+    [
+      "contenteditable",
+      <div key="contenteditable" contentEditable suppressContentEditableWarning>
+        Outside editor
+      </div>,
+    ],
+    [
+      "interactive ARIA role",
+      <div key="aria-button" role="button" tabIndex={0}>
+        Outside ARIA button
+      </div>,
+    ],
+  ])("does not capture Enter from an unrelated %s", (_name, element) => {
+    const { container } = render(
+      <>
+        {element}
+        <AgentApprovalPrompt
+          request={request}
+          onRetryConnection={mockOnRetryConnection}
+          onStop={mockOnStop}
+        />
+      </>,
+    );
+    const target = container.firstElementChild as HTMLElement;
+
+    fireEvent.keyDown(target, { key: "Enter", code: "Enter" });
+
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+  });
+
+  it("does not approve when an unrelated link is focused", () => {
+    render(
+      <>
+        <a href="/help">Approval help</a>
+        <AgentApprovalPrompt
+          request={request}
+          onRetryConnection={mockOnRetryConnection}
+          onStop={mockOnStop}
+        />
+      </>,
+    );
+    const link = screen.getByRole("link", { name: "Approval help" });
+    link.focus();
+
+    fireEvent.keyDown(document.body, { key: "Enter", code: "Enter" });
+
+    expect(link).toHaveFocus();
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+  });
+
+  it("still approves from a safe noninteractive page target", async () => {
+    render(
+      <>
+        <div data-testid="outside-copy">Outside copy</div>
+        <AgentApprovalPrompt
+          request={request}
+          onRetryConnection={mockOnRetryConnection}
+          onStop={mockOnStop}
+        />
+      </>,
+    );
+
+    fireEvent.keyDown(screen.getByTestId("outside-copy"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    await waitFor(() => expect(mockSendToolApproval).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows reconnecting and stop controls without session credentials", () => {
+    mockSession = null;
+    renderPrompt();
+
+    expect(
+      screen.getByText("Reconnecting to the Agent approval session..."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Allow once" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+    expect(mockOnStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows retry and stop controls after reconnection fails", () => {
+    mockSession = null;
+    renderPrompt({ hasConnectionError: true });
+
+    expect(
+      screen.getByText("Could not reconnect to the Agent approval session."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+    expect(mockOnRetryConnection).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: "Stop agent" }),
+    ).toBeInTheDocument();
+  });
+
   it("does not submit modified Enter shortcuts", () => {
-    render(<AgentApprovalPrompt request={request} />);
+    renderPrompt();
 
     fireEvent.keyDown(document.body, {
       key: "Enter",

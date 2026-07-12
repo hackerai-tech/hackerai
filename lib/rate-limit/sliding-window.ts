@@ -78,6 +78,25 @@ end
 return {1, nextBaseRemaining + nextBonusRemaining}
 `;
 
+const PEEK_FREE_REQUEST_UNITS_SCRIPT = `
+local usageKey = KEYS[1]
+local bonusKey = KEYS[2]
+local requestLimit = tonumber(ARGV[1])
+local used = tonumber(redis.call("GET", usageKey) or "0")
+local bonusRemaining = tonumber(redis.call("GET", bonusKey) or "0")
+local baseRemaining = requestLimit - used
+
+if baseRemaining < 0 then
+  baseRemaining = 0
+end
+
+if bonusRemaining < 0 then
+  bonusRemaining = 0
+end
+
+return baseRemaining + bonusRemaining
+`;
+
 const GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT = `
 local bonusKey = KEYS[1]
 local grantKey = KEYS[2]
@@ -253,3 +272,76 @@ export const checkFreeAgentRateLimit = async (
 ): Promise<RateLimitInfo> => {
   return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST);
 };
+
+export const checkFreeUserRateLimitCapacity = async (
+  userId: string,
+  requestCost = FREE_ASK_REQUEST_COST,
+): Promise<RateLimitInfo> => {
+  const redis = createRedisClient();
+  const requestLimit = getFreeRequestLimit();
+  const cost = Math.max(1, Math.trunc(requestCost));
+  const { bucket, reset } = getCurrentUtcDayWindow();
+
+  if (!redis) {
+    if (process.env.NODE_ENV !== "production") {
+      return {
+        remaining: requestLimit,
+        resetTime: new Date(reset),
+        limit: requestLimit,
+        rateLimitSkipped: true,
+      };
+    }
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is not configured",
+    );
+  }
+
+  try {
+    const remaining = Math.max(
+      0,
+      Number(
+        await redis.eval(
+          PEEK_FREE_REQUEST_UNITS_SCRIPT,
+          [
+            `free_limit:${userId}:free:${bucket}`,
+            getFreeReferralBonusKey(userId),
+          ],
+          [requestLimit],
+        ),
+      ),
+    );
+    if (remaining < cost) {
+      throw new ChatSDKError(
+        "rate_limit:chat",
+        `You've used all your daily requests. Daily requests reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,
+        {
+          resetTimestamp: reset,
+          subscription: "free",
+          capReason: "daily_requests_exhausted",
+          ...getLimitPressureContext({
+            subscription: "free",
+            capReason: "daily_requests_exhausted",
+          }),
+        },
+      );
+    }
+
+    return {
+      remaining,
+      resetTime: new Date(reset),
+      limit: requestLimit,
+    };
+  } catch (error) {
+    if (error instanceof ChatSDKError) throw error;
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  }
+};
+
+export const checkFreeAgentRateLimitCapacity = async (
+  userId: string,
+): Promise<RateLimitInfo> =>
+  checkFreeUserRateLimitCapacity(userId, FREE_AGENT_REQUEST_COST);

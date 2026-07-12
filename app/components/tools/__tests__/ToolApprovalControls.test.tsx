@@ -86,7 +86,7 @@ describe("ToolApprovalControls", () => {
     mockSendAgentApprovalSessionInput.mockClear();
   });
 
-  it("optimistically updates the tool row before the input request settles", async () => {
+  it("shows approval sending until the server accepts the input", async () => {
     render(
       <AgentApprovalProvider>
         <ApprovalStatusHarness />
@@ -99,7 +99,7 @@ describe("ToolApprovalControls", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("approval-row-state")).toHaveTextContent(
-        "approved",
+        "sending",
       ),
     );
 
@@ -107,8 +107,10 @@ describe("ToolApprovalControls", () => {
       resolveApprovalInput?.();
     });
 
-    expect(screen.getByTestId("approval-row-state")).toHaveTextContent(
-      "approved",
+    await waitFor(() =>
+      expect(screen.getByTestId("approval-row-state")).toHaveTextContent(
+        "approved",
+      ),
     );
   });
 

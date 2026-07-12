@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect } from "react";
-import { ChevronDown, Hand } from "lucide-react";
+import { AlertTriangle, ChevronDown, Hand, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -19,6 +19,9 @@ import { deriveAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants
 
 type AgentApprovalPromptProps = {
   request: ActiveAgentToolApprovalRequest;
+  hasConnectionError?: boolean;
+  onRetryConnection?: () => void;
+  onStop: () => void;
 };
 
 const isPlainEnterKey = (event: {
@@ -34,29 +37,52 @@ const isPlainEnterKey = (event: {
   !event.metaKey &&
   !event.shiftKey;
 
-const isEditableKeyTarget = (target: EventTarget | null) => {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
+const INTERACTIVE_KEY_TARGET_SELECTOR = [
+  "a",
+  "area[href]",
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "details",
+  "summary",
+  '[contenteditable=""]',
+  '[contenteditable="true"]',
+  '[contenteditable="plaintext-only"]',
+  '[role~="button"]',
+  '[role~="checkbox"]',
+  '[role~="combobox"]',
+  '[role~="grid"]',
+  '[role~="gridcell"]',
+  '[role~="link"]',
+  '[role~="listbox"]',
+  '[role~="menu"]',
+  '[role~="menubar"]',
+  '[role~="menuitem"]',
+  '[role~="menuitemcheckbox"]',
+  '[role~="menuitemradio"]',
+  '[role~="option"]',
+  '[role~="radio"]',
+  '[role~="radiogroup"]',
+  '[role~="scrollbar"]',
+  '[role~="searchbox"]',
+  '[role~="slider"]',
+  '[role~="spinbutton"]',
+  '[role~="switch"]',
+  '[role~="tab"]',
+  '[role~="tablist"]',
+  '[role~="textbox"]',
+  '[role~="tree"]',
+  '[role~="treegrid"]',
+  '[role~="treeitem"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
-  const editableElement = target.closest("input, textarea, select");
-  if (!editableElement) return false;
-
-  if (editableElement instanceof HTMLInputElement) {
-    return ![
-      "button",
-      "checkbox",
-      "color",
-      "file",
-      "image",
-      "radio",
-      "range",
-      "reset",
-      "submit",
-    ].includes(editableElement.type);
-  }
-
-  return true;
-};
+const isInteractiveKeyTarget = (target: EventTarget | null) =>
+  target instanceof Element &&
+  (target instanceof HTMLElement && target.isContentEditable
+    ? true
+    : target.closest(INTERACTIVE_KEY_TARGET_SELECTOR) !== null);
 
 const getApprovalCategory = (request: ActiveAgentToolApprovalRequest) => {
   if (request.operation === "terminal_execute") return "Terminal command";
@@ -77,7 +103,12 @@ const getReusableApprovalDescription = (
   return `Changes to ${grant.path}`;
 };
 
-export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
+export function AgentApprovalPrompt({
+  request,
+  hasConnectionError = false,
+  onRetryConnection,
+  onStop,
+}: AgentApprovalPromptProps) {
   const { session, sendToolApproval, toolApprovalSendStates } =
     useAgentApproval();
   const sendState = toolApprovalSendStates[request.approvalId] ?? "idle";
@@ -85,7 +116,10 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
   const isApproved = sendState === "approved";
   const isDenied = sendState === "denied";
   const isSettled = isApproved || isDenied;
-  const canSubmit = !!session && !isSending && !isSettled;
+  const hasSessionCredentials = Boolean(
+    session?.sessionId.trim() && session.publicAccessToken.trim(),
+  );
+  const canSubmit = hasSessionCredentials && !isSending && !isSettled;
   const targetGrant = deriveAgentApprovalTargetGrant(request);
   const reusableApprovalLabel =
     targetGrant?.kind === "terminal_interaction"
@@ -153,10 +187,9 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
       if (!canSubmit || event.defaultPrevented || !isPlainEnterKey(event)) {
         return;
       }
-      if (isEditableKeyTarget(event.target)) return;
       if (
-        event.target instanceof HTMLElement &&
-        event.target.closest("button, [role='menu']")
+        isInteractiveKeyTarget(event.target) ||
+        isInteractiveKeyTarget(document.activeElement)
       ) {
         return;
       }
@@ -173,10 +206,13 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
     ? "Approved"
     : isDenied
       ? "Denied"
-      : "Allow once";
+      : isSending
+        ? "Sending..."
+        : "Allow once";
 
   return (
     <form
+      aria-busy={isSending}
       className="order-2 flex min-w-0 flex-col gap-4 rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
       onSubmit={(event) => {
         event.preventDefault();
@@ -206,69 +242,129 @@ export function AgentApprovalPrompt({ request }: AgentApprovalPromptProps) {
         </div>
       ) : null}
 
-      <div
-        className="flex items-center justify-end gap-2"
-        data-testid="agent-approval-actions"
-      >
-        <Button
-          type="button"
-          variant="outline"
-          disabled={!canSubmit}
-          className="rounded-full bg-transparent shadow-none"
-          onClick={() => void denyApproval()}
+      {!hasSessionCredentials ? (
+        <div
+          className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+          data-testid="agent-approval-connection-state"
         >
-          Deny
-        </Button>
-
-        <div className="flex items-center">
-          <Button
-            type="submit"
-            disabled={!canSubmit}
-            className={
-              targetGrant
-                ? "rounded-l-full rounded-r-none px-4"
-                : "rounded-full px-4"
-            }
+          <div
+            className="flex min-w-0 items-start gap-2 text-sm text-muted-foreground"
+            role={hasConnectionError ? "alert" : "status"}
           >
-            {allowLabel}
+            {hasConnectionError && onRetryConnection ? (
+              <AlertTriangle
+                className="mt-0.5 size-4 shrink-0"
+                aria-hidden="true"
+              />
+            ) : (
+              <LoaderCircle
+                className="mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+            )}
+            <span>
+              {hasConnectionError
+                ? "Could not reconnect to the Agent approval session."
+                : "Reconnecting to the Agent approval session..."}
+            </span>
+          </div>
+
+          <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-2">
+            {hasConnectionError ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full rounded-full bg-transparent shadow-none sm:w-auto"
+                onClick={onRetryConnection}
+              >
+                Retry connection
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant={hasConnectionError ? "destructive" : "outline"}
+              className="w-full rounded-full shadow-none sm:w-auto"
+              onClick={onStop}
+            >
+              Stop agent
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="flex items-center justify-end gap-2"
+          data-testid="agent-approval-actions"
+        >
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!canSubmit}
+            className="rounded-full bg-transparent shadow-none"
+            onClick={() => void denyApproval()}
+          >
+            Deny
           </Button>
 
-          {targetGrant ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  disabled={!canSubmit}
-                  className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
-                  aria-label="More approval options"
+          <div className="flex items-center">
+            <Button
+              type="submit"
+              disabled={!canSubmit}
+              className={
+                targetGrant
+                  ? "rounded-l-full rounded-r-none px-4"
+                  : "rounded-full px-4"
+              }
+            >
+              {allowLabel}
+            </Button>
+
+            {targetGrant ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    disabled={!canSubmit}
+                    className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
+                    aria-label="More approval options"
+                  >
+                    <ChevronDown aria-hidden="true" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  side="top"
+                  align="end"
+                  sideOffset={6}
+                  className="min-w-56 rounded-xl p-1.5"
                 >
-                  <ChevronDown aria-hidden="true" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                align="end"
-                sideOffset={6}
-                className="min-w-56 rounded-xl p-1.5"
-              >
-                <DropdownMenuItem
-                  className="min-h-10 rounded-lg px-3 text-sm"
-                  onSelect={() => void submitApproval(false)}
-                >
-                  Allow once
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="min-h-10 rounded-lg px-3 text-sm"
-                  aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
-                  onSelect={() => void submitApproval(true)}
-                >
-                  {reusableApprovalLabel}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
+                  <DropdownMenuItem
+                    className="min-h-10 rounded-lg px-3 text-sm"
+                    onSelect={() => void submitApproval(false)}
+                  >
+                    Allow once
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="min-h-10 rounded-lg px-3 text-sm"
+                    aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
+                    onSelect={() => void submitApproval(true)}
+                  >
+                    {reusableApprovalLabel}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
         </div>
-      </div>
+      )}
+
+      <span className="sr-only" role="status" aria-live="polite">
+        {isSending
+          ? "Sending approval response."
+          : isApproved
+            ? "Agent action approved."
+            : isDenied
+              ? "Agent action denied."
+              : ""}
+      </span>
     </form>
   );
 }

@@ -47,6 +47,16 @@ const agentApprovalSessionSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentApprovalRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-approval-route.ts"),
+  "utf8",
+);
+
+const agentApprovalClientSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../chat/agent-approval-session.ts"),
+  "utf8",
+);
+
 const routeSrc = fs.readFileSync(
   path.resolve(__dirname, "../agent-trigger-route.ts"),
   "utf8",
@@ -519,15 +529,17 @@ describe("agent-long chat UI — completion reconciliation", () => {
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
   test("uses the authorized chat snapshot for run and approval session IDs", () => {
     expect(cancelSrc).toMatch(
-      /const approvalSessionId\s*=\s*chat\.active_agent_approval_session_id;\s*const runId\s*=\s*chat\.active_trigger_run_id;/,
+      /const approvalSessionId\s*=\s*chat\s*\?\s*chat\.active_agent_approval_session_id\s*:\s*temporaryRefresh\?\.approvalSessionId;/,
+    );
+    expect(cancelSrc).toMatch(
+      /const runId\s*=\s*chat\s*\?\s*chat\.active_trigger_run_id\s*:\s*temporaryRefresh\?\.runId/,
     );
     expect(cancelSrc).not.toMatch(/getActiveTriggerRun/);
     expect(cancelSrc).toMatch(/expectedApprovalSessionId:\s*approvalSessionId/);
   });
 
-  test("runs.cancel is called before clearing the stored run ID", () => {
-    const cancelCallIdx = cancelSrc.indexOf("runs.cancel(runId)");
-    // Search for the actual call site after runs.cancel, not the import
+  test("Trigger cancellation is called before clearing the stored run ID", () => {
+    const cancelCallIdx = cancelSrc.indexOf("cancelAgentTriggerRun(runId)");
     const clearCallIdx = cancelSrc.indexOf(
       "setActiveTriggerRun({",
       cancelCallIdx,
@@ -659,6 +671,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/buildAgentApprovalSessionId/);
     expect(routeSrc).toMatch(/createHash\("sha256"\)/);
     expect(routeSrc).toMatch(/keyParts:\s*triggerDedupeKeyParts/);
+    expect(routeSrc).toMatch(
+      /approvalProtocolVersion:\s*AGENT_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(/approvalWorkerVersion/);
+    expect(routeSrc).toMatch(/worker:\$\{approvalWorkerVersion/);
     expect(routeSrc).not.toMatch(/randomUUID/);
   });
 
@@ -728,7 +745,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("approval tokens are short-lived and refreshable", () => {
     expect(agentApprovalSessionSrc).toMatch(
-      /AGENT_APPROVAL_TOKEN_EXPIRATION\s*=\s*"15m"/,
+      /DEFAULT_AGENT_APPROVAL_TOKEN_EXPIRATION\s*=\s*"15m"/,
+    );
+    expect(agentApprovalSessionSrc).toMatch(
+      /process\.env\.AGENT_APPROVAL_TOKEN_EXPIRATION/,
     );
     expect(routeSrc).toMatch(
       /expirationTime:\s*AGENT_APPROVAL_TOKEN_EXPIRATION/,
@@ -740,6 +760,47 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/refreshAccessToken/);
     expect(transportSrc).toMatch(/refreshRunAccessToken/);
     expect(transportSrc).toMatch(/resumeUrl:\s*getAgentResumeUrl\(chatId\)/);
+  });
+
+  test("temporary approval refresh is signed, user-bound, and content-free", () => {
+    expect(agentApprovalSessionSrc).toMatch(/createHmac\("sha256"/);
+    expect(agentApprovalSessionSrc).toMatch(/httpOnly:\s*true/);
+    expect(agentApprovalSessionSrc).toMatch(/sameSite:\s*"strict"/);
+    expect(resumeSrc).toMatch(/getTemporaryAgentApprovalRefreshHandle/);
+    expect(routeSrc).toMatch(/setTemporaryAgentApprovalRefreshCookie/);
+    expect(agentApprovalSessionSrc).not.toMatch(/messages|prompt|content/);
+  });
+
+  test("approval protocol v2 is explicit and requires route-last deployment", () => {
+    expect(agentApprovalSessionSrc).toMatch(
+      /AGENT_APPROVAL_PROTOCOL_VERSION\s*=\s*\n?\s*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(
+      /approvalProtocolVersion:\s*AGENT_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(/Convex -> Trigger worker -> Vercel/);
+    expect(routeSrc).toMatch(/old workers ignore this field/);
+  });
+
+  test("approval decisions are owner-checked, signed, and appended server-side", () => {
+    expect(agentApprovalClientSrc).toMatch(/AGENT_APPROVAL_ENDPOINT/);
+    expect(agentApprovalClientSrc).not.toMatch(/sendTriggerSessionInput/);
+    expect(agentApprovalRouteSrc).toMatch(/getUserIDAndPro\(req\)/);
+    expect(agentApprovalRouteSrc).toMatch(/active_agent_approval_request/);
+    expect(agentApprovalRouteSrc).toMatch(
+      /getTemporaryAgentApprovalRefreshHandle/,
+    );
+    expect(agentApprovalRouteSrc).toMatch(
+      /metadata\.approvalStatus\s*!==\s*"pending"/,
+    );
+    expect(agentApprovalRouteSrc).toMatch(/metadata\.approvalToolCallId/);
+    expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
+    expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
+    expect(taskSrc).toMatch(/await metadata\.flush\(\)/);
+    expect(agentApprovalRouteSrc).toMatch(/signAgentToolApprovalInput/);
+    expect(agentApprovalRouteSrc).toMatch(
+      /sessions\.open\(approvalSessionId\)\.in\.send\(signedInput/,
+    );
   });
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
@@ -778,7 +839,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/onToolFailure,\s*requestToolApproval,\s*\)/);
   });
 
-  test("runs use small subscription-aware Trigger.dev priority offsets", () => {
+  test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
     expect(routeSrc).toMatch(
       /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
@@ -791,6 +852,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\.\.\.\(triggerPriority\s*>\s*0\s*\?\s*{\s*priority:\s*triggerPriority\s*}\s*:\s*{}\)/,
     );
     expect(routeSrc).toMatch(/triggerPriority/);
+    expect(routeSrc).toMatch(/triggerConfig:\s*approvalTriggerConfig/);
+    expect(routeSrc).toMatch(/AGENT_APPROVAL_TRIGGER_VERSION/);
+    expect(routeSrc).toMatch(/lockToVersion:\s*approvalWorkerVersion/);
+    expect(routeSrc).toMatch(
+      /process\.env\.NODE_ENV === "production"[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
+    );
   });
 
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
@@ -808,6 +875,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(parallelIdx).toBeGreaterThan(-1);
     expect(tokenIdx).toBeGreaterThan(parallelIdx);
     expect(activeRunIdx).toBeGreaterThan(parallelIdx);
+  });
+
+  test("an unassociated started run is closed and canceled before failing", () => {
+    expect(routeSrc).toMatch(/association\s*!==\s*"updated"/);
+    expect(routeSrc).toMatch(/agent_run_association:\s*association/);
+    expect(routeSrc).toMatch(
+      /closeAgentApprovalSession\([\s\S]*"agent-run-association-failed"/,
+    );
+    expect(routeSrc).toMatch(/cancelAgentTriggerRun\(runId\)/);
   });
 
   test("start route returns chat id with the public run handle", () => {
@@ -1277,13 +1353,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "...(triggerRegion ? { region: triggerRegion } : {})",
       triggerOptionsIdx,
     );
-    const sessionStartIdx = routeSrc.indexOf(
-      "sessions.start",
+    const approvalTriggerConfigIdx = routeSrc.indexOf(
+      "const approvalTriggerConfig",
       triggerOptionsRegionIdx,
     );
     const sessionRegionIdx = routeSrc.indexOf(
       "...(triggerRegion ? { region: triggerRegion } : {})",
-      sessionStartIdx,
+      approvalTriggerConfigIdx,
+    );
+    const sessionStartIdx = routeSrc.indexOf(
+      "sessions.start",
+      approvalTriggerConfigIdx,
     );
     const triggerIdx = routeSrc.indexOf(
       "tasks.trigger",
@@ -1295,7 +1375,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routingIdx).toBeGreaterThan(userLocationIdx);
     expect(triggerOptionsIdx).toBeGreaterThan(routingIdx);
     expect(triggerOptionsRegionIdx).toBeGreaterThan(triggerOptionsIdx);
-    expect(sessionRegionIdx).toBeGreaterThan(sessionStartIdx);
+    expect(approvalTriggerConfigIdx).toBeGreaterThan(triggerOptionsRegionIdx);
+    expect(sessionRegionIdx).toBeGreaterThan(approvalTriggerConfigIdx);
+    expect(sessionStartIdx).toBeGreaterThan(sessionRegionIdx);
     expect(triggerIdx).toBeGreaterThan(triggerOptionsRegionIdx);
     expect(triggerIdx).toBeGreaterThan(sessionRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);

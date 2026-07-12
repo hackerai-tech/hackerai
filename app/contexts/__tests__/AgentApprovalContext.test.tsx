@@ -1,5 +1,11 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useEffect } from "react";
 
 const mockSendAgentApprovalSessionInput = jest.fn(
@@ -88,6 +94,37 @@ describe("AgentApprovalProvider", () => {
         accessToken: "expired-approval-token",
         partId: "agent-tool-approval:approval-1:approve:full_access",
       }),
+    );
+  });
+
+  it("stays in the sending state while session input is refreshing", async () => {
+    let finishSending: (() => void) | undefined;
+    mockSendAgentApprovalSessionInput.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSending = resolve;
+        }),
+    );
+
+    render(
+      <AgentApprovalProvider>
+        <ApprovalHarness />
+      </AgentApprovalProvider>,
+    );
+
+    await screen.findByText("expired-approval-token");
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("approval-state")).toHaveTextContent("sending"),
+    );
+
+    await act(async () => finishSending?.());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("approval-state")).toHaveTextContent(
+        "approved",
+      ),
     );
   });
 });

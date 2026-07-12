@@ -126,7 +126,7 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
 
       setToolApprovalSendStates((states) => ({
         ...states,
-        [approvalId]: decision === "approve" ? "approved" : "denied",
+        [approvalId]: "sending",
       }));
 
       try {
@@ -145,6 +145,10 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
             );
           },
         });
+        setToolApprovalSendStates((states) => ({
+          ...states,
+          [approvalId]: decision === "approve" ? "approved" : "denied",
+        }));
       } catch (error) {
         setToolApprovalSendStates((states) => ({
           ...states,

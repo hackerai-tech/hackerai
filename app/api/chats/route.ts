@@ -1,47 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runs } from "@trigger.dev/sdk";
 
 import { getUserID } from "@/lib/auth/get-user-id";
 import {
   deleteAllChatsForBackend,
-  getActiveTriggerRunsForUser,
+  fenceAndGetActiveAgentResourcesForUser,
 } from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
 import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
 export const maxDuration = 30;
-
-const TRIGGER_CANCEL_CONCURRENCY = 4;
-
-async function cancelTriggerRuns(triggerRunIds: string[]) {
-  for (let i = 0; i < triggerRunIds.length; i += TRIGGER_CANCEL_CONCURRENCY) {
-    const chunk = triggerRunIds.slice(i, i + TRIGGER_CANCEL_CONCURRENCY);
-    await Promise.all(chunk.map((triggerRunId) => runs.cancel(triggerRunId)));
-  }
-}
 
 export async function DELETE(req: NextRequest) {
   try {
     const userId = await getUserID(req);
     await assertUserCanAccessChatHistory(userId);
-    const activeTriggerRuns = await getActiveTriggerRunsForUser({ userId });
+    const activeAgentResources = await fenceAndGetActiveAgentResourcesForUser({
+      userId,
+    });
 
-    if (activeTriggerRuns.hasMore) {
-      return new NextResponse("Too many active chat runs to delete safely", {
-        status: 409,
-      });
+    if (activeAgentResources.hasMore) {
+      return new NextResponse(
+        "Too many active agent resources to delete safely",
+        { status: 409 },
+      );
     }
 
-    const triggerRunIds = [
-      ...new Set(activeTriggerRuns.runs.map((run) => run.triggerRunId)),
-    ];
-
-    await cancelTriggerRuns(triggerRunIds);
+    const cleanup = await closeAndCancelAgentResources(
+      activeAgentResources.resources,
+      "chat-deleted",
+    );
     await deleteAllChatsForBackend({ userId });
 
     return NextResponse.json({
       deleted: true,
-      canceledTriggerRuns: triggerRunIds.length,
+      ...cleanup,
     });
   } catch (error) {
     if (error instanceof ChatSDKError) return error.toResponse();

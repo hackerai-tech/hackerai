@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  getAgentApprovalConnectionSandboxIdentity,
+  serializeSandboxScopedAgentApprovalTargetPrefix,
+} from "../../types/agent";
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
@@ -50,9 +54,13 @@ jest.mock("../lib/suspensionGuards", () => ({
 const { persistAgentApprovalGrant } =
   require("../chats") as typeof import("../chats");
 
+const commandTargetPrefix = '["npm","test"]';
 const grant = {
   kind: "terminal_command" as const,
-  targetPrefix: '["npm","test"]',
+  targetPrefix: serializeSandboxScopedAgentApprovalTargetPrefix({
+    sandboxIdentity: "e2b",
+    targetPrefix: commandTargetPrefix,
+  }),
   executable: "npm",
   argv: ["npm", "test"],
 };
@@ -119,6 +127,51 @@ describe("persistAgentApprovalGrant", () => {
       grant,
     });
     expect(otherUser.patch).not.toHaveBeenCalled();
+  });
+
+  it("stores the same target separately for different sandbox identities", async () => {
+    const desktopGrant = {
+      ...grant,
+      targetPrefix: serializeSandboxScopedAgentApprovalTargetPrefix({
+        sandboxIdentity: getAgentApprovalConnectionSandboxIdentity(
+          "desktop-connection-1",
+        ),
+        targetPrefix: commandTargetPrefix,
+      }),
+    };
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      agent_approval_grants: [grant],
+    });
+
+    await persistAgentApprovalGrant.handler(ctx, {
+      serviceKey: "service-key",
+      chatId: "chat-1",
+      userId: "user-1",
+      grant: desktopGrant,
+    });
+
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      agent_approval_grants: [grant, desktopGrant],
+    });
+  });
+
+  it("rejects legacy grants without a sandbox scope", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      agent_approval_grants: [],
+    });
+
+    await persistAgentApprovalGrant.handler(ctx, {
+      serviceKey: "service-key",
+      chatId: "chat-1",
+      userId: "user-1",
+      grant: { ...grant, targetPrefix: commandTargetPrefix },
+    });
+
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("keeps only the 100 most recent grants", async () => {

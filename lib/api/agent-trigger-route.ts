@@ -51,7 +51,13 @@ import {
   stripLocalDesktopSourcePaths,
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
-import { AGENT_APPROVAL_TOKEN_EXPIRATION } from "@/lib/api/agent-approval-session";
+import {
+  AGENT_APPROVAL_PROTOCOL_VERSION,
+  AGENT_APPROVAL_TOKEN_EXPIRATION,
+  cancelAgentTriggerRun,
+  closeAgentApprovalSession,
+  setTemporaryAgentApprovalRefreshCookie,
+} from "@/lib/api/agent-approval-session";
 
 const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
   {
@@ -182,18 +188,116 @@ const buildAgentRunIdempotencyKey = async (
   keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>,
 ) => idempotencyKeys.create(keyParts, { scope: "global" });
 
-const buildAgentApprovalSessionId = ({
+export const buildAgentApprovalSessionId = ({
   chatId,
   keyParts,
+  approvalProtocolVersion,
+  approvalWorkerVersion,
 }: {
   chatId: string;
   keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>;
+  approvalProtocolVersion: number;
+  approvalWorkerVersion: string | undefined;
 }) => {
   const digest = createHash("sha256")
-    .update(keyParts.join("\0"))
+    .update(
+      [
+        `protocol:${approvalProtocolVersion}`,
+        `worker:${approvalWorkerVersion ?? "unversioned"}`,
+        ...keyParts,
+      ].join("\0"),
+    )
     .digest("base64url")
     .slice(0, 32);
-  return `agent-approval:${chatId}:${digest}`;
+  return `agent-approval:v${approvalProtocolVersion}:${chatId}:${digest}`;
+};
+
+type StartedAgentRunAccess = {
+  publicAccessToken: string;
+  approvalSessionPublicAccessToken?: string;
+};
+
+export const finalizeStartedAgentRun = async ({
+  chatId,
+  runId,
+  approvalSessionId,
+  temporary,
+}: {
+  chatId: string;
+  runId: string;
+  approvalSessionId: string | undefined;
+  temporary: boolean;
+}): Promise<StartedAgentRunAccess> => {
+  try {
+    const [publicAccessToken, approvalSessionPublicAccessToken, association] =
+      await Promise.all([
+        auth.createPublicToken({
+          scopes: { read: { runs: [runId] } },
+          // 6h is enough to cover the max task duration plus reconnect grace.
+          expirationTime: "6h",
+        }),
+        approvalSessionId
+          ? auth.createPublicToken({
+              scopes: {
+                write: { sessions: approvalSessionId },
+              } as any,
+              expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
+            })
+          : Promise.resolve(undefined),
+        temporary
+          ? Promise.resolve("updated" as const)
+          : setActiveTriggerRun({
+              chatId,
+              triggerRunId: runId,
+              approvalSessionId: approvalSessionId ?? null,
+            }),
+      ]);
+
+    if (association !== "updated") {
+      throw new ChatSDKError(
+        "not_found:chat",
+        "The chat was deleted while the Agent run was starting.",
+        { agent_run_association: association },
+      );
+    }
+
+    return {
+      publicAccessToken,
+      ...(approvalSessionPublicAccessToken
+        ? { approvalSessionPublicAccessToken }
+        : {}),
+    };
+  } catch (error) {
+    // A started run must never be returned when its chat association fails.
+    // Close both resources because Session close and run cancellation are
+    // independently idempotent and either one may already be terminal.
+    const cleanupResults = await Promise.allSettled([
+      closeAgentApprovalSession(
+        approvalSessionId,
+        "agent-run-association-failed",
+      ),
+      cancelAgentTriggerRun(runId),
+      temporary
+        ? Promise.resolve()
+        : setActiveTriggerRun({
+            chatId,
+            triggerRunId: null,
+            approvalSessionId: null,
+            expectedRunId: runId,
+            clearApprovalPending: true,
+          }),
+    ]);
+    for (const cleanupResult of cleanupResults) {
+      if (cleanupResult.status === "rejected") {
+        console.error("Failed to clean up an unreturned Agent run:", {
+          chatId,
+          runId,
+          error: cleanupResult.reason,
+        });
+      }
+    }
+    throw error;
+  }
 };
 
 export const createAgentTriggerPost =
@@ -371,6 +475,10 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
+      // Set this Vercel env var to the deployed Trigger worker version during
+      // the protocol-v2 rollout so Sessions cannot schedule an older worker.
+      const approvalWorkerVersion =
+        process.env.AGENT_APPROVAL_TRIGGER_VERSION?.trim() || undefined;
       const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
@@ -388,8 +496,23 @@ export const createAgentTriggerPost =
           ? buildAgentApprovalSessionId({
               chatId,
               keyParts: triggerDedupeKeyParts,
+              approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
+              approvalWorkerVersion,
             })
           : undefined;
+      if (
+        approvalSessionId &&
+        process.env.NODE_ENV === "production" &&
+        !approvalWorkerVersion
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Agent approval is temporarily unavailable while its worker version is being deployed.",
+        );
+      }
+      // Approval protocol rollout order is Convex -> Trigger worker -> Vercel.
+      // The v2 worker must reject unsupported approvalProtocolVersion values;
+      // old workers ignore this field, so the route that emits v2 deploys last.
       const agentPayload = {
         chatId,
         userId,
@@ -402,6 +525,7 @@ export const createAgentTriggerPost =
         sandboxPreference,
         agentPermissionMode,
         approvalSessionId,
+        approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         selectedModel: selectedModelOverride,
         userLocation,
         temporary,
@@ -427,6 +551,8 @@ export const createAgentTriggerPost =
         triggerPriority,
         triggerPayloadMessageCount: messagesForPayload.length,
         agentPermissionMode,
+        approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
+        ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
       };
       const triggerOptions = {
@@ -439,27 +565,24 @@ export const createAgentTriggerPost =
       };
 
       let runId: string;
-      let approvalSessionPublicAccessToken: string | undefined;
       if (approvalSessionId) {
+        const approvalTriggerConfig = {
+          basePayload: agentPayload,
+          tags: triggerTags,
+          ...(triggerRegion ? { region: triggerRegion } : {}),
+          ...(approvalWorkerVersion
+            ? { lockToVersion: approvalWorkerVersion }
+            : {}),
+        };
         const session = await sessions.start({
-          type: "agent-long-approval",
+          type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
           externalId: approvalSessionId,
           taskIdentifier: AGENT_TRIGGER_TASK_ID,
           tags: triggerTags,
           metadata: triggerMetadata,
-          triggerConfig: {
-            basePayload: agentPayload,
-            tags: triggerTags,
-            ...(triggerRegion ? { region: triggerRegion } : {}),
-          },
+          triggerConfig: approvalTriggerConfig,
         });
         runId = session.runId;
-        approvalSessionPublicAccessToken = await auth.createPublicToken({
-          scopes: {
-            write: { sessions: approvalSessionId },
-          } as any,
-          expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
-        });
       } else {
         const handle = await tasks.trigger<typeof agentLongTask>(
           AGENT_TRIGGER_TASK_ID,
@@ -471,24 +594,15 @@ export const createAgentTriggerPost =
 
       const triggerCompletedAt = Date.now();
 
-      // Public access token scoped to this run only — the client uses it to
-      // subscribe to the realtime stream without ever seeing TRIGGER_SECRET_KEY.
-      // Updating Convex with the active run id is independent, so overlap both
-      // network calls before returning the handle to the browser.
-      const [publicAccessToken] = await Promise.all([
-        auth.createPublicToken({
-          scopes: { read: { runs: [runId] } },
-          // 6h is enough to cover the max task duration plus reconnect grace.
-          expirationTime: "6h",
-        }),
-        temporary
-          ? Promise.resolve(null)
-          : setActiveTriggerRun({
-              chatId,
-              triggerRunId: runId,
-              approvalSessionId: approvalSessionId ?? null,
-            }),
-      ]);
+      // Access-token creation and durable association are independent, so
+      // overlap them while treating every post-start failure as terminal.
+      const { publicAccessToken, approvalSessionPublicAccessToken } =
+        await finalizeStartedAgentRun({
+          chatId,
+          runId,
+          approvalSessionId,
+          temporary: temporary === true,
+        });
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,
@@ -502,10 +616,11 @@ export const createAgentTriggerPost =
         agentPermissionMode,
       });
 
-      return NextResponse.json({
+      const response = NextResponse.json({
         runId,
         publicAccessToken,
         chatId,
+        approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalSessionId && approvalSessionPublicAccessToken
           ? {
               approvalSessionId,
@@ -513,6 +628,16 @@ export const createAgentTriggerPost =
             }
           : {}),
       });
+      if (temporary && approvalSessionId) {
+        setTemporaryAgentApprovalRefreshCookie(response, {
+          req,
+          userId,
+          chatId,
+          runId,
+          approvalSessionId,
+        });
+      }
+      return response;
     } catch (error) {
       return handleAgentRouteError({
         error,

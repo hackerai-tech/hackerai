@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
-import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
+import {
+  cancelAgentTriggerRun,
+  clearTemporaryAgentApprovalRefreshCookie,
+  closeAgentApprovalSession,
+  getTemporaryAgentApprovalRefreshHandle,
+} from "@/lib/api/agent-approval-session";
 
 export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
@@ -25,12 +29,21 @@ export const createAgentCancelPost =
       const { userId } = await getUserIDAndPro(req);
 
       const chat = await getChatById({ id: chatId });
-      if (!chat || chat.user_id !== userId) {
+      if (chat && chat.user_id !== userId) {
         return new NextResponse("Forbidden", { status: 403 });
       }
 
-      const approvalSessionId = chat.active_agent_approval_session_id;
-      const runId = chat.active_trigger_run_id;
+      const temporaryRefresh = chat
+        ? null
+        : getTemporaryAgentApprovalRefreshHandle({ req, userId, chatId });
+      if (!chat && !temporaryRefresh) {
+        return new NextResponse("Forbidden", { status: 403 });
+      }
+
+      const approvalSessionId = chat
+        ? chat.active_agent_approval_session_id
+        : temporaryRefresh?.approvalSessionId;
+      const runId = chat ? chat.active_trigger_run_id : temporaryRefresh?.runId;
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
         if (approvalSessionId) {
@@ -46,25 +59,29 @@ export const createAgentCancelPost =
         return NextResponse.json({ canceled: false, reason: "no_active_run" });
       }
 
-      // Best-effort cancel — the run may have already failed/completed.
-      // Either way we want to clear the stored id so the UI unblocks.
-      try {
-        await runs.cancel(runId);
-      } catch {
-        // Ignore: run is already in a terminal state.
+      await cancelAgentTriggerRun(runId);
+      if (chat) {
+        await setActiveTriggerRun({
+          chatId,
+          triggerRunId: null,
+          approvalSessionId: null,
+          expectedRunId: runId,
+          ...(approvalSessionId
+            ? { expectedApprovalSessionId: approvalSessionId }
+            : {}),
+          clearApprovalPending: true,
+        });
       }
-      await setActiveTriggerRun({
-        chatId,
-        triggerRunId: null,
-        approvalSessionId: null,
-        expectedRunId: runId,
-        ...(approvalSessionId
-          ? { expectedApprovalSessionId: approvalSessionId }
-          : {}),
-        clearApprovalPending: true,
-      });
 
-      return NextResponse.json({ canceled: true, runId });
+      const response = NextResponse.json({ canceled: true, runId });
+      if (temporaryRefresh) {
+        clearTemporaryAgentApprovalRefreshCookie(response, {
+          req,
+          userId,
+          chatId,
+        });
+      }
+      return response;
     } catch (error) {
       return handleAgentRouteError({
         error,

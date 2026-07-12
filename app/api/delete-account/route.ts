@@ -7,6 +7,8 @@ import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
+import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -177,6 +179,22 @@ export const POST = async (req: NextRequest) => {
     const serviceKey = getConvexServiceKey();
     stage = "mark_account_identity_deleted";
     await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
+
+    stage = "fence_active_agent_resources";
+    const activeAgentResources = await fenceAndGetActiveAgentResourcesForUser({
+      userId,
+    });
+    if (activeAgentResources.hasMore) {
+      throw new Error(
+        "Too many active agent resources to delete safely. Please stop active Agent runs and retry.",
+      );
+    }
+
+    stage = "close_active_agent_resources";
+    await closeAndCancelAgentResources(
+      activeAgentResources.resources,
+      "account-deleted",
+    );
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
