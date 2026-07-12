@@ -95,6 +95,7 @@ import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
   createChatLogger,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
@@ -592,7 +593,8 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
 
 const getTerminalProviderStreamError = (
   state:
-    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.streamFinishReason !== "error") return undefined;
@@ -609,7 +611,8 @@ const getTerminalProviderStreamError = (
 
 const isTerminalProviderStreamError = (
   state:
-    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
+    | Pick<AgentStreamState, "streamFinishReason" | "providerError">
+    | undefined,
 ): boolean => state?.streamFinishReason === "error";
 
 type RecordedAgentLongFailure = {
@@ -1546,7 +1549,8 @@ export const agentLongTask = task({
             const usageSettlementState =
               subscription === "free"
                 ? null
-                : createUsageSettlementState(rateLimitInfo, extraUsageConfig);
+                : createUsageSettlementState(rateLimitInfo);
+            let usageSettlementSequence = 0;
 
             const deductAccumulatedUsage = async () => {
               try {
@@ -1674,7 +1678,7 @@ export const agentLongTask = task({
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force }) => {
+              async ({ currentCostDollars, force, model }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1691,6 +1695,7 @@ export const agentLongTask = task({
                   currentCostDollars,
                 );
                 if (additionalCostPoints <= 0) return;
+                usageSettlementSequence += 1;
 
                 let deductionResult: Awaited<
                   ReturnType<typeof deductUsageDelta>
@@ -1718,8 +1723,8 @@ export const agentLongTask = task({
                     usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
-                    error:
-                      error instanceof Error ? error.message : String(error),
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
                   });
                   deductionResult = {
                     includedPointsDeducted: 0,
@@ -1729,6 +1734,24 @@ export const agentLongTask = task({
                     usageDeductionFailureReason: "deduction_failed",
                   };
                 }
+
+                captureUsageSettlement({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  model,
+                  requestId: ctx.run.id,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  settlementSequence: usageSettlementSequence,
+                  currentCostDollars,
+                  requestedDeltaPoints: additionalCostPoints,
+                  deduction: deductionResult,
+                  forced: force,
+                });
 
                 usageRefundTracker.addDeductions(deductionResult);
                 const cumulativeDeduction = addUsageDeductionDelta(

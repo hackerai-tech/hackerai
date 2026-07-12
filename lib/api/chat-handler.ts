@@ -69,6 +69,7 @@ import {
   captureAgentCompletionAnalytics,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
   createChatLogger,
   shutdownPostHog,
   type ChatLogger,
@@ -194,7 +195,8 @@ export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
     let preemptiveTimeout:
-      ReturnType<typeof createPreemptiveTimeout> | undefined;
+      | ReturnType<typeof createPreemptiveTimeout>
+      | undefined;
 
     // Track usage deductions for refund on error
     const usageRefundTracker = new UsageRefundTracker();
@@ -425,7 +427,8 @@ export const createChatHandler = () => {
       chatLogger.setChat(chatLogContext, selectedModel);
 
       let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
+        | PaidDailyFreeAllowanceReservation
+        | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -868,7 +871,8 @@ export const createChatHandler = () => {
             const usageSettlementState =
               subscription === "free" || paidDailyFreeAllowanceReservation
                 ? null
-                : createUsageSettlementState(rateLimitInfo, extraUsageConfig);
+                : createUsageSettlementState(rateLimitInfo);
+            let usageSettlementSequence = 0;
 
             const deductAccumulatedUsage = async () => {
               try {
@@ -1081,7 +1085,7 @@ export const createChatHandler = () => {
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
-              async ({ currentCostDollars, force }) => {
+              async ({ currentCostDollars, force, model }) => {
                 if (!usageSettlementState || hasRecordedUsage) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1098,6 +1102,7 @@ export const createChatHandler = () => {
                   currentCostDollars,
                 );
                 if (additionalCostPoints <= 0) return;
+                usageSettlementSequence += 1;
 
                 let deductionResult: Awaited<
                   ReturnType<typeof deductUsageDelta>
@@ -1125,8 +1130,8 @@ export const createChatHandler = () => {
                     usage_settlement_id: usageTracker.usageSettlementId,
                     current_cost_dollars: currentCostDollars,
                     force,
-                    error:
-                      error instanceof Error ? error.message : String(error),
+                    error_name:
+                      error instanceof Error ? error.name : "UnknownError",
                   });
                   deductionResult = {
                     includedPointsDeducted: 0,
@@ -1136,6 +1141,24 @@ export const createChatHandler = () => {
                     usageDeductionFailureReason: "deduction_failed",
                   };
                 }
+
+                captureUsageSettlement({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  model,
+                  requestId: req.headers.get("x-vercel-id") ?? undefined,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  settlementSequence: usageSettlementSequence,
+                  currentCostDollars,
+                  requestedDeltaPoints: additionalCostPoints,
+                  deduction: deductionResult,
+                  forced: force,
+                });
 
                 usageRefundTracker.addDeductions(deductionResult);
                 const cumulativeDeduction = addUsageDeductionDelta(
