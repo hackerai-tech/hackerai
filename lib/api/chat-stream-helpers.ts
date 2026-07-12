@@ -549,7 +549,7 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "agent-model-free": MINIMAX_M3_FALLBACK_CHAIN,
+  "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
   "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
@@ -663,6 +663,7 @@ export function getRetryFallbackModel(
 ): ModelName {
   if (
     modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro" ||
     modelName === "model-grok-4.3" ||
