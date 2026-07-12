@@ -71,6 +71,7 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
+    modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-pro" ||
     modelName === "model-deepseek-v4-flash",
 }));
@@ -165,6 +166,12 @@ describe("resolveAgentModelForImageToolResults", () => {
         true,
       ),
     ).toBe("model-kimi-k2.7-code");
+  });
+
+  it("switches free DeepSeek Agent steps to MiniMax after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
+    ).toBe("model-minimax-m3");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {

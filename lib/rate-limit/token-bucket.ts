@@ -32,6 +32,8 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-grok-4.3": { input: 1.25, output: 2.5 },
   "model-gemini-3-flash": { input: 1.25, output: 2.5 },
+  // Rates from OpenRouter: $0.09 in / $0.18 out per 1M tokens.
+  "agent-model-free": { input: 0.09, output: 0.18 },
   "model-deepseek-v4-pro": { input: 0.435, output: 0.87 },
   "fallback-grok-4.3": { input: 1.25, output: 2.5 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
@@ -41,7 +43,6 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   // Rates from OpenRouter: $0.30 in / $1.20 out per 1M tokens.
   "ask-model": { input: 0.3, output: 1.2 },
   "agent-model": { input: 0.3, output: 1.2 },
-  "agent-model-free": { input: 0.3, output: 1.2 },
   "model-minimax-m3": { input: 0.3, output: 1.2 },
   // Kimi keys are retained as compatibility aliases for stale persisted routes.
   // Rates from OpenRouter: $0.95 in / $4.00 out per 1M tokens.
