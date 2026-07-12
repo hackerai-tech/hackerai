@@ -29,11 +29,13 @@ export const useReasoning = () => {
 
 export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean;
+  collapseWhenInactive?: boolean;
 };
 
 export function Reasoning({
   className,
   isStreaming = false,
+  collapseWhenInactive = true,
   open,
   defaultOpen = false,
   onOpenChange,
@@ -47,8 +49,12 @@ export function Reasoning({
   });
 
   useEffect(() => {
-    setIsOpen(isStreaming);
-  }, [isStreaming, setIsOpen]);
+    if (isStreaming) {
+      setIsOpen(true);
+    } else if (collapseWhenInactive) {
+      setIsOpen(false);
+    }
+  }, [collapseWhenInactive, isStreaming, setIsOpen]);
 
   const contextValue = useMemo(
     () => ({ isOpen: !!isOpen, setIsOpen, isStreaming }),

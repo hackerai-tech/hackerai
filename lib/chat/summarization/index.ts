@@ -18,7 +18,7 @@ import {
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 import {
-  GROK_4_3_SLUG,
+  GROK_4_5_SLUG,
   KIMI_K2_7_CODE_SLUG,
   myProvider,
 } from "@/lib/ai/providers";
@@ -63,7 +63,7 @@ const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
 };
 const SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS = [
   KIMI_K2_7_CODE_SLUG,
-  GROK_4_3_SLUG,
+  GROK_4_5_SLUG,
 ] as const;
 const SUMMARIZATION_ATTEMPT_ERROR_KEY = "__hackeraiSummarizationAttempt";
 

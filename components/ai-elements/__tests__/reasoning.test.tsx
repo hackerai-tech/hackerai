@@ -49,4 +49,27 @@ describe("Reasoning", () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  it("can defer content collapse to a parent work panel", async () => {
+    const { rerender } = render(
+      <Reasoning isStreaming collapseWhenInactive={false}>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Visible reasoning text")).toBeVisible();
+    });
+
+    rerender(
+      <Reasoning isStreaming={false} collapseWhenInactive={false}>
+        <ReasoningTrigger />
+        <ReasoningContent>Visible reasoning text</ReasoningContent>
+      </Reasoning>,
+    );
+
+    expect(screen.getByText("Reasoning")).toBeInTheDocument();
+    expect(screen.getByText("Visible reasoning text")).toBeVisible();
+  });
 });

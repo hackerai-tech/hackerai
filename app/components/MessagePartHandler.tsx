@@ -21,6 +21,8 @@ interface MessagePartHandlerProps {
   partIndex: number;
   status: ChatStatus;
   isLastMessage?: boolean;
+  keepLatestReasoningOpenDuringStreaming?: boolean;
+  deferReasoningCollapseUntilParent?: boolean;
   /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
   terminalOutputByToolCallId?: Map<string, string>;
   /** File details from get_terminal_files tool (streamed progressively) */
@@ -71,6 +73,16 @@ function arePropsEqual(
 
   // Always re-render if isLastMessage changes
   if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
+  if (
+    prevProps.keepLatestReasoningOpenDuringStreaming !==
+    nextProps.keepLatestReasoningOpenDuringStreaming
+  )
+    return false;
+  if (
+    prevProps.deferReasoningCollapseUntilParent !==
+    nextProps.deferReasoningCollapseUntilParent
+  )
+    return false;
 
   // Shared file details change for get_terminal_files during streaming
   // Must be checked before the part reference check below, because the part
@@ -130,6 +142,8 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   partIndex,
   status,
   isLastMessage,
+  keepLatestReasoningOpenDuringStreaming,
+  deferReasoningCollapseUntilParent,
   terminalOutputByToolCallId,
   sharedFileDetails,
 }: MessagePartHandlerProps) {
@@ -155,6 +169,8 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           partIndex={partIndex}
           status={status}
           isLastMessage={isLastMessage}
+          keepLatestOpenDuringStreaming={keepLatestReasoningOpenDuringStreaming}
+          deferCollapseUntilParent={deferReasoningCollapseUntilParent}
         />
       );
 

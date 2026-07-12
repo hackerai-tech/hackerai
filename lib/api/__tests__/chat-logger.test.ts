@@ -649,7 +649,7 @@ describe("createChatLogger provider stream termination", () => {
         active_tools_mode: "all",
         reasoning_enabled: true,
         fallback_model_count: 1,
-        fallback_model_slugs: ["x-ai/grok-4.3"],
+        fallback_model_slugs: ["x-ai/grok-4.5"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };

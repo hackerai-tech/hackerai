@@ -23,7 +23,7 @@ jest.mock("@/lib/logger", () => ({
 
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
-const GROK_SLUG = "x-ai/grok-4.3";
+const GROK_SLUG = "x-ai/grok-4.5";
 const MINIMAX_SLUG = "minimax/minimax-m3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 const GLM_SLUG = "z-ai/glm-5.2";
@@ -226,7 +226,7 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it("falls back from paid Ask PDF Grok route through MiniMax, Kimi, then Grok", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-grok-4.3", "ask");
+    const opts = buildProviderOptions(false, "user-1", "model-grok-4.5", "ask");
     expect(opts.openrouter).toMatchObject({
       models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
@@ -312,7 +312,7 @@ describe("buildProviderOptions fallback chain", () => {
     "model-deepseek-v4-pro",
     "ask-model",
     "model-minimax-m3",
-    "model-grok-4.3",
+    "model-grok-4.5",
     "model-gemini-3-flash",
   ])("enables medium reasoning for ask mode model %s", (modelName) => {
     const opts = buildProviderOptions(false, "user-1", modelName, "ask");
@@ -455,12 +455,12 @@ describe("getRetryFallbackModel", () => {
   });
 
   it("keeps paid Ask image MiniMax app-side retry on the terminal Grok fallback", () => {
-    expect(getRetryFallbackModel("ask-model", "ask")).toBe("fallback-grok-4.3");
+    expect(getRetryFallbackModel("ask-model", "ask")).toBe("fallback-grok-4.5");
   });
 
   it.each([
     ["model-deepseek-v4-pro", "ask"],
-    ["model-grok-4.3", "ask"],
+    ["model-grok-4.5", "ask"],
     ["model-gemini-3-flash", "ask"],
   ] as const)(
     "uses the paid Agent fallback chain for app-side retry after paid Ask route %s fails",
@@ -508,7 +508,17 @@ describe("resolveServedModelForCostAccounting", () => {
         responseModel: GROK_SLUG,
         mode: "agent",
       }),
-    ).toBe("fallback-grok-4.3");
+    ).toBe("fallback-grok-4.5");
+  });
+
+  it("maps a direct Grok provider slug back to the Grok 4.5 cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-does-not-exist",
+        responseModel: GROK_SLUG,
+        mode: "ask",
+      }),
+    ).toBe("model-grok-4.5");
   });
 
   it("maps dated Opus provider response slugs back to the local cost key", () => {

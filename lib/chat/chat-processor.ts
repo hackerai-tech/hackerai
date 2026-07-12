@@ -46,7 +46,7 @@ export const getMaxStepsForUser = (
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
- *   stay on Grok 4.3 for native document support. Paid Agent Auto/Standard
+ *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
  *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
  *   provider-visible media is attached. HackerAI Pro uses GLM 5.2 for
  *   text-only prompts and Kimi K2.7 Code for media prompts.
@@ -75,7 +75,7 @@ export function selectModel(
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
   const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
   const paidAskMediaModel: ModelName = hasAskPdf
-    ? "model-grok-4.3"
+    ? "model-grok-4.5"
     : hasAskImage
       ? "ask-model"
       : "model-deepseek-v4-pro";
@@ -108,7 +108,7 @@ export function selectModel(
       return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
     }
     return hasAskPdf
-      ? "model-grok-4.3"
+      ? "model-grok-4.5"
       : hasAskImage
         ? "model-minimax-m3"
         : "model-deepseek-v4-pro";

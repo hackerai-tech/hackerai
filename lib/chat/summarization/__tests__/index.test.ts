@@ -39,7 +39,7 @@ jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
-  GROK_4_3_SLUG: "x-ai/grok-4.3",
+  GROK_4_5_SLUG: "x-ai/grok-4.5",
   KIMI_K2_7_CODE_SLUG: "moonshotai/kimi-k2.7-code:exacto",
   myProvider: {
     languageModel: mockProviderLanguageModel,
@@ -842,8 +842,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     const saveSummaryCall =
       mockSaveChatSummary.mock.calls[mockSaveChatSummary.mock.calls.length - 1];
     const persistedMetadata = saveSummaryCall?.[0].metadata as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(persistedMetadata?.inputTokens).toBeUndefined();
     expect(persistedMetadata?.outputTokens).toBeUndefined();
     expect(persistedMetadata?.cacheReadTokens).toBeUndefined();
@@ -968,7 +967,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       openrouter: {
         user: "user_123",
         reasoning: { enabled: false },
-        models: ["moonshotai/kimi-k2.7-code:exacto", "x-ai/grok-4.3"],
+        models: ["moonshotai/kimi-k2.7-code:exacto", "x-ai/grok-4.5"],
       },
     });
 

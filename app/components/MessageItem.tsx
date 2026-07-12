@@ -245,6 +245,8 @@ export const MessageItem = memo(function MessageItem({
       : undefined;
   const shouldShowWorkingTimer = isStreamingThisMessage;
   const shouldUseWorkedFor = message.metadata?.mode === "agent";
+  const deferReasoningCollapseUntilWorkedFor =
+    shouldUseWorkedFor && workParts.length > 0 && trailingTextParts.length > 0;
 
   // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
   const terminalOutputByToolCallId = useMemo(() => {
@@ -286,6 +288,8 @@ export const MessageItem = memo(function MessageItem({
       partIndex={partIndex}
       status={effectiveStatus}
       isLastMessage={isLastMessage}
+      keepLatestReasoningOpenDuringStreaming={shouldUseWorkedFor}
+      deferReasoningCollapseUntilParent={deferReasoningCollapseUntilWorkedFor}
       terminalOutputByToolCallId={terminalOutputByToolCallId}
       sharedFileDetails={effectiveFileDetails}
     />
