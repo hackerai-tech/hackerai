@@ -106,17 +106,19 @@ import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 const AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+const FREE_AGENT_VISION_MODEL = "model-minimax-m3";
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
   mode: ChatMode,
   hasImageToolResults: boolean,
-): string =>
-  mode === "agent" &&
-  hasImageToolResults &&
-  (modelName === "model-glm-5.2" || isDeepSeekModel(modelName))
+): string => {
+  if (mode !== "agent" || !hasImageToolResults) return modelName;
+  if (modelName === "agent-model-free") return FREE_AGENT_VISION_MODEL;
+  return modelName === "model-glm-5.2" || isDeepSeekModel(modelName)
     ? AGENT_VISION_MODEL
     : modelName;
+};
 
 export type RollingModelContextCheckpoint = {
   /** Latest compacted provider context, excluding later raw SDK responses. */

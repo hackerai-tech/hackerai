@@ -27,6 +27,7 @@ const GROK_SLUG = "x-ai/grok-4.5";
 const MINIMAX_SLUG = "minimax/minimax-m3";
 const KIMI_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 const GLM_SLUG = "z-ai/glm-5.2";
+const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash";
 
 describe("buildProviderOptions fallback chain", () => {
   it("resolves Opus 4.6 ask chain to Grok", () => {
@@ -189,15 +190,16 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("falls back from free Agent MiniMax to Kimi then Grok", () => {
+  it("runs free Agent on DeepSeek Flash max and falls back through MiniMax, Kimi, then Grok", () => {
     const opts = buildProviderOptions(
-      false,
+      true,
       "user-1",
       "agent-model-free",
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      models: [KIMI_SLUG, GROK_SLUG],
+      reasoning: { enabled: true, effort: "xhigh" },
+      models: [MINIMAX_SLUG, KIMI_SLUG, GROK_SLUG],
       user: "user-1",
     });
   });
@@ -446,9 +448,9 @@ describe("getRetryFallbackModel", () => {
     },
   );
 
-  it("keeps free Agent MiniMax app-side retry on the terminal Grok fallback", () => {
+  it("retries free Agent DeepSeek Flash with MiniMax", () => {
     expect(getRetryFallbackModel("agent-model-free", "agent")).toBe(
-      "fallback-grok-4.5",
+      "model-minimax-m3",
     );
   });
 
@@ -469,6 +471,26 @@ describe("getRetryFallbackModel", () => {
 });
 
 describe("resolveServedModelForCostAccounting", () => {
+  it("maps the primary free Agent DeepSeek slug back to its local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: DEEPSEEK_FLASH_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("agent-model-free");
+  });
+
+  it("maps a MiniMax slug served from free Agent fallback back to the local cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "agent-model-free",
+        responseModel: MINIMAX_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-minimax-m3");
+  });
+
   it("maps a Kimi provider slug served from free Agent fallback back to the local cost key", () => {
     expect(
       resolveServedModelForCostAccounting({

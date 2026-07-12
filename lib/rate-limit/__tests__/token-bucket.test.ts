@@ -433,14 +433,21 @@ describe("token-bucket", () => {
       );
     });
 
-    it.each([
-      "ask-model",
-      "agent-model",
-      "agent-model-free",
-      "model-minimax-m3",
-    ])("should use MiniMax M3 pricing for %s ($0.30/$1.20)", (modelName) => {
-      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4200);
-      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(16800);
+    it.each(["ask-model", "agent-model", "model-minimax-m3"])(
+      "should use MiniMax M3 pricing for %s ($0.30/$1.20)",
+      (modelName) => {
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4200);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(16800);
+      },
+    );
+
+    it("should use DeepSeek V4 Flash pricing for free Agent ($0.09/$0.18)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "agent-model-free")).toBe(
+        1260,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "agent-model-free")).toBe(
+        2520,
+      );
     });
 
     it.each(["model-grok-4.5", "model-gemini-3-flash", "fallback-grok-4.5"])(

@@ -6,7 +6,7 @@ import {
 } from "@/lib/ai/providers";
 
 describe("provider registry", () => {
-  it("keeps paid Ask image, Agent Standard, and stale Kimi compatibility keys pointed at their active slugs", () => {
+  it("keeps active routes and stale compatibility keys pointed at their provider slugs", () => {
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
     ).toBe("minimax/minimax-m3");
@@ -16,7 +16,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("minimax/minimax-m3");
+    ).toBe("deepseek/deepseek-v4-flash");
     expect(
       (myProvider.languageModel("model-minimax-m3") as { modelId: string })
         .modelId,
@@ -195,7 +195,6 @@ describe("sanitizeOpenRouterRequestForXai", () => {
 describe("supportsMultimodalToolResults", () => {
   it("allows MiniMax and Kimi registry keys and OpenRouter slugs for image tool result experiments", () => {
     expect(supportsMultimodalToolResults("agent-model")).toBe(true);
-    expect(supportsMultimodalToolResults("agent-model-free")).toBe(true);
     expect(supportsMultimodalToolResults("ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("model-minimax-m3")).toBe(true);
     expect(supportsMultimodalToolResults("minimax/minimax-m3")).toBe(true);
@@ -213,6 +212,7 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("still rejects text-only DeepSeek model keys", () => {
+    expect(supportsMultimodalToolResults("agent-model-free")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-flash")).toBe(
       false,
     );

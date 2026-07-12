@@ -181,19 +181,20 @@ export const KIMI_K2_7_CODE_SLUG = "moonshotai/kimi-k2.7-code:exacto";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
+export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash";
 
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or(MINIMAX_M3_SLUG),
-    "ask-model-free": or("deepseek/deepseek-v4-flash"),
+    "ask-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "agent-model": or(MINIMAX_M3_SLUG),
-    "agent-model-free": or(MINIMAX_M3_SLUG),
+    "agent-model-free": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.5": or(GROK_4_5_SLUG),
     // Compatibility alias for stale internal references persisted before the
     // paid Ask PDF route settled on Grok 4.5.
     "model-gemini-3-flash": or(GROK_4_5_SLUG),
-    "model-deepseek-v4-flash": or("deepseek/deepseek-v4-flash"),
+    "model-deepseek-v4-flash": or(DEEPSEEK_V4_FLASH_SLUG),
     "model-deepseek-v4-pro": or("deepseek/deepseek-v4-pro"),
     "model-opus-4.6": or("anthropic/claude-opus-4.6"),
     "model-glm-5.2": or(GLM_5_2_SLUG),
@@ -217,7 +218,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "ask-model": "May 2026",
   "ask-model-free": "May 2025",
   "agent-model": "May 2026",
-  "agent-model-free": "May 2026",
+  "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.5": "July 2026",
   "model-gemini-3-flash": "July 2026",
@@ -271,6 +272,7 @@ export function isAnthropicModel(modelName: string): boolean {
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash" ||
     modelName === "model-deepseek-v4-pro"
   );
@@ -290,7 +292,6 @@ export function isMiniMaxModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
     normalized === "agent-model" ||
-    normalized === "agent-model-free" ||
     normalized === "ask-model" ||
     normalized === "model-minimax-m3" ||
     normalized.includes("minimax/minimax-m3")
