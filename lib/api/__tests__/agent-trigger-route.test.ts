@@ -54,6 +54,7 @@ const {
   buildAgentApprovalSessionId,
   buildAgentRunDedupeKeyParts,
   finalizeStartedAgentRun,
+  resolveAgentApprovalWorkerVersion,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
 
@@ -184,6 +185,21 @@ describe("Agent trigger route lifecycle", () => {
       }),
     ).not.toBe(v2WorkerA);
     expect(v2WorkerA).toMatch(/^agent-approval:v2:chat-1:/);
+  });
+
+  it("uses the existing Trigger worker version when no approval override exists", () => {
+    expect(
+      resolveAgentApprovalWorkerVersion({
+        AGENT_APPROVAL_TRIGGER_VERSION: undefined,
+        TRIGGER_VERSION: " 20260712.5 ",
+      }),
+    ).toBe("20260712.5");
+    expect(
+      resolveAgentApprovalWorkerVersion({
+        AGENT_APPROVAL_TRIGGER_VERSION: "20260712.7",
+        TRIGGER_VERSION: "20260712.5",
+      }),
+    ).toBe("20260712.7");
   });
 
   it("uses a new Session identity for each regeneration attempt", () => {

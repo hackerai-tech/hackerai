@@ -871,6 +871,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/triggerPriority/);
     expect(routeSrc).toMatch(/triggerConfig:\s*approvalTriggerConfig/);
     expect(routeSrc).toMatch(/AGENT_APPROVAL_TRIGGER_VERSION/);
+    expect(routeSrc).toMatch(/TRIGGER_VERSION/);
     expect(routeSrc).toMatch(/lockToVersion:\s*approvalWorkerVersion/);
     expect(routeSrc).toMatch(
       /process\.env\.NODE_ENV === "production"[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
