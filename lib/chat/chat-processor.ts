@@ -46,9 +46,10 @@ export const getMaxStepsForUser = (
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
  *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
- *   stay on Grok 4.3 for native document support. HackerAI Pro uses GLM 5.2
- *   for text-only prompts and Kimi K2.7 Code when provider-visible media is
- *   attached.
+ *   stay on Grok 4.3 for native document support. Paid Agent Auto/Standard
+ *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
+ *   provider-visible media is attached. HackerAI Pro uses GLM 5.2 for
+ *   text-only prompts and Kimi K2.7 Code for media prompts.
  * @returns Model name to use
  */
 export function selectModel(
@@ -65,14 +66,14 @@ export function selectModel(
     subscription,
     options,
   );
-  // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
+  // DeepSeek routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
   // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
   // when mixed with images because the MiniMax ask route is image-scoped.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const hasProProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
+  const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
   const paidAskMediaModel: ModelName = hasAskPdf
     ? "model-grok-4.3"
     : hasAskImage
@@ -82,7 +83,9 @@ export function selectModel(
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
-      : "agent-model"
+      : hasProviderMedia
+        ? "agent-model"
+        : "model-deepseek-v4-pro"
     : isFreeAsk
       ? "ask-model-free"
       : paidAskMediaModel;
@@ -97,10 +100,13 @@ export function selectModel(
     return autoModel;
   }
 
-  // Paid ASK Standard mirrors the auto-route split, but uses explicit keys so
+  // Paid Standard mirrors each mode's Auto split, but uses explicit keys so
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
-  if (allowedSelectedModel === "hackerai-standard" && !isAgent) {
+  if (allowedSelectedModel === "hackerai-standard") {
+    if (isAgent) {
+      return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
+    }
     return hasAskPdf
       ? "model-grok-4.3"
       : hasAskImage
@@ -109,7 +115,7 @@ export function selectModel(
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return hasProProviderMedia ? "model-kimi-k2.7-code" : "model-glm-5.2";
+    return hasProviderMedia ? "model-kimi-k2.7-code" : "model-glm-5.2";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);

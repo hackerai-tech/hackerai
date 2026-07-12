@@ -31,12 +31,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to different providers per mode", () => {
+  it("HackerAI Standard resolves to DeepSeek in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
       "model-deepseek-v4-pro",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-minimax-m3",
+      "model-deepseek-v4-pro",
     );
   });
 
@@ -70,5 +70,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
       expect(option.description).toBeTruthy();
       expect(option.poweredBy).toBeTruthy();
     }
+  });
+
+  it("discloses the text and media providers for Agent Standard", () => {
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
+        ?.poweredBy,
+    ).toBe("DeepSeek V4 Pro · MiniMax M3 for images and PDFs");
   });
 });

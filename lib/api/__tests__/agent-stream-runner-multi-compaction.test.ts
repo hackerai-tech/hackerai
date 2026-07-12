@@ -70,6 +70,9 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 }));
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
+  isDeepSeekModel: (modelName: string) =>
+    modelName === "model-deepseek-v4-pro" ||
+    modelName === "model-deepseek-v4-flash",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
   ptySessionManager: { closeAllSessions: jest.fn() },
@@ -91,6 +94,7 @@ jest.mock("@/lib/utils/error-utils", () => ({
 const {
   createAgentStream,
   initAgentStreamState,
+  resolveAgentModelForImageToolResults,
 }: typeof import("@/lib/api/agent-stream-runner") = require("@/lib/api/agent-stream-runner");
 
 const uiMessage = (id: string, text: string): UIMessage => ({
@@ -140,6 +144,41 @@ const createTestStreamContext = (
   usageRefundTracker: {},
   getHardTimeoutReason: () => null,
   ...overrides,
+});
+
+describe("resolveAgentModelForImageToolResults", () => {
+  it("keeps DeepSeek for text-only Agent steps", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro",
+        "agent",
+        false,
+      ),
+    ).toBe("model-deepseek-v4-pro");
+  });
+
+  it("switches DeepSeek Agent steps to Kimi after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro",
+        "agent",
+        true,
+      ),
+    ).toBe("model-kimi-k2.7-code");
+  });
+
+  it("does not change Ask routes or multimodal Agent models", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-deepseek-v4-pro",
+        "ask",
+        true,
+      ),
+    ).toBe("model-deepseek-v4-pro");
+    expect(
+      resolveAgentModelForImageToolResults("model-minimax-m3", "agent", true),
+    ).toBe("model-minimax-m3");
+  });
 });
 
 describe("createAgentStream repeated compaction", () => {

@@ -155,10 +155,40 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "routes paid %s Auto/Standard text to DeepSeek V4 Pro in both modes",
+    (subscription) => {
+      for (const mode of ["ask", "agent"] as const) {
+        for (const selectedModel of ["auto", "hackerai-standard"] as const) {
+          expect(selectModel(mode, subscription, selectedModel)).toBe(
+            "model-deepseek-v4-pro",
+          );
+        }
+      }
+    },
+  );
+
   // Default model selection by mode
   describe("default models (no override)", () => {
-    it("should return agent-model for agent mode", () => {
-      expect(selectModel("agent", "pro")).toBe("agent-model");
+    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+      "should return DeepSeek V4 Pro for paid agent text on %s",
+      (subscription) => {
+        expect(selectModel("agent", subscription)).toBe(
+          "model-deepseek-v4-pro",
+        );
+      },
+    );
+
+    it("should return agent-model (MiniMax) for paid agent with an image", () => {
+      expect(selectModel("agent", "pro", undefined, true, false)).toBe(
+        "agent-model",
+      );
+    });
+
+    it("should return agent-model (MiniMax) for paid agent with a PDF", () => {
+      expect(selectModel("agent", "pro", undefined, false, true)).toBe(
+        "agent-model",
+      );
     });
 
     it("should return DeepSeek V4 Pro for paid ask with no image/PDF", () => {
@@ -265,15 +295,27 @@ describe("selectModel", () => {
     });
   });
 
-  // Agent mode — Standard resolves to MiniMax.
+  // Agent mode — Auto/Standard use DeepSeek for text and media-capable routes otherwise.
   describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to MiniMax M3 in agent mode", () => {
+    it("should map HackerAI Standard to DeepSeek V4 Pro for text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
-        "model-minimax-m3",
+        "model-deepseek-v4-pro",
       );
     });
 
-    it("should map HackerAI Pro to GLM 5.2 in text-only agent mode", () => {
+    it("should route HackerAI Standard to MiniMax M3 when an image is attached", () => {
+      expect(
+        selectModel("agent", "pro", "hackerai-standard", true, false),
+      ).toBe("model-minimax-m3");
+    });
+
+    it("should route HackerAI Standard to MiniMax M3 when a PDF is attached", () => {
+      expect(
+        selectModel("agent", "pro", "hackerai-standard", false, true),
+      ).toBe("model-minimax-m3");
+    });
+
+    it("should keep HackerAI Pro on GLM 5.2 in text-only agent mode", () => {
       expect(selectModel("agent", "pro", "hackerai-pro")).toBe("model-glm-5.2");
     });
 
@@ -313,9 +355,9 @@ describe("selectModel", () => {
       ).toBe("model-opus-4.6");
     });
 
-    it("should default to agent-model when no model selected", () => {
-      expect(selectModel("agent", "pro")).toBe("agent-model");
-      expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
+    it("should default to DeepSeek V4 Pro when no model is selected", () => {
+      expect(selectModel("agent", "pro")).toBe("model-deepseek-v4-pro");
+      expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
     });
   });
 
@@ -340,8 +382,17 @@ describe("selectModel", () => {
 
   // "auto" override
   describe("auto override", () => {
-    it("should treat 'auto' as no override in agent mode", () => {
-      expect(selectModel("agent", "pro", "auto")).toBe("agent-model");
+    it("should route paid agent Auto text to DeepSeek V4 Pro", () => {
+      expect(selectModel("agent", "pro", "auto")).toBe("model-deepseek-v4-pro");
+    });
+
+    it("should route paid agent Auto media to agent-model (MiniMax)", () => {
+      expect(selectModel("agent", "pro", "auto", true, false)).toBe(
+        "agent-model",
+      );
+      expect(selectModel("agent", "pro", "auto", false, true)).toBe(
+        "agent-model",
+      );
     });
 
     it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek Pro)", () => {
@@ -362,7 +413,9 @@ describe("selectModel", () => {
   // Undefined override
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
-      expect(selectModel("agent", "pro", undefined)).toBe("agent-model");
+      expect(selectModel("agent", "pro", undefined)).toBe(
+        "model-deepseek-v4-pro",
+      );
       expect(selectModel("ask", "pro", undefined)).toBe(
         "model-deepseek-v4-pro",
       );

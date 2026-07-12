@@ -61,7 +61,7 @@ import {
   toolResultsContainImageViewResult,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { isAnthropicModel } from "@/lib/ai/providers";
+import { isAnthropicModel, isDeepSeekModel } from "@/lib/ai/providers";
 import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
@@ -105,7 +105,18 @@ import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
-const GLM_AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+const AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+
+export const resolveAgentModelForImageToolResults = (
+  modelName: string,
+  mode: ChatMode,
+  hasImageToolResults: boolean,
+): string =>
+  mode === "agent" &&
+  hasImageToolResults &&
+  (modelName === "model-glm-5.2" || isDeepSeekModel(modelName))
+    ? AGENT_VISION_MODEL
+    : modelName;
 
 export type RollingModelContextCheckpoint = {
   /** Latest compacted provider context, excluding later raw SDK responses. */
@@ -332,8 +343,7 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -594,11 +604,11 @@ export async function createAgentStream(
     state.finalMessages,
   );
   const getEffectiveModelName = () =>
-    modelName === "model-glm-5.2" &&
-    ctx.mode === "agent" &&
-    streamHasImageViewResults
-      ? GLM_AGENT_VISION_MODEL
-      : modelName;
+    resolveAgentModelForImageToolResults(
+      modelName,
+      ctx.mode,
+      streamHasImageViewResults,
+    );
   const getEffectiveModelInfo = () => {
     const effectiveModelName = getEffectiveModelName();
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
@@ -882,8 +892,7 @@ export async function createAgentStream(
               const lastStepResponseMessages =
                 (
                   lastStep as
-                    | { response?: { messages?: ModelMessage[] } }
-                    | undefined
+                    { response?: { messages?: ModelMessage[] } } | undefined
                 )?.response?.messages ?? [];
               const retainedToolTransaction = getLatestCompletedToolTransaction(
                 lastStepResponseMessages,
