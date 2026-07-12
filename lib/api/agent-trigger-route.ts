@@ -503,10 +503,10 @@ export const createAgentTriggerPost =
 
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
-      // Set this Vercel env var to the deployed Trigger worker version during
-      // the protocol-v2 rollout so Sessions cannot schedule an older worker.
+      // Trigger.dev's atomic Vercel integration pins the app and worker from the
+      // same commit. Reuse that pin so Sessions cannot schedule an older worker.
       const approvalWorkerVersion =
-        process.env.AGENT_APPROVAL_TRIGGER_VERSION?.trim() || undefined;
+        process.env.TRIGGER_VERSION?.trim() || undefined;
       const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
