@@ -64,6 +64,57 @@ const ApprovalHarness = () => {
   );
 };
 
+const ApprovalHandoffHarness = () => {
+  const {
+    activeToolApprovalRequest,
+    setActiveToolApprovalRequest,
+    settleActiveToolApprovalRequest,
+  } = useAgentApproval();
+
+  return (
+    <>
+      <span data-testid="active-approval-id">
+        {activeToolApprovalRequest?.approvalId ?? "none"}
+      </span>
+      <button
+        type="button"
+        onClick={() =>
+          setActiveToolApprovalRequest({
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+            title: "Approve the first command?",
+          })
+        }
+      >
+        Show first
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          settleActiveToolApprovalRequest({
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+          })
+        }
+      >
+        Settle first
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          setActiveToolApprovalRequest({
+            approvalId: "approval-2",
+            toolCallId: "tool-2",
+            title: "Approve the second command?",
+          })
+        }
+      >
+        Show second
+      </button>
+    </>
+  );
+};
+
 describe("AgentApprovalProvider", () => {
   beforeEach(() => {
     mockSendAgentApprovalSessionInput.mockClear();
@@ -126,5 +177,47 @@ describe("AgentApprovalProvider", () => {
         "approved",
       ),
     );
+  });
+
+  it("keeps the settled prompt mounted until the next approval replaces it", () => {
+    jest.useFakeTimers();
+
+    render(
+      <AgentApprovalProvider>
+        <ApprovalHandoffHarness />
+      </AgentApprovalProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show first" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settle first" }));
+
+    expect(screen.getByTestId("active-approval-id")).toHaveTextContent(
+      "approval-1",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show second" }));
+    act(() => jest.runOnlyPendingTimers());
+
+    expect(screen.getByTestId("active-approval-id")).toHaveTextContent(
+      "approval-2",
+    );
+    jest.useRealTimers();
+  });
+
+  it("clears a settled prompt when no next approval arrives", () => {
+    jest.useFakeTimers();
+
+    render(
+      <AgentApprovalProvider>
+        <ApprovalHandoffHarness />
+      </AgentApprovalProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show first" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settle first" }));
+    act(() => jest.runOnlyPendingTimers());
+
+    expect(screen.getByTestId("active-approval-id")).toHaveTextContent("none");
+    jest.useRealTimers();
   });
 });

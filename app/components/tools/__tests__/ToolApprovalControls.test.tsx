@@ -112,6 +112,9 @@ describe("ToolApprovalControls", () => {
         "approved",
       ),
     );
+    expect(screen.getByTestId("active-approval-request")).toHaveTextContent(
+      '"approvalId":"approval-1"',
+    );
   });
 
   it("forwards live approval metadata to the ChatInput prompt", async () => {

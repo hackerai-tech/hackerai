@@ -4,7 +4,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -26,6 +28,8 @@ export type AgentApprovalSession = {
 };
 
 export type ActiveAgentToolApprovalRequest = AgentToolApprovalPromptRequest;
+
+const APPROVAL_PROMPT_HANDOFF_DELAY_MS = 500;
 
 type SendAgentToolApprovalArgs = {
   approvalId: string;
@@ -50,6 +54,10 @@ type AgentApprovalContextValue = {
     approvalId?: string;
     toolCallId?: string;
   }) => void;
+  settleActiveToolApprovalRequest: (request: {
+    approvalId: string;
+    toolCallId: string;
+  }) => void;
   sendToolApproval: (args: SendAgentToolApprovalArgs) => Promise<void>;
 };
 
@@ -60,17 +68,40 @@ const AgentApprovalContext = createContext<AgentApprovalContextValue | null>(
 export function AgentApprovalProvider({ children }: { children: ReactNode }) {
   const [session, setAgentApprovalSession] =
     useState<AgentApprovalSession | null>(null);
-  const [activeToolApprovalRequest, setActiveToolApprovalRequest] =
+  const [activeToolApprovalRequest, setActiveToolApprovalRequestState] =
     useState<ActiveAgentToolApprovalRequest | null>(null);
   const [toolApprovalSendStates, setToolApprovalSendStates] = useState<
     Record<string, AgentApprovalSendState>
   >({});
+  const pendingApprovalClearRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const cancelPendingApprovalClear = useCallback(() => {
+    if (pendingApprovalClearRef.current === null) return;
+    clearTimeout(pendingApprovalClearRef.current);
+    pendingApprovalClearRef.current = null;
+  }, []);
+
+  useEffect(
+    () => () => cancelPendingApprovalClear(),
+    [cancelPendingApprovalClear],
+  );
+
+  const setActiveToolApprovalRequest = useCallback(
+    (request: ActiveAgentToolApprovalRequest | null) => {
+      cancelPendingApprovalClear();
+      setActiveToolApprovalRequestState(request);
+    },
+    [cancelPendingApprovalClear],
+  );
 
   const clearAgentApprovalSession = useCallback(() => {
+    cancelPendingApprovalClear();
     setAgentApprovalSession(null);
-    setActiveToolApprovalRequest(null);
+    setActiveToolApprovalRequestState(null);
     setToolApprovalSendStates({});
-  }, []);
+  }, [cancelPendingApprovalClear]);
 
   const clearActiveToolApprovalRequest = useCallback(
     ({
@@ -80,14 +111,40 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
       approvalId?: string;
       toolCallId?: string;
     }) => {
-      setActiveToolApprovalRequest((current) => {
+      cancelPendingApprovalClear();
+      setActiveToolApprovalRequestState((current) => {
         if (!current) return null;
         if (approvalId && current.approvalId !== approvalId) return current;
         if (toolCallId && current.toolCallId !== toolCallId) return current;
         return null;
       });
     },
-    [],
+    [cancelPendingApprovalClear],
+  );
+
+  const settleActiveToolApprovalRequest = useCallback(
+    ({
+      approvalId,
+      toolCallId,
+    }: {
+      approvalId: string;
+      toolCallId: string;
+    }) => {
+      cancelPendingApprovalClear();
+      pendingApprovalClearRef.current = setTimeout(() => {
+        pendingApprovalClearRef.current = null;
+        setActiveToolApprovalRequestState((current) => {
+          if (
+            current?.approvalId !== approvalId ||
+            current.toolCallId !== toolCallId
+          ) {
+            return current;
+          }
+          return null;
+        });
+      }, APPROVAL_PROMPT_HANDOFF_DELAY_MS);
+    },
+    [cancelPendingApprovalClear],
   );
 
   const sendToolApproval = useCallback(
@@ -169,6 +226,7 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
       clearAgentApprovalSession,
       setActiveToolApprovalRequest,
       clearActiveToolApprovalRequest,
+      settleActiveToolApprovalRequest,
       sendToolApproval,
     }),
     [
@@ -177,6 +235,8 @@ export function AgentApprovalProvider({ children }: { children: ReactNode }) {
       clearAgentApprovalSession,
       sendToolApproval,
       session,
+      setActiveToolApprovalRequest,
+      settleActiveToolApprovalRequest,
       toolApprovalSendStates,
     ],
   );

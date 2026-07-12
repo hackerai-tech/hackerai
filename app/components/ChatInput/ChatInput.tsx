@@ -350,7 +350,6 @@ export const ChatInput = ({
 
         {showAgentApprovalPrompt ? (
           <AgentApprovalPrompt
-            key={approvalRequest.approvalId}
             request={approvalRequest}
             hasConnectionError={status === "error"}
             onRetryConnection={onReconnect}

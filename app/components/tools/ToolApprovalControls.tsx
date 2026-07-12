@@ -56,6 +56,7 @@ export function ToolApprovalControls({
   const {
     setActiveToolApprovalRequest,
     clearActiveToolApprovalRequest,
+    settleActiveToolApprovalRequest,
     toolApprovalSendStates,
   } = useAgentApproval();
   const sendState = approvalId
@@ -64,8 +65,11 @@ export function ToolApprovalControls({
   const isSettled = sendState === "approved" || sendState === "denied";
 
   useEffect(() => {
-    if (!approvalId || isSettled) {
-      clearActiveToolApprovalRequest({ approvalId, toolCallId });
+    if (!approvalId) {
+      clearActiveToolApprovalRequest({ toolCallId });
+      return;
+    }
+    if (isSettled) {
       return;
     }
 
@@ -80,10 +84,6 @@ export function ToolApprovalControls({
       kind,
       operation,
     });
-
-    return () => {
-      clearActiveToolApprovalRequest({ approvalId, toolCallId });
-    };
   }, [
     approvalId,
     clearActiveToolApprovalRequest,
@@ -98,6 +98,18 @@ export function ToolApprovalControls({
     title,
     toolCallId,
   ]);
+
+  useEffect(() => {
+    if (!approvalId || !isSettled) return;
+    settleActiveToolApprovalRequest({ approvalId, toolCallId });
+  }, [approvalId, isSettled, settleActiveToolApprovalRequest, toolCallId]);
+
+  useEffect(
+    () => () => {
+      clearActiveToolApprovalRequest({ approvalId, toolCallId });
+    },
+    [approvalId, clearActiveToolApprovalRequest, toolCallId],
+  );
 
   return children?.(sendState) ?? null;
 }
