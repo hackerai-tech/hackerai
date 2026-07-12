@@ -52,6 +52,13 @@ export type RateLimitWarningData =
       midStream?: boolean;
     }
   | {
+      warningType: "paid-daily-free-allowance";
+      resetTime: Date;
+      subscription: SubscriptionTier;
+      mode: ChatMode;
+      costLimitDollars: number;
+    }
+  | {
       warningType: "agent-run-spend-cap";
       resetTime: Date;
       subscription: "pro";
@@ -116,6 +123,10 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
   }
 
+  if (data.warningType === "paid-daily-free-allowance") {
+    return `Your paid-plan limit is used up, so this ${data.mode === "agent" ? "Agent" : "Ask"} response is using today's free $${data.costLimitDollars.toFixed(2)} allowance with our low-cost model. It resets ${timeString} and the response will stop if the allowance runs out.`;
+  }
+
   if (data.warningType === "agent-run-spend-cap") {
     return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} legacy per-run safety cap. Continue to keep working.`;
   }
@@ -176,7 +187,8 @@ export const RateLimitWarning = ({
   const message = getMessage(data, timeString);
   const capReason =
     data.warningType === "sliding-window" ||
-    data.warningType === "agent-run-spend-cap"
+    data.warningType === "agent-run-spend-cap" ||
+    data.warningType === "paid-daily-free-allowance"
       ? undefined
       : data.capReason;
   const extraUsageCta =
@@ -186,10 +198,13 @@ export const RateLimitWarning = ({
           capReason,
         })
       : null;
-  const showUsageCta = data.warningType === "extra-usage-active";
+  const showUsageCta =
+    data.warningType === "extra-usage-active" ||
+    data.warningType === "paid-daily-free-allowance";
   const showUpgrade =
     data.warningType !== "agent-run-spend-cap" &&
     data.warningType !== "extra-usage-active" &&
+    data.warningType !== "paid-daily-free-allowance" &&
     shouldShowUpgradeCta({
       subscription: data.subscription,
       capReason,
@@ -199,9 +214,11 @@ export const RateLimitWarning = ({
       ? "daily_requests"
       : data.warningType === "agent-run-spend-cap"
         ? "monthly"
-        : data.warningType === "token-bucket"
-          ? getLimitTypeForCapReason(capReason)
-          : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
+        : data.warningType === "paid-daily-free-allowance"
+          ? "paid_daily_free_allowance"
+          : data.warningType === "token-bucket"
+            ? getLimitTypeForCapReason(capReason)
+            : getLimitTypeForCapReason(data.capReason ?? "extra_usage_active");
   const limitSeverity =
     data.warningType === "token-bucket" && data.remainingPercent === 0
       ? "hit"

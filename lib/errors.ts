@@ -84,6 +84,67 @@ export class ChatSDKError extends Error {
   }
 }
 
+const STREAM_ERROR_PREFIX = "__HACKERAI_CHAT_SDK_ERROR__:";
+
+/**
+ * UI message streams only carry error text. Preserve the structured error
+ * fields needed by the client for rate-limit actions when an error crosses a
+ * durable Agent stream.
+ */
+export function serializeChatSDKErrorForStream(error: ChatSDKError): string {
+  const code: ErrorCode = `${error.type}:${error.surface}`;
+
+  try {
+    return `${STREAM_ERROR_PREFIX}${JSON.stringify({
+      code,
+      cause: typeof error.cause === "string" ? error.cause : undefined,
+      metadata: error.metadata,
+    })}`;
+  } catch {
+    return typeof error.cause === "string" ? error.cause : error.message;
+  }
+}
+
+export function deserializeChatSDKErrorFromStream(
+  error: unknown,
+): ChatSDKError | null {
+  if (error instanceof ChatSDKError) return error;
+  if (
+    !(error instanceof Error) ||
+    !error.message.startsWith(STREAM_ERROR_PREFIX)
+  ) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(
+      error.message.slice(STREAM_ERROR_PREFIX.length),
+    ) as {
+      code?: unknown;
+      cause?: unknown;
+      metadata?: unknown;
+    };
+    if (
+      typeof parsed.code !== "string" ||
+      !/^(bad_request|unauthorized|forbidden|not_found|rate_limit|offline):(chat|auth|api|stream|database|history|vote|document|sandbox|suggestions)$/.test(
+        parsed.code,
+      )
+    ) {
+      return null;
+    }
+
+    return new ChatSDKError(
+      parsed.code as ErrorCode,
+      typeof parsed.cause === "string" ? parsed.cause : undefined,
+      parsed.metadata && typeof parsed.metadata === "object"
+        ? (parsed.metadata as Record<string, unknown>)
+        : undefined,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function getMessageByErrorCode(errorCode: ErrorCode): string {
   if (errorCode.includes("database")) {
     return "An error occurred while executing a database query.";

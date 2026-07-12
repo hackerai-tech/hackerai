@@ -1,7 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import { ChatSDKError, isNetworkStreamError } from "@/lib/errors";
+import {
+  ChatSDKError,
+  deserializeChatSDKErrorFromStream,
+  isNetworkStreamError,
+} from "@/lib/errors";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
@@ -12,9 +16,10 @@ import {
   capturePaidDailyFreeAllowanceImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
+import type { ChatMode } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
-  PAID_DAILY_FREE_ASK_CTA_TEXT,
+  getPaidDailyFreeAllowanceCtaText,
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
@@ -25,6 +30,7 @@ interface MessageErrorStateProps {
   error: Error;
   onRetry: (options?: RetryOptions) => void;
   onReconnect?: () => void;
+  mode?: ChatMode;
 }
 
 const formatCountdown = (ms: number): string => {
@@ -45,12 +51,19 @@ export const MessageErrorState = ({
   error,
   onRetry,
   onReconnect,
+  mode,
 }: MessageErrorStateProps) => {
   const { subscription, initializeNewChat } = useGlobalState();
+  const structuredStreamError = useMemo(
+    () => deserializeChatSDKErrorFromStream(error),
+    [error],
+  );
+  const displayError = structuredStreamError ?? error;
   const isRateLimitError =
-    error instanceof ChatSDKError && error.type === "rate_limit";
+    displayError instanceof ChatSDKError && displayError.type === "rate_limit";
 
-  const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
+  const metadata =
+    displayError instanceof ChatSDKError ? displayError.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
   const capReason = metadata?.capReason as LimitCapReason | undefined;
   const upgradeImpressionRef = useRef(false);
@@ -74,10 +87,12 @@ export const MessageErrorState = ({
 
   // Extract error message - check for cause first, then message
   const errorMessage = (() => {
-    if (error instanceof ChatSDKError) {
-      return typeof error.cause === "string" ? error.cause : error.message;
+    if (displayError instanceof ChatSDKError) {
+      return typeof displayError.cause === "string"
+        ? displayError.cause
+        : displayError.message;
     }
-    return error.message || "An error occurred.";
+    return displayError.message || "An error occurred.";
   })();
   const isProviderContentBlocked =
     metadata?.providerErrorCategory === "content_blocked" ||
@@ -85,7 +100,9 @@ export const MessageErrorState = ({
       errorMessage,
     );
   const canReconnect =
-    !isProviderContentBlocked && !!onReconnect && isNetworkStreamError(error);
+    !isProviderContentBlocked &&
+    !!onReconnect &&
+    isNetworkStreamError(displayError);
 
   const isPaidUser = subscription !== "free";
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
@@ -106,6 +123,11 @@ export const MessageErrorState = ({
     isRateLimitError &&
     paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
     paidDailyFreeAllowance.available === true;
+  const paidDailyFreeAllowanceCtaText = getPaidDailyFreeAllowanceCtaText(mode);
+  const allowanceCostRemaining =
+    typeof paidDailyFreeAllowance?.costRemainingDollars === "number"
+      ? paidDailyFreeAllowance.costRemainingDollars
+      : undefined;
   const shouldFocusPaidAllowanceActions =
     canUsePaidDailyFreeAllowance &&
     extraUsageCta?.analyticsText === "Add Credits";
@@ -169,7 +191,7 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+      cta_text: paidDailyFreeAllowanceCtaText,
       allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
       allowance_cost_remaining_dollars:
         paidDailyFreeAllowance?.costRemainingDollars,
@@ -178,6 +200,7 @@ export const MessageErrorState = ({
     canUsePaidDailyFreeAllowance,
     capReason,
     paidDailyFreeAllowance,
+    paidDailyFreeAllowanceCtaText,
     subscription,
   ]);
 
@@ -211,6 +234,22 @@ export const MessageErrorState = ({
         {isRateLimitError && timeRemaining > 0 && (
           <p className="text-xs text-muted-foreground mt-1">
             Resets in {formatCountdown(timeRemaining)}
+          </p>
+        )}
+        {canUsePaidDailyFreeAllowance && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Your paid-plan limit is used up, but you still have
+            {allowanceCostRemaining !== undefined
+              ? ` up to $${allowanceCostRemaining.toFixed(2)}`
+              : ""}{" "}
+            of free usage today. Continue this request in{" "}
+            {mode === "agent"
+              ? "Agent"
+              : mode === "ask"
+                ? "Ask"
+                : "the current"}{" "}
+            mode with our low-cost model. The daily allowance resets at midnight
+            UTC.
           </p>
         )}
       </div>
@@ -270,7 +309,7 @@ export const MessageErrorState = ({
                     source: "rate_limit_error",
                     from_tier: subscription,
                     cap_reason: capReason,
-                    cta_text: PAID_DAILY_FREE_ASK_CTA_TEXT,
+                    cta_text: paidDailyFreeAllowanceCtaText,
                     allowance_requests_remaining:
                       paidDailyFreeAllowance?.requestsRemaining,
                     allowance_cost_remaining_dollars:
@@ -281,7 +320,7 @@ export const MessageErrorState = ({
                   });
                 }}
               >
-                {PAID_DAILY_FREE_ASK_CTA_TEXT}
+                {paidDailyFreeAllowanceCtaText}
               </Button>
             )}
             {showUpgrade && (

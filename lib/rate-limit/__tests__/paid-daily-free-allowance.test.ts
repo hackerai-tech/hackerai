@@ -108,7 +108,7 @@ describe("paid daily free allowance", () => {
     hasAttachments: false,
   };
 
-  it("reports one available paid Ask rescue by default", async () => {
+  it("reports one available paid rescue by default", async () => {
     const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
 
     const status = await getPaidDailyFreeAllowanceStatus(eligibleContext);
@@ -125,7 +125,7 @@ describe("paid daily free allowance", () => {
     });
   });
 
-  it("excludes unsupported tiers, agent mode, attachments, and rollout-disabled users", async () => {
+  it("supports Agent mode while keeping Ask attachments excluded", async () => {
     const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
 
     await expect(
@@ -139,10 +139,14 @@ describe("paid daily free allowance", () => {
     });
     await expect(
       getPaidDailyFreeAllowanceStatus({ ...eligibleContext, mode: "agent" }),
-    ).resolves.toMatchObject({
-      available: false,
-      unavailableReason: "unsupported_mode",
-    });
+    ).resolves.toMatchObject({ available: true });
+    await expect(
+      getPaidDailyFreeAllowanceStatus({
+        ...eligibleContext,
+        mode: "agent",
+        hasAttachments: true,
+      }),
+    ).resolves.toMatchObject({ available: true });
     await expect(
       getPaidDailyFreeAllowanceStatus({
         ...eligibleContext,
@@ -153,6 +157,27 @@ describe("paid daily free allowance", () => {
       unavailableReason: "attachments_not_supported",
     });
 
+    mockIsFeatureEnabled.mockReturnValue(false);
+    await expect(
+      getPaidDailyFreeAllowanceStatus(eligibleContext),
+    ).resolves.toMatchObject({
+      available: false,
+      unavailableReason: "rollout_disabled",
+    });
+  });
+
+  it("excludes unsupported tiers and rollout-disabled users", async () => {
+    const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+    await expect(
+      getPaidDailyFreeAllowanceStatus({
+        ...eligibleContext,
+        subscription: "team",
+        mode: "agent",
+      }),
+    ).resolves.toMatchObject({
+      available: false,
+      unavailableReason: "unsupported_subscription",
+    });
     mockIsFeatureEnabled.mockReturnValue(false);
     await expect(
       getPaidDailyFreeAllowanceStatus(eligibleContext),

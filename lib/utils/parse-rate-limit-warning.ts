@@ -7,6 +7,7 @@ const WARNING_TYPES = [
   "sliding-window",
   "token-bucket",
   "extra-usage-active",
+  "paid-daily-free-allowance",
   "agent-run-spend-cap",
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
@@ -82,6 +83,26 @@ export function parseRateLimitWarning(
       resetTime,
       mode: modeRaw,
       subscription,
+    };
+  }
+
+  if (warningType === "paid-daily-free-allowance") {
+    const modeRaw = typeof rawData.mode === "string" ? rawData.mode : null;
+    const costLimitDollars = rawData.costLimitDollars;
+    if (
+      subscription === "free" ||
+      !isChatMode(modeRaw) ||
+      !isNumber(costLimitDollars) ||
+      costLimitDollars <= 0
+    ) {
+      return null;
+    }
+    return {
+      warningType: "paid-daily-free-allowance",
+      resetTime,
+      subscription,
+      mode: modeRaw,
+      costLimitDollars,
     };
   }
 

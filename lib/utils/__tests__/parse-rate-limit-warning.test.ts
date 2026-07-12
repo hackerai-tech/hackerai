@@ -2,6 +2,41 @@ import { describe, expect, it } from "@jest/globals";
 import { parseRateLimitWarning } from "../parse-rate-limit-warning";
 
 describe("parseRateLimitWarning", () => {
+  it("parses paid daily Agent allowance notices", () => {
+    expect(
+      parseRateLimitWarning(
+        {
+          warningType: "paid-daily-free-allowance",
+          subscription: "pro",
+          mode: "agent",
+          resetTime: "2026-06-30T00:00:00.000Z",
+          costLimitDollars: 0.25,
+        },
+        { hasUserDismissed: false },
+      ),
+    ).toMatchObject({
+      warningType: "paid-daily-free-allowance",
+      subscription: "pro",
+      mode: "agent",
+      costLimitDollars: 0.25,
+    });
+  });
+
+  it("rejects paid daily allowance notices for free users", () => {
+    expect(
+      parseRateLimitWarning(
+        {
+          warningType: "paid-daily-free-allowance",
+          subscription: "free",
+          mode: "agent",
+          resetTime: "2026-06-30T00:00:00.000Z",
+          costLimitDollars: 0.25,
+        },
+        { hasUserDismissed: false },
+      ),
+    ).toBeNull();
+  });
+
   it("parses Pro Agent per-run spend-cap warnings", () => {
     const parsed = parseRateLimitWarning(
       {

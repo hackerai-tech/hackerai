@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@jest/globals";
-import { ChatSDKError, isNetworkStreamError } from "../errors";
+import {
+  ChatSDKError,
+  deserializeChatSDKErrorFromStream,
+  isNetworkStreamError,
+  serializeChatSDKErrorForStream,
+} from "../errors";
 
 describe("isNetworkStreamError", () => {
   it("classifies common browser stream transport failures as reconnectable", () => {
@@ -33,5 +38,33 @@ describe("ChatSDKError messages", () => {
     expect(new ChatSDKError("bad_request:sandbox").message).toBe(
       "The computer attachment upload failed.",
     );
+  });
+});
+
+describe("ChatSDKError stream serialization", () => {
+  it("preserves rate-limit metadata across text-only streams", () => {
+    const original = new ChatSDKError(
+      "rate_limit:chat",
+      "Monthly usage is exhausted.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: { available: true },
+      },
+    );
+
+    const parsed = deserializeChatSDKErrorFromStream(
+      new Error(serializeChatSDKErrorForStream(original)),
+    );
+
+    expect(parsed).toBeInstanceOf(ChatSDKError);
+    expect(parsed).toMatchObject({
+      type: "rate_limit",
+      surface: "chat",
+      cause: "Monthly usage is exhausted.",
+      metadata: {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: { available: true },
+      },
+    });
   });
 });

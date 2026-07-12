@@ -268,12 +268,16 @@ function baseStatus(
 function getStaticUnavailableReason(
   ctx: PaidDailyFreeAllowanceContext,
 ): PaidDailyFreeAllowanceUnavailableReason | null {
-  if (ctx.mode !== "ask") return "unsupported_mode";
   if (!PAID_INDIVIDUAL_TIERS.has(ctx.subscription)) {
     return "unsupported_subscription";
   }
   if (ctx.capReason !== "monthly_exhausted") return "not_monthly_exhausted";
-  if (ctx.hasAttachments) return "attachments_not_supported";
+  // Ask attachments may require a more expensive multimodal route. Agent
+  // attachments stay eligible because the allowance uses the cheap Agent
+  // model and records the run's model, tool, and sandbox costs together.
+  if (ctx.mode === "ask" && ctx.hasAttachments) {
+    return "attachments_not_supported";
+  }
   return null;
 }
 
