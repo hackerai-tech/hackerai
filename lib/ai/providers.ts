@@ -333,7 +333,7 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return isAgentMode(mode) ? "model-minimax-m3" : "model-deepseek-v4-pro";
+      return "model-deepseek-v4-pro";
     case "hackerai-pro":
       return "model-glm-5.2";
     case "hackerai-max":
