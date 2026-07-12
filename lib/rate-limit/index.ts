@@ -63,7 +63,6 @@ export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
 export {
   addUsageDeductionDelta,
-  costDollarsToPoints,
   createUsageSettlementState,
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,

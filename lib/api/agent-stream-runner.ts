@@ -332,7 +332,8 @@ const buildProviderRequestDiagnostics = (args: {
   }
 
   const lastMessage = args.messages.at(-1) as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   const serializedBytes = getSerializedBytes(args.messages);
   const contextUsedPercent =
     args.contextUsage.maxTokens > 0
@@ -426,6 +427,7 @@ export type AgentStreamContext = {
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     force: boolean;
+    model: string;
   }) => Promise<void>;
 
   /**
@@ -880,7 +882,8 @@ export async function createAgentStream(
               const lastStepResponseMessages =
                 (
                   lastStep as
-                    { response?: { messages?: ModelMessage[] } } | undefined
+                    | { response?: { messages?: ModelMessage[] } }
+                    | undefined
                 )?.response?.messages ?? [];
               const retainedToolTransaction = getLatestCompletedToolTransaction(
                 lastStepResponseMessages,
@@ -1152,6 +1155,7 @@ export async function createAgentStream(
         force:
           budgetDecision?.type === "abort" ||
           budgetDecision?.type === "abort-agent-run-spend-cap",
+        model: response?.modelId ?? modelName,
       });
       if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
