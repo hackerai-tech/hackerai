@@ -1614,6 +1614,12 @@ export const agentLongTask = task({
       .set("chatId", chatId)
       .set("endpoint", endpoint)
       .set("triggerPayloadMessageCount", messages.length);
+    if (approvalSessionId) {
+      metadata
+        .set("userId", userId)
+        .set("approvalSessionId", approvalSessionId)
+        .set("approvalProtocolVersion", AGENT_TOOL_APPROVAL_PROTOCOL_VERSION);
+    }
     if (payload.requestTiming) {
       metadata
         .set("routeStartedAt", payload.requestTiming.routeStartedAt)

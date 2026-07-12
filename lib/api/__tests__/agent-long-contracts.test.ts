@@ -796,6 +796,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentApprovalRouteSrc).toMatch(/metadata\.approvalToolCallId/);
     expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
     expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
+    expect(taskSrc).toContain('.set("userId", userId)');
+    expect(taskSrc).toContain('.set("approvalSessionId", approvalSessionId)');
+    expect(taskSrc).toMatch(
+      /\.set\(\s*"approvalProtocolVersion",\s*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION/,
+    );
     expect(taskSrc).toMatch(/await metadata\.flush\(\)/);
     expect(agentApprovalRouteSrc).toMatch(/signAgentToolApprovalInput/);
     expect(agentApprovalRouteSrc).toMatch(
