@@ -314,6 +314,7 @@ describe("buildProviderOptions fallback chain", () => {
     "model-minimax-m3",
     "model-grok-4.5",
     "model-gemini-3-flash",
+    "fallback-grok-4.5",
   ])("enables medium reasoning for ask mode model %s", (modelName) => {
     const opts = buildProviderOptions(false, "user-1", modelName, "ask");
     expect(opts.openrouter.reasoning).toEqual({

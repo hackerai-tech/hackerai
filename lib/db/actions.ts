@@ -57,6 +57,8 @@ const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const CHAT_DELETION_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
@@ -352,6 +354,19 @@ const getRetryableDatabaseErrorReason = (
 const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
 const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
 
+const getRetryableChatDeletionErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  if (/OptimisticConcurrencyControlFailure/i.test(stringifyError(error))) {
+    return "optimistic_concurrency_conflict";
+  }
+
+  return undefined;
+};
+
 const getRetryableSaveChatErrorReason = (
   error: unknown,
 ): string | undefined => {
@@ -374,11 +389,55 @@ const getRetryableReasonForDatabaseOperation = (
   if (operation === "chats.saveChat") {
     return getRetryableSaveChatErrorReason(error);
   }
+  if (
+    operation === "chats.deleteChatForBackend" ||
+    operation === "chats.deleteAllChatsForBackend"
+  ) {
+    return getRetryableChatDeletionErrorReason(error);
+  }
   return getRetryableDatabaseErrorReason(error);
 };
 
 const waitForRetryDelay = (delayMs: number) =>
   new Promise((resolve) => setTimeout(resolve, delayMs));
+
+const runRetryableChatDeletion = async <T>({
+  operation,
+  metadata,
+  mutation,
+}: {
+  operation: "chats.deleteChatForBackend" | "chats.deleteAllChatsForBackend";
+  metadata: Record<string, unknown>;
+  mutation: () => Promise<T>;
+}): Promise<T> => {
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await mutation();
+    } catch (error) {
+      const retryReason = getRetryableChatDeletionErrorReason(error);
+      const retryDelayMs = CHAT_DELETION_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw error;
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_deletion_retry_scheduled",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: operation,
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          ...metadata,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+};
 
 const ACCESS_DENIED_ERROR_CODE = "ACCESS_DENIED";
 const CHAT_CANCELED_ERROR_CODE = "CHAT_CANCELED";
@@ -642,13 +701,23 @@ export async function deleteChatForBackend({
   expectedTriggerRunId: string | null;
   expectedApprovalSessionId: string | null;
 }) {
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    userId,
+    expectedTriggerRunId,
+    expectedApprovalSessionId,
+  };
+
   try {
-    return await getConvexClient().mutation(api.chats.deleteChatForBackend, {
-      serviceKey,
-      chatId,
-      userId,
-      expectedTriggerRunId,
-      expectedApprovalSessionId,
+    return await runRetryableChatDeletion({
+      operation: "chats.deleteChatForBackend",
+      metadata: { chat_id: chatId, user_id: userId },
+      mutation: () =>
+        getConvexClient().mutation(
+          api.chats.deleteChatForBackend,
+          mutationArgs,
+        ),
     });
   } catch (error) {
     throw databaseError("chats.deleteChatForBackend", error, {
@@ -724,9 +793,14 @@ export async function fenceAndGetActiveAgentResourcesForUser({
 
 export async function deleteAllChatsForBackend({ userId }: { userId: string }) {
   try {
-    await getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
-      serviceKey,
-      userId,
+    await runRetryableChatDeletion({
+      operation: "chats.deleteAllChatsForBackend",
+      metadata: { user_id: userId },
+      mutation: () =>
+        getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
+          serviceKey,
+          userId,
+        }),
     });
   } catch (error) {
     throw databaseError("chats.deleteAllChatsForBackend", error, {

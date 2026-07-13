@@ -41,6 +41,7 @@ const loadSaveMessageWithMocks = async () => {
   }));
 
   const {
+    deleteAllChatsForBackend,
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
@@ -50,6 +51,7 @@ const loadSaveMessageWithMocks = async () => {
     setActiveTriggerRun,
   } = await import("../actions");
   return {
+    deleteAllChatsForBackend,
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
@@ -1089,6 +1091,46 @@ describe("getMessagesByChatId", () => {
 });
 
 describe("deleteChatForBackend", () => {
+  it("retries generic Convex server errors before deleting a chat", async () => {
+    const { deleteChatForBackend, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error("[Request ID: abc] Server Error");
+    mockMutation
+      .mockRejectedValueOnce(convexError as never)
+      .mockResolvedValueOnce({ deleted: true } as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        deleteChatForBackend({
+          chatId: "chat-1",
+          userId: "user-1",
+          expectedTriggerRunId: null,
+          expectedApprovalSessionId: null,
+        }),
+      ).resolves.toEqual({ deleted: true });
+
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_deletion_retry_scheduled");
+      expect(retryEvents).toEqual([
+        expect.objectContaining({
+          db_operation: "chats.deleteChatForBackend",
+          retry_reason: "convex_server_error",
+          attempt: 1,
+          next_attempt: 2,
+          retry_delay_ms: 0,
+          chat_id: "chat-1",
+          user_id: "user-1",
+        }),
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("classifies Convex access denials as warnings and forbidden chat errors", async () => {
     const { deleteChatForBackend, mockMutation } =
       await loadSaveMessageWithMocks();
@@ -1127,8 +1169,93 @@ describe("deleteChatForBackend", () => {
         const payload = JSON.parse(String(line));
         return payload.event;
       });
+      expect(mockMutation).toHaveBeenCalledTimes(1);
       expect(warnEvents).toContain("chat_access_denied");
+      expect(warnEvents).not.toContain("chat_deletion_retry_scheduled");
       expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("deleteAllChatsForBackend", () => {
+  it("retries Convex optimistic concurrency conflicts", async () => {
+    const { deleteAllChatsForBackend, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error(
+      JSON.stringify({
+        code: "OptimisticConcurrencyControlFailure",
+        message: "Documents changed while this mutation was being run",
+      }),
+    );
+    mockMutation
+      .mockRejectedValueOnce(convexError as never)
+      .mockResolvedValueOnce(undefined as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        deleteAllChatsForBackend({ userId: "user-1" }),
+      ).resolves.toBeUndefined();
+
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_deletion_retry_scheduled");
+      expect(retryEvents).toEqual([
+        expect.objectContaining({
+          db_operation: "chats.deleteAllChatsForBackend",
+          retry_reason: "optimistic_concurrency_conflict",
+          attempt: 1,
+          next_attempt: 2,
+          retry_delay_ms: 0,
+          user_id: "user-1",
+        }),
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("classifies an exhausted optimistic concurrency retry as transient", async () => {
+    const { deleteAllChatsForBackend, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error(
+      JSON.stringify({
+        code: "OptimisticConcurrencyControlFailure",
+        message: "Documents changed while this mutation was being run",
+      }),
+    );
+    mockMutation.mockRejectedValue(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        deleteAllChatsForBackend({ userId: "user-1" }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.deleteAllChatsForBackend",
+          db_retry_reason: "optimistic_concurrency_conflict",
+        }),
+      });
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_deletion_retry_scheduled");
+      expect(retryEvents).toEqual([
+        expect.objectContaining({ attempt: 1, next_attempt: 2 }),
+        expect.objectContaining({ attempt: 2, next_attempt: 3 }),
+      ]);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
