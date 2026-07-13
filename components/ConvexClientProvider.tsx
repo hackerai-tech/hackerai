@@ -6,7 +6,6 @@ import { ConvexProviderWithAuth } from "convex/react";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import { useAuthFromAuthKit } from "@/lib/auth/use-auth-from-authkit";
 
-const noop = () => {};
 const PRERENDER_CONVEX_URL = "https://placeholder.convex.cloud";
 
 export function ConvexClientProvider({ children }: { children: ReactNode }) {
@@ -23,9 +22,9 @@ export function ConvexClientProvider({ children }: { children: ReactNode }) {
   });
 
   return (
-    // Prevent AuthKit's default window.location.reload() on session expiration.
-    // We handle auth state gracefully via Convex token refresh and middleware checks.
-    <AuthKitProvider onSessionExpired={noop}>
+    // Passing a callback still enables AuthKit's focus/visibility session probe.
+    // Disable it entirely; Convex token refresh and middleware own auth recovery.
+    <AuthKitProvider onSessionExpired={false}>
       <ConvexProviderWithAuth client={convex} useAuth={useAuthFromAuthKit}>
         {children}
       </ConvexProviderWithAuth>

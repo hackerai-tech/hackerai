@@ -595,13 +595,15 @@ const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
 
 // Standard Ask can route text-only prompts to DeepSeek, image prompts to
 // MiniMax, and PDF prompts to Grok. Keep those route keys and their persisted
-// Grok alias on one effort level so they do not drift.
+// Grok aliases, including the app-side retry key, on one effort level so they
+// do not drift. Grok 4.5 rejects requests that explicitly disable reasoning.
 const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
   "ask-model",
   "model-minimax-m3",
   "model-grok-4.5",
   "model-gemini-3-flash",
+  "fallback-grok-4.5",
 ] as const satisfies readonly ModelName[];
 
 const ASK_MEDIUM_REASONING_MODELS = [
