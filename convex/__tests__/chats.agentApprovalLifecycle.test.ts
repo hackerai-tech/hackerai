@@ -56,7 +56,6 @@ jest.mock("../lib/suspensionGuards", () => ({
 const {
   deleteChatForBackend,
   fenceChatsForDeletion,
-  getActiveAgentResourcesForUser,
   getActiveTriggerRunsForUser,
   setActiveTriggerRun,
 } = require("../chats") as typeof import("../chats");
@@ -120,14 +119,14 @@ describe("Agent approval lifecycle guards", () => {
       id: "chat-1",
       user_id: "user-1",
     };
-    const take = jest
-      .fn<any>()
-      .mockImplementation(async () =>
-        chat.deletion_started_at === undefined ? [chat] : [],
-      );
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [chat],
+      isDone: true,
+      continueCursor: "",
+    });
     const first = jest.fn<any>().mockImplementation(async () => chat);
     const withIndex = jest.fn((indexName: string) =>
-      indexName === "by_user_and_deletion_started" ? { take } : { first },
+      indexName === "by_user_and_updated" ? { paginate } : { first },
     );
     const patch = jest.fn<any>().mockImplementation(async (_id, update) => {
       Object.assign(chat, update);
@@ -140,8 +139,14 @@ describe("Agent approval lifecycle guards", () => {
       fenceChatsForDeletion.handler(ctx, {
         serviceKey: "service-key",
         userId: "user-1",
+        cursor: null,
       }),
-    ).resolves.toEqual({ fencedChats: 1, hasMore: false });
+    ).resolves.toEqual({
+      fencedChats: 1,
+      isDone: true,
+      continueCursor: "",
+      resources: [],
+    });
     await expect(
       setActiveTriggerRun.handler(ctx, {
         serviceKey: "service-key",
@@ -153,6 +158,7 @@ describe("Agent approval lifecycle guards", () => {
     expect(chat.deletion_started_at).toEqual(expect.any(Number));
     expect(chat.active_trigger_run_id).toBeUndefined();
     expect(patch).toHaveBeenCalledTimes(1);
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 100 });
   });
 
   it("reports when a started run has no chat row to associate with", async () => {
@@ -254,33 +260,43 @@ describe("Agent approval lifecycle guards", () => {
     });
   });
 
-  it("enumerates approval Sessions even when no Trigger run is stored", async () => {
-    const runTake = jest.fn<any>().mockResolvedValue([]);
-    const sessionTake = jest.fn<any>().mockResolvedValue([
-      {
-        id: "chat-1",
-        active_agent_approval_session_id: "approval-session-1",
-      },
-    ]);
-    const withIndex = jest.fn((indexName: string) => ({
-      take:
-        indexName === "by_user_and_active_trigger_run" ? runTake : sessionTake,
-    }));
-    const ctx = { db: { query: jest.fn(() => ({ withIndex })) } } as any;
+  it("returns approval Sessions even when no Trigger run is stored", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_agent_approval_session_id: "approval-session-1",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [chat],
+      isDone: true,
+      continueCursor: "",
+    });
+    const withIndex = jest.fn(() => ({ paginate }));
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: { query: jest.fn(() => ({ withIndex })), patch },
+    } as any;
 
     await expect(
-      getActiveAgentResourcesForUser.handler(ctx, {
+      fenceChatsForDeletion.handler(ctx, {
         serviceKey: "service-key",
         userId: "user-1",
+        cursor: null,
       }),
     ).resolves.toEqual({
+      fencedChats: 1,
+      isDone: true,
+      continueCursor: "",
       resources: [
         {
           chatId: "chat-1",
           approvalSessionId: "approval-session-1",
         },
       ],
-      hasMore: false,
+    });
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      deletion_started_at: expect.any(Number),
     });
   });
 });

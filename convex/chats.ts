@@ -77,6 +77,12 @@ const agentApprovalTargetGrantValidator = v.union(
   }),
 );
 
+const activeAgentResourceValidator = v.object({
+  chatId: v.string(),
+  triggerRunId: v.optional(v.string()),
+  approvalSessionId: v.optional(v.string()),
+});
+
 const MAX_AGENT_APPROVAL_GRANTS_PER_CHAT = 100;
 
 const getErrorName = (error: unknown): string =>
@@ -1280,30 +1286,55 @@ export const fenceChatsForDeletion = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
+    cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
     fencedChats: v.number(),
-    hasMore: v.boolean(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    resources: v.array(activeAgentResourceValidator),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const chats = await ctx.db
+    const page = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_deletion_started", (q) =>
-        q.eq("user_id", args.userId).eq("deletion_started_at", undefined),
-      )
-      .take(CHAT_DELETION_FENCE_BATCH_SIZE + 1);
-    const batch = chats.slice(0, CHAT_DELETION_FENCE_BATCH_SIZE);
+      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
+      .paginate({
+        cursor: args.cursor,
+        numItems: CHAT_DELETION_FENCE_BATCH_SIZE,
+      });
     const now = Date.now();
+    let fencedChats = 0;
 
-    for (const chat of batch) {
-      await ctx.db.patch(chat._id, { deletion_started_at: now });
+    for (const chat of page.page) {
+      if (chat.deletion_started_at === undefined) {
+        await ctx.db.patch(chat._id, { deletion_started_at: now });
+        fencedChats++;
+      }
     }
 
     return {
-      fencedChats: batch.length,
-      hasMore: chats.length > CHAT_DELETION_FENCE_BATCH_SIZE,
+      fencedChats,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      resources: page.page.flatMap((chat) =>
+        chat.active_trigger_run_id || chat.active_agent_approval_session_id
+          ? [
+              {
+                chatId: chat.id,
+                ...(chat.active_trigger_run_id
+                  ? { triggerRunId: chat.active_trigger_run_id }
+                  : {}),
+                ...(chat.active_agent_approval_session_id
+                  ? {
+                      approvalSessionId: chat.active_agent_approval_session_id,
+                    }
+                  : {}),
+              },
+            ]
+          : [],
+      ),
     };
   },
 });
@@ -1518,80 +1549,6 @@ export const getActiveTriggerRunsForUser = query({
           : [],
       ),
       hasMore: chats.length > limit,
-    };
-  },
-});
-
-export const getActiveAgentResourcesForUser = query({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    limit: v.optional(v.number()),
-  },
-  returns: v.object({
-    resources: v.array(
-      v.object({
-        chatId: v.string(),
-        triggerRunId: v.optional(v.string()),
-        approvalSessionId: v.optional(v.string()),
-      }),
-    ),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-    const requestedLimit = Math.floor(
-      args.limit ?? MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
-    );
-    const limit = Math.min(
-      Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 1, 1),
-      MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN,
-    );
-
-    const [runChats, sessionChats] = await Promise.all([
-      ctx.db
-        .query("chats")
-        .withIndex("by_user_and_active_trigger_run", (q) =>
-          q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
-        )
-        .take(limit + 1),
-      ctx.db
-        .query("chats")
-        .withIndex("by_user_and_active_approval_session", (q) =>
-          q
-            .eq("user_id", args.userId)
-            .gt("active_agent_approval_session_id", ""),
-        )
-        .take(limit + 1),
-    ]);
-
-    const resourcesByChatId = new Map<
-      string,
-      {
-        chatId: string;
-        triggerRunId?: string;
-        approvalSessionId?: string;
-      }
-    >();
-    for (const chat of [
-      ...runChats.slice(0, limit),
-      ...sessionChats.slice(0, limit),
-    ]) {
-      const current = resourcesByChatId.get(chat.id) ?? { chatId: chat.id };
-      resourcesByChatId.set(chat.id, {
-        ...current,
-        ...(chat.active_trigger_run_id
-          ? { triggerRunId: chat.active_trigger_run_id }
-          : {}),
-        ...(chat.active_agent_approval_session_id
-          ? { approvalSessionId: chat.active_agent_approval_session_id }
-          : {}),
-      });
-    }
-
-    return {
-      resources: [...resourcesByChatId.values()],
-      hasMore: runChats.length > limit || sessionChats.length > limit,
     };
   },
 });
