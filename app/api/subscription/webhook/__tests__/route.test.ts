@@ -177,7 +177,10 @@ function mockInvoicePaymentFailedAnalytics({
   paymentIntent = hydratedPaymentIntent(),
   paymentIntentError,
 }: {
-  invoicePaymentIntent?: ReturnType<typeof expandedInvoicePaymentIntent> | null;
+  invoicePaymentIntent?:
+    | ReturnType<typeof expandedInvoicePaymentIntent>
+    | ReturnType<typeof hydratedPaymentIntent>
+    | null;
   paymentIntent?: ReturnType<typeof hydratedPaymentIntent>;
   paymentIntentError?: Error;
 } = {}) {
@@ -713,6 +716,26 @@ describe("POST /api/subscription/webhook", () => {
       expect.objectContaining({
         billing_failure_group: "insufficient_funds",
         stripe_payment_intent_id: "pi_payment_failed",
+      }),
+    );
+  });
+
+  it("uses an already-hydrated charge without retrieving the PaymentIntent", async () => {
+    mockInvoicePaymentFailedAnalytics({
+      invoicePaymentIntent: hydratedPaymentIntent(),
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockRetrievePaymentIntent).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "billing_payment_failed",
+      expect.objectContaining({
+        billing_failure_group: "insufficient_funds",
+        outcome_reason: "insufficient_funds",
+        card_country: "US",
       }),
     );
   });
