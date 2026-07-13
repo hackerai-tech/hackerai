@@ -1169,7 +1169,9 @@ describe("deleteChatForBackend", () => {
         const payload = JSON.parse(String(line));
         return payload.event;
       });
+      expect(mockMutation).toHaveBeenCalledTimes(1);
       expect(warnEvents).toContain("chat_access_denied");
+      expect(warnEvents).not.toContain("chat_deletion_retry_scheduled");
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -1215,6 +1217,48 @@ describe("deleteAllChatsForBackend", () => {
       ]);
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  it("classifies an exhausted optimistic concurrency retry as transient", async () => {
+    const { deleteAllChatsForBackend, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const convexError = new Error(
+      JSON.stringify({
+        code: "OptimisticConcurrencyControlFailure",
+        message: "Documents changed while this mutation was being run",
+      }),
+    );
+    mockMutation.mockRejectedValue(convexError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        deleteAllChatsForBackend({ userId: "user-1" }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "chats.deleteAllChatsForBackend",
+          db_retry_reason: "optimistic_concurrency_conflict",
+        }),
+      });
+
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "chat_deletion_retry_scheduled");
+      expect(retryEvents).toEqual([
+        expect.objectContaining({ attempt: 1, next_attempt: 2 }),
+        expect.objectContaining({ attempt: 2, next_attempt: 3 }),
+      ]);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });
