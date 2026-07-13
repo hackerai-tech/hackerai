@@ -28,6 +28,8 @@ import {
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
 import {
+  invoicePaymentIntent,
+  invoicePaymentIntentId,
   invoiceSubscriptionId,
   stripeObjectId,
   subscriptionPaymentFailureProperties,
@@ -128,12 +130,18 @@ function monthlyUsagePeriodEndSeconds(
   return subscriptionCurrentPeriodEndSeconds(subscription);
 }
 
+type BillingFailureAnalyticsContext = {
+  invoice: Stripe.Invoice;
+  paymentIntent?: Stripe.PaymentIntent;
+};
+
 async function retrieveInvoiceForFailureAnalytics(
   invoiceId: string,
-): Promise<Stripe.Invoice | null> {
+): Promise<BillingFailureAnalyticsContext | null> {
+  let invoice: Stripe.Invoice;
   try {
-    return await stripe.invoices.retrieve(invoiceId, {
-      expand: ["payment_intent", "payment_intent.latest_charge"],
+    invoice = await stripe.invoices.retrieve(invoiceId, {
+      expand: ["payments.data.payment.payment_intent"],
     });
   } catch (error) {
     phLogger.warn("subscription_payment_failure_invoice_retrieve_failed", {
@@ -141,6 +149,37 @@ async function retrieveInvoiceForFailureAnalytics(
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
+  }
+
+  const expandedPaymentIntent = invoicePaymentIntent(invoice);
+  const paymentIntentId = invoicePaymentIntentId(invoice);
+  const latestCharge = expandedPaymentIntent?.latest_charge;
+  if (
+    !paymentIntentId ||
+    latestCharge === null ||
+    (latestCharge && typeof latestCharge === "object")
+  ) {
+    return { invoice, paymentIntent: expandedPaymentIntent };
+  }
+
+  try {
+    const paymentIntent = await stripe.paymentIntents.retrieve(
+      paymentIntentId,
+      {
+        expand: ["latest_charge"],
+      },
+    );
+    return { invoice, paymentIntent };
+  } catch (error) {
+    phLogger.warn(
+      "subscription_payment_failure_payment_intent_retrieve_failed",
+      {
+        stripe_invoice_id: invoiceId,
+        stripe_payment_intent_id: paymentIntentId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return { invoice, paymentIntent: expandedPaymentIntent };
   }
 }
 
@@ -510,6 +549,7 @@ async function recordPaidStartMix({
 
 async function emitBillingPaymentFailed(args: {
   invoice: Stripe.Invoice;
+  paymentIntent?: Stripe.PaymentIntent;
   customerId: string;
   userIds: string[];
   orgId?: string;
@@ -522,6 +562,7 @@ async function emitBillingPaymentFailed(args: {
   const failureProperties = subscriptionPaymentFailureProperties({
     invoice: args.invoice,
     lifecycle: args.lifecycle,
+    paymentIntent: args.paymentIntent,
   });
 
   for (const uid of args.userIds) {
@@ -890,16 +931,15 @@ async function handleInvoicePaymentFailed(
     return;
   }
 
-  const expandedInvoice = (invoice as unknown as { payment_intent?: unknown })
-    .payment_intent
-    ? invoice
-    : ((await retrieveInvoiceForFailureAnalytics(invoice.id)) ?? invoice);
+  const failureContext = await retrieveInvoiceForFailureAnalytics(invoice.id);
+  const failureInvoice = failureContext?.invoice ?? invoice;
   const subscription =
     resolved?.kind === "resolved" ? resolved.subscription : undefined;
   const price = subscription?.items?.data[0]?.price;
 
   await emitBillingPaymentFailed({
-    invoice: expandedInvoice,
+    invoice: failureInvoice,
+    paymentIntent: failureContext?.paymentIntent,
     customerId,
     userIds,
     orgId: orgId ?? undefined,
@@ -1310,14 +1350,15 @@ async function handleSubscriptionDeleted(
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
   const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
-  const failureInvoice =
+  const failureContext =
     cancellationReason === "payment_failed" && latestInvoiceId
       ? await retrieveInvoiceForFailureAnalytics(latestInvoiceId)
       : null;
-  const failureProperties = failureInvoice
+  const failureProperties = failureContext
     ? subscriptionPaymentFailureProperties({
-        invoice: failureInvoice,
+        invoice: failureContext.invoice,
         lifecycle: "subscription_deleted",
+        paymentIntent: failureContext.paymentIntent,
       })
     : undefined;
 
@@ -1346,9 +1387,10 @@ async function handleSubscriptionDeleted(
     });
   }
 
-  if (failureInvoice) {
+  if (failureContext) {
     await emitBillingPaymentFailed({
-      invoice: failureInvoice,
+      invoice: failureContext.invoice,
+      paymentIntent: failureContext.paymentIntent,
       customerId,
       userIds,
       orgId: orgId ?? undefined,

@@ -66,28 +66,35 @@ export function invoiceSubscriptionId(
   );
 }
 
-function expandedPaymentIntent(
+function invoicePaymentIntentReference(
+  invoice: Stripe.Invoice,
+): string | Stripe.PaymentIntent | undefined {
+  const invoicePayments = invoice.payments?.data ?? [];
+  const invoicePayment =
+    invoicePayments.find(
+      (payment) =>
+        payment.is_default && payment.payment.type === "payment_intent",
+    ) ??
+    invoicePayments.find(
+      (payment) => payment.payment.type === "payment_intent",
+    );
+
+  return invoicePayment?.payment.payment_intent;
+}
+
+export function invoicePaymentIntent(
   invoice: Stripe.Invoice,
 ): Stripe.PaymentIntent | undefined {
-  const paymentIntent = (
-    invoice as unknown as {
-      payment_intent?: string | Stripe.PaymentIntent | null;
-    }
-  ).payment_intent;
-
+  const paymentIntent = invoicePaymentIntentReference(invoice);
   return paymentIntent && typeof paymentIntent === "object"
     ? paymentIntent
     : undefined;
 }
 
-function paymentIntentId(invoice: Stripe.Invoice): string | undefined {
-  const paymentIntent = (
-    invoice as unknown as {
-      payment_intent?: string | Stripe.PaymentIntent | null;
-    }
-  ).payment_intent;
-
-  return stripeObjectId(paymentIntent);
+export function invoicePaymentIntentId(
+  invoice: Stripe.Invoice,
+): string | undefined {
+  return stripeObjectId(invoicePaymentIntentReference(invoice));
 }
 
 function latestCharge(
@@ -157,11 +164,13 @@ function failureGroup(args: {
 export function subscriptionPaymentFailureProperties({
   invoice,
   lifecycle,
+  paymentIntent: providedPaymentIntent,
 }: {
   invoice: Stripe.Invoice;
   lifecycle: BillingFailureLifecycle;
+  paymentIntent?: Stripe.PaymentIntent;
 }): BillingFailureProperties {
-  const paymentIntent = expandedPaymentIntent(invoice);
+  const paymentIntent = providedPaymentIntent ?? invoicePaymentIntent(invoice);
   const charge = latestCharge(paymentIntent);
   const lastPaymentError = paymentIntent?.last_payment_error;
   const card = charge?.payment_method_details?.card;
@@ -194,7 +203,7 @@ export function subscriptionPaymentFailureProperties({
     amount_remaining_dollars: centsToDollars(invoice.amount_remaining),
     currency: invoice.currency,
     stripe_invoice_id: invoice.id,
-    stripe_payment_intent_id: paymentIntentId(invoice),
+    stripe_payment_intent_id: stripeObjectId(paymentIntent),
     stripe_charge_id:
       stripeObjectId(charge) ?? stripeObjectId(lastPaymentError?.charge),
     failure_code: failureCode,
