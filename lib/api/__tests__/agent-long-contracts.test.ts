@@ -884,6 +884,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         source.match(/resetServedModelTelemetryForRetry\(state\)/g),
       ).toHaveLength(2);
 
+      const catchModelSwitchIdx = source.indexOf(
+        "retryUsedFallbackModel = retryUsesDifferentModel(",
+      );
+      const catchResetIdx = source.indexOf(
+        "resetServedModelTelemetryForRetry(state)",
+        catchModelSwitchIdx,
+      );
+      const catchRetryStreamIdx = source.indexOf(
+        "createStream(fallbackModel)",
+        catchResetIdx,
+      );
+
+      expect(catchModelSwitchIdx).toBeGreaterThan(-1);
+      expect(catchResetIdx).toBeGreaterThan(catchModelSwitchIdx);
+      expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
+
       const retryModelIdx = source.indexOf(
         "const retryModel = shouldRetryWithoutImageToolResults",
       );
