@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
@@ -39,7 +39,7 @@ import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
-  runTerminalCmdTool,
+  createRunTerminalCmdToolSchema,
 } from "./schemas";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
@@ -51,6 +51,16 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+
+type RunTerminalCmdInput = {
+  command: string;
+  brief?: string;
+  justification?: string;
+  prefix_rule?: string[];
+  is_background: boolean;
+  timeout?: number;
+  interactive: boolean;
+};
 
 const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
   pid
@@ -65,21 +75,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const runTerminalCmdTool = createRunTerminalCmdToolSchema({
+    approvalGated: !!context.requestToolApproval,
+    // The conditional schema adds approval-only fields, but both branches
+    // normalize to the same execution input handled below.
+  }) as unknown as Tool<RunTerminalCmdInput, unknown>;
 
   return tool({
     ...runTerminalCmdTool,
     execute: async (
       {
         command,
+        brief,
+        justification,
+        prefix_rule,
         is_background,
         timeout,
         interactive,
-      }: {
-        command: string;
-        is_background: boolean;
-        timeout?: number;
-        interactive: boolean;
-      },
+      }: RunTerminalCmdInput,
       { toolCallId, abortSignal },
     ) => {
       // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
@@ -134,6 +147,26 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
+
+      const approval = await context.requestToolApproval?.({
+        toolCallId,
+        toolName: "run_terminal_cmd",
+        operation: "terminal_execute",
+        target: command,
+        brief,
+        justification,
+        prefixRule: prefix_rule,
+      });
+      if (approval && !approval.approved) {
+        return {
+          result: {
+            output: "",
+            exitCode: 1,
+            error: approval.reason,
+            approvalDenied: true,
+          },
+        };
+      }
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {

@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
+import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
@@ -100,10 +101,12 @@ export default function RootLayout({
         <ChunkLoadRecovery />
         <DataStreamProvider>
           <TodoBlockProvider>
-            <TooltipProvider>
-              {children}
-              <Toaster />
-            </TooltipProvider>
+            <AgentApprovalProvider>
+              <TooltipProvider>
+                {children}
+                <Toaster />
+              </TooltipProvider>
+            </AgentApprovalProvider>
           </TodoBlockProvider>
         </DataStreamProvider>
       </PostHogProvider>

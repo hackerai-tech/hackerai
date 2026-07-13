@@ -2,7 +2,7 @@ import type { Sandbox } from "@e2b/code-interpreter";
 import type { UIMessageStreamWriter } from "ai";
 import type { Geo } from "@vercel/functions";
 import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
-import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
+import type { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import type { ChatMode, SubscriptionTier } from "./chat";
@@ -89,6 +89,241 @@ export type ToolFailureLogger = (
   event: ToolFailureLogEvent,
 ) => void | Promise<void>;
 
+export type AgentToolApprovalGrant = "full_access" | "target_prefix";
+export type AgentToolApprovalGrantKind =
+  "terminal_command" | "terminal_interaction" | "file_change";
+
+export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
+
+const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
+  "agent-approval-sandbox-scope-v1" as const;
+
+export const getAgentApprovalConnectionSandboxIdentity = (
+  connectionId: string,
+): AgentApprovalSandboxIdentity => {
+  if (!connectionId || /[\u0000-\u001f]/.test(connectionId)) {
+    throw new Error("Invalid sandbox connection ID");
+  }
+  return `connection:${connectionId}`;
+};
+
+const isAgentApprovalSandboxIdentity = (
+  value: unknown,
+): value is AgentApprovalSandboxIdentity =>
+  value === "e2b" ||
+  (typeof value === "string" &&
+    value.startsWith("connection:") &&
+    value.length > "connection:".length &&
+    !/[\u0000-\u001f]/.test(value));
+
+export const serializeSandboxScopedAgentApprovalTargetPrefix = ({
+  sandboxIdentity,
+  targetPrefix,
+}: {
+  sandboxIdentity: AgentApprovalSandboxIdentity;
+  targetPrefix: string;
+}): string =>
+  JSON.stringify([
+    AGENT_APPROVAL_SANDBOX_SCOPE_VERSION,
+    sandboxIdentity,
+    targetPrefix,
+  ]);
+
+export const parseSandboxScopedAgentApprovalTargetPrefix = (
+  value: string,
+): {
+  sandboxIdentity: AgentApprovalSandboxIdentity;
+  targetPrefix: string;
+} | null => {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 3 ||
+      parsed[0] !== AGENT_APPROVAL_SANDBOX_SCOPE_VERSION ||
+      !isAgentApprovalSandboxIdentity(parsed[1]) ||
+      typeof parsed[2] !== "string"
+    ) {
+      return null;
+    }
+    return {
+      sandboxIdentity: parsed[1],
+      targetPrefix: parsed[2],
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const getAgentApprovalTargetPrefixForSandbox = ({
+  persistedTargetPrefix,
+  sandboxIdentity,
+}: {
+  persistedTargetPrefix: string;
+  sandboxIdentity: AgentApprovalSandboxIdentity;
+}): string | null => {
+  const scoped = parseSandboxScopedAgentApprovalTargetPrefix(
+    persistedTargetPrefix,
+  );
+  return scoped?.sandboxIdentity === sandboxIdentity
+    ? scoped.targetPrefix
+    : null;
+};
+
+export type AgentToolApprovalDecision = "approve" | "deny";
+
+export type AgentToolApprovalOperation =
+  | "terminal_execute"
+  | "terminal_interact"
+  | "file_write"
+  | "file_append"
+  | "file_edit";
+
+const AGENT_TOOL_APPROVAL_OPERATIONS = [
+  "terminal_execute",
+  "terminal_interact",
+  "file_write",
+  "file_append",
+  "file_edit",
+] as const satisfies readonly AgentToolApprovalOperation[];
+
+export type AgentToolApprovalPromptKind = "terminal" | "file";
+
+export const isAgentToolApprovalOperation = (
+  value: unknown,
+): value is AgentToolApprovalOperation =>
+  typeof value === "string" &&
+  (AGENT_TOOL_APPROVAL_OPERATIONS as readonly string[]).includes(value);
+
+export const getAgentToolApprovalPromptKind = (
+  operation: AgentToolApprovalOperation | undefined,
+): AgentToolApprovalPromptKind | undefined => {
+  if (!operation) return undefined;
+  if (operation === "terminal_execute" || operation === "terminal_interact") {
+    return "terminal";
+  }
+  return "file";
+};
+
+export const getAgentToolApprovalPromptTitle = ({
+  operation,
+  fallback,
+}: {
+  operation: AgentToolApprovalOperation | undefined;
+  fallback?: string;
+}): string | undefined => {
+  if (operation === "terminal_execute") {
+    return "Allow HackerAI to run this terminal command?";
+  }
+  if (operation === "terminal_interact") {
+    return "Allow HackerAI to interact with this terminal session?";
+  }
+  if (operation === "file_write") {
+    return "Allow HackerAI to create this file?";
+  }
+  if (operation === "file_append") {
+    return "Allow HackerAI to append to this file?";
+  }
+  if (operation === "file_edit") {
+    return "Allow HackerAI to edit this file?";
+  }
+  return fallback;
+};
+
+export const getAgentToolApprovalPromptDetail = ({
+  operation,
+  fallback,
+}: {
+  operation: AgentToolApprovalOperation | undefined;
+  fallback?: string;
+}): string | undefined => {
+  const kind = getAgentToolApprovalPromptKind(operation);
+  if (kind === "terminal") {
+    return "Approve to continue, or deny to stop this command.";
+  }
+  if (kind === "file") {
+    return "Approve to continue, or deny to stop this file change.";
+  }
+  return fallback;
+};
+
+export type AgentToolApprovalRequest = {
+  toolCallId: string;
+  toolName: string;
+  operation: AgentToolApprovalOperation;
+  target: string;
+  brief?: string;
+  justification?: string;
+  prefixRule?: string[];
+};
+
+export type AgentToolApprovalPendingRequest = {
+  approvalId: string;
+  toolCallId: string;
+  operation?: AgentToolApprovalOperation;
+  target?: string;
+  justification?: string;
+  prefixRule?: string[];
+  title?: string;
+  detail?: string;
+  kind?: AgentToolApprovalPromptKind;
+  createdAt?: number;
+};
+
+export type AgentToolApprovalPromptRequest = AgentToolApprovalPendingRequest & {
+  title: string;
+};
+
+export type AgentToolApprovalResult =
+  | {
+      approved: true;
+      approvalId: string;
+    }
+  | {
+      approved: false;
+      approvalId?: string;
+      reason: string;
+    };
+
+export type AgentToolApprovalRequester = (
+  request: AgentToolApprovalRequest,
+) => Promise<AgentToolApprovalResult>;
+
+export const AGENT_TOOL_APPROVAL_PROTOCOL_VERSION = 2 as const;
+
+export type AgentToolApprovalAuthorization = {
+  issuedAt: number;
+  userId: string;
+  chatId: string;
+  runId: string;
+  approvalSessionId: string;
+  subscription: SubscriptionTier;
+  organizationId?: string;
+  signature: string;
+};
+
+export type AgentToolApprovalInputRecord = {
+  type: "agent-tool-approval";
+  protocolVersion?: typeof AGENT_TOOL_APPROVAL_PROTOCOL_VERSION;
+  approvalId: string;
+  toolCallId: string;
+  decision: AgentToolApprovalDecision;
+  grant: AgentToolApprovalGrant;
+  targetPrefix?: string;
+  targetKind?: AgentToolApprovalGrantKind;
+  message?: string;
+  at?: number;
+  authorization?: AgentToolApprovalAuthorization;
+};
+
+export type UnsignedAgentToolApprovalInputRecord = Omit<
+  AgentToolApprovalInputRecord,
+  "authorization" | "protocolVersion"
+> & {
+  protocolVersion: typeof AGENT_TOOL_APPROVAL_PROTOCOL_VERSION;
+  authorization: Omit<AgentToolApprovalAuthorization, "signature">;
+};
+
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
@@ -114,4 +349,6 @@ export interface ToolContext {
   onToolCost?: (costDollars: number) => void;
   /** Callback to report handled provider/tool failures to the request's host runtime. */
   onToolFailure?: ToolFailureLogger;
+  /** Optional approval gate for mutating or command-executing agent tools. */
+  requestToolApproval?: AgentToolApprovalRequester;
 }

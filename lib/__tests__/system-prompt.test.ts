@@ -317,6 +317,47 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("You are in ASK MODE");
   });
 
+  it("explains ask-approval mode without asking in chat first", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+      "ask_approval",
+    );
+
+    expect(prompt).toContain("Agent tool approval mode: Ask for approval.");
+    expect(prompt).toContain(
+      "call the appropriate tool with a clear brief; the platform will pause that tool call and ask the user to approve or deny it.",
+    );
+    expect(prompt).toContain(
+      "A text-only response without the needed tool call can end the Agent run before the approval prompt appears.",
+    );
+    expect(prompt).toContain(
+      "If the user denies, cancels, or approval times out, treat that result as the user's decision",
+    );
+  });
+
+  it("keeps full-access mode explicit in agent prompts", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+      "full_access",
+    );
+
+    expect(prompt).toContain("Agent tool approval mode: Full access.");
+    expect(prompt).toContain("Tool calls can run without per-action approval.");
+    expect(prompt).not.toContain("Agent tool approval mode: Ask for approval.");
+  });
+
   it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {
     const localHostContext = `You are executing commands on Linux 6.8 (x64) in DANGEROUS MODE.
 Commands run directly on the host OS "labbox" without Docker isolation.`;

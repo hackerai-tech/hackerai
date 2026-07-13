@@ -42,6 +42,21 @@ const statusSrc = fs.readFileSync(
   "utf8",
 );
 
+const agentApprovalSessionSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-approval-session.ts"),
+  "utf8",
+);
+
+const agentApprovalRouteSrc = fs.readFileSync(
+  path.resolve(__dirname, "../agent-approval-route.ts"),
+  "utf8",
+);
+
+const agentApprovalClientSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../chat/agent-approval-session.ts"),
+  "utf8",
+);
+
 const routeSrc = fs.readFileSync(
   path.resolve(__dirname, "../agent-trigger-route.ts"),
   "utf8",
@@ -512,9 +527,19 @@ describe("agent-long chat UI — completion reconciliation", () => {
 });
 
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
-  test("runs.cancel is called before clearing the stored run ID", () => {
-    const cancelCallIdx = cancelSrc.indexOf("runs.cancel(runId)");
-    // Search for the actual call site after runs.cancel, not the import
+  test("uses the authorized chat snapshot for run and approval session IDs", () => {
+    expect(cancelSrc).toMatch(
+      /const approvalSessionId\s*=\s*chat\s*\?\s*chat\.active_agent_approval_session_id\s*:\s*temporaryRefresh\?\.approvalSessionId;/,
+    );
+    expect(cancelSrc).toMatch(
+      /const runId\s*=\s*chat\s*\?\s*chat\.active_trigger_run_id\s*:\s*temporaryRefresh\?\.runId/,
+    );
+    expect(cancelSrc).not.toMatch(/getActiveTriggerRun/);
+    expect(cancelSrc).toMatch(/expectedApprovalSessionId:\s*approvalSessionId/);
+  });
+
+  test("Trigger cancellation is called before clearing the stored run ID", () => {
+    const cancelCallIdx = cancelSrc.indexOf("cancelAgentTriggerRun(runId)");
     const clearCallIdx = cancelSrc.indexOf(
       "setActiveTriggerRun({",
       cancelCallIdx,
@@ -557,7 +582,7 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{\s*runId,\s*publicAccessToken,\s*chatId\s*\}\)/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 });
@@ -610,7 +635,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
-    expect(routeSrc).toMatch(/metadata:\s*{/);
+    expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
+    expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
   });
@@ -649,12 +675,172 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
     expect(routeSrc).toMatch(/idempotencyKeys/);
+    expect(routeSrc).toMatch(/buildAgentRunDedupeKeyParts/);
     expect(routeSrc).toMatch(/buildAgentRunIdempotencyKey/);
     expect(routeSrc).toMatch(/getLastRequestMessageId/);
     expect(routeSrc).toMatch(/scope:\s*"global"/);
     expect(routeSrc).toMatch(/idempotencyKey:\s*triggerIdempotencyKey/);
     expect(routeSrc).toMatch(/idempotencyKeyTTL:\s*"6h"/);
     expect(routeSrc).toMatch(/existingChat\?\.update_time/);
+  });
+
+  test("uses the turn dedupe key for approval session external IDs", () => {
+    expect(routeSrc).toMatch(/buildAgentApprovalSessionId/);
+    expect(routeSrc).toMatch(/createHash\("sha256"\)/);
+    expect(routeSrc).toMatch(/keyParts:\s*triggerDedupeKeyParts/);
+    expect(routeSrc).toMatch(
+      /approvalProtocolVersion:\s*AGENT_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(/approvalWorkerVersion/);
+    expect(routeSrc).toMatch(/agentRunRequestId/);
+    expect(routeSrc).toMatch(/worker:\$\{approvalWorkerVersion/);
+    expect(routeSrc).not.toMatch(/randomUUID/);
+  });
+
+  test("agent approval denial resolves as rejected without aborting the run", () => {
+    expect(taskSrc).toMatch(/next\.output\.decision\s*===\s*"approve"/);
+    expect(taskSrc).toMatch(
+      /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId\s*\}/,
+    );
+    expect(taskSrc).toMatch(
+      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
+    );
+    expect(taskSrc).toMatch(/record\.message === undefined/);
+    expect(taskSrc).toMatch(
+      /The user denied approval for this operation and said:/,
+    );
+
+    const denyLogIdx = taskSrc.indexOf("tool approval denied");
+    const denyReturnIdx = taskSrc.indexOf("approved: false", denyLogIdx);
+    const abortIdx = taskSrc.indexOf("signal.aborted", denyLogIdx);
+
+    expect(denyLogIdx).toBeGreaterThan(-1);
+    expect(denyReturnIdx).toBeGreaterThan(denyLogIdx);
+    expect(abortIdx === -1 || abortIdx > denyReturnIdx).toBe(true);
+  });
+
+  test("agent approval supports target prefix grants for ask-again behavior", () => {
+    expect(taskSrc).toMatch(/record\.grant === "target_prefix"/);
+    expect(taskSrc).toMatch(/record\.targetPrefix === undefined/);
+    expect(taskSrc).toMatch(/record\.targetKind === undefined/);
+    expect(taskSrc).toMatch(/const approvedTargetGrants/);
+    expect(taskSrc).toMatch(/initialTargetGrants/);
+    expect(taskSrc).toMatch(/persistTargetGrant/);
+    expect(taskSrc).toMatch(/persistAgentApprovalGrant/);
+    expect(taskSrc).toMatch(/agent_approval_grants/);
+    expect(taskSrc).toMatch(
+      /approvedTargetGrant\.kind !== "terminal_interaction"/,
+    );
+    expect(taskSrc).toMatch(/matchesApprovalTargetGrant/);
+    expect(taskSrc).toMatch(/approvalStatus", "auto_approved"/);
+    expect(taskSrc).toMatch(/next\.output\.grant === "target_prefix"/);
+    expect(taskSrc).toMatch(/approvalGrant", "target_prefix"/);
+  });
+
+  test("agent approval pending state is durable until the user responds", () => {
+    expect(taskSrc).toMatch(/buildPendingApprovalRequest/);
+    expect(taskSrc).toMatch(/AgentToolApprovalPendingRequest/);
+    expect(taskSrc).toMatch(/operation:\s*request\.operation/);
+    expect(taskSrc).toMatch(/request\.justification/);
+    expect(taskSrc).toMatch(/request\.prefixRule/);
+    expect(taskSrc).toMatch(/let shouldClearApprovalPending = false/);
+    expect(taskSrc).toMatch(
+      /if\s*\(\s*approvalPendingMarked\s*&&\s*shouldClearApprovalPending\s*\)/,
+    );
+    expect(taskSrc).toMatch(/shouldClearApprovalPending = true/);
+    expect(taskSrc).toMatch(/setApprovalPending\(\s*true,\s*[\s\S]*approvalId/);
+  });
+
+  test("agent approval waits without a wall-clock expiry", () => {
+    expect(taskSrc).not.toMatch(/AGENT_APPROVAL_TIMEOUT/);
+    expect(taskSrc).toMatch(/\.wait<AgentToolApprovalInputRecord>\(\)/);
+    expect(taskSrc).toMatch(/activeRuntimeBudget\.pause\(\)/);
+    expect(taskSrc).toMatch(/activeRuntimeBudget\.resume\(\)/);
+    expect(taskSrc).toMatch(
+      /getActiveElapsedTimeMs:\s*runtimeBudget\.getElapsedTimeMs/,
+    );
+  });
+
+  test("approval tokens are short-lived and refreshable", () => {
+    expect(agentApprovalSessionSrc).toMatch(
+      /DEFAULT_AGENT_APPROVAL_TOKEN_EXPIRATION\s*=\s*"15m"/,
+    );
+    expect(agentApprovalSessionSrc).toMatch(
+      /process\.env\.AGENT_APPROVAL_TOKEN_EXPIRATION/,
+    );
+    expect(routeSrc).toMatch(
+      /expirationTime:\s*AGENT_APPROVAL_TOKEN_EXPIRATION/,
+    );
+    expect(resumeSrc).toMatch(
+      /expirationTime:\s*AGENT_APPROVAL_TOKEN_EXPIRATION/,
+    );
+    expect(routeSrc).not.toMatch(/session\.publicAccessToken\s*\?\?/);
+    expect(triggerBrowserRealtimeSrc).toMatch(/refreshAccessToken/);
+    expect(transportSrc).toMatch(/refreshRunAccessToken/);
+    expect(transportSrc).toMatch(/resumeUrl:\s*getAgentResumeUrl\(chatId\)/);
+  });
+
+  test("temporary approval refresh is signed, user-bound, and content-free", () => {
+    expect(agentApprovalSessionSrc).toMatch(/createHmac\("sha256"/);
+    expect(agentApprovalSessionSrc).toMatch(/httpOnly:\s*true/);
+    expect(agentApprovalSessionSrc).toMatch(/sameSite:\s*"strict"/);
+    expect(resumeSrc).toMatch(/getTemporaryAgentApprovalRefreshHandle/);
+    expect(routeSrc).toMatch(/setTemporaryAgentApprovalRefreshCookie/);
+    expect(agentApprovalSessionSrc).not.toMatch(/messages|prompt|content/);
+  });
+
+  test("approval protocol v2 is explicit and requires route-last deployment", () => {
+    expect(agentApprovalSessionSrc).toMatch(
+      /AGENT_APPROVAL_PROTOCOL_VERSION\s*=\s*\n?\s*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(
+      /approvalProtocolVersion:\s*AGENT_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(routeSrc).toMatch(/Convex -> Trigger worker -> Vercel/);
+    expect(routeSrc).toMatch(/old workers ignore this field/);
+  });
+
+  test("approval decisions are owner-checked, signed, and appended server-side", () => {
+    expect(agentApprovalClientSrc).toMatch(/AGENT_APPROVAL_ENDPOINT/);
+    expect(agentApprovalClientSrc).not.toMatch(/sendTriggerSessionInput/);
+    expect(agentApprovalRouteSrc).toMatch(/getUserIDAndPro\(req\)/);
+    expect(agentApprovalRouteSrc).toMatch(/active_agent_approval_request/);
+    expect(agentApprovalRouteSrc).toMatch(
+      /getTemporaryAgentApprovalRefreshHandle/,
+    );
+    expect(agentApprovalRouteSrc).toMatch(
+      /metadata\.approvalStatus\s*!==\s*"pending"/,
+    );
+    expect(agentApprovalRouteSrc).toMatch(/metadata\.approvalToolCallId/);
+    expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
+    expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
+    expect(taskSrc).toContain('.set("userId", userId)');
+    expect(taskSrc).toContain('.set("approvalSessionId", approvalSessionId)');
+    expect(taskSrc).toMatch(
+      /\.set\(\s*"approvalProtocolVersion",\s*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION/,
+    );
+    expect(taskSrc).toMatch(/await metadata\.flush\(\)/);
+    expect(agentApprovalRouteSrc).toMatch(/signAgentToolApprovalInput/);
+    expect(agentApprovalRouteSrc).toMatch(
+      /sessions\.open\(approvalSessionId\)\.in\.send\(signedInput/,
+    );
+  });
+
+  test("terminal approval cleanup compare-clears stale composer state", () => {
+    expect(taskSrc).toMatch(
+      /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,
+    );
+    expect(resumeSrc).toMatch(
+      /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
+    );
+    expect(statusSrc).toMatch(/clearTerminalAgentRun/);
+    expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
+    expect(chatComponentSrc).toMatch(
+      /const storedAgentApprovalRequest\s*=\s*activeTriggerRunId\s*\?\s*getStoredAgentApprovalRequest\(chatDataForCurrentChat\)\s*:\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
+    );
   });
 
   test("handled tool failures are visible in Trigger logs and metadata", () => {
@@ -673,10 +859,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /await\s+recordAgentLongHandledToolFailureForDashboard/,
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
-    expect(taskSrc).toMatch(/onToolFailure,\s*\)/);
+    expect(taskSrc).toMatch(/onToolFailure,\s*requestToolApproval,\s*\)/);
   });
 
-  test("runs use small subscription-aware Trigger.dev priority offsets", () => {
+  test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
     expect(routeSrc).toMatch(
       /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
@@ -689,6 +875,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\.\.\.\(triggerPriority\s*>\s*0\s*\?\s*{\s*priority:\s*triggerPriority\s*}\s*:\s*{}\)/,
     );
     expect(routeSrc).toMatch(/triggerPriority/);
+    expect(routeSrc).toMatch(/triggerConfig:\s*approvalTriggerConfig/);
+    expect(routeSrc).toMatch(/process\.env\.TRIGGER_VERSION/);
+    expect(routeSrc).not.toMatch(/AGENT_APPROVAL_TRIGGER_VERSION/);
+    expect(routeSrc).toMatch(/lockToVersion:\s*approvalWorkerVersion/);
+    expect(routeSrc).toMatch(
+      /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
+    );
   });
 
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
@@ -708,9 +901,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(activeRunIdx).toBeGreaterThan(parallelIdx);
   });
 
+  test("an unassociated started run is closed and canceled before failing", () => {
+    expect(routeSrc).toMatch(/association\s*!==\s*"updated"/);
+    expect(routeSrc).toMatch(/agent_run_association:\s*association/);
+    expect(routeSrc).toMatch(
+      /closeAgentApprovalSession\([\s\S]*"agent-run-association-failed"/,
+    );
+    expect(routeSrc).toMatch(/cancelAgentTriggerRun\(runId\)/);
+  });
+
   test("start route returns chat id with the public run handle", () => {
     expect(routeSrc).toMatch(
-      /NextResponse\.json\(\{\s*runId:\s*handle\.id,\s*publicAccessToken,\s*chatId,/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 
@@ -1222,25 +1424,58 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long only passes explicit Trigger.dev region when mapped", () => {
-    const routingIdx = routeSrc.indexOf("getTriggerRegionForVercelRequest(");
-    const userLocationIdx = routeSrc.indexOf("userLocation", routingIdx);
-    const triggerIdx = routeSrc.indexOf("tasks.trigger", routingIdx);
-    const regionOptionIdx = routeSrc.indexOf(
+    const userLocationIdx = routeSrc.indexOf(
+      "const userLocation = geolocation(req)",
+    );
+    const routingIdx = routeSrc.indexOf(
+      "getTriggerRegionForVercelRequest(req, userLocation)",
+      userLocationIdx,
+    );
+    const triggerOptionsIdx = routeSrc.indexOf(
+      "const triggerOptions",
+      routingIdx,
+    );
+    const triggerOptionsRegionIdx = routeSrc.indexOf(
       "...(triggerRegion ? { region: triggerRegion } : {})",
-      triggerIdx,
+      triggerOptionsIdx,
+    );
+    const approvalTriggerConfigIdx = routeSrc.indexOf(
+      "const approvalTriggerConfig",
+      triggerOptionsRegionIdx,
+    );
+    const sessionRegionIdx = routeSrc.indexOf(
+      "...(triggerRegion ? { region: triggerRegion } : {})",
+      approvalTriggerConfigIdx,
+    );
+    const sessionStartIdx = routeSrc.indexOf(
+      "sessions.start",
+      approvalTriggerConfigIdx,
+    );
+    const triggerIdx = routeSrc.indexOf(
+      "tasks.trigger",
+      triggerOptionsRegionIdx,
     );
 
+    expect(userLocationIdx).toBeGreaterThan(-1);
     expect(routingIdx).toBeGreaterThan(-1);
-    expect(userLocationIdx).toBeGreaterThan(routingIdx);
-    expect(triggerIdx).toBeGreaterThan(routingIdx);
-    expect(regionOptionIdx).toBeGreaterThan(triggerIdx);
+    expect(routingIdx).toBeGreaterThan(userLocationIdx);
+    expect(triggerOptionsIdx).toBeGreaterThan(routingIdx);
+    expect(triggerOptionsRegionIdx).toBeGreaterThan(triggerOptionsIdx);
+    expect(approvalTriggerConfigIdx).toBeGreaterThan(triggerOptionsRegionIdx);
+    expect(sessionRegionIdx).toBeGreaterThan(approvalTriggerConfigIdx);
+    expect(sessionStartIdx).toBeGreaterThan(sessionRegionIdx);
+    expect(triggerIdx).toBeGreaterThan(triggerOptionsRegionIdx);
+    expect(triggerIdx).toBeGreaterThan(sessionRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
   });
 
   test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
     expect(routeSrc).toMatch(/freeQuotaSubject/);
-    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*freeQuotaSubject/);
+    expect(routeSrc).toMatch(
+      /const agentPayload\s*=\s*{[\s\S]*freeQuotaSubject/,
+    );
+    expect(routeSrc).toMatch(/tasks\.trigger[\s\S]*agentPayload/);
     expect(taskSrc).toMatch(/freeQuotaSubject\?:\s*string/);
     expect(taskSrc).toMatch(
       /const freeUsageSubject\s*=\s*freeQuotaSubject\s*\?\?\s*userId/,

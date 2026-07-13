@@ -8,10 +8,7 @@ import Loading from "@/components/ui/loading";
 interface SidebarHistoryProps {
   chats: any[];
   paginationStatus?:
-    | "LoadingFirstPage"
-    | "CanLoadMore"
-    | "LoadingMore"
-    | "Exhausted";
+    "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
   containerRef?: React.RefObject<HTMLDivElement | null>;
 }
@@ -106,7 +103,12 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           shareId={chat.share_id}
           shareDate={chat.share_date}
           isPinned={chat.pinned_at != null}
-          isStreaming={!!chat.active_stream_id || !!chat.active_trigger_run_id}
+          isStreaming={
+            !!chat.active_stream_id ||
+            !!chat.active_trigger_run_id ||
+            !!chat.active_agent_approval_pending
+          }
+          isAwaitingApproval={!!chat.active_agent_approval_pending}
         />
       ))}
 

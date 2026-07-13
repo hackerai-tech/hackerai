@@ -13,6 +13,42 @@ const usageDeductionFailureReasonValidator = v.union(
   v.literal("deduction_failed"),
 );
 
+const activeAgentApprovalRequestValidator = v.object({
+  approvalId: v.string(),
+  toolCallId: v.string(),
+  operation: v.optional(
+    v.union(
+      v.literal("terminal_execute"),
+      v.literal("terminal_interact"),
+      v.literal("file_write"),
+      v.literal("file_append"),
+      v.literal("file_edit"),
+    ),
+  ),
+  target: v.optional(v.string()),
+  justification: v.optional(v.string()),
+  prefixRule: v.optional(v.array(v.string())),
+  title: v.optional(v.string()),
+  detail: v.optional(v.string()),
+  kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
+  createdAt: v.optional(v.number()),
+});
+
+const agentApprovalTargetGrantValidator = v.union(
+  v.object({
+    kind: v.literal("terminal_command"),
+    targetPrefix: v.string(),
+    executable: v.string(),
+    argv: v.array(v.string()),
+  }),
+  v.object({
+    kind: v.literal("file_change"),
+    targetPrefix: v.string(),
+    path: v.string(),
+    pathFlavor: v.union(v.literal("posix"), v.literal("windows")),
+  }),
+);
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -21,7 +57,16 @@ export default defineSchema({
     finish_reason: v.optional(v.string()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    active_agent_approval_session_id: v.optional(v.string()),
+    active_agent_approval_pending: v.optional(v.boolean()),
+    active_agent_approval_request: v.optional(
+      activeAgentApprovalRequestValidator,
+    ),
+    agent_approval_grants: v.optional(
+      v.array(agentApprovalTargetGrantValidator),
+    ),
     canceled_at: v.optional(v.number()),
+    deletion_started_at: v.optional(v.number()),
     default_model_slug: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
@@ -60,6 +105,11 @@ export default defineSchema({
       "user_id",
       "active_trigger_run_id",
     ])
+    .index("by_user_and_active_approval_session", [
+      "user_id",
+      "active_agent_approval_session_id",
+    ])
+    .index("by_user_and_deletion_started", ["user_id", "deletion_started_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {

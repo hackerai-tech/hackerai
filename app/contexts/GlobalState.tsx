@@ -13,6 +13,7 @@ import React, {
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
+  type AgentPermissionMode,
   type SelectedModel,
   type SidebarContent,
   type QueuedMessage,
@@ -44,7 +45,9 @@ import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
 import {
   readChatMode,
+  readAgentPermissionMode,
   writeChatMode,
+  writeAgentPermissionMode,
   readSelectedModel,
   writeSelectedModel,
   cleanupExpiredDrafts,
@@ -124,6 +127,10 @@ interface GlobalStateType {
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+
+  // Agent tool approval behavior
+  agentPermissionMode: AgentPermissionMode;
+  setAgentPermissionMode: (mode: AgentPermissionMode) => void;
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
@@ -408,6 +415,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
     useSandboxPreference(!!user);
+
+  const [agentPermissionMode, setAgentPermissionMode] =
+    useState<AgentPermissionMode>(() => readAgentPermissionMode());
+
+  useEffect(() => {
+    writeAgentPermissionMode(agentPermissionMode);
+  }, [agentPermissionMode]);
 
   // Check for available local sandbox connections
   const localConnections = useQuery(
@@ -1116,6 +1130,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    agentPermissionMode,
+    setAgentPermissionMode,
     desktopBridgeActive,
     hasLocalSandbox,
     localConnections,

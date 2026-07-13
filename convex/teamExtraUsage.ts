@@ -18,8 +18,7 @@ const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
 const AUTO_RELOAD_OPERATION_LEASE_MS = 2 * 60_000;
 
 type AutoReloadChargeEvaluation =
-  | { allowed: true; amountCents: number }
-  | { allowed: false; reason: string };
+  { allowed: true; amountCents: number } | { allowed: false; reason: string };
 
 const evaluateTeamAutoReloadCharge = ({
   balancePoints,

@@ -28,6 +28,10 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import {
+  type ActiveAgentToolApprovalRequest,
+  useAgentApproval,
+} from "../contexts/AgentApprovalContext";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
@@ -67,6 +71,12 @@ import {
   type ChatMessage,
   type ChatMode,
 } from "@/types";
+import {
+  getAgentToolApprovalPromptDetail,
+  getAgentToolApprovalPromptKind,
+  getAgentToolApprovalPromptTitle,
+  isAgentToolApprovalOperation,
+} from "@/types/agent";
 import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -88,6 +98,69 @@ const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
 type MessagePaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
+export const getStoredAgentApprovalRequest = (
+  chatData: unknown,
+): ActiveAgentToolApprovalRequest | null => {
+  if (!chatData || typeof chatData !== "object") return null;
+  const record = chatData as Record<string, unknown>;
+  if (record.active_agent_approval_pending !== true) return null;
+  const request = record.active_agent_approval_request;
+  if (!request || typeof request !== "object") return null;
+  const approvalRequest = request as Record<string, unknown>;
+  const approvalId = approvalRequest.approvalId;
+  const toolCallId = approvalRequest.toolCallId;
+  if (typeof approvalId !== "string" || typeof toolCallId !== "string") {
+    return null;
+  }
+  const operation = isAgentToolApprovalOperation(approvalRequest.operation)
+    ? approvalRequest.operation
+    : undefined;
+  const fallbackTitle =
+    typeof approvalRequest.title === "string"
+      ? approvalRequest.title
+      : undefined;
+  const title = getAgentToolApprovalPromptTitle({
+    operation,
+    fallback: fallbackTitle,
+  });
+  if (!title) return null;
+  const fallbackDetail =
+    typeof approvalRequest.detail === "string"
+      ? approvalRequest.detail
+      : undefined;
+  const fallbackKind =
+    approvalRequest.kind === "terminal" || approvalRequest.kind === "file"
+      ? approvalRequest.kind
+      : undefined;
+  const kind = getAgentToolApprovalPromptKind(operation) ?? fallbackKind;
+  const detail = getAgentToolApprovalPromptDetail({
+    operation,
+    fallback: fallbackDetail,
+  });
+
+  return {
+    approvalId,
+    toolCallId,
+    title,
+    ...(operation ? { operation } : {}),
+    ...(typeof approvalRequest.target === "string"
+      ? { target: approvalRequest.target }
+      : {}),
+    ...(typeof approvalRequest.justification === "string"
+      ? { justification: approvalRequest.justification }
+      : {}),
+    ...(Array.isArray(approvalRequest.prefixRule) &&
+    approvalRequest.prefixRule.every((part) => typeof part === "string")
+      ? { prefixRule: approvalRequest.prefixRule as string[] }
+      : {}),
+    ...(detail ? { detail } : {}),
+    ...(kind ? { kind } : {}),
+    ...(typeof approvalRequest.createdAt === "number"
+      ? { createdAt: approvalRequest.createdAt }
+      : {}),
+  };
+};
 
 export function getExistingChatLoadState({
   isExistingChat,
@@ -339,6 +412,7 @@ function StreamEffects({
   todos,
   temporaryChatsEnabled,
   sandboxPreference,
+  agentPermissionMode,
   selectedModel,
   resetRef,
   hasActiveStream,
@@ -358,6 +432,7 @@ function StreamEffects({
   todos: Todo[];
   temporaryChatsEnabled: boolean;
   sandboxPreference: string;
+  agentPermissionMode: string;
   selectedModel: string;
   resetRef: RefObject<(() => void) | null>;
   hasActiveStream: boolean | undefined;
@@ -380,6 +455,7 @@ function StreamEffects({
     todos,
     temporaryChatsEnabled,
     sandboxPreference,
+    agentPermissionMode,
     selectedModel,
   });
 
@@ -428,16 +504,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    agentPermissionMode,
     selectedModel,
     setSelectedModel,
     subscription,
     localConnections,
   } = useGlobalState();
+  const { setAgentApprovalSession, clearAgentApprovalSession } =
+    useAgentApproval();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
+
+  useEffect(() => {
+    clearAgentApprovalSession();
+  }, [chatId, clearAgentApprovalSession]);
 
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
@@ -470,6 +553,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
     subscription,
@@ -542,10 +626,20 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
-  const activeTriggerRunRef = useLatestRef(
-    (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      string | undefined,
-  );
+  const activeTriggerRunId = (chatDataForCurrentChat as any)
+    ?.active_trigger_run_id as string | undefined;
+  const storedAgentApprovalRequest = activeTriggerRunId
+    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
+    : null;
+  const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
+  const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (!hasLoadedCurrentChat || activeTriggerRunId) {
+      return;
+    }
+    clearAgentApprovalSession();
+  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
@@ -709,6 +803,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
+        case "data-agent-approval-session": {
+          const approvalData = dataPart.data as {
+            chatId?: unknown;
+            sessionId?: unknown;
+            publicAccessToken?: unknown;
+          };
+          if (
+            typeof approvalData.sessionId === "string" &&
+            typeof approvalData.publicAccessToken === "string" &&
+            (approvalData.chatId === undefined ||
+              approvalData.chatId === chatId)
+          ) {
+            setAgentApprovalSession({
+              chatId,
+              sessionId: approvalData.sessionId,
+              publicAccessToken: approvalData.publicAccessToken,
+            });
+          }
+          break;
+        }
         case "data-upload-status": {
           const uploadData = dataPart.data as {
             message: string;
@@ -1539,6 +1653,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 todos: todosRef.current,
                 temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
+                agentPermissionMode: agentPermissionModeRef.current,
                 selectedModel: requestSelectedModelRef.current,
               },
             },
@@ -1565,6 +1680,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
+    agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
 
@@ -1588,6 +1704,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
+    activeTriggerRunRef,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -1689,6 +1806,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         todos={todos}
         temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
+        agentPermissionMode={agentPermissionMode}
         selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
@@ -1795,6 +1913,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                           <ChatInput
                             onSubmit={handleSubmit}
                             onStop={handleStop}
+                            onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
                             isCentered={true}
@@ -1809,6 +1928,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
+                            storedApprovalRequest={storedAgentApprovalRequest}
                           />
                         </div>
                       )}
@@ -1829,6 +1949,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
                     hasMessages={hasMessages}
@@ -1840,6 +1961,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
+                    storedApprovalRequest={storedAgentApprovalRequest}
                   />
                 )}
             </div>

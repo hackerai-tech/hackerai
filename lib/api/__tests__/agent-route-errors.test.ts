@@ -78,7 +78,10 @@ describe("handleAgentRouteError", () => {
     });
 
     expect(response.status).toBe(500);
-    expect(await response.text()).toBe("Failed to start agent");
+    expect(await response.json()).toMatchObject({
+      code: "bad_request:api",
+      cause: "Failed to start agent",
+    });
     const payload = JSON.parse(
       String((console.error as jest.Mock).mock.calls[0][0]),
     );
@@ -110,7 +113,10 @@ describe("handleAgentRouteError", () => {
     });
 
     expect(response.status).toBe(500);
-    expect(await response.text()).toBe("Failed to cancel agent task");
+    expect(await response.json()).toMatchObject({
+      code: "bad_request:api",
+      cause: "Failed to cancel agent task",
+    });
     const payload = JSON.parse(
       String((console.error as jest.Mock).mock.calls[0][0]),
     );

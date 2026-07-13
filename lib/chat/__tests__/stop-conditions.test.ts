@@ -261,11 +261,10 @@ describe("elapsedTimeExceeds", () => {
         maxDurationMs: 5000,
       },
     ])("$scenario", ({ startOffset, maxDurationMs }) => {
-      const now = Date.now();
       const onFired = jest.fn();
       const condition = elapsedTimeExceeds({
         maxDurationMs,
-        getStartTime: () => now - startOffset,
+        getElapsedTimeMs: () => startOffset,
         onFired,
       });
       expect(condition()).toBe(false);
@@ -273,11 +272,10 @@ describe("elapsedTimeExceeds", () => {
   });
 
   it("returns true when elapsed time equals threshold", () => {
-    const now = Date.now();
     const onFired = jest.fn();
     const condition = elapsedTimeExceeds({
       maxDurationMs: 5000,
-      getStartTime: () => now - 5000,
+      getElapsedTimeMs: () => 5000,
       onFired,
     });
     expect(condition()).toBe(true);
@@ -301,11 +299,10 @@ describe("elapsedTimeExceeds", () => {
         maxDurationMs: 60000,
       },
     ])("$scenario", ({ startOffset, maxDurationMs }) => {
-      const now = Date.now();
       const onFired = jest.fn();
       const condition = elapsedTimeExceeds({
         maxDurationMs,
-        getStartTime: () => now - startOffset,
+        getElapsedTimeMs: () => startOffset,
         onFired,
       });
       expect(condition()).toBe(true);
@@ -313,11 +310,10 @@ describe("elapsedTimeExceeds", () => {
   });
 
   it("calls onFired when it fires", () => {
-    const now = Date.now();
     const onFired = jest.fn();
     const condition = elapsedTimeExceeds({
       maxDurationMs: 5000,
-      getStartTime: () => now - 6000,
+      getElapsedTimeMs: () => 6000,
       onFired,
     });
     condition();
@@ -325,11 +321,10 @@ describe("elapsedTimeExceeds", () => {
   });
 
   it("does NOT call onFired when below threshold", () => {
-    const now = Date.now();
     const onFired = jest.fn();
     const condition = elapsedTimeExceeds({
       maxDurationMs: 5000,
-      getStartTime: () => now - 1000,
+      getElapsedTimeMs: () => 1000,
       onFired,
     });
     condition();
@@ -338,18 +333,18 @@ describe("elapsedTimeExceeds", () => {
     expect(onFired).not.toHaveBeenCalled();
   });
 
-  it("uses dynamic getStartTime() value (not cached)", () => {
+  it("uses dynamic getElapsedTimeMs() value (not cached)", () => {
     const onFired = jest.fn();
-    let startTime = Date.now();
+    let elapsedTimeMs = 0;
     const condition = elapsedTimeExceeds({
       maxDurationMs: 5000,
-      getStartTime: () => startTime,
+      getElapsedTimeMs: () => elapsedTimeMs,
       onFired,
     });
 
     expect(condition()).toBe(false);
 
-    startTime = Date.now() - 6000;
+    elapsedTimeMs = 6000;
     expect(condition()).toBe(true);
     expect(onFired).toHaveBeenCalledTimes(1);
   });

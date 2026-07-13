@@ -1219,12 +1219,37 @@ export const createFile = (context: ToolContext) => {
   const supportsViewInSchema = canViewMultimodalFiles();
   const fileToolSchema = createFileToolSchema({
     supportsView: supportsViewInSchema,
+    approvalGated: !!context.requestToolApproval,
   });
 
   return tool({
     ...fileToolSchema,
-    execute: async ({ action, path, text, range, edits }) => {
+    execute: async (
+      { action, path, brief, text, range, edits },
+      { toolCallId },
+    ) => {
       try {
+        if (action === "write" || action === "append" || action === "edit") {
+          const approval = await context.requestToolApproval?.({
+            toolCallId,
+            toolName: "file",
+            operation:
+              action === "write"
+                ? "file_write"
+                : action === "append"
+                  ? "file_append"
+                  : "file_edit",
+            target: path,
+            brief,
+          });
+          if (approval && !approval.approved) {
+            return {
+              error: approval.reason,
+              approvalDenied: true,
+            };
+          }
+        }
+
         const { sandbox } = await getSandboxForFileTool();
 
         switch (action) {

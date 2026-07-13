@@ -449,6 +449,7 @@ export type AgentStreamContext = {
   };
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
+  getActiveElapsedTimeMs?: () => number;
 
   // Dependencies
   writer: UIMessageStreamWriter;
@@ -1113,7 +1114,9 @@ export async function createAgentStream(
       }),
       elapsedTimeExceeds({
         maxDurationMs: ctx.maxDurationMs,
-        getStartTime: () => ctx.streamStartTime,
+        getElapsedTimeMs:
+          ctx.getActiveElapsedTimeMs ??
+          (() => Date.now() - ctx.streamStartTime),
         onFired: () => {
           state.stoppedDueToElapsedTimeout = true;
         },

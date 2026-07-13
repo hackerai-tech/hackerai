@@ -17,21 +17,11 @@ import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
 type ExtraUsagePurchaseRoute =
-  | "checkout_action"
-  | "confirm"
-  | "webhook"
-  | "repair";
+  "checkout_action" | "confirm" | "webhook" | "repair";
 type ExtraUsagePurchaseResult =
-  | "created"
-  | "paid_seen"
-  | "credited"
-  | "already_processed"
-  | "failed";
+  "created" | "paid_seen" | "credited" | "already_processed" | "failed";
 type MaxModelExtraUsageReason =
-  | "available"
-  | "disabled"
-  | "empty"
-  | "monthly_cap_exhausted";
+  "available" | "disabled" | "empty" | "monthly_cap_exhausted";
 
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
@@ -78,8 +68,7 @@ const getMonthlySpentPointsForCurrentMonth = (
 };
 
 type AutoReloadChargeEvaluation =
-  | { allowed: true; amountCents: number }
-  | { allowed: false; reason: string };
+  { allowed: true; amountCents: number } | { allowed: false; reason: string };
 
 /**
  * Evaluate an auto-reload from one transactional wallet snapshot.

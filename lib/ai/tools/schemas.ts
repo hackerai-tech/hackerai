@@ -11,58 +11,101 @@ export const toolBriefSchema = z
 export const RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 export const RUN_TERMINAL_MAX_TIMEOUT_SECONDS = 600;
 
-export const runTerminalCmdTool = tool({
-  description: `Execute a command on behalf of the user.
-If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
-Commands execute immediately without requiring user approval.
-In using these tools, adhere to the following guidelines:
-1. Use command chaining and pipes for efficiency:
+export const createRunTerminalCmdToolSchema = ({
+  approvalGated = false,
+}: {
+  approvalGated?: boolean;
+} = {}) => {
+  const commandCompositionGuidance = approvalGated
+    ? `1. Prefer one static command per tool call so a safe argv prefix can be approved and reused:
+   - Do not chain commands or use shell operators such as \`&&\`, \`|\`, \`;\`, redirects, or substitutions
+   - Use separate tool calls for multi-step workflows`
+    : `1. Use command chaining and pipes for efficiency:
    - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
-   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)
-2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
-3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
-4. If the command would use a pager, append \` | cat\` to the command.
-5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-6. Dont include any newlines in the command.
-7. Handle large outputs and save scan results to files:
+   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)`;
+  const pagerGuidance = approvalGated
+    ? "4. If the command would use a pager, pass the command's native non-pager flag."
+    : "4. If the command would use a pager, append ` | cat` to the command.";
+  const largeOutputGuidance = approvalGated
+    ? `7. Handle large outputs and save scan results to files:
+  - For complex and long-running scans (e.g., nmap, dirb, gobuster), use the tool's native output-file flags (e.g., \`-oN\` for nmap)
+  - Keep each command static and use separate tool calls to inspect or extract relevant results
+  - Never let full verbose output return to context (causes overflow)`
+    : `7. Handle large outputs and save scan results to files:
   - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
   - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
     - Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
     - Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
     - Anti-pattern: Never let full verbose output return to context (causes overflow)
-  - Always redirect excessive output to files to avoid context overflow.
+  - Always redirect excessive output to files to avoid context overflow.`;
+
+  return tool({
+    description: `Execute a command on behalf of the user.
+If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
+Commands run in the selected sandbox environment.${approvalGated ? " The platform will pause execution after you call this tool and ask the user to approve it; do not ask in chat instead of calling the tool when a command is needed." : ""}
+${approvalGated ? "For every approval-gated command, provide a concise, user-facing justification describing the intended outcome; HackerAI displays it in the approval prompt, so do not merely repeat the command. prefix_rule is optional: provide it only for a narrow, useful category of similar commands the user can safely approve for this conversation. It must be an exact argv prefix represented as separate array elements. Prefer a stable safe prefix over copying the complete command, and omit it when no reusable scope is appropriate. Never provide prefix_rule for destructive commands, shell wrappers, compound commands, redirects, substitutions, environment assignments, wildcards, or other dynamic shell syntax." : ""}
+In using these tools, adhere to the following guidelines:
+${commandCompositionGuidance}
+2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
+3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
+${pagerGuidance}
+5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
+6. Dont include any newlines in the command.
+${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
 9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
 10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout -> reduce scope, break into smaller operations.
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
-  inputSchema: z.object({
-    command: z.string().describe("The shell command to execute"),
-    brief: toolBriefSchema,
-    is_background: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
-      ),
-    timeout: z
-      .number()
-      .optional()
-      .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
-      .describe(
-        `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
-      ),
-    interactive: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
-      ),
-  }),
-});
+    inputSchema: z.object({
+      command: z.string().describe("The shell command to execute"),
+      brief: toolBriefSchema,
+      ...(approvalGated
+        ? {
+            justification: z
+              .string()
+              .max(240)
+              .optional()
+              .describe(
+                "A concise, user-facing reason shown in HackerAI's approval prompt. Explain the intended outcome rather than repeating the command.",
+              ),
+            prefix_rule: z
+              .array(z.string().min(1).max(256))
+              .min(1)
+              .max(16)
+              .optional()
+              .describe(
+                'An optional reusable command scope the user may approve for this conversation. Supply separate argv elements that exactly match the beginning of the command. Choose the narrowest useful stable prefix for a category of similar commands, such as ["git", "status"] or ["ping", "-c", "4"], instead of copying the complete command. Omit it when reuse is unsafe or unnecessary, including destructive commands, shell wrappers, compound commands, redirects, substitutions, environment assignments, wildcards, and other dynamic shell syntax.',
+              ),
+          }
+        : {}),
+      is_background: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
+        ),
+      timeout: z
+        .number()
+        .optional()
+        .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
+        .describe(
+          `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+        ),
+      interactive: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
+        ),
+    }),
+  });
+};
+
+export const runTerminalCmdTool = createRunTerminalCmdToolSchema();
 
 export const INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
 export const INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS = 300;
@@ -178,8 +221,10 @@ const fileEditSchema = z.object({
 
 export const createFileToolSchema = ({
   supportsView,
+  approvalGated = false,
 }: {
   supportsView: boolean;
+  approvalGated?: boolean;
 }) => {
   const actionSchema = (
     supportsView
@@ -199,6 +244,9 @@ export const createFileToolSchema = ({
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
+    approvalGated
+      ? "Write, append, and edit actions are approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first."
+      : null,
     "For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
@@ -224,6 +272,7 @@ export const createFileToolSchema = ({
     "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
   ];
   const instructionsDescription = instructions
+    .filter((instruction): instruction is string => Boolean(instruction))
     .map((instruction, index) => `${index + 1}. ${instruction}`)
     .join("\n");
 

@@ -70,6 +70,36 @@ describe("checkRateLimit", () => {
   };
 
   describe("free users", () => {
+    it("peeks at post-wait Agent capacity without consuming units", async () => {
+      const { checkRateLimitCapacity } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      mockEvalFn.mockResolvedValue(4);
+
+      const result = await checkRateLimitCapacity("user-123", "agent", "free");
+
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        [
+          expect.stringMatching(/^free_limit:user-123:free:\d+$/),
+          "free_referral_bonus:user-123",
+        ],
+        [10],
+      );
+      expect(result.remaining).toBe(4);
+    });
+
+    it("rejects post-wait Agent capacity below the two-unit cost", async () => {
+      const { checkRateLimitCapacity } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      mockEvalFn.mockResolvedValue(1);
+
+      await expect(
+        checkRateLimitCapacity("user-123", "agent", "free"),
+      ).rejects.toMatchObject({ type: "rate_limit" });
+    });
+
     it("should use the shared free rate limit with cost 2 in agent mode", async () => {
       const { checkRateLimit } = getIsolatedModule();
 
@@ -165,6 +195,53 @@ describe("checkRateLimit", () => {
   });
 
   describe("paid users", () => {
+    it("peeks at post-wait paid capacity with zero estimated cost", async () => {
+      const { checkRateLimitCapacity } = getIsolatedModule();
+
+      const result = await checkRateLimitCapacity("user-123", "agent", "pro");
+
+      expect(mockCheckTokenBucketLimit).toHaveBeenCalledWith(
+        "user-123",
+        "pro",
+        0,
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(result.remaining).toBe(5000);
+    });
+
+    it("rejects exhausted paid capacity without usable extra usage", async () => {
+      const { checkRateLimitCapacity } = getIsolatedModule();
+      mockCheckTokenBucketLimit.mockResolvedValue({
+        remaining: 0,
+        resetTime: new Date(),
+        limit: 10_000,
+      });
+
+      await expect(
+        checkRateLimitCapacity("user-123", "agent", "pro"),
+      ).rejects.toMatchObject({ type: "rate_limit" });
+    });
+
+    it("allows exhausted included capacity when current extra usage is usable", async () => {
+      const { checkRateLimitCapacity } = getIsolatedModule();
+      mockCheckTokenBucketLimit.mockResolvedValue({
+        remaining: 0,
+        resetTime: new Date(),
+        limit: 10_000,
+      });
+      const extraUsageConfig = {
+        enabled: true,
+        hasBalance: true,
+        autoReloadEnabled: false,
+      };
+
+      await expect(
+        checkRateLimitCapacity("user-123", "agent", "pro", extraUsageConfig),
+      ).resolves.toMatchObject({ remaining: 0 });
+    });
+
     it("should use token bucket for pro users in agent mode", async () => {
       const { checkRateLimit } = getIsolatedModule();
 

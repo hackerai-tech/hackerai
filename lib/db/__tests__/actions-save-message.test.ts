@@ -42,6 +42,7 @@ const loadSaveMessageWithMocks = async () => {
 
   const {
     deleteChatForBackend,
+    fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getMessagesByChatId,
     saveChat,
@@ -50,6 +51,7 @@ const loadSaveMessageWithMocks = async () => {
   } = await import("../actions");
   return {
     deleteChatForBackend,
+    fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getMessagesByChatId,
     mockCompactMessageForStorage,
@@ -61,6 +63,38 @@ const loadSaveMessageWithMocks = async () => {
     setActiveTriggerRun,
   };
 };
+
+describe("fenceAndGetActiveAgentResourcesForUser", () => {
+  it("finishes every fence batch before enumerating active resources", async () => {
+    const { fenceAndGetActiveAgentResourcesForUser, mockMutation, mockQuery } =
+      await loadSaveMessageWithMocks();
+    const calls: string[] = [];
+    mockMutation
+      .mockImplementationOnce(async () => {
+        calls.push("fence-1");
+        return { fencedChats: 100, hasMore: true };
+      })
+      .mockImplementationOnce(async () => {
+        calls.push("fence-2");
+        return { fencedChats: 1, hasMore: false };
+      });
+    mockQuery.mockImplementationOnce(async () => {
+      calls.push("snapshot");
+      return {
+        resources: [{ chatId: "chat-1", triggerRunId: "run-1" }],
+        hasMore: false,
+      };
+    });
+
+    await expect(
+      fenceAndGetActiveAgentResourcesForUser({ userId: "user-1" }),
+    ).resolves.toEqual({
+      resources: [{ chatId: "chat-1", triggerRunId: "run-1" }],
+      hasMore: false,
+    });
+    expect(calls).toEqual(["fence-1", "fence-2", "snapshot"]);
+  });
+});
 
 describe("saveChat", () => {
   it("retries generic Convex server errors before saving a new chat", async () => {
@@ -391,6 +425,19 @@ describe("getChatById", () => {
 });
 
 describe("setActiveTriggerRun", () => {
+  it("returns the explicit Convex association result", async () => {
+    const { mockMutation, setActiveTriggerRun } =
+      await loadSaveMessageWithMocks();
+    mockMutation.mockResolvedValue("deleting" as never);
+
+    await expect(
+      setActiveTriggerRun({
+        chatId: "chat-1",
+        triggerRunId: "run-1",
+      }),
+    ).resolves.toBe("deleting");
+  });
+
   it("preserves transient database failures with queryable run metadata", async () => {
     const { mockMutation, setActiveTriggerRun } =
       await loadSaveMessageWithMocks();
@@ -1044,6 +1091,8 @@ describe("deleteChatForBackend", () => {
         deleteChatForBackend({
           chatId: "chat-1",
           userId: "user-1",
+          expectedTriggerRunId: "run-1",
+          expectedApprovalSessionId: "approval-session-1",
         }),
       ).rejects.toMatchObject({
         type: "forbidden",

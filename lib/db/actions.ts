@@ -17,7 +17,11 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
-import type { SubscriptionTier, NoteCategory } from "@/types";
+import type {
+  AgentToolApprovalPendingRequest,
+  SubscriptionTier,
+  NoteCategory,
+} from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -36,6 +40,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -52,6 +57,7 @@ const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
 type SummaryReason =
   "token_threshold" | "provider_input_threshold" | "provider_pressure";
@@ -616,15 +622,21 @@ export async function getChatById({ id }: { id: string }) {
 export async function deleteChatForBackend({
   chatId,
   userId,
+  expectedTriggerRunId,
+  expectedApprovalSessionId,
 }: {
   chatId: string;
   userId: string;
+  expectedTriggerRunId: string | null;
+  expectedApprovalSessionId: string | null;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
+    return await getConvexClient().mutation(api.chats.deleteChatForBackend, {
       serviceKey,
       chatId,
       userId,
+      expectedTriggerRunId,
+      expectedApprovalSessionId,
     });
   } catch (error) {
     throw databaseError("chats.deleteChatForBackend", error, {
@@ -649,6 +661,42 @@ export async function getActiveTriggerRunsForUser({
     );
   } catch (error) {
     throw databaseError("chats.getActiveTriggerRunsForUser", error, {
+      user_id: userId,
+    });
+  }
+}
+
+export async function fenceAndGetActiveAgentResourcesForUser({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    for (let batch = 0; batch < MAX_CHAT_DELETION_FENCE_BATCHES; batch++) {
+      const result = await getConvexClient().mutation(
+        api.chats.fenceChatsForDeletion,
+        {
+          serviceKey,
+          userId,
+        },
+      );
+
+      if (!result.hasMore) {
+        return await getConvexClient().query(
+          api.chats.getActiveAgentResourcesForUser,
+          {
+            serviceKey,
+            userId,
+          },
+        );
+      }
+    }
+
+    throw new Error(
+      "Chat deletion fencing is taking longer than expected. Please retry deletion.",
+    );
+  } catch (error) {
+    throw databaseError("chats.fenceAndGetActiveAgentResourcesForUser", error, {
       user_id: userId,
     });
   }
@@ -1409,18 +1457,29 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
+  approvalSessionId,
   expectedRunId,
+  expectedApprovalSessionId,
+  clearApprovalPending,
 }: {
   chatId: string;
   triggerRunId: string | null;
+  approvalSessionId?: string | null;
   expectedRunId?: string;
+  expectedApprovalSessionId?: string;
+  clearApprovalPending?: boolean;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
+    return await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
       serviceKey,
       chatId,
       triggerRunId,
+      ...(approvalSessionId !== undefined ? { approvalSessionId } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
+      ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
     });
   } catch (error) {
     throw databaseError("chats.setActiveTriggerRun", error, {
@@ -1429,6 +1488,55 @@ export async function setActiveTriggerRun({
       expected_run_id: expectedRunId,
     });
   }
+}
+
+export async function setActiveAgentApprovalPending({
+  chatId,
+  pending,
+  request,
+  expectedRunId,
+  expectedApprovalSessionId,
+}: {
+  chatId: string;
+  pending: boolean;
+  request?: AgentToolApprovalPendingRequest;
+  expectedRunId?: string;
+  expectedApprovalSessionId?: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.setActiveAgentApprovalPending, {
+      serviceKey,
+      chatId,
+      pending,
+      ...(request !== undefined ? { request } : {}),
+      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active agent approval state",
+    );
+  }
+}
+
+export async function persistAgentApprovalGrant({
+  chatId,
+  userId,
+  grant,
+}: {
+  chatId: string;
+  userId: string;
+  grant: PersistedAgentApprovalTargetGrant;
+}) {
+  await getConvexClient().mutation(api.chats.persistAgentApprovalGrant, {
+    serviceKey,
+    chatId,
+    userId,
+    grant,
+  });
 }
 
 export async function getActiveTriggerRun({ chatId }: { chatId: string }) {

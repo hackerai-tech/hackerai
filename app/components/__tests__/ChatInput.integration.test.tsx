@@ -12,8 +12,12 @@ import {
   GlobalStateProvider,
   useGlobalState,
 } from "../../contexts/GlobalState";
+import {
+  AgentApprovalProvider,
+  useAgentApproval,
+} from "../../contexts/AgentApprovalContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 
@@ -45,7 +49,9 @@ jest.mock("../../hooks/useFileUpload", () => ({
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <TooltipProvider>{children}</TooltipProvider>
+      <AgentApprovalProvider>
+        <TooltipProvider>{children}</TooltipProvider>
+      </AgentApprovalProvider>
     </GlobalStateProvider>
   );
 };
@@ -66,9 +72,48 @@ const UploadedFilesSetter = ({
   );
 };
 
+const AgentApprovalSetter = () => {
+  const { setChatMode } = useGlobalState();
+  const { setAgentApprovalSession, setActiveToolApprovalRequest } =
+    useAgentApproval();
+
+  useEffect(() => {
+    setChatMode("agent");
+    setAgentApprovalSession({
+      chatId: "approval-chat",
+      sessionId: "agent-approval-session",
+      publicAccessToken: "public-token",
+    });
+    setActiveToolApprovalRequest({
+      approvalId: "approval-1",
+      toolCallId: "tool-1",
+      title: "Allow HackerAI to run this terminal command?",
+      target: "ping -c 4 hackerone.com",
+      justification: "Check whether the target host is reachable.",
+      prefixRule: ["ping", "-c", "4"],
+      detail: "Approve to continue, or deny to stop this command.",
+      kind: "terminal",
+      operation: "terminal_execute",
+    });
+  }, [setActiveToolApprovalRequest, setAgentApprovalSession, setChatMode]);
+
+  return null;
+};
+
+const AgentModeSetter = () => {
+  const { setChatMode } = useGlobalState();
+
+  useEffect(() => {
+    setChatMode("agent");
+  }, [setChatMode]);
+
+  return null;
+};
+
 describe("ChatInput - Integration Tests", () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
+  const mockOnReconnect = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -155,6 +200,203 @@ describe("ChatInput - Integration Tests", () => {
 
       // Queue panel should not be visible in ask mode
       expect(screen.queryByText("Queued messages")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Agent Mode Integration", () => {
+    it("does not show a late approval after the composer stop button is clicked", async () => {
+      let resolveStop: ((stopped: boolean) => void) | undefined;
+      const pendingStop = new Promise<boolean>((resolve) => {
+        resolveStop = resolve;
+      });
+      const stop = jest.fn(() => pendingStop);
+      const approvalRequest = {
+        approvalId: "late-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "curl https://hackerai.co",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute",
+      };
+      const renderChatInput = (
+        status: "ready" | "streaming",
+        storedApprovalRequest: typeof approvalRequest | null,
+      ) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={stop}
+            status={status}
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={storedApprovalRequest}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderChatInput("streaming", null));
+
+      fireEvent.click(screen.getByLabelText("Stop generation"));
+      rerender(renderChatInput("streaming", approvalRequest));
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+
+      await act(async () => resolveStop?.(true));
+      rerender(renderChatInput("ready", null));
+      rerender(renderChatInput("ready", approvalRequest));
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+    });
+
+    it("replaces the composer with an approval selector while awaiting approval", async () => {
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="approval-chat"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("agent-approval-prompt"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Allow once" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "More approval options" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+      expect(
+        screen.getByText("Check whether the target host is reachable."),
+      ).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+    });
+
+    it("renders recovery controls while a stored approval reconnects", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+      expect(
+        screen.getByText("Reconnecting to the Agent approval session..."),
+      ).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Allow once" }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+      expect(mockOnStop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+    });
+
+    it("restores the approval prompt when stopping the Agent fails", async () => {
+      const failedStop = jest.fn(async () => false);
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={failedStop}
+            status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("Reconnecting to the Agent approval session..."),
+        ).toBeInTheDocument(),
+      );
+      expect(failedStop).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders retry and stop controls when stored approval reconnection fails", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="error"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.getByText("Could not reconnect to the Agent approval session."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Retry connection" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop agent" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+      expect(mockOnReconnect).toHaveBeenCalledTimes(1);
     });
   });
 

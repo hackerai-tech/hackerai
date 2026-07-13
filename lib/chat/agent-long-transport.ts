@@ -2,6 +2,7 @@ import { fetchWithErrorHandlers } from "@/lib/utils";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
 import {
   AGENT_API_ENDPOINT,
+  AGENT_RESUME_ENDPOINT,
   AGENT_STATUS_ENDPOINT,
   LEGACY_AGENT_RESUME_ENDPOINT,
   LEGACY_AGENT_STATUS_ENDPOINT,
@@ -11,6 +12,7 @@ import {
   readTriggerRunStream,
   retrieveTriggerRunStatus,
 } from "./trigger-browser-realtime";
+import { createContentSequenceGuard } from "./agent-long-content-sequence-guard";
 
 /**
  * `fetch` adapter for Trigger-backed Agent mode used by the chat transport.
@@ -34,6 +36,42 @@ type RunHandle = {
   runId: string;
   publicAccessToken: string;
   chatId?: string;
+  approvalSessionId?: string;
+  approvalSessionPublicAccessToken?: string;
+};
+
+const getAgentResumeUrl = (chatId: string | undefined): string | undefined =>
+  chatId
+    ? `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`
+    : undefined;
+
+const refreshRunAccessToken = async ({
+  resumeUrl,
+  runId,
+  signal,
+}: {
+  resumeUrl: string;
+  runId: string;
+  signal: AbortSignal;
+}): Promise<string> => {
+  const response = await fetch(resumeUrl, {
+    method: "GET",
+    cache: "no-store",
+    credentials: "same-origin",
+    signal,
+  });
+  if (response.status === 204) {
+    throw new Error("The Agent run is no longer active.");
+  }
+  if (!response.ok) {
+    throw new Error(`Agent run token refresh failed: ${response.status}`);
+  }
+
+  const handle = (await response.json()) as Partial<RunHandle>;
+  if (handle.runId !== runId || typeof handle.publicAccessToken !== "string") {
+    throw new Error("Agent run token refresh returned a different run.");
+  }
+  return handle.publicAccessToken;
 };
 
 type AgentLongRealtimeCancel = () => Promise<void> | void;
@@ -166,7 +204,11 @@ const getStatusEndpointFromResumeUrl = (url: string): string => {
 const buildSSEResponseFromRun = (
   handle: RunHandle,
   signal?: AbortSignal,
-  options?: { chatId?: string; statusEndpoint?: string },
+  options?: {
+    chatId?: string;
+    statusEndpoint?: string;
+    resumeUrl?: string;
+  },
 ): Response => {
   const { runId, publicAccessToken } = handle;
   const encoder = new TextEncoder();
@@ -195,6 +237,29 @@ const buildSSEResponseFromRun = (
       let streamIterator: AsyncIterator<unknown> | undefined;
       let userAborted = false;
       const isControllerErrored = () => controller.desiredSize === null;
+      const enqueueAgentApprovalSessionPart = () => {
+        if (
+          !handle.approvalSessionId ||
+          !handle.approvalSessionPublicAccessToken ||
+          closed
+        ) {
+          return;
+        }
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: "data-agent-approval-session",
+              id: `agent-approval-session-${runId}`,
+              transient: true,
+              data: {
+                chatId,
+                sessionId: handle.approvalSessionId,
+                publicAccessToken: handle.approvalSessionPublicAccessToken,
+              },
+            })}\n\n`,
+          ),
+        );
+      };
 
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
@@ -269,6 +334,8 @@ const buildSSEResponseFromRun = (
           readAbortController.abort();
           return;
         }
+
+        enqueueAgentApprovalSessionPart();
 
         const completedRunDrainTimeout = Symbol("completed-run-drain-timeout");
         let completedRunDrainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -375,12 +442,24 @@ const buildSSEResponseFromRun = (
         }, QUIET_STREAM_STATUS_POLL_INTERVAL_MS);
         void pollRunStatusWhenIdle({ beforeFirstEvent: true });
 
+        const resumeUrl = options?.resumeUrl;
+        const streamSignal = readAbortController.signal;
         const uiStream = readTriggerRunStream<unknown>(
           runId,
           AGENT_UI_STREAM_ID,
           {
             accessToken: publicAccessToken,
-            signal: readAbortController.signal,
+            ...(resumeUrl
+              ? {
+                  refreshAccessToken: () =>
+                    refreshRunAccessToken({
+                      resumeUrl,
+                      runId,
+                      signal: streamSignal,
+                    }),
+                }
+              : {}),
+            signal: streamSignal,
             timeoutInSeconds: STREAM_IDLE_TIMEOUT_SECONDS,
           },
         );
@@ -407,6 +486,7 @@ const buildSSEResponseFromRun = (
         let batchedDeltaCount = 0;
         let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
         const toolInputDedup = createToolInputDedupFilter();
+        const contentSequenceGuard = createContentSequenceGuard();
 
         const flushDeltaBuffers = () => {
           if (deltaFlushTimer !== null) {
@@ -512,6 +592,14 @@ const buildSSEResponseFromRun = (
           const chunkType = (chunk as { type?: string }).type;
           const chunkId = (chunk as { id?: string }).id;
           const chunkDelta = (chunk as { delta?: string }).delta;
+
+          if (
+            contentSequenceGuard.shouldDrop(
+              chunk as { type?: string; id?: string },
+            )
+          ) {
+            continue;
+          }
 
           if (
             (chunkType === "text-delta" || chunkType === "reasoning-delta") &&
@@ -647,6 +735,7 @@ export const fetchAgentLongStream = async (
     const handle: RunHandle = await startResponse.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      resumeUrl: getAgentResumeUrl(chatId),
       statusEndpoint: AGENT_STATUS_ENDPOINT,
     });
   } finally {
@@ -680,6 +769,7 @@ export const resumeAgentLongStream = async (
     const handle: RunHandle = await response.json();
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
+      resumeUrl: url,
       statusEndpoint: getStatusEndpointFromResumeUrl(url),
     });
   } finally {

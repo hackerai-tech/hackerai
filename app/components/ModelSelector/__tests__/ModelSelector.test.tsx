@@ -5,9 +5,8 @@ import type { SubscriptionTier } from "@/types/chat";
 
 let mockSubscription: SubscriptionTier;
 let mockMaxEntitlement: unknown;
-const mockUseQuery = jest.fn(
-  (_query: unknown, args: unknown) =>
-    args === "skip" ? undefined : mockMaxEntitlement,
+const mockUseQuery = jest.fn((_query: unknown, args: unknown) =>
+  args === "skip" ? undefined : mockMaxEntitlement,
 );
 const mockRedirectToPricing = jest.fn();
 const mockOpenSettingsDialog = jest.fn();

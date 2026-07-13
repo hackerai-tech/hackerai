@@ -11,6 +11,7 @@ type AgentRouteErrorContext = {
   userId?: string;
   chatId?: string;
   runId?: string;
+  approvalSessionId?: string;
   stage?: string;
 };
 
@@ -74,7 +75,7 @@ export function handleAgentRouteError({
 }: {
   error: unknown;
   endpoint: AgentApiEndpoint;
-  action: "start" | "resume" | "cancel" | "status";
+  action: "start" | "resume" | "cancel" | "status" | "approve";
   fallbackMessage: string;
   context?: AgentRouteErrorContext;
 }) {
@@ -96,9 +97,17 @@ export function handleAgentRouteError({
       user_id: context.userId,
       chat_id: context.chatId,
       trigger_run_id: context.runId,
+      approval_session_id: context.approvalSessionId,
       stage: context.stage,
       ...serializeRouteError(error),
     }),
   );
-  return new NextResponse(fallbackMessage, { status: 500 });
+  return NextResponse.json(
+    {
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: fallbackMessage,
+    },
+    { status: 500 },
+  );
 }

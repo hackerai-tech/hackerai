@@ -3,12 +3,14 @@
 import { AttachmentButton } from "@/app/components/AttachmentButton";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
+import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
 import {
   SubmitStopButton,
   type SubmitStopButtonProps,
 } from "./SubmitStopButton";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
@@ -28,14 +30,19 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {user ? (
-        <ModelSelector
-          value={selectedModel}
-          onChange={setSelectedModel}
-          mode={chatMode}
-        />
+      {isAgentMode(chatMode) ? (
+        <div className="hidden md:block">
+          <AgentPermissionSelector />
+        </div>
       ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
+        {user ? (
+          <ModelSelector
+            value={selectedModel}
+            onChange={setSelectedModel}
+            mode={chatMode}
+          />
+        ) : null}
         <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>
     </div>

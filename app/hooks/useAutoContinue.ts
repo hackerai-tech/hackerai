@@ -26,6 +26,7 @@ export interface UseAutoContinueParams {
   todos: Todo[];
   temporaryChatsEnabled: boolean;
   sandboxPreference: string;
+  agentPermissionMode: string;
   selectedModel: string;
 }
 
@@ -38,6 +39,7 @@ export function useAutoContinue({
   todos,
   temporaryChatsEnabled,
   sandboxPreference,
+  agentPermissionMode,
   selectedModel,
 }: UseAutoContinueParams) {
   const { dataStream } = useDataStreamState();
@@ -53,6 +55,7 @@ export function useAutoContinue({
   const sendMessageRef = useLatestRef(sendMessage);
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const selectedModelRef = useLatestRef(selectedModel);
   const isPartForCurrentChat = (part: ScopedDataUIPart) =>
     part.__chatId === undefined || part.__chatId === chatId;
@@ -122,6 +125,7 @@ export function useAutoContinue({
             todos: todosRef.current,
             temporary: temporaryChatsEnabledRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: selectedModelRef.current,
           },
         },
@@ -142,6 +146,7 @@ export function useAutoContinue({
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
+    agentPermissionModeRef,
     selectedModelRef,
   ]);
 

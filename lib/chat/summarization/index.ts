@@ -51,9 +51,7 @@ export type { SummarizationResult, SummarizationUsage } from "./helpers";
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
 type CompactionLogReason =
-  | "provider_pressure"
-  | "provider_input_tokens"
-  | "estimated_token_threshold";
+  "provider_pressure" | "provider_input_tokens" | "estimated_token_threshold";
 
 type SummarizationAttempt = "primary" | "fallback";
 

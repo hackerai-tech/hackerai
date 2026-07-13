@@ -35,6 +35,8 @@ import {
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
+import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
+import { v4 as uuidv4 } from "uuid";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -52,6 +54,7 @@ interface UseChatHandlersProps {
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
+  activeTriggerRunRef?: RefObject<string | undefined>;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -71,6 +74,7 @@ export const useChatHandlers = ({
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
+  activeTriggerRunRef,
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
@@ -91,7 +95,12 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
+    agentPermissionMode,
     selectedModel,
+    sidebarOpen,
+    sidebarContent,
+    openSidebar,
+    closeSidebar,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
@@ -113,7 +122,10 @@ export const useChatHandlers = ({
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
+  const sidebarOpenRef = useLatestRef(sidebarOpen);
+  const sidebarContentRef = useLatestRef(sidebarContent);
 
   const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
     file.uploaded &&
@@ -152,25 +164,29 @@ export const useChatHandlers = ({
   const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
     sanitizeForConvexValue(parts) as ChatMessage["parts"];
 
-  // Mirrors the transport routing rule in app/components/chat.tsx. Persistent
-  // chats only; temporary chats use the legacy Redis pub/sub cancel path.
+  // A persisted active run takes precedence over the current UI mode. This
+  // matters while restoring an approval before mode initialization completes.
   const shouldCancelTriggerRun = () =>
-    !temporaryChatsEnabledRef.current &&
-    shouldUseAgentLongForAgent({
-      mode: chatModeRef.current,
-      subscription: subscriptionRef.current,
-      isTauri: isTauriEnvironment(),
-    });
+    Boolean(activeTriggerRunRef?.current) ||
+    (!temporaryChatsEnabledRef.current &&
+      shouldUseAgentLongForAgent({
+        mode: chatModeRef.current,
+        subscription: subscriptionRef.current,
+        isTauri: isTauriEnvironment(),
+      }));
 
-  const cancelTriggerRun = () => {
+  const cancelTriggerRun = async (): Promise<void> => {
     if (!shouldCancelTriggerRun()) return;
-    fetch(AGENT_CANCEL_ENDPOINT, {
+    const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId }),
-    }).catch((error) => {
-      console.error("Failed to cancel trigger.dev run:", error);
     });
+    if (!response.ok) {
+      throw new Error(
+        `Agent cancellation failed with status ${response.status}`,
+      );
+    }
   };
 
   /**
@@ -260,6 +276,30 @@ export const useChatHandlers = ({
     return normalizedMessages;
   };
 
+  const stopActiveRunForReplacement = async (): Promise<void> => {
+    const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
+      cancelTriggerRun(),
+      stopActiveStream({ skipSave: true }),
+    ]);
+
+    if (triggerCancelResult.status === "rejected") {
+      console.error(
+        "Failed to cancel trigger.dev run before replacement:",
+        triggerCancelResult.reason,
+      );
+      toast.error("Could not restart the Agent run. Please try again.");
+      throw triggerCancelResult.reason;
+    }
+    if (streamStopResult.status === "rejected") {
+      throw streamStopResult.reason;
+    }
+  };
+
+  const hasActiveRunToReplace = () =>
+    status === "streaming" ||
+    status === "submitted" ||
+    Boolean(activeTriggerRunRef?.current);
+
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
 
@@ -319,7 +359,9 @@ export const useChatHandlers = ({
       } else if (queueBehavior === "stop-and-send") {
         // Cancel the trigger.dev run for Agent streams so the prior
         // run stops burning compute instead of finishing in the background.
-        cancelTriggerRun();
+        void cancelTriggerRun().catch((error) => {
+          console.error("Failed to cancel trigger.dev run:", error);
+        });
 
         await stopActiveStream();
         // Continue to send the new message immediately below (don't return)
@@ -379,6 +421,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
             },
@@ -397,6 +440,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
             },
@@ -419,16 +463,23 @@ export const useChatHandlers = ({
     // Clear any active status indicators immediately
     onStopCallback?.();
 
-    // Fire the trigger.dev cancel in parallel with stopActiveStream so the
-    // Trigger.dev API round-trip overlaps the Convex cancel/save instead of
-    // sequencing after it.
-    cancelTriggerRun();
+    const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
+      cancelTriggerRun(),
+      stopActiveStream(),
+    ]);
 
-    try {
-      await stopActiveStream();
-    } catch (error) {
-      console.error("Error in handleStop:", error);
+    if (triggerCancelResult.status === "rejected") {
+      console.error(
+        "Failed to cancel trigger.dev run:",
+        triggerCancelResult.reason,
+      );
+      toast.error("Could not stop the Agent run. Please try again.");
     }
+    if (streamStopResult.status === "rejected") {
+      console.error("Error in handleStop:", streamStopResult.reason);
+    }
+
+    return triggerCancelResult.status === "fulfilled";
   };
 
   const handleRegenerate = async () => {
@@ -436,9 +487,10 @@ export const useChatHandlers = ({
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -452,6 +504,21 @@ export const useChatHandlers = ({
     // Without this, the SDK's regenerate() only removes the last assistant,
     // leaving old auto-continue chain messages visible in the UI.
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
+
+    const currentSidebarContent = sidebarContentRef.current;
+    if (sidebarOpenRef.current && currentSidebarContent) {
+      const nextSidebarContent = reconcileSidebarContentAfterRegeneration(
+        trimmedMessages,
+        currentSidebarContent,
+      );
+
+      if (!nextSidebarContent) {
+        closeSidebar();
+      } else if (nextSidebarContent !== currentSidebarContent) {
+        openSidebar(nextSidebarContent);
+      }
+    }
+
     setMessages(trimmedMessages);
 
     const shouldSendClientMessagesForRegenerate =
@@ -478,10 +545,12 @@ export const useChatHandlers = ({
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModelRef.current,
           },
         }),
@@ -494,8 +563,10 @@ export const useChatHandlers = ({
             messages: trimmedMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModelRef.current,
           },
         }),
@@ -508,9 +579,10 @@ export const useChatHandlers = ({
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
@@ -539,10 +611,12 @@ export const useChatHandlers = ({
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
@@ -556,8 +630,10 @@ export const useChatHandlers = ({
             messages: messagesToLastUser,
             todos: cleanedTodos,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: requestSelectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
@@ -574,9 +650,10 @@ export const useChatHandlers = ({
     setIsAutoResuming(false);
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (status === "streaming") {
-      await stopActiveStream({ skipSave: true });
+    if (hasActiveRunToReplace()) {
+      await stopActiveRunForReplacement();
     }
+    const agentRunRequestId = uuidv4();
 
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
@@ -674,8 +751,10 @@ export const useChatHandlers = ({
             messages: [],
             todos: cleanedTodosForEdit,
             regenerate: true,
+            agentRunRequestId,
             temporary: false,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },
@@ -713,8 +792,10 @@ export const useChatHandlers = ({
             messages: messagesUpToEdit,
             todos: cleanedTodosForEdit,
             regenerate: true,
+            agentRunRequestId,
             temporary: true,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },
@@ -741,6 +822,7 @@ export const useChatHandlers = ({
             todos,
             temporary: temporaryChatsEnabled,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: continuationSelectedModel,
           },
         },
@@ -789,6 +871,7 @@ export const useChatHandlers = ({
             todos,
             temporary: temporaryChatsEnabled,
             sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
 
             selectedModel: requestSelectedModel,
           },

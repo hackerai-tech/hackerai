@@ -29,8 +29,17 @@ type RetrieveTriggerRunStatusOptions = {
 
 type ReadTriggerRunStreamOptions = {
   accessToken: string;
+  refreshAccessToken?: () => Promise<string>;
   signal?: AbortSignal;
   timeoutInSeconds?: number;
+};
+
+type SendTriggerSessionInputOptions = {
+  sessionId: string;
+  accessToken: string;
+  partId: string;
+  value: unknown;
+  signal?: AbortSignal;
 };
 
 const TRIGGER_API_BASE_URL = "https://api.trigger.dev";
@@ -39,8 +48,23 @@ const TRIGGER_API_VERSION = "2025-07-16";
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_SEEN_STREAM_IDS = 5_000;
 const NON_RETRYABLE_STATUSES = new Set([400, 404, 409, 410, 422]);
+const AUTHORIZATION_FAILURE_STATUSES = new Set([401, 403]);
 
 class TriggerRealtimeNonRetryableError extends Error {}
+
+export class TriggerSessionInputHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "TriggerSessionInputHttpError";
+  }
+}
+
+export const isTriggerSessionInputAuthorizationError = (error: unknown) =>
+  error instanceof TriggerSessionInputHttpError &&
+  AUTHORIZATION_FAILURE_STATUSES.has(error.status);
 
 const getTriggerStreamHeaders = (
   accessToken: string,
@@ -65,6 +89,18 @@ const getTriggerStreamHeaders = (
 
   return headers;
 };
+
+const getTriggerJsonHeaders = (
+  accessToken: string,
+): Record<string, string> => ({
+  Authorization: `Bearer ${accessToken}`,
+  "Content-Type": "application/json",
+  "trigger-version": TRIGGER_VERSION,
+  "x-trigger-api-version": TRIGGER_API_VERSION,
+  "x-trigger-client": "browser",
+  "x-trigger-realtime-streams-version": "v2",
+  "x-trigger-source": "sdk",
+});
 
 const linkAbort = (
   parent: AbortSignal | undefined,
@@ -244,6 +280,45 @@ export async function retrieveTriggerRunStatus(
   return run.status;
 }
 
+export async function sendTriggerSessionInput({
+  sessionId,
+  accessToken,
+  partId,
+  value,
+  signal,
+}: SendTriggerSessionInputOptions): Promise<void> {
+  const abortController = new AbortController();
+  const unlinkAbort = linkAbort(signal, abortController);
+  const timeoutId = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(
+      `${TRIGGER_API_BASE_URL}/realtime/v1/sessions/${encodeURIComponent(
+        sessionId,
+      )}/in/append`,
+      {
+        method: "POST",
+        headers: {
+          ...getTriggerJsonHeaders(accessToken),
+          "X-Part-Id": partId,
+        },
+        body: JSON.stringify(value),
+        signal: abortController.signal,
+      },
+    );
+
+    if (!response.ok) {
+      throw new TriggerSessionInputHttpError(
+        `Trigger session append failed: ${response.status}`,
+        response.status,
+      );
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    unlinkAbort();
+  }
+}
+
 export async function* readTriggerRunStream<T>(
   runId: string,
   streamKey: string,
@@ -251,8 +326,10 @@ export async function* readTriggerRunStream<T>(
 ): AsyncGenerator<T> {
   const abortController = new AbortController();
   const unlinkAbort = linkAbort(options.signal, abortController);
+  let accessToken = options.accessToken;
   let lastEventId: string | undefined;
   let retryCount = 0;
+  let refreshedAfterAuthorizationFailure = false;
   const seenStreamIds = new Set<string>();
 
   const rememberSeenStreamId = (id: string) => {
@@ -281,7 +358,7 @@ export async function* readTriggerRunStream<T>(
       try {
         const response = await fetch(streamUrl, {
           headers: getTriggerStreamHeaders(
-            options.accessToken,
+            accessToken,
             lastEventId,
             options.timeoutInSeconds,
           ),
@@ -290,6 +367,33 @@ export async function* readTriggerRunStream<T>(
         clearTimeout(fetchTimeoutId);
 
         if (!response.ok) {
+          if (AUTHORIZATION_FAILURE_STATUSES.has(response.status)) {
+            if (
+              !options.refreshAccessToken ||
+              refreshedAfterAuthorizationFailure
+            ) {
+              throw new TriggerRealtimeNonRetryableError(
+                `Trigger stream request failed: ${response.status}`,
+              );
+            }
+
+            refreshedAfterAuthorizationFailure = true;
+            let refreshedAccessToken: string;
+            try {
+              refreshedAccessToken = await options.refreshAccessToken();
+            } catch {
+              throw new TriggerRealtimeNonRetryableError(
+                "Trigger stream access token refresh failed",
+              );
+            }
+            if (!refreshedAccessToken || refreshedAccessToken === accessToken) {
+              throw new TriggerRealtimeNonRetryableError(
+                "Trigger stream access token refresh returned no new token",
+              );
+            }
+            accessToken = refreshedAccessToken;
+            continue;
+          }
           if (NON_RETRYABLE_STATUSES.has(response.status)) {
             throw new TriggerRealtimeNonRetryableError(
               `Trigger stream request failed: ${response.status}`,
@@ -300,6 +404,7 @@ export async function* readTriggerRunStream<T>(
           continue;
         }
 
+        refreshedAfterAuthorizationFailure = false;
         const streamVersion = response.headers.get("X-Stream-Version") ?? "v1";
         let receivedEventOnConnection = false;
 

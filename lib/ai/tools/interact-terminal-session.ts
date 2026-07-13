@@ -41,11 +41,13 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       {
         session: sessionId,
         action,
+        brief,
         input,
         timeout,
       }: {
         session: string;
         action: "send" | "wait" | "view" | "kill";
+        brief?: string;
         input?: string;
         timeout?: number;
       },
@@ -142,6 +144,26 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         },
       });
 
+      const requestTerminalInteractionApproval = async (
+        target: string,
+      ): Promise<ActionResult | null> => {
+        const approval = await context.requestToolApproval?.({
+          toolCallId,
+          toolName: "interact_terminal_session",
+          operation: "terminal_interact",
+          target,
+          brief,
+        });
+        if (!approval || approval.approved) return null;
+        return {
+          result: {
+            output: "",
+            error: approval.reason,
+            approvalDenied: true,
+          },
+        };
+      };
+
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
@@ -158,6 +180,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // that doesn't tell the model the session is dead.
         const priorExit = peekSessionExit(session);
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
+
+        const approvalDenied = await requestTerminalInteractionApproval(
+          `send to ${sessionId}: ${input}`,
+        );
+        if (approvalDenied) return approvalDenied;
 
         emitPriorContext(session);
 
@@ -264,6 +291,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const lookup = getSessionOrError("kill", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
+
+        const approvalDenied = await requestTerminalInteractionApproval(
+          `kill ${sessionId}`,
+        );
+        if (approvalDenied) return approvalDenied;
 
         // Skip the snapshot dump — the user already saw the final state via
         // prior view/wait/send blocks; a one-line confirmation reads cleaner

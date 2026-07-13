@@ -156,7 +156,7 @@ export function accumulateChunksToMessage(
         const inv = getToolInvocation(chunk.toolCallId);
         if (inv && "state" in inv)
           (inv as { state?: string }).state = "approval-requested";
-        if (inv && "approval" in inv)
+        if (inv)
           (inv as { approval?: { id: string } }).approval = {
             id: chunk.approvalId,
           };

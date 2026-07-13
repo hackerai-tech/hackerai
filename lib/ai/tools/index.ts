@@ -30,6 +30,7 @@ import type {
   SubscriptionTier,
   SandboxBootInfo,
   ToolFailureLogger,
+  AgentToolApprovalRequester,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -60,6 +61,7 @@ export const createTools = (
   onSandboxBoot?: (info: SandboxBootInfo) => void,
   modelName?: string,
   onToolFailure?: ToolFailureLogger,
+  requestToolApproval?: AgentToolApprovalRequester,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -126,6 +128,7 @@ export const createTools = (
     appendMetadataStream,
     onToolCost,
     onToolFailure,
+    requestToolApproval,
   };
 
   const buildTools = (): ToolSet => {
