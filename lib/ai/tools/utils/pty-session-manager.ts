@@ -1,5 +1,5 @@
 /**
- * Per-chat PTY session store.
+ * Per-chat terminal session store.
  *
  * Lifetime model for M1: sessions live only for the duration of a single
  * assistant streaming response. `chat-handler.onFinish` calls `closeAll(chatId)`
@@ -7,6 +7,11 @@
  * sandbox — the Node-side object here is only a per-chat cache with ring
  * buffer, idle/lifetime timers and bookkeeping to compute deltas for
  * `action=wait` / `action=view`.
+ *
+ * Most sessions are interactive PTYs. A foreground non-interactive command
+ * that outlives its initial wait window is registered as `kind="command"` so
+ * the model receives a real opaque session id instead of trying to derive one
+ * from an OS PID.
  */
 
 import type { PtyHandle } from "./e2b-pty-adapter";
@@ -27,10 +32,14 @@ export const DEFAULT_PTY_COLS = 120;
 export const DEFAULT_PTY_ROWS = 30;
 
 const CLOSE_EXIT_FALLBACK_MS = 2_000;
+const FAILED_COMMAND_CLEANUP_RETRY_BASE_MS = 5_000;
+const FAILED_COMMAND_CLEANUP_RETRY_MAX_MS = 30_000;
+const MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS = 6;
 
 export interface PtySession {
   readonly sessionId: string;
   readonly chatId: string;
+  readonly kind: "pty" | "command";
   readonly pid: number;
   cols: number;
   rows: number;
@@ -58,6 +67,7 @@ export interface CreateSessionOpts {
   createHandle: () => Promise<PtyHandle>;
   cols: number;
   rows: number;
+  kind?: "pty" | "command";
 }
 
 interface InternalSession extends PtySession {
@@ -67,6 +77,10 @@ interface InternalSession extends PtySession {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** hard cap timer — set at create, never reset. */
   lifetimeTimer: ReturnType<typeof setTimeout> | null;
+  /** bounded retry timer after command transport termination fails. */
+  cleanupRetryTimer: ReturnType<typeof setTimeout> | null;
+  /** consecutive unexpected command cleanup failures. */
+  cleanupFailureCount: number;
   /** onData unsubscribe function. */
   unsubscribe: (() => void) | null;
   /** True once close() has been initiated — prevents re-entry. */
@@ -119,7 +133,10 @@ export class PtySessionManager {
       const session: InternalSession = {
         sessionId,
         chatId,
-        pid: handle.pid,
+        kind: opts.kind ?? "pty",
+        get pid() {
+          return handle.pid;
+        },
         cols: opts.cols,
         rows: opts.rows,
         createdAt: now,
@@ -131,6 +148,8 @@ export class PtySessionManager {
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,
+        cleanupRetryTimer: null,
+        cleanupFailureCount: 0,
         unsubscribe: null,
         closing: false,
         exitedNaturally: null,
@@ -144,7 +163,7 @@ export class PtySessionManager {
       // idle + lifetime timers
       this.armIdleTimer(session);
       session.lifetimeTimer = setTimeout(() => {
-        void this.killAndRemove(session, "lifetime");
+        void this.killAndRemove(session, "lifetime").catch(() => {});
       }, SESSION_MAX_LIFETIME_MS);
 
       // Natural exit — mark as exited but keep session around so the model
@@ -247,6 +266,17 @@ export class PtySessionManager {
     await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
   }
 
+  /**
+   * Remove a completed, unexposed session without sending a redundant kill.
+   * Used for ordinary non-interactive commands that finish inside the initial
+   * run_terminal_cmd wait window.
+   */
+  forget(chatId: string, sessionId: string): void {
+    const session = this.chats.get(chatId)?.get(sessionId);
+    if (!session) return;
+    this.removeSession(session);
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   private onData(session: InternalSession, bytes: Uint8Array): void {
@@ -262,7 +292,7 @@ export class PtySessionManager {
   private armIdleTimer(session: InternalSession): void {
     if (session.idleTimer) clearTimeout(session.idleTimer);
     session.idleTimer = setTimeout(() => {
-      void this.killAndRemove(session, "idle");
+      void this.killAndRemove(session, "idle").catch(() => {});
     }, SESSION_IDLE_TIMEOUT_MS);
   }
 
@@ -341,7 +371,12 @@ export class PtySessionManager {
       clearTimeout(session.lifetimeTimer);
       session.lifetimeTimer = null;
     }
+    if (session.cleanupRetryTimer) {
+      clearTimeout(session.cleanupRetryTimer);
+      session.cleanupRetryTimer = null;
+    }
 
+    let unexpectedKillError: unknown;
     try {
       await session.handle.kill();
     } catch (err) {
@@ -355,7 +390,44 @@ export class PtySessionManager {
           "[pty-session-manager] kill failed pid=" + session.pid + ":",
           err,
         );
+        unexpectedKillError = err;
       }
+    }
+
+    // A command session represents a still-running foreground execution. If
+    // its transport could not confirm termination, keep the handle and output
+    // buffer registered rather than claiming success and losing the only safe
+    // way to retry cleanup. Natural exit or a later cleanup attempt can still
+    // settle and remove it.
+    if (unexpectedKillError && session.kind === "command") {
+      session.closing = false;
+      session.cleanupFailureCount += 1;
+      const lifetimeRemaining =
+        session.createdAt + SESSION_MAX_LIFETIME_MS - Date.now();
+      const cleanupExhausted =
+        session.cleanupFailureCount >= MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS ||
+        lifetimeRemaining <= 0;
+
+      if (cleanupExhausted) {
+        // The transport repeatedly failed to terminate a command. Drop only
+        // the local bookkeeping at the bounded retry/lifetime cap so one
+        // broken handle cannot permanently consume a per-chat session slot.
+        this.removeSession(session);
+        throw unexpectedKillError;
+      }
+
+      const retryDelayMs = Math.min(
+        FAILED_COMMAND_CLEANUP_RETRY_BASE_MS *
+          2 ** (session.cleanupFailureCount - 1),
+        FAILED_COMMAND_CLEANUP_RETRY_MAX_MS,
+      );
+      session.cleanupRetryTimer = setTimeout(() => {
+        void this.killAndRemove(session, "idle").catch(() => {});
+      }, retryDelayMs);
+      session.lifetimeTimer = setTimeout(() => {
+        void this.killAndRemove(session, "lifetime").catch(() => {});
+      }, lifetimeRemaining);
+      throw unexpectedKillError;
     }
 
     await Promise.race([
@@ -384,6 +456,10 @@ export class PtySessionManager {
     if (session.lifetimeTimer) {
       clearTimeout(session.lifetimeTimer);
       session.lifetimeTimer = null;
+    }
+    if (session.cleanupRetryTimer) {
+      clearTimeout(session.cleanupRetryTimer);
+      session.cleanupRetryTimer = null;
     }
     const chat = this.chats.get(session.chatId);
     if (chat) {

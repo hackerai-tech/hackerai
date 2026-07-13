@@ -95,10 +95,19 @@ export const TRUNCATION_MESSAGE =
   "\n\n[... OUTPUT TRUNCATED - middle content removed ...]\n\n";
 export const FILE_READ_TRUNCATION_MESSAGE =
   "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]\n\n";
-export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
-  pid
-    ? `\n\nCommand output paused after ${seconds} seconds. Command continues in background with PID: ${pid}`
-    : `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
+export const TIMEOUT_MESSAGE = (
+  seconds: number,
+  pid?: number,
+  session?: string,
+) => {
+  if (session) {
+    const pidSuffix = pid ? ` (PID: ${pid})` : "";
+    return `\n\nCommand output paused after ${seconds} seconds. Command continues in terminal session ${session}${pidSuffix}. Use interact_terminal_session with this exact session ID to wait, view, or kill it.`;
+  }
+
+  const pidSuffix = pid ? ` with PID: ${pid}` : "";
+  return `\n\nCommand output paused after ${seconds} seconds. Command continues in the background${pidSuffix}, but no reusable terminal session was created. Do not derive a session ID from the PID or call interact_terminal_session for this command.`;
+};
 
 export const FULL_OUTPUT_SAVED_MESSAGE = (
   filePath: string,

@@ -11,7 +11,8 @@ export const ANSI_REGEX =
 export const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 
 /**
- * Collect output for up to `timeoutMs`, then resolve. Aborts early on `signal`.
+ * Collect output for up to `timeoutMs`, then resolve. Aborts early on `signal`
+ * or when the underlying process exits.
  *
  * Streams every raw chunk through `onChunk` for the UI writer before
  * consuming the session delta and returning.
@@ -69,6 +70,7 @@ export async function waitForOutput(
 
     const onAbort = () => finish();
     signal?.addEventListener("abort", onAbort, { once: true });
+    void session.handle.exited.then(finish, finish);
 
     function finish() {
       if (settled) return;

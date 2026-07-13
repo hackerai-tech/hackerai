@@ -107,7 +107,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         }
         const found = ptySessionManager.get(chatId, sid);
         if (!found) {
-          return { error: errorResult(`Session ${sid} not found.`) };
+          return {
+            error: errorResult(
+              `Session ${sid} not found. Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one.`,
+            ),
+          };
         }
         return { session: found };
       };
@@ -174,6 +178,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
+        if (session.kind === "command") {
+          return errorResult(
+            `Session ${sessionId} belongs to a non-interactive command and does not accept input. Use action=wait, view, or kill.`,
+          );
+        }
 
         // Fast-fail if the PTY already exited — otherwise sendInput on E2B
         // rejects with an opaque `[not_found] process with pid N not found`
@@ -250,13 +259,14 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         );
         await drainEmitQueue();
         const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const exited = alreadyExited ?? (await peekExited(session));
         const out: Record<string, unknown> = {
           output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
           sessionSnapshot: snapshots.cleaned,
           rawSnapshot: snapshots.raw,
         };
         if (session.bufferTruncated) out.bufferTruncated = true;
-        if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
+        if (exited) out.exited = { exitCode: exited.exitCode };
         return { result: out };
       };
 
@@ -301,11 +311,21 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // prior view/wait/send blocks; a one-line confirmation reads cleaner
         // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
-        await ptySessionManager.close(chatId, session.sessionId);
+        try {
+          await ptySessionManager.close(chatId, session.sessionId);
+        } catch (err) {
+          const retained = ptySessionManager.get(chatId, session.sessionId);
+          return errorResult(
+            `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. ${retained ? "The session was retained so cleanup can be retried." : "The bounded cleanup limit was reached, so local session tracking was removed."}`,
+          );
+        }
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
         return {
           result: {
-            output: "Successfully killed interactive shell.",
+            output:
+              session.kind === "pty"
+                ? "Successfully killed interactive shell."
+                : "Successfully killed non-interactive command session.",
             exitCode: exit.exitCode,
           },
         };
