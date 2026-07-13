@@ -164,7 +164,9 @@ function makeContext(opts: {
     userID: "u1",
     chatId: opts.chatId ?? "chat-1",
     fileAccumulator: {} as never,
-    backgroundProcessTracker: {} as never,
+    backgroundProcessTracker: {
+      addProcess: jest.fn(),
+    } as never,
     ptySessionManager,
     mode: "agent",
     modelName: "configured-model",
@@ -338,6 +340,113 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ).toContain("echo hi");
   });
 
+  test("returns a real opaque session when a foreground command outlives its wait window", async () => {
+    let finishCommand!: (result: {
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }) => void;
+    let streamStdout: ((data: string) => void) | undefined;
+    const pendingCommand = new Promise<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }>((resolve) => {
+      finishCommand = resolve;
+    });
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (
+            _command: string,
+            opts?: { onStdout?: (data: string) => void },
+          ) => {
+            streamStdout = opts?.onStdout;
+            return pendingCommand;
+          },
+        ),
+      },
+    };
+
+    const { context, ptySessionManager } = makeContext({ sandbox: nonE2B });
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "whois hackerai.co",
+      brief: "query WHOIS",
+      is_background: false,
+      timeout: 0.01,
+      interactive: false,
+    })) as {
+      result: {
+        output: string;
+        session?: string;
+        timedOut?: boolean;
+        exitCode: number | null;
+      };
+    };
+
+    expect(result.result.timedOut).toBe(true);
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
+    expect(result.result.session).not.toBe("cmd-1689");
+    expect(result.result.output).toContain(
+      `terminal session ${result.result.session}`,
+    );
+    expect(result.result.output).toContain(
+      "Use interact_terminal_session with this exact session ID",
+    );
+
+    const session = ptySessionManager.get("chat-1", result.result.session!);
+    expect(session?.kind).toBe("command");
+
+    streamStdout?.("WHOIS complete\n");
+    finishCommand({ stdout: "WHOIS complete\n", stderr: "", exitCode: 0 });
+    await expect(session?.handle.exited).resolves.toEqual({ exitCode: 0 });
+    expect(
+      new TextDecoder().decode(ptySessionManager.snapshot(session!)),
+    ).toContain("WHOIS complete");
+
+    ptySessionManager.forget("chat-1", result.result.session!);
+  });
+
+  test("marks detached background PIDs as non-resumable", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn().mockResolvedValue({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          pid: 1689,
+        }),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sleep 30",
+      is_background: true,
+      timeout: 5,
+      interactive: false,
+    })) as {
+      result: {
+        output: string;
+        pid?: number;
+        session?: string;
+        resumable?: boolean;
+      };
+    };
+
+    expect(result.result.pid).toBe(1689);
+    expect(result.result.session).toBeUndefined();
+    expect(result.result.resumable).toBe(false);
+    expect(result.result.output).toContain(
+      "do not pass this PID to interact_terminal_session",
+    );
+  });
+
   test("does not block destructive-looking commands", async () => {
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
@@ -450,7 +559,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }
   });
 
-  test("does not report noisy timeout termination when PID discovery fails", async () => {
+  test("cancels a managed noisy command when PID discovery fails", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     const pendingCommand = new Promise<never>(() => {});
@@ -495,10 +604,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         };
       };
 
-      expect(result.result.exitCode).toBeNull();
-      expect(result.result.terminatedOnTimeout).toBeUndefined();
-      expect(result.result.output).toContain("continues in background");
-      expect(result.result.output).not.toContain(
+      expect(result.result.exitCode).toBe(124);
+      expect(result.result.terminatedOnTimeout).toBe(true);
+      expect(result.result.output).toContain(
         "noisy foreground process was terminated",
       );
       expect(nonE2B.commands.run).not.toHaveBeenCalledWith("kill -9 123", {});
@@ -519,8 +627,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         user_id: "u1",
         tool_call_id: "call-1",
         output_truncated: true,
-        termination_attempted: false,
-        termination_succeeded: false,
+        termination_attempted: true,
+        termination_succeeded: true,
       });
       expect(noisyTimeoutLog?.pid).toBeUndefined();
     } finally {

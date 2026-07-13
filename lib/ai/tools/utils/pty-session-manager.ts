@@ -1,5 +1,5 @@
 /**
- * Per-chat PTY session store.
+ * Per-chat terminal session store.
  *
  * Lifetime model for M1: sessions live only for the duration of a single
  * assistant streaming response. `chat-handler.onFinish` calls `closeAll(chatId)`
@@ -7,6 +7,11 @@
  * sandbox — the Node-side object here is only a per-chat cache with ring
  * buffer, idle/lifetime timers and bookkeeping to compute deltas for
  * `action=wait` / `action=view`.
+ *
+ * Most sessions are interactive PTYs. A foreground non-interactive command
+ * that outlives its initial wait window is registered as `kind="command"` so
+ * the model receives a real opaque session id instead of trying to derive one
+ * from an OS PID.
  */
 
 import type { PtyHandle } from "./e2b-pty-adapter";
@@ -31,6 +36,7 @@ const CLOSE_EXIT_FALLBACK_MS = 2_000;
 export interface PtySession {
   readonly sessionId: string;
   readonly chatId: string;
+  readonly kind: "pty" | "command";
   readonly pid: number;
   cols: number;
   rows: number;
@@ -58,6 +64,7 @@ export interface CreateSessionOpts {
   createHandle: () => Promise<PtyHandle>;
   cols: number;
   rows: number;
+  kind?: "pty" | "command";
 }
 
 interface InternalSession extends PtySession {
@@ -119,7 +126,10 @@ export class PtySessionManager {
       const session: InternalSession = {
         sessionId,
         chatId,
-        pid: handle.pid,
+        kind: opts.kind ?? "pty",
+        get pid() {
+          return handle.pid;
+        },
         cols: opts.cols,
         rows: opts.rows,
         createdAt: now,
@@ -245,6 +255,17 @@ export class PtySessionManager {
     if (!chat) return;
     const sessions = Array.from(chat.values());
     await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
+  }
+
+  /**
+   * Remove a completed, unexposed session without sending a redundant kill.
+   * Used for ordinary non-interactive commands that finish inside the initial
+   * run_terminal_cmd wait window.
+   */
+  forget(chatId: string, sessionId: string): void {
+    const session = this.chats.get(chatId)?.get(sessionId);
+    if (!session) return;
+    this.removeSession(session);
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

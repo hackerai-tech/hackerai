@@ -85,21 +85,21 @@ ${largeOutputGuidance}
         .optional()
         .default(false)
         .describe(
-          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
+          "Run the command as a detached background process. Only meaningful when interactive=false; ignored otherwise. Detached processes return a PID but no reusable terminal session, so never pass that PID to interact_terminal_session. Use FALSE if you need output or a resumable session; TRUE only for long-running processes whose output you do not need to poll.",
         ),
       timeout: z
         .number()
         .optional()
         .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command output before returning. For interactive=false, quiet foreground commands can keep running in background on timeout; noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for command output before returning. A quiet foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy that returned session exactly and never derive one from its PID. Noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
         .optional()
         .default(false)
         .describe(
-          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
+          "When true, opens an input-capable PTY and returns a reusable `session` ID. Use `interact_terminal_session` to continue it with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. Foreground interactive=false commands can also return a wait/view/kill session if they exceed the initial timeout, but those sessions do not accept send. E2B and local (Centrifugo) sandboxes only.",
         ),
     }),
   });
@@ -121,12 +121,14 @@ export const interactTerminalSessionTool = tool({
 </supported_actions>
 
 <instructions>
-- Sessions are created by \`run_terminal_cmd\` with \`interactive=true\`; pass the returned \`session\` id here
+- Only call this tool when the preceding \`run_terminal_cmd\` result contains an explicit \`session\` field; copy that value exactly
+- A PID is not a session ID. Never derive a session from a PID (for example, never turn PID 1689 into \`cmd-1689\`)
+- Input-capable sessions are created with \`interactive=true\`; timed-out foreground commands may return non-interactive sessions that support wait/view/kill but not send
 - When using \`view\` action, ensure command has completed execution before using its output
 - Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
 - Processes are NEVER killed on timeout - they keep running in the session; \`timeout\` only controls how long to wait for output before returning
 - Use \`wait\` action when a process needs additional time to complete and return
-- Only use \`wait\` after \`send\` (or after \`run_terminal_cmd\` returned without finishing); decide whether to wait based on the prior output
+- Only use \`wait\` after \`send\`, or after \`run_terminal_cmd\` returned without finishing and included an explicit \`session\` field; decide whether to wait based on the prior output
 - DO NOT use \`wait\` for long-running daemon processes
 - \`send\` writes input and captures only the immediate response chunk; if the process needs more time before it replies, follow up with \`action=wait\`
 - \`input\` is sent verbatim. Without a trailing \\n (or \`Enter\`), the line is typed but NOT submitted - a follow-up \`send\` will append to the same line. ALWAYS include \\n unless you specifically want to type without pressing Enter (e.g. building up a key sequence)
@@ -158,7 +160,7 @@ export const interactTerminalSessionTool = tool({
     session: z
       .string()
       .describe(
-        "The unique identifier of the target shell session (returned by `run_terminal_cmd` with `interactive=true`)",
+        "The exact opaque session identifier explicitly returned by run_terminal_cmd. Never pass a PID or construct a session identifier yourself.",
       ),
     timeout: z
       .number()

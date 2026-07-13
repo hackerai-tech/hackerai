@@ -20,6 +20,10 @@ import {
 } from "./utils/sandbox-command-options";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
 import {
+  createCommandSessionHandle,
+  type CommandSessionHandle,
+} from "./utils/command-session-handle";
+import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
   type PtySession,
@@ -412,6 +416,44 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             let execution: any = null;
             let handler: ReturnType<typeof createTerminalHandler> | null = null;
             let processId: number | null = null; // Store PID for all processes
+            let commandSession: PtySession | null = null;
+            let commandHandle: CommandSessionHandle | null = null;
+            let commandSessionExposed = false;
+            const commandAbortController = new AbortController();
+
+            const forgetUnexposedCommandSession = () => {
+              if (!commandSession || commandSessionExposed) return;
+              ptySessionManager.forget(chatId, commandSession.sessionId);
+            };
+
+            const terminateManagedCommand = async (): Promise<boolean> => {
+              if (isCentrifugoSandbox(sandboxInstance)) {
+                if (processId) {
+                  return terminateProcessReliably(
+                    sandboxInstance,
+                    null,
+                    processId,
+                  );
+                }
+                if (!commandAbortController.signal.aborted) {
+                  commandAbortController.abort();
+                }
+                return true;
+              }
+
+              if (!processId && execution?.pid) {
+                processId = execution.pid;
+              }
+              if (!processId) {
+                processId = await findProcessPid(sandboxInstance, command);
+              }
+              if (processId) commandHandle?.setPid(processId);
+              return terminateProcessReliably(
+                sandboxInstance,
+                execution,
+                processId,
+              );
+            };
 
             const shouldTerminateNoisyTimedOutCommand = () => {
               if (is_background || !handler) return false;
@@ -469,7 +511,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // from the killed process might trigger retries
               resolved = true;
 
-              if (isCentrifugoSandbox(sandboxInstance)) {
+              if (commandHandle) {
+                try {
+                  const terminated = await terminateManagedCommand();
+                  if (!terminated) {
+                    console.warn(
+                      "[Terminal Command] Managed command could not be terminated during abort",
+                    );
+                  }
+                } catch (error) {
+                  console.error(
+                    "[Terminal Command] Error during managed command abort:",
+                    error,
+                  );
+                }
+                commandHandle.resolveExit(130);
+                forgetUnexposedCommandSession();
+              } else if (isCentrifugoSandbox(sandboxInstance)) {
                 const result = handler ? handler.getResult() : { output: "" };
                 if (handler) {
                   handler.cleanup();
@@ -482,36 +540,36 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   },
                 });
                 return;
-              }
+              } else {
+                // Try to get PID from execution object first (cheap, no shell call)
+                if (!processId && execution && (execution as any)?.pid) {
+                  processId = (execution as any).pid;
+                }
 
-              // Try to get PID from execution object first (cheap, no shell call)
-              if (!processId && execution && (execution as any)?.pid) {
-                processId = (execution as any).pid;
-              }
+                // Fall back to PID discovery via pgrep/ps for any command type
+                if (!processId) {
+                  processId = await findProcessPid(sandboxInstance, command);
+                }
 
-              // Fall back to PID discovery via pgrep/ps for any command type
-              if (!processId) {
-                processId = await findProcessPid(sandboxInstance, command);
-              }
-
-              // Terminate the current process
-              try {
-                if ((execution && execution.kill) || processId) {
-                  await terminateProcessReliably(
-                    sandboxInstance,
-                    execution,
-                    processId,
-                  );
-                } else {
-                  console.warn(
-                    "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                // Terminate the current process
+                try {
+                  if ((execution && execution.kill) || processId) {
+                    await terminateProcessReliably(
+                      sandboxInstance,
+                      execution,
+                      processId,
+                    );
+                  } else {
+                    console.warn(
+                      "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                    );
+                  }
+                } catch (error) {
+                  console.error(
+                    "[Terminal Command] Error during abort termination:",
+                    error,
                   );
                 }
-              } catch (error) {
-                console.error(
-                  "[Terminal Command] Error during abort termination:",
-                  error,
-                );
               }
 
               // Clean up and resolve
@@ -550,6 +608,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   if (resolved) {
                     return;
                   }
+                  // Claim completion before any async PID/termination work so
+                  // a command exiting at the timeout boundary cannot win the
+                  // race and unregister the session we are about to return.
+                  resolved = true;
+                  if (commandSession) commandSessionExposed = true;
 
                   // Try to get PID from execution object first (if available)
                   if (!processId && execution && (execution as any)?.pid) {
@@ -559,28 +622,32 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   const terminateNoisyCommand =
                     shouldTerminateNoisyTimedOutCommand();
 
-                  // For foreground commands on stream timeout, try to discover
-                  // PID for user reference and, for noisy truncated output,
-                  // terminate the process before the sandbox transport keeps
-                  // buffering output until MAX_COMMAND_EXECUTION_TIME.
-                  if (!processId && !is_background) {
+                  // A real opaque terminal session is sufficient for ordinary
+                  // foreground timeouts. PID discovery is only needed when a
+                  // noisy command must be terminated defensively.
+                  if (!processId && !is_background && terminateNoisyCommand) {
                     processId = await findProcessPid(sandboxInstance, command);
                   }
+                  if (processId) commandHandle?.setPid(processId);
 
                   let terminationAttempted = false;
                   let terminationSucceeded = false;
                   let terminationError: unknown;
                   if (terminateNoisyCommand) {
                     terminationAttempted = Boolean(
-                      (execution && execution.kill) || processId,
+                      commandHandle ||
+                      (execution && execution.kill) ||
+                      processId,
                     );
                     try {
                       if (terminationAttempted) {
-                        terminationSucceeded = await terminateProcessReliably(
-                          sandboxInstance,
-                          execution,
-                          processId,
-                        );
+                        terminationSucceeded = commandHandle
+                          ? await terminateManagedCommand()
+                          : await terminateProcessReliably(
+                              sandboxInstance,
+                              execution,
+                              processId,
+                            );
                       }
                     } catch (error) {
                       terminationError = error;
@@ -595,6 +662,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
                   const commandTerminated =
                     terminateNoisyCommand && terminationSucceeded;
+                  if (commandTerminated) {
+                    commandSessionExposed = false;
+                    commandHandle?.resolveExit(124);
+                    forgetUnexposedCommandSession();
+                  }
+                  const resumableSession = commandTerminated
+                    ? undefined
+                    : commandSession?.sessionId;
+                  if (resumableSession) commandSessionExposed = true;
                   const timeoutMessage = commandTerminated
                     ? TERMINATED_TIMEOUT_MESSAGE(
                         effectiveStreamTimeout,
@@ -603,11 +679,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     : TIMEOUT_MESSAGE(
                         effectiveStreamTimeout,
                         processId ?? undefined,
+                        resumableSession,
                       );
 
                   await createTerminalWriter(timeoutMessage);
 
-                  resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   const result = handler
                     ? handler.getResult(processId ?? undefined, {
@@ -621,6 +697,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     result: {
                       output: result.output,
                       exitCode: commandTerminated ? 124 : null,
+                      timedOut: true,
+                      ...(resumableSession && {
+                        session: resumableSession,
+                        ...(processId ? { pid: processId } : {}),
+                      }),
                       ...(commandTerminated && {
                         terminatedOnTimeout: true,
                       }),
@@ -633,17 +714,45 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Register abort listener
             abortSignal?.addEventListener("abort", onAbort, { once: true });
 
+            const commandSessionReady: Promise<void> = is_background
+              ? Promise.resolve()
+              : (() => {
+                  commandHandle = createCommandSessionHandle({
+                    kill: terminateManagedCommand,
+                  });
+                  return ptySessionManager
+                    .create(chatId, {
+                      cols,
+                      rows,
+                      kind: "command",
+                      createHandle: async () => commandHandle!,
+                    })
+                    .then((session) => {
+                      commandSession = session;
+                    });
+                })();
+
+            const forwardCommandOutput = (output: string) => {
+              void handler?.stdout(output);
+              commandHandle?.emitText(output);
+            };
+
             const commonOptions = buildSandboxCommandOptions(
               sandboxInstance,
               is_background
                 ? undefined
                 : {
-                    onStdout: handler!.stdout,
-                    onStderr: handler!.stderr,
+                    onStdout: forwardCommandOutput,
+                    onStderr: forwardCommandOutput,
                   },
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
-              ? { ...commonOptions, signal: abortSignal }
+              ? {
+                  ...commonOptions,
+                  signal: is_background
+                    ? abortSignal
+                    : commandAbortController.signal,
+                }
               : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
@@ -689,60 +798,70 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               stderr: string;
               exitCode: number;
               pid?: number;
-            }> = is_background
-              ? retryWithBackoff(
-                  async () => {
-                    const result = await sandboxInstance.commands.run(
-                      effectiveCommand,
-                      {
-                        ...runOptions,
-                        background: true,
-                      },
-                    );
-                    // Normalize the result to include exitCode
-                    return {
-                      stdout: result.stdout,
-                      stderr: result.stderr,
-                      exitCode: result.exitCode ?? 0,
-                      pid: (result as { pid?: number }).pid,
-                    };
-                  },
-                  {
-                    maxRetries: 6,
-                    baseDelayMs: 500,
-                    jitterMs: 50,
-                    isPermanentError,
-                    // Retry logs are too noisy - they're expected behavior
-                    logger: () => {},
-                  },
-                )
-              : retryWithBackoff(
-                  () =>
-                    sandboxInstance.commands.run(effectiveCommand, runOptions),
-                  {
-                    maxRetries: 6,
-                    baseDelayMs: 500,
-                    jitterMs: 50,
-                    isPermanentError,
-                    // Retry logs are too noisy - they're expected behavior
-                    logger: () => {},
-                  },
-                );
+            }> = commandSessionReady.then(() => {
+              if (resolved || abortSignal?.aborted) {
+                return { stdout: "", stderr: "", exitCode: 130 };
+              }
+              return is_background
+                ? retryWithBackoff(
+                    async () => {
+                      const result = await sandboxInstance.commands.run(
+                        effectiveCommand,
+                        {
+                          ...runOptions,
+                          background: true,
+                        },
+                      );
+                      // Normalize the result to include exitCode
+                      return {
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        exitCode: result.exitCode ?? 0,
+                        pid: (result as { pid?: number }).pid,
+                      };
+                    },
+                    {
+                      maxRetries: 6,
+                      baseDelayMs: 500,
+                      jitterMs: 50,
+                      isPermanentError,
+                      // Retry logs are too noisy - they're expected behavior
+                      logger: () => {},
+                    },
+                  )
+                : retryWithBackoff(
+                    () =>
+                      sandboxInstance.commands.run(
+                        effectiveCommand,
+                        runOptions,
+                      ),
+                    {
+                      maxRetries: 6,
+                      baseDelayMs: 500,
+                      jitterMs: 50,
+                      isPermanentError,
+                      // Retry logs are too noisy - they're expected behavior
+                      logger: () => {},
+                    },
+                  );
+            });
 
             runPromise
               .then(async (exec) => {
                 execution = exec;
 
-                // Capture PID for background processes
-                if (is_background && exec?.pid) {
+                if (exec?.pid) {
                   processId = exec.pid;
+                  commandHandle?.setPid(exec.pid);
                 }
+                commandHandle?.resolveExit(exec.exitCode ?? 0);
 
                 if (handler) {
                   handler.cleanup();
                 }
 
                 if (!resolved) {
+                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   const finalResult = handler
@@ -754,7 +873,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
                   // Track background processes with their output files
                   if (is_background && processId) {
-                    const backgroundOutput = `Background process started with PID: ${processId}\n`;
+                    const backgroundOutput = `Detached background process started with PID: ${processId}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`;
                     await createTerminalWriter(backgroundOutput);
 
                     const outputFiles =
@@ -784,7 +903,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     result: is_background
                       ? {
                           pid: processId,
-                          output: `Background process started with PID: ${processId ?? "unknown"}\n`,
+                          resumable: false,
+                          output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
                           exitCode: exec.exitCode ?? 0,
@@ -795,13 +915,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                               : undefined,
                         },
                   });
+                } else {
+                  // Abort/noisy-timeout paths do not expose a resumable
+                  // session, so discard their bookkeeping once execution
+                  // eventually settles. Exposed timeout sessions stay
+                  // available for wait/view until stream cleanup.
+                  forgetUnexposedCommandSession();
                 }
               })
               .catch(async (error) => {
+                commandHandle?.resolveExit(
+                  error instanceof CommandExitError ? error.exitCode : null,
+                );
                 if (handler) {
                   handler.cleanup();
                 }
                 if (!resolved) {
+                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   // Handle CommandExitError as a valid result (non-zero exit code)
@@ -834,6 +964,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   } else {
                     reject(error);
                   }
+                } else {
+                  forgetUnexposedCommandSession();
                 }
               });
           });

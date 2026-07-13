@@ -27,6 +27,7 @@ jest.mock("@e2b/code-interpreter", () => ({
 
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createCommandSessionHandle } from "../utils/command-session-handle";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
   PtySessionManager,
@@ -251,6 +252,54 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       input: "hi\n",
     })) as { result: { error?: string } };
     expect(result.result.error).toMatch(/Session nope not found/);
+    expect(result.result.error).toContain("a PID is not a session ID");
+  });
+
+  test("non-interactive command sessions support wait but reject send", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const handle = createCommandSessionHandle({
+      kill: async () => true,
+    });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    const send = (await runTool(tool, {
+      action: "send",
+      session: session.sessionId,
+      input: "hello\n",
+    })) as { result: { error?: string } };
+    expect(send.result.error).toContain(
+      "non-interactive command and does not accept input",
+    );
+
+    mockWaitForOutput.mockImplementationOnce(realWaitForOutput);
+    const waitPromise = runTool(tool, {
+      action: "wait",
+      session: session.sessionId,
+      timeout: 1,
+    }) as Promise<{
+      result: {
+        output: string;
+        exited?: { exitCode: number | null };
+      };
+    }>;
+    setTimeout(() => {
+      handle.emitText("WHOIS complete\n");
+      handle.resolveExit(0);
+    }, 10);
+
+    const waited = await waitPromise;
+    expect(waited.result.output).toContain("WHOIS complete");
+    expect(waited.result.exited).toEqual({ exitCode: 0 });
+
+    ptySessionManager.forget("chat-1", session.sessionId);
   });
 
   test("send with oversized input errors without calling sendInput", async () => {
