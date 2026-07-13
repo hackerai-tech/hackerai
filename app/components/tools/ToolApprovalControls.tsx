@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   useAgentApproval,
   type AgentApprovalSendState,
@@ -63,6 +63,11 @@ export function ToolApprovalControls({
     ? (toolApprovalSendStates[approvalId] ?? "idle")
     : "idle";
   const isSettled = sendState === "approved" || sendState === "denied";
+  const isSettledRef = useRef(isSettled);
+
+  useEffect(() => {
+    isSettledRef.current = isSettled;
+  }, [isSettled]);
 
   useEffect(() => {
     if (!approvalId) {
@@ -106,9 +111,18 @@ export function ToolApprovalControls({
 
   useEffect(
     () => () => {
+      if (approvalId && isSettledRef.current) {
+        settleActiveToolApprovalRequest({ approvalId, toolCallId });
+        return;
+      }
       clearActiveToolApprovalRequest({ approvalId, toolCallId });
     },
-    [approvalId, clearActiveToolApprovalRequest, toolCallId],
+    [
+      approvalId,
+      clearActiveToolApprovalRequest,
+      settleActiveToolApprovalRequest,
+      toolCallId,
+    ],
   );
 
   return children?.(sendState) ?? null;

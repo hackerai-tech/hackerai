@@ -6,7 +6,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 let resolveApprovalInput: (() => void) | undefined;
 const mockSendAgentApprovalSessionInput = jest.fn(
@@ -36,6 +36,7 @@ function ApprovalStatusHarness() {
     setAgentApprovalSession,
     sendToolApproval,
   } = useAgentApproval();
+  const [showApprovalControls, setShowApprovalControls] = useState(true);
 
   useEffect(() => {
     setAgentApprovalSession({
@@ -47,20 +48,22 @@ function ApprovalStatusHarness() {
 
   return (
     <>
-      <ToolApprovalControls
-        approvalId="approval-1"
-        toolCallId="tool-1"
-        title="Allow HackerAI to run this terminal command?"
-        target="ping -c 4 hackerone.com"
-        justification="Check whether the target host is reachable."
-        prefixRule={approvalPrefixRule}
-        kind="terminal"
-        operation="terminal_execute"
-      >
-        {(sendState) => (
-          <span data-testid="approval-row-state">{sendState}</span>
-        )}
-      </ToolApprovalControls>
+      {showApprovalControls ? (
+        <ToolApprovalControls
+          approvalId="approval-1"
+          toolCallId="tool-1"
+          title="Allow HackerAI to run this terminal command?"
+          target="ping -c 4 hackerone.com"
+          justification="Check whether the target host is reachable."
+          prefixRule={approvalPrefixRule}
+          kind="terminal"
+          operation="terminal_execute"
+        >
+          {(sendState) => (
+            <span data-testid="approval-row-state">{sendState}</span>
+          )}
+        </ToolApprovalControls>
+      ) : null}
       <span data-testid="active-approval-request">
         {JSON.stringify(activeToolApprovalRequest)}
       </span>
@@ -75,6 +78,9 @@ function ApprovalStatusHarness() {
         }
       >
         Approve
+      </button>
+      <button type="button" onClick={() => setShowApprovalControls(false)}>
+        Replace tool row
       </button>
     </>
   );
@@ -138,6 +144,37 @@ describe("ToolApprovalControls", () => {
         }),
       ),
     );
+  });
+
+  it("keeps a settled prompt mounted when its tool row is replaced", async () => {
+    jest.useFakeTimers();
+
+    render(
+      <AgentApprovalProvider>
+        <ApprovalStatusHarness />
+      </AgentApprovalProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await act(async () => resolveApprovalInput?.());
+    await act(async () => {});
+
+    expect(screen.getByTestId("approval-row-state")).toHaveTextContent(
+      "approved",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace tool row" }));
+
+    expect(screen.getByTestId("active-approval-request")).toHaveTextContent(
+      '"approvalId":"approval-1"',
+    );
+
+    act(() => jest.runOnlyPendingTimers());
+
+    expect(screen.getByTestId("active-approval-request")).toHaveTextContent(
+      "null",
+    );
+    jest.useRealTimers();
   });
 
   it("maps approval send states to immediate tool-row labels", () => {
