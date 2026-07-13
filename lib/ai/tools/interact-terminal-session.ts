@@ -314,8 +314,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         try {
           await ptySessionManager.close(chatId, session.sessionId);
         } catch (err) {
+          const retained = ptySessionManager.get(chatId, session.sessionId);
           return errorResult(
-            `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. The session was retained so cleanup can be retried.`,
+            `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. ${retained ? "The session was retained so cleanup can be retried." : "The bounded cleanup limit was reached, so local session tracking was removed."}`,
           );
         }
         const exit = await exitPromise.catch(() => ({ exitCode: null }));

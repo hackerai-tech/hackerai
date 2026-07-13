@@ -32,7 +32,9 @@ export const DEFAULT_PTY_COLS = 120;
 export const DEFAULT_PTY_ROWS = 30;
 
 const CLOSE_EXIT_FALLBACK_MS = 2_000;
-const FAILED_COMMAND_CLEANUP_RETRY_MS = 10_000;
+const FAILED_COMMAND_CLEANUP_RETRY_BASE_MS = 5_000;
+const FAILED_COMMAND_CLEANUP_RETRY_MAX_MS = 30_000;
+const MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS = 6;
 
 export interface PtySession {
   readonly sessionId: string;
@@ -75,6 +77,10 @@ interface InternalSession extends PtySession {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** hard cap timer — set at create, never reset. */
   lifetimeTimer: ReturnType<typeof setTimeout> | null;
+  /** bounded retry timer after command transport termination fails. */
+  cleanupRetryTimer: ReturnType<typeof setTimeout> | null;
+  /** consecutive unexpected command cleanup failures. */
+  cleanupFailureCount: number;
   /** onData unsubscribe function. */
   unsubscribe: (() => void) | null;
   /** True once close() has been initiated — prevents re-entry. */
@@ -142,6 +148,8 @@ export class PtySessionManager {
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,
+        cleanupRetryTimer: null,
+        cleanupFailureCount: 0,
         unsubscribe: null,
         closing: false,
         exitedNaturally: null,
@@ -155,7 +163,7 @@ export class PtySessionManager {
       // idle + lifetime timers
       this.armIdleTimer(session);
       session.lifetimeTimer = setTimeout(() => {
-        void this.killAndRemove(session, "lifetime");
+        void this.killAndRemove(session, "lifetime").catch(() => {});
       }, SESSION_MAX_LIFETIME_MS);
 
       // Natural exit — mark as exited but keep session around so the model
@@ -284,7 +292,7 @@ export class PtySessionManager {
   private armIdleTimer(session: InternalSession): void {
     if (session.idleTimer) clearTimeout(session.idleTimer);
     session.idleTimer = setTimeout(() => {
-      void this.killAndRemove(session, "idle");
+      void this.killAndRemove(session, "idle").catch(() => {});
     }, SESSION_IDLE_TIMEOUT_MS);
   }
 
@@ -363,6 +371,10 @@ export class PtySessionManager {
       clearTimeout(session.lifetimeTimer);
       session.lifetimeTimer = null;
     }
+    if (session.cleanupRetryTimer) {
+      clearTimeout(session.cleanupRetryTimer);
+      session.cleanupRetryTimer = null;
+    }
 
     let unexpectedKillError: unknown;
     try {
@@ -389,18 +401,32 @@ export class PtySessionManager {
     // settle and remove it.
     if (unexpectedKillError && session.kind === "command") {
       session.closing = false;
-      session.idleTimer = setTimeout(() => {
-        void this.killAndRemove(session, "idle").catch(() => {});
-      }, FAILED_COMMAND_CLEANUP_RETRY_MS);
-      const lifetimeRemaining = Math.max(
-        0,
-        session.createdAt + SESSION_MAX_LIFETIME_MS - Date.now(),
-      );
-      if (lifetimeRemaining > 0) {
-        session.lifetimeTimer = setTimeout(() => {
-          void this.killAndRemove(session, "lifetime").catch(() => {});
-        }, lifetimeRemaining);
+      session.cleanupFailureCount += 1;
+      const lifetimeRemaining =
+        session.createdAt + SESSION_MAX_LIFETIME_MS - Date.now();
+      const cleanupExhausted =
+        session.cleanupFailureCount >= MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS ||
+        lifetimeRemaining <= 0;
+
+      if (cleanupExhausted) {
+        // The transport repeatedly failed to terminate a command. Drop only
+        // the local bookkeeping at the bounded retry/lifetime cap so one
+        // broken handle cannot permanently consume a per-chat session slot.
+        this.removeSession(session);
+        throw unexpectedKillError;
       }
+
+      const retryDelayMs = Math.min(
+        FAILED_COMMAND_CLEANUP_RETRY_BASE_MS *
+          2 ** (session.cleanupFailureCount - 1),
+        FAILED_COMMAND_CLEANUP_RETRY_MAX_MS,
+      );
+      session.cleanupRetryTimer = setTimeout(() => {
+        void this.killAndRemove(session, "idle").catch(() => {});
+      }, retryDelayMs);
+      session.lifetimeTimer = setTimeout(() => {
+        void this.killAndRemove(session, "lifetime").catch(() => {});
+      }, lifetimeRemaining);
       throw unexpectedKillError;
     }
 
@@ -430,6 +456,10 @@ export class PtySessionManager {
     if (session.lifetimeTimer) {
       clearTimeout(session.lifetimeTimer);
       session.lifetimeTimer = null;
+    }
+    if (session.cleanupRetryTimer) {
+      clearTimeout(session.cleanupRetryTimer);
+      session.cleanupRetryTimer = null;
     }
     const chat = this.chats.get(session.chatId);
     if (chat) {
