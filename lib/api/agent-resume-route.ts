@@ -31,6 +31,26 @@ export const createAgentResumeGet =
       req.headers.get("x-request-id") ??
       req.headers.get("x-vercel-id") ??
       undefined;
+    const requestStartedAt = Date.now();
+    const slowRequestInterval = setInterval(() => {
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "agent_resume_slow_request",
+          service: "hackerai-web",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          endpoint,
+          request_id: requestId,
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: runId,
+          stage,
+          elapsed_ms: Date.now() - requestStartedAt,
+        }),
+      );
+    }, 10_000);
 
     try {
       const authContext = await getUserIDAndPro(req);
@@ -100,5 +120,7 @@ export const createAgentResumeGet =
           stage,
         },
       });
+    } finally {
+      clearInterval(slowRequestInterval);
     }
   };

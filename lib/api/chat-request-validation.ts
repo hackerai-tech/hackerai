@@ -79,6 +79,17 @@ export const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
           "invalid_type",
         );
       }
+
+      if (
+        (part.type === "text" || part.type === "reasoning") &&
+        typeof part.text !== "string"
+      ) {
+        throw invalidMessagesError(
+          `${partField}.text`,
+          part.text,
+          "invalid_text",
+        );
+      }
     }
   }
 

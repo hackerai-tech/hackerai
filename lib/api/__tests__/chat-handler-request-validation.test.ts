@@ -71,6 +71,32 @@ describe("chat-handler request validation", () => {
     );
   });
 
+  it.each(["text", "reasoning"] as const)(
+    "rejects non-string %s before token counting",
+    (partType) => {
+      expect(() =>
+        requireChatMessagesArray([
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: partType, text: ["not", "text"] }],
+          },
+        ]),
+      ).toThrow(
+        expect.objectContaining({
+          type: "bad_request",
+          surface: "api",
+          statusCode: 400,
+          metadata: expect.objectContaining({
+            invalid_request_field: "messages[0].parts[0].text",
+            invalid_request_field_type: "array",
+            invalid_request_field_reason: "invalid_text",
+          }),
+        }),
+      );
+    },
+  );
+
   it("returns valid UI messages unchanged", () => {
     const messages = [
       {

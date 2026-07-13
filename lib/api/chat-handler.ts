@@ -1705,10 +1705,67 @@ export const createChatHandler = () => {
                       preemptiveTimeout?.isPreemptive() ?? false;
                     const onFinishStartTime = Date.now();
                     const triggerTime = preemptiveTimeout?.getTriggerTime();
+                    const cleanupRequestId =
+                      req.headers.get("x-request-id") ??
+                      req.headers.get("x-vercel-id") ??
+                      undefined;
+
+                    const logCleanupStage = ({
+                      phase,
+                      step,
+                      stepStartTime,
+                    }: {
+                      phase: "started" | "completed";
+                      step: string;
+                      stepStartTime: number;
+                    }) => {
+                      if (!isPreemptiveAbort) return;
+
+                      console.info(
+                        JSON.stringify({
+                          timestamp: new Date().toISOString(),
+                          level: "info",
+                          event: "preemptive_timeout_cleanup_stage",
+                          service: "chat-handler",
+                          environment:
+                            process.env.VERCEL_ENV ??
+                            process.env.NODE_ENV ??
+                            "unknown",
+                          request_id: cleanupRequestId,
+                          user_id: userId,
+                          chat_id: chatId,
+                          endpoint,
+                          phase,
+                          stage: step,
+                          stage_duration_ms:
+                            phase === "completed"
+                              ? Date.now() - stepStartTime
+                              : undefined,
+                          elapsed_since_timeout_ms: triggerTime
+                            ? Date.now() - triggerTime
+                            : null,
+                        }),
+                      );
+                    };
+
+                    const beginStep = (step: string): number => {
+                      const stepStartTime = Date.now();
+                      logCleanupStage({
+                        phase: "started",
+                        step,
+                        stepStartTime,
+                      });
+                      return stepStartTime;
+                    };
 
                     // Helper to log step timing during preemptive timeout
                     const logStep = (step: string, stepStartTime: number) => {
                       if (isPreemptiveAbort) {
+                        logCleanupStage({
+                          phase: "completed",
+                          step,
+                          stepStartTime,
+                        });
                         const stepDuration = Date.now() - stepStartTime;
                         const totalElapsed =
                           Date.now() - (triggerTime || onFinishStartTime);
@@ -1735,12 +1792,12 @@ export const createChatHandler = () => {
                     }
 
                     // Clear pre-emptive timeout
-                    let stepStart = Date.now();
+                    let stepStart = beginStep("clear_timeout");
                     preemptiveTimeout?.clear();
                     logStep("clear_timeout", stepStart);
 
                     // Stop cancellation subscriber
-                    stepStart = Date.now();
+                    stepStart = beginStep("stop_cancellation_subscriber");
                     await cancellationSubscriber.stop();
                     subscriberStopped = true;
                     logStep("stop_cancellation_subscriber", stepStart);
@@ -1757,7 +1814,7 @@ export const createChatHandler = () => {
                     }
 
                     // Emit wide event
-                    stepStart = Date.now();
+                    stepStart = beginStep("settle_usage_and_emit_success");
                     const sandboxInfo = sandboxManager.getSandboxInfo();
                     chatLogger!.setSandbox(sandboxInfo);
                     chatLogger!.setCacheMetrics({
@@ -1790,19 +1847,19 @@ export const createChatHandler = () => {
                       wasPreemptiveTimeout: isPreemptiveAbort,
                       hadSummarization: summarizationTracker.hasSummarized,
                     });
-                    logStep("emit_success_event", stepStart);
+                    logStep("settle_usage_and_emit_success", stepStart);
 
                     // Sandbox cleanup is automatic with auto-pause
                     // The sandbox will auto-pause after inactivity timeout (7 minutes)
                     // No manual pause needed
 
                     // Always wait for title generation to complete
-                    stepStart = Date.now();
+                    stepStart = beginStep("wait_title_generation");
                     const generatedTitle = await titlePromise;
                     logStep("wait_title_generation", stepStart);
 
                     if (!temporary) {
-                      stepStart = Date.now();
+                      stepStart = beginStep("merge_todos");
                       const mergedTodos = getTodoManager().mergeWith(
                         baseTodos,
                         assistantMessageId,
@@ -1819,7 +1876,7 @@ export const createChatHandler = () => {
 
                       if (shouldPersist) {
                         // updateChat automatically clears stream state (active_stream_id and canceled_at)
-                        stepStart = Date.now();
+                        stepStart = beginStep("update_chat");
                         await updateChat({
                           chatId,
                           title: generatedTitle,
@@ -1832,12 +1889,12 @@ export const createChatHandler = () => {
                         logStep("update_chat", stepStart);
                       } else {
                         // If not persisting, still need to clear stream state
-                        stepStart = Date.now();
+                        stepStart = beginStep("prepare_for_new_stream");
                         await prepareForNewStream({ chatId });
                         logStep("prepare_for_new_stream", stepStart);
                       }
 
-                      stepStart = Date.now();
+                      stepStart = beginStep("get_accumulated_files");
                       const accumulatedFiles = getFileAccumulator().getAll();
                       const newFileIds = accumulatedFiles.map((f) => f.fileId);
                       logStep("get_accumulated_files", stepStart);
@@ -1885,6 +1942,7 @@ export const createChatHandler = () => {
                       let resolvedUsage: Record<string, unknown> | undefined =
                         state.streamUsage;
                       if (!resolvedUsage && isAborted) {
+                        stepStart = beginStep("resolve_stream_usage");
                         try {
                           resolvedUsage = (await result.usage) as Record<
                             string,
@@ -1892,6 +1950,8 @@ export const createChatHandler = () => {
                           >;
                         } catch {
                           // Usage unavailable on abort - continue without it
+                        } finally {
+                          logStep("resolve_stream_usage", stepStart);
                         }
                       }
 
@@ -1945,7 +2005,7 @@ export const createChatHandler = () => {
                       }
 
                       // Save messages (either full save or just append extraFileIds)
-                      stepStart = Date.now();
+                      stepStart = beginStep("save_messages");
                       for (const message of messages) {
                         let processedMessage =
                           summarizationTracker.processMessageForSave(message);
@@ -2037,18 +2097,18 @@ export const createChatHandler = () => {
 
                       // Send file metadata via stream for resumable stream clients
                       // Uses accumulated metadata directly - no DB query needed!
-                      stepStart = Date.now();
+                      stepStart = beginStep("send_file_metadata");
                       sendFileMetadataToStream(accumulatedFiles);
                       logStep("send_file_metadata", stepStart);
                     } else {
                       // For temporary chats, send file metadata via stream before cleanup
-                      stepStart = Date.now();
+                      stepStart = beginStep("send_temp_file_metadata");
                       const tempFiles = getFileAccumulator().getAll();
                       sendFileMetadataToStream(tempFiles);
                       logStep("send_temp_file_metadata", stepStart);
 
                       // Ensure temp stream row is removed backend-side
-                      stepStart = Date.now();
+                      stepStart = beginStep("delete_temp_stream");
                       await deleteTempStreamForBackend({ chatId });
                       logStep("delete_temp_stream", stepStart);
                     }
@@ -2063,7 +2123,9 @@ export const createChatHandler = () => {
                           ? Date.now() - triggerTime
                           : null,
                       });
+                      stepStart = beginStep("flush_telemetry");
                       await phLogger.flush();
+                      logStep("flush_telemetry", stepStart);
                     }
 
                     const autoContinueStopSource =
