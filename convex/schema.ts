@@ -105,11 +105,6 @@ export default defineSchema({
       "user_id",
       "active_trigger_run_id",
     ])
-    .index("by_user_and_active_approval_session", [
-      "user_id",
-      "active_agent_approval_session_id",
-    ])
-    .index("by_user_and_deletion_started", ["user_id", "deletion_started_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {

@@ -65,34 +65,53 @@ const loadSaveMessageWithMocks = async () => {
 };
 
 describe("fenceAndGetActiveAgentResourcesForUser", () => {
-  it("finishes every fence batch before enumerating active resources", async () => {
+  it("collects active resources while advancing through fence cursors", async () => {
     const { fenceAndGetActiveAgentResourcesForUser, mockMutation, mockQuery } =
       await loadSaveMessageWithMocks();
     const calls: string[] = [];
     mockMutation
       .mockImplementationOnce(async () => {
         calls.push("fence-1");
-        return { fencedChats: 100, hasMore: true };
+        return {
+          fencedChats: 100,
+          isDone: false,
+          continueCursor: "cursor-1",
+          resources: [{ chatId: "chat-1", triggerRunId: "run-1" }],
+        };
       })
       .mockImplementationOnce(async () => {
         calls.push("fence-2");
-        return { fencedChats: 1, hasMore: false };
+        return {
+          fencedChats: 1,
+          isDone: true,
+          continueCursor: "",
+          resources: [
+            { chatId: "chat-2", approvalSessionId: "approval-session-2" },
+          ],
+        };
       });
-    mockQuery.mockImplementationOnce(async () => {
-      calls.push("snapshot");
-      return {
-        resources: [{ chatId: "chat-1", triggerRunId: "run-1" }],
-        hasMore: false,
-      };
-    });
 
     await expect(
       fenceAndGetActiveAgentResourcesForUser({ userId: "user-1" }),
     ).resolves.toEqual({
-      resources: [{ chatId: "chat-1", triggerRunId: "run-1" }],
+      resources: [
+        { chatId: "chat-1", triggerRunId: "run-1" },
+        { chatId: "chat-2", approvalSessionId: "approval-session-2" },
+      ],
       hasMore: false,
     });
-    expect(calls).toEqual(["fence-1", "fence-2", "snapshot"]);
+    expect(calls).toEqual(["fence-1", "fence-2"]);
+    expect(mockMutation).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ cursor: null }),
+    );
+    expect(mockMutation).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ cursor: "cursor-1" }),
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 
