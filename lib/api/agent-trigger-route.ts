@@ -73,6 +73,18 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
   AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION[subscription];
 
+type AgentDeploymentEnvironment = {
+  NODE_ENV?: string;
+  VERCEL_ENV?: string;
+};
+
+export const shouldRequireAgentApprovalWorkerVersion = (
+  environment: AgentDeploymentEnvironment = process.env,
+) =>
+  environment.VERCEL_ENV
+    ? environment.VERCEL_ENV === "production"
+    : environment.NODE_ENV === "production";
+
 type AgentTriggerRequestBody = {
   messages: UIMessage[];
   chatId: string;
@@ -531,7 +543,7 @@ export const createAgentTriggerPost =
           : undefined;
       if (
         approvalSessionId &&
-        process.env.NODE_ENV === "production" &&
+        shouldRequireAgentApprovalWorkerVersion() &&
         !approvalWorkerVersion
       ) {
         throw new ChatSDKError(

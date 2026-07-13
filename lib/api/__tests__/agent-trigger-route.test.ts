@@ -54,6 +54,7 @@ const {
   buildAgentApprovalSessionId,
   buildAgentRunDedupeKeyParts,
   finalizeStartedAgentRun,
+  shouldRequireAgentApprovalWorkerVersion,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
 
@@ -184,6 +185,27 @@ describe("Agent trigger route lifecycle", () => {
       }),
     ).not.toBe(v2WorkerA);
     expect(v2WorkerA).toMatch(/^agent-approval:v2:chat-1:/);
+  });
+
+  it("requires an approval worker pin only for production deployments", () => {
+    expect(
+      shouldRequireAgentApprovalWorkerVersion({
+        NODE_ENV: "production",
+        VERCEL_ENV: "production",
+      }),
+    ).toBe(true);
+    expect(
+      shouldRequireAgentApprovalWorkerVersion({
+        NODE_ENV: "production",
+        VERCEL_ENV: "preview",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRequireAgentApprovalWorkerVersion({ NODE_ENV: "production" }),
+    ).toBe(true);
+    expect(
+      shouldRequireAgentApprovalWorkerVersion({ NODE_ENV: "development" }),
+    ).toBe(false);
   });
 
   it("uses a new Session identity for each regeneration attempt", () => {
