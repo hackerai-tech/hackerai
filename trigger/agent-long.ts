@@ -138,6 +138,8 @@ import { canUseExtraUsage, normalizeMaxModelForSubscription } from "@/types";
 import {
   createAgentStream,
   initAgentStreamState,
+  resetServedModelTelemetryForRetry,
+  retryUsesDifferentModel,
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
@@ -1641,6 +1643,7 @@ export const agentLongTask = task({
               : null;
 
             let isRetryWithFallback = false;
+            let retryUsedFallbackModel = false;
             const isAutoModel = [
               "ask-model",
               "ask-model-free",
@@ -2058,6 +2061,11 @@ export const agentLongTask = task({
                   },
                 );
                 isRetryWithFallback = true;
+                retryUsedFallbackModel = retryUsesDifferentModel(
+                  selectedModel,
+                  fallbackModel,
+                );
+                resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
@@ -2221,6 +2229,11 @@ export const agentLongTask = task({
                         const retryModel = shouldRetryWithoutImageToolResults
                           ? selectedModel
                           : fallbackModel;
+                        retryUsedFallbackModel = retryUsesDifferentModel(
+                          selectedModel,
+                          retryModel,
+                        );
+                        resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
                             .map((message) =>
@@ -2320,7 +2333,8 @@ export const agentLongTask = task({
                                     configuredModelId,
                                     responseModel: state.responseModel,
                                     fallbackServed:
-                                      state.responseModel && isRetryWithFallback
+                                      state.responseModel &&
+                                      retryUsedFallbackModel
                                         ? true
                                         : state.fallbackServed,
                                     finishReason: state.streamFinishReason,
@@ -2458,7 +2472,7 @@ export const agentLongTask = task({
                         configuredModelId,
                         responseModel: state.responseModel,
                         fallbackServed:
-                          state.responseModel && isRetryWithFallback
+                          state.responseModel && retryUsedFallbackModel
                             ? true
                             : state.fallbackServed,
                         finishReason: state.streamFinishReason,

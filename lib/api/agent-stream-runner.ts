@@ -134,6 +134,11 @@ export const resolveFallbackServedTelemetry = ({
   return fallbackModels.includes(responseModel) ? true : undefined;
 };
 
+export const retryUsesDifferentModel = (
+  selectedModel: string,
+  retryModel: string,
+): boolean => retryModel !== selectedModel;
+
 export type RollingModelContextCheckpoint = {
   /** Latest compacted provider context, excluding later raw SDK responses. */
   baseMessages: ModelMessage[];
@@ -230,6 +235,13 @@ export function initAgentStreamState(
     budgetAbortDetails: undefined,
   };
 }
+
+export const resetServedModelTelemetryForRetry = (
+  state: Pick<AgentStreamState, "responseModel" | "fallbackServed">,
+): void => {
+  state.responseModel = undefined;
+  state.fallbackServed = undefined;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -551,7 +563,9 @@ export async function createAgentStream(
     state.fallbackServed = resolveFallbackServedTelemetry({
       requestedModel: lastRequestedSlug,
       responseModel: state.responseModel,
-      fallbackModels: getFallbackSlugs(modelName, ctx.mode),
+      fallbackModels: getFallbackSlugs(modelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      }),
     });
 
     const openRouterMetadata = lastStep

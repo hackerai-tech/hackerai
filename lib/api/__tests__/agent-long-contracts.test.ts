@@ -878,6 +878,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
+  test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(
+        source.match(/resetServedModelTelemetryForRetry\(state\)/g),
+      ).toHaveLength(2);
+
+      const retryModelIdx = source.indexOf(
+        "const retryModel = shouldRetryWithoutImageToolResults",
+      );
+      const modelSwitchIdx = source.indexOf(
+        "retryUsedFallbackModel = retryUsesDifferentModel(",
+        retryModelIdx,
+      );
+      const resetIdx = source.indexOf(
+        "resetServedModelTelemetryForRetry(state)",
+        modelSwitchIdx,
+      );
+      const retryStreamIdx = source.indexOf(
+        "createStream(retryModel)",
+        resetIdx,
+      );
+
+      expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
+      expect(resetIdx).toBeGreaterThan(modelSwitchIdx);
+      expect(retryStreamIdx).toBeGreaterThan(resetIdx);
+    }
+  });
+
+  test("assistant-loop abort telemetry uses the multimodal fallback chain", () => {
+    const abortStateIdx = agentStreamRunnerSrc.indexOf(
+      "const recordAssistantContentLoopAbortState",
+    );
+    const fallbackTelemetryIdx = agentStreamRunnerSrc.indexOf(
+      "state.fallbackServed = resolveFallbackServedTelemetry",
+      abortStateIdx,
+    );
+    const multimodalFallbackIdx = agentStreamRunnerSrc.indexOf(
+      "hasMultimodalToolResults: streamHasImageViewResults",
+      fallbackTelemetryIdx,
+    );
+
+    expect(abortStateIdx).toBeGreaterThan(-1);
+    expect(fallbackTelemetryIdx).toBeGreaterThan(abortStateIdx);
+    expect(multimodalFallbackIdx).toBeGreaterThan(fallbackTelemetryIdx);
+  });
+
   test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
     const onStepFinishIdx = agentStreamRunnerSrc.indexOf(
       "onStepFinish: async ({ usage, response, providerMetadata }) => {",

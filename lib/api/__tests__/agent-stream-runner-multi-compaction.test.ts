@@ -95,8 +95,10 @@ jest.mock("@/lib/utils/error-utils", () => ({
 const {
   createAgentStream,
   initAgentStreamState,
+  resetServedModelTelemetryForRetry,
   resolveAgentModelForImageToolResults,
   resolveFallbackServedTelemetry,
+  retryUsesDifferentModel,
 }: typeof import("@/lib/api/agent-stream-runner") = require("@/lib/api/agent-stream-runner");
 
 const uiMessage = (id: string, text: string): UIMessage => ({
@@ -231,6 +233,31 @@ describe("resolveFallbackServedTelemetry", () => {
         fallbackModels: ["x-ai/grok-4.5"],
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("retry served-model telemetry", () => {
+  it("does not label a same-model image recovery as a fallback model retry", () => {
+    expect(
+      retryUsesDifferentModel("agent-model-free", "agent-model-free"),
+    ).toBe(false);
+    expect(
+      retryUsesDifferentModel("agent-model-free", "model-minimax-m3"),
+    ).toBe(true);
+  });
+
+  it("clears prior served-model state before a retry can abort without metadata", () => {
+    const state = {
+      responseModel: "deepseek/deepseek-v4-flash",
+      fallbackServed: false,
+    };
+
+    resetServedModelTelemetryForRetry(state);
+
+    expect(state).toEqual({
+      responseModel: undefined,
+      fallbackServed: undefined,
+    });
   });
 });
 

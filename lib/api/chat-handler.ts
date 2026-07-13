@@ -162,6 +162,8 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  resetServedModelTelemetryForRetry,
+  retryUsesDifferentModel,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
@@ -859,6 +861,7 @@ export const createChatHandler = () => {
               : null;
 
             let isRetryWithFallback = false;
+            let retryUsedFallbackModel = false;
             const isAutoModel = isAutoModelSelectionForRetry({
               selectedModel,
               selectedModelOverride,
@@ -1285,6 +1288,11 @@ export const createChatHandler = () => {
                 });
 
                 isRetryWithFallback = true;
+                retryUsedFallbackModel = retryUsesDifferentModel(
+                  selectedModel,
+                  fallbackModel,
+                );
+                resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
@@ -1462,6 +1470,11 @@ export const createChatHandler = () => {
                         const retryModel = shouldRetryWithoutImageToolResults
                           ? selectedModel
                           : fallbackModel;
+                        retryUsedFallbackModel = retryUsesDifferentModel(
+                          selectedModel,
+                          retryModel,
+                        );
+                        resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
@@ -1559,7 +1572,8 @@ export const createChatHandler = () => {
                                   configuredModelId,
                                   responseModel: state.responseModel,
                                   fallbackServed:
-                                    state.responseModel && isRetryWithFallback
+                                    state.responseModel &&
+                                    retryUsedFallbackModel
                                       ? true
                                       : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
@@ -1793,7 +1807,7 @@ export const createChatHandler = () => {
                       configuredModelId,
                       responseModel: state.responseModel,
                       fallbackServed:
-                        state.responseModel && isRetryWithFallback
+                        state.responseModel && retryUsedFallbackModel
                           ? true
                           : state.fallbackServed,
                       finishReason: state.streamFinishReason,
