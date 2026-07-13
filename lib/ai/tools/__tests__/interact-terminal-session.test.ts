@@ -302,6 +302,71 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     ptySessionManager.forget("chat-1", session.sessionId);
   });
 
+  test("non-interactive command sessions support view and confirmed kill", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const terminate = jest.fn(async () => true);
+    const handle = createCommandSessionHandle({ kill: terminate });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    handle.emitText("partial WHOIS output\n");
+    const viewed = (await runTool(tool, {
+      action: "view",
+      session: session.sessionId,
+    })) as {
+      result: { output: string };
+    };
+    expect(viewed.result.output).toContain("partial WHOIS output");
+
+    const killed = (await runTool(tool, {
+      action: "kill",
+      session: session.sessionId,
+    })) as {
+      result: { output: string; exitCode: number | null };
+    };
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(killed.result).toEqual({
+      output: "Successfully killed non-interactive command session.",
+      exitCode: null,
+    });
+    expect(ptySessionManager.get("chat-1", session.sessionId)).toBeUndefined();
+  });
+
+  test("failed command-session kill is reported and retained for retry", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const terminate = jest.fn(async () => false);
+    const handle = createCommandSessionHandle({ kill: terminate });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    const killed = (await runTool(tool, {
+      action: "kill",
+      session: session.sessionId,
+    })) as {
+      result: { error?: string };
+    };
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(killed.result.error).toContain("Failed to kill session");
+    expect(killed.result.error).toContain("retained");
+    expect(ptySessionManager.get("chat-1", session.sessionId)).toBe(session);
+
+    ptySessionManager.forget("chat-1", session.sessionId);
+  });
+
   test("send with oversized input errors without calling sendInput", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();

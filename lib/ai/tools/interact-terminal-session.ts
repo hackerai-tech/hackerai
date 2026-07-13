@@ -311,7 +311,13 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // prior view/wait/send blocks; a one-line confirmation reads cleaner
         // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
-        await ptySessionManager.close(chatId, session.sessionId);
+        try {
+          await ptySessionManager.close(chatId, session.sessionId);
+        } catch (err) {
+          return errorResult(
+            `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. The session was retained so cleanup can be retried.`,
+          );
+        }
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
         return {
           result: {

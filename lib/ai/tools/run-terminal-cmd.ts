@@ -7,7 +7,6 @@ import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
-import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
   waitForSandboxReady,
@@ -64,6 +63,19 @@ type RunTerminalCmdInput = {
   is_background: boolean;
   timeout?: number;
   interactive: boolean;
+};
+
+type E2BCommandHandle = {
+  readonly pid: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode?: number;
+  wait(): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }>;
+  kill(): Promise<boolean>;
 };
 
 const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
@@ -428,13 +440,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             const terminateManagedCommand = async (): Promise<boolean> => {
               if (isCentrifugoSandbox(sandboxInstance)) {
-                if (processId) {
-                  return terminateProcessReliably(
-                    sandboxInstance,
-                    null,
-                    processId,
-                  );
-                }
                 if (!commandAbortController.signal.aborted) {
                   commandAbortController.abort();
                 }
@@ -444,9 +449,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               if (!processId && execution?.pid) {
                 processId = execution.pid;
               }
-              if (!processId) {
-                processId = await findProcessPid(sandboxInstance, command);
-              }
+              if (!processId && !execution?.kill) return false;
               if (processId) commandHandle?.setPid(processId);
               return terminateProcessReliably(
                 sandboxInstance,
@@ -525,8 +528,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     error,
                   );
                 }
-                commandHandle.resolveExit(130);
-                forgetUnexposedCommandSession();
               } else if (isCentrifugoSandbox(sandboxInstance)) {
                 const result = handler ? handler.getResult() : { output: "" };
                 if (handler) {
@@ -544,11 +545,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // Try to get PID from execution object first (cheap, no shell call)
                 if (!processId && execution && (execution as any)?.pid) {
                   processId = (execution as any).pid;
-                }
-
-                // Fall back to PID discovery via pgrep/ps for any command type
-                if (!processId) {
-                  processId = await findProcessPid(sandboxInstance, command);
                 }
 
                 // Terminate the current process
@@ -622,12 +618,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   const terminateNoisyCommand =
                     shouldTerminateNoisyTimedOutCommand();
 
-                  // A real opaque terminal session is sufficient for ordinary
-                  // foreground timeouts. PID discovery is only needed when a
-                  // noisy command must be terminated defensively.
-                  if (!processId && !is_background && terminateNoisyCommand) {
-                    processId = await findProcessPid(sandboxInstance, command);
-                  }
                   if (processId) commandHandle?.setPid(processId);
 
                   let terminationAttempted = false;
@@ -664,8 +654,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     terminateNoisyCommand && terminationSucceeded;
                   if (commandTerminated) {
                     commandSessionExposed = false;
-                    commandHandle?.resolveExit(124);
-                    forgetUnexposedCommandSession();
                   }
                   const resumableSession = commandTerminated
                     ? undefined
@@ -753,7 +741,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     ? abortSignal
                     : commandAbortController.signal,
                 }
-              : commonOptions;
+              : isE2BSandbox(sandboxInstance)
+                ? { ...commonOptions, signal: abortSignal }
+                : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
@@ -784,11 +774,21 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             // Augment PATH for local sandboxes so user-installed tools
             // (e.g. ~/go/bin/waybackurls) are found without full paths.
-            // Keep the original `command` for PID discovery (findProcessPid).
             const effectiveCommand = augmentCommandPath(
               command,
               sandboxInstance,
             );
+
+            const retryOptions = {
+              maxRetries: 6,
+              baseDelayMs: 500,
+              jitterMs: 50,
+              signal: abortSignal,
+              isPermanentError: (error: unknown) =>
+                resolved || isPermanentError(error),
+              // Retry logs are too noisy - they're expected behavior
+              logger: () => {},
+            };
 
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
@@ -798,52 +798,55 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               stderr: string;
               exitCode: number;
               pid?: number;
-            }> = commandSessionReady.then(() => {
+            }> = commandSessionReady.then(async () => {
               if (resolved || abortSignal?.aborted) {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
-              return is_background
-                ? retryWithBackoff(
-                    async () => {
-                      const result = await sandboxInstance.commands.run(
-                        effectiveCommand,
-                        {
-                          ...runOptions,
-                          background: true,
-                        },
-                      );
-                      // Normalize the result to include exitCode
-                      return {
-                        stdout: result.stdout,
-                        stderr: result.stderr,
-                        exitCode: result.exitCode ?? 0,
-                        pid: (result as { pid?: number }).pid,
-                      };
-                    },
+
+              if (is_background) {
+                return retryWithBackoff(async () => {
+                  const result = await sandboxInstance.commands.run(
+                    effectiveCommand,
                     {
-                      maxRetries: 6,
-                      baseDelayMs: 500,
-                      jitterMs: 50,
-                      isPermanentError,
-                      // Retry logs are too noisy - they're expected behavior
-                      logger: () => {},
-                    },
-                  )
-                : retryWithBackoff(
-                    () =>
-                      sandboxInstance.commands.run(
-                        effectiveCommand,
-                        runOptions,
-                      ),
-                    {
-                      maxRetries: 6,
-                      baseDelayMs: 500,
-                      jitterMs: 50,
-                      isPermanentError,
-                      // Retry logs are too noisy - they're expected behavior
-                      logger: () => {},
+                      ...runOptions,
+                      background: true,
                     },
                   );
+                  return {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exitCode: result.exitCode ?? 0,
+                    pid: (result as { pid?: number }).pid,
+                  };
+                }, retryOptions);
+              }
+
+              if (isE2BSandbox(sandboxInstance)) {
+                // E2B's foreground `run()` only returns after exit, so it
+                // cannot provide identity while a command is still running.
+                // Start it through the SDK's background handle, retain that
+                // exact handle/PID for lifecycle operations, then wait here
+                // to preserve foreground behavior for the caller.
+                const started = (await retryWithBackoff(
+                  () =>
+                    sandboxInstance.commands.run(effectiveCommand, {
+                      ...runOptions,
+                      background: true,
+                    }),
+                  retryOptions,
+                )) as unknown as E2BCommandHandle;
+                execution = started;
+                processId = started.pid;
+                commandHandle?.setPid(started.pid);
+                const result = await started.wait();
+                return { ...result, pid: started.pid };
+              }
+
+              return retryWithBackoff(
+                () =>
+                  sandboxInstance.commands.run(effectiveCommand, runOptions),
+                retryOptions,
+              );
             });
 
             runPromise

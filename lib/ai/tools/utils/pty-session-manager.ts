@@ -32,6 +32,7 @@ export const DEFAULT_PTY_COLS = 120;
 export const DEFAULT_PTY_ROWS = 30;
 
 const CLOSE_EXIT_FALLBACK_MS = 2_000;
+const FAILED_COMMAND_CLEANUP_RETRY_MS = 10_000;
 
 export interface PtySession {
   readonly sessionId: string;
@@ -363,6 +364,7 @@ export class PtySessionManager {
       session.lifetimeTimer = null;
     }
 
+    let unexpectedKillError: unknown;
     try {
       await session.handle.kill();
     } catch (err) {
@@ -376,7 +378,30 @@ export class PtySessionManager {
           "[pty-session-manager] kill failed pid=" + session.pid + ":",
           err,
         );
+        unexpectedKillError = err;
       }
+    }
+
+    // A command session represents a still-running foreground execution. If
+    // its transport could not confirm termination, keep the handle and output
+    // buffer registered rather than claiming success and losing the only safe
+    // way to retry cleanup. Natural exit or a later cleanup attempt can still
+    // settle and remove it.
+    if (unexpectedKillError && session.kind === "command") {
+      session.closing = false;
+      session.idleTimer = setTimeout(() => {
+        void this.killAndRemove(session, "idle").catch(() => {});
+      }, FAILED_COMMAND_CLEANUP_RETRY_MS);
+      const lifetimeRemaining = Math.max(
+        0,
+        session.createdAt + SESSION_MAX_LIFETIME_MS - Date.now(),
+      );
+      if (lifetimeRemaining > 0) {
+        session.lifetimeTimer = setTimeout(() => {
+          void this.killAndRemove(session, "lifetime").catch(() => {});
+        }, lifetimeRemaining);
+      }
+      throw unexpectedKillError;
     }
 
     await Promise.race([
