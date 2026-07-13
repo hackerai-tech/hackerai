@@ -84,6 +84,10 @@ describe("captureAgentRun", () => {
       subscription: "pro",
       sandboxInfo: { type: "remote-connection", name: "Work laptop" },
       outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -94,10 +98,66 @@ describe("captureAgentRun", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        selected_model: "agent-model",
+        configured_model: "deepseek/deepseek-v4-pro",
+        response_model: "deepseek/deepseek-v4-pro",
+        fallback_served: false,
         sandboxType: "remote-connection",
         sandbox_type: "remote-connection",
       },
     });
+  });
+
+  it("attributes a served fallback without inferring it from model names", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "free",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      selectedModel: "agent-model-free",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      responseModel: "minimax/minimax-m3",
+      fallbackServed: true,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: expect.objectContaining({
+        selected_model: "agent-model-free",
+        configured_model: "deepseek/deepseek-v4-flash",
+        response_model: "minimax/minimax-m3",
+        fallback_served: true,
+      }),
+    });
+  });
+
+  it("omits served-model attribution when the provider reports no response model", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "error",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
+    });
+
+    const properties = capture.mock.calls[0][0].properties;
+    expect(properties).toMatchObject({
+      selected_model: "agent-model",
+      configured_model: "deepseek/deepseek-v4-pro",
+    });
+    expect(properties).not.toHaveProperty("response_model");
+    expect(properties).not.toHaveProperty("fallback_served");
   });
 
   it("does not capture agent run events for ask mode", () => {
@@ -110,6 +170,10 @@ describe("captureAgentRun", () => {
       subscription: "pro",
       sandboxInfo: { type: "e2b" },
       outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).not.toHaveBeenCalled();
@@ -269,6 +333,10 @@ describe("captureAgentCompletionAnalytics", () => {
       sandboxInfo: { type: "e2b" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+      selectedModel: "agent-model-free",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      responseModel: "deepseek/deepseek-v4-flash",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledTimes(2);
@@ -280,6 +348,10 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "free",
         subscription_tier: "free",
         outcome: "success",
+        selected_model: "agent-model-free",
+        configured_model: "deepseek/deepseek-v4-flash",
+        response_model: "deepseek/deepseek-v4-flash",
+        fallback_served: false,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },
@@ -311,6 +383,10 @@ describe("captureAgentCompletionAnalytics", () => {
       sandboxInfo: { type: "e2b" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledTimes(1);
@@ -322,6 +398,10 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        selected_model: "agent-model",
+        configured_model: "deepseek/deepseek-v4-pro",
+        response_model: "deepseek/deepseek-v4-pro",
+        fallback_served: false,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },
@@ -330,7 +410,7 @@ describe("captureAgentCompletionAnalytics", () => {
 });
 
 describe("captureUsageCost", () => {
-  it("captures a user-scoped cost event with queryable dollar fields", () => {
+  it("keeps model=auto while adding the actual served model and allowance fields", () => {
     const capture = jest.fn();
 
     captureUsageCost({
@@ -341,8 +421,9 @@ describe("captureUsageCost", () => {
       chatId: "chat_123",
       endpoint: "/api/chat",
       mode: "agent",
+      responseModel: "deepseek/deepseek-v4-pro",
       usage: {
-        model: "claude-sonnet",
+        model: "auto",
         type: "extra",
         inputTokens: 1000,
         outputTokens: 500,
@@ -381,7 +462,8 @@ describe("captureUsageCost", () => {
         chat_id: "chat_123",
         endpoint: "/api/chat",
         mode: "agent",
-        model: "claude-sonnet",
+        model: "auto",
+        response_model: "deepseek/deepseek-v4-pro",
         usage_type: "extra",
         cost_dollars: 0.42,
         included_cost_dollars: 0.1,
@@ -408,6 +490,41 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+  });
+
+  it("omits response_model when served-model metadata is unavailable", () => {
+    const capture = jest.fn();
+
+    captureUsageCost({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "pro",
+      chatId: "chat_123",
+      endpoint: "/api/chat",
+      mode: "agent",
+      usage: {
+        model: "auto",
+        type: "included",
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        costDollars: 0.01,
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: 0,
+        costSource: "provider",
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
+      "response_model",
+    );
   });
 });
 
@@ -804,8 +921,7 @@ describe("createChatLogger provider stream termination", () => {
       );
       const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
       const capturedError = fields?.error as
-        | (Error & { cause?: unknown })
-        | undefined;
+        (Error & { cause?: unknown }) | undefined;
 
       expect(capturedError).toBeInstanceOf(Error);
       expect(capturedError?.name).toBe("AI_APICallError");

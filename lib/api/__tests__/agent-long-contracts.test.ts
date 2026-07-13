@@ -639,6 +639,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/createPaidDailyFreeAllowanceBudgetSnapshot/);
     expect(taskSrc).toMatch(/recordPaidDailyFreeAllowanceCost/);
     expect(taskSrc).toMatch(/serializeChatSDKErrorForStream/);
+    expect(taskSrc).toMatch(
+      /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
+    );
   });
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {

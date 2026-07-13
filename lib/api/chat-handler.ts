@@ -1076,6 +1076,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  responseModel: state.responseModel,
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(
@@ -1554,6 +1555,13 @@ export const createChatHandler = () => {
                                   sandboxInfo,
                                   outcome,
                                   chatLogger,
+                                  selectedModel,
+                                  configuredModelId,
+                                  responseModel: state.responseModel,
+                                  fallbackServed:
+                                    state.responseModel && isRetryWithFallback
+                                      ? true
+                                      : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                 });
@@ -1781,6 +1789,13 @@ export const createChatHandler = () => {
                       sandboxInfo,
                       outcome,
                       chatLogger,
+                      selectedModel,
+                      configuredModelId,
+                      responseModel: state.responseModel,
+                      fallbackServed:
+                        state.responseModel && isRetryWithFallback
+                          ? true
+                          : state.fallbackServed,
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                     });
