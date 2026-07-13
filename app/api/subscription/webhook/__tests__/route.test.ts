@@ -12,6 +12,7 @@ const mockRetrieveCustomer = jest.fn();
 const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockRetrieveInvoice = jest.fn();
+const mockRetrievePaymentIntent = jest.fn();
 const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockResetRateLimitBuckets = jest.fn();
@@ -49,6 +50,9 @@ jest.mock("@/app/api/stripe", () => ({
     },
     invoices: {
       retrieve: mockRetrieveInvoice,
+    },
+    paymentIntents: {
+      retrieve: mockRetrievePaymentIntent,
     },
   },
 }));
@@ -544,31 +548,51 @@ describe("POST /api/subscription/webhook", () => {
           subscription: "sub_payment_failed",
         },
       },
-      payment_intent: {
-        id: "pi_payment_failed",
-        last_payment_error: {
-          code: "card_declined",
-          decline_code: "insufficient_funds",
-          charge: "ch_payment_failed",
-          payment_method: { type: "card" },
-        },
-        latest_charge: {
-          id: "ch_payment_failed",
-          failure_code: "card_declined",
-          outcome: {
-            type: "issuer_declined",
-            reason: "insufficient_funds",
-            network_status: "declined_by_network",
-            network_decline_code: "51",
-            risk_level: "normal",
-          },
-          payment_method_details: {
-            type: "card",
-            card: {
-              brand: "visa",
-              country: "US",
-              funding: "debit",
+      payments: {
+        data: [
+          {
+            is_default: true,
+            payment: {
+              type: "payment_intent",
+              payment_intent: {
+                id: "pi_payment_failed",
+                last_payment_error: {
+                  code: "card_declined",
+                  decline_code: "insufficient_funds",
+                  charge: "ch_payment_failed",
+                  payment_method: { type: "card" },
+                },
+                latest_charge: "ch_payment_failed",
+              },
             },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePaymentIntent.mockResolvedValue({
+      id: "pi_payment_failed",
+      last_payment_error: {
+        code: "card_declined",
+        decline_code: "insufficient_funds",
+        charge: "ch_payment_failed",
+        payment_method: { type: "card" },
+      },
+      latest_charge: {
+        id: "ch_payment_failed",
+        failure_code: "card_declined",
+        outcome: {
+          type: "issuer_declined",
+          reason: "insufficient_funds",
+          network_status: "declined_by_network",
+          network_decline_code: "51",
+          risk_level: "normal",
+        },
+        payment_method_details: {
+          type: "card",
+          card: {
+            brand: "visa",
+            country: "US",
+            funding: "debit",
           },
         },
       },
@@ -582,8 +606,14 @@ describe("POST /api/subscription/webhook", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual({ received: true });
     expect(mockRetrieveInvoice).toHaveBeenCalledWith("in_payment_failed", {
-      expand: ["payment_intent", "payment_intent.latest_charge"],
+      expand: ["payments.data.payment.payment_intent"],
     });
+    expect(mockRetrievePaymentIntent).toHaveBeenCalledWith(
+      "pi_payment_failed",
+      {
+        expand: ["latest_charge"],
+      },
+    );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "billing_payment_failed",
       expect.objectContaining({
@@ -673,31 +703,51 @@ describe("POST /api/subscription/webhook", () => {
           subscription: "sub_deleted_payment_failed",
         },
       },
-      payment_intent: {
-        id: "pi_deleted_payment_failed",
-        last_payment_error: {
-          code: "card_declined",
-          decline_code: "transaction_not_allowed",
-          charge: "ch_deleted_payment_failed",
-          payment_method: { type: "card" },
-        },
-        latest_charge: {
-          id: "ch_deleted_payment_failed",
-          failure_code: "card_declined",
-          outcome: {
-            type: "issuer_declined",
-            reason: "transaction_not_allowed",
-            network_status: "declined_by_network",
-            network_decline_code: "57",
-            risk_level: "normal",
-          },
-          payment_method_details: {
-            type: "card",
-            card: {
-              brand: "mastercard",
-              country: "MA",
-              funding: "debit",
+      payments: {
+        data: [
+          {
+            is_default: true,
+            payment: {
+              type: "payment_intent",
+              payment_intent: {
+                id: "pi_deleted_payment_failed",
+                last_payment_error: {
+                  code: "card_declined",
+                  decline_code: "transaction_not_allowed",
+                  charge: "ch_deleted_payment_failed",
+                  payment_method: { type: "card" },
+                },
+                latest_charge: "ch_deleted_payment_failed",
+              },
             },
+          },
+        ],
+      },
+    } as never);
+    mockRetrievePaymentIntent.mockResolvedValue({
+      id: "pi_deleted_payment_failed",
+      last_payment_error: {
+        code: "card_declined",
+        decline_code: "transaction_not_allowed",
+        charge: "ch_deleted_payment_failed",
+        payment_method: { type: "card" },
+      },
+      latest_charge: {
+        id: "ch_deleted_payment_failed",
+        failure_code: "card_declined",
+        outcome: {
+          type: "issuer_declined",
+          reason: "transaction_not_allowed",
+          network_status: "declined_by_network",
+          network_decline_code: "57",
+          risk_level: "normal",
+        },
+        payment_method_details: {
+          type: "card",
+          card: {
+            brand: "mastercard",
+            country: "MA",
+            funding: "debit",
           },
         },
       },
@@ -712,7 +762,11 @@ describe("POST /api/subscription/webhook", () => {
     expect(body).toEqual({ received: true });
     expect(mockRetrieveInvoice).toHaveBeenCalledWith(
       "in_deleted_payment_failed",
-      { expand: ["payment_intent", "payment_intent.latest_charge"] },
+      { expand: ["payments.data.payment.payment_intent"] },
+    );
+    expect(mockRetrievePaymentIntent).toHaveBeenCalledWith(
+      "pi_deleted_payment_failed",
+      { expand: ["latest_charge"] },
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "subscription_cancelled",
