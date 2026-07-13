@@ -162,6 +162,8 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  resetServedModelTelemetryForRetry,
+  retryUsesDifferentModel,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
@@ -859,6 +861,7 @@ export const createChatHandler = () => {
               : null;
 
             let isRetryWithFallback = false;
+            let retryUsedFallbackModel = false;
             const isAutoModel = isAutoModelSelectionForRetry({
               selectedModel,
               selectedModelOverride,
@@ -1076,6 +1079,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   usage: usageCostRecord,
+                  responseModel: state.responseModel,
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(
@@ -1284,6 +1288,11 @@ export const createChatHandler = () => {
                 });
 
                 isRetryWithFallback = true;
+                retryUsedFallbackModel = retryUsesDifferentModel(
+                  selectedModel,
+                  fallbackModel,
+                );
+                resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToTokenExhaustion = false;
                 state.stoppedDueToElapsedTimeout = false;
@@ -1461,6 +1470,11 @@ export const createChatHandler = () => {
                         const retryModel = shouldRetryWithoutImageToolResults
                           ? selectedModel
                           : fallbackModel;
+                        retryUsedFallbackModel = retryUsesDifferentModel(
+                          selectedModel,
+                          retryModel,
+                        );
+                        resetServedModelTelemetryForRetry(state);
                         if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
@@ -1554,6 +1568,14 @@ export const createChatHandler = () => {
                                   sandboxInfo,
                                   outcome,
                                   chatLogger,
+                                  selectedModel,
+                                  configuredModelId,
+                                  responseModel: state.responseModel,
+                                  fallbackServed:
+                                    state.responseModel &&
+                                    retryUsedFallbackModel
+                                      ? true
+                                      : state.fallbackServed,
                                   finishReason: state.streamFinishReason,
                                   budgetAbortDetails: state.budgetAbortDetails,
                                 });
@@ -1838,6 +1860,13 @@ export const createChatHandler = () => {
                       sandboxInfo,
                       outcome,
                       chatLogger,
+                      selectedModel,
+                      configuredModelId,
+                      responseModel: state.responseModel,
+                      fallbackServed:
+                        state.responseModel && retryUsedFallbackModel
+                          ? true
+                          : state.fallbackServed,
                       finishReason: state.streamFinishReason,
                       budgetAbortDetails: state.budgetAbortDetails,
                     });

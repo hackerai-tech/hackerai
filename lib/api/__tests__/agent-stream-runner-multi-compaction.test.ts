@@ -95,7 +95,10 @@ jest.mock("@/lib/utils/error-utils", () => ({
 const {
   createAgentStream,
   initAgentStreamState,
+  resetServedModelTelemetryForRetry,
   resolveAgentModelForImageToolResults,
+  resolveFallbackServedTelemetry,
+  retryUsesDifferentModel,
 }: typeof import("@/lib/api/agent-stream-runner") = require("@/lib/api/agent-stream-runner");
 
 const uiMessage = (id: string, text: string): UIMessage => ({
@@ -185,6 +188,76 @@ describe("resolveAgentModelForImageToolResults", () => {
     expect(
       resolveAgentModelForImageToolResults("model-minimax-m3", "agent", true),
     ).toBe("model-minimax-m3");
+  });
+});
+
+describe("resolveFallbackServedTelemetry", () => {
+  it("returns false for the requested primary model", () => {
+    expect(
+      resolveFallbackServedTelemetry({
+        requestedModel: "deepseek/deepseek-v4-pro",
+        responseModel: "deepseek/deepseek-v4-pro",
+        fallbackModels: ["minimax/minimax-m3"],
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true only for a configured fallback model", () => {
+    expect(
+      resolveFallbackServedTelemetry({
+        requestedModel: "deepseek/deepseek-v4-pro",
+        responseModel: "minimax/minimax-m3",
+        fallbackModels: ["minimax/minimax-m3"],
+      }),
+    ).toBe(true);
+    expect(
+      resolveFallbackServedTelemetry({
+        requestedModel: "minimax/minimax-m3",
+        responseModel: "minimax/minimax-m3",
+        fallbackModels: ["minimax/minimax-m3"],
+      }),
+    ).toBe(false);
+  });
+
+  it("returns undefined without a response model or an exact route match", () => {
+    expect(
+      resolveFallbackServedTelemetry({
+        requestedModel: "anthropic/claude-opus-4.6",
+        fallbackModels: ["x-ai/grok-4.5"],
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveFallbackServedTelemetry({
+        requestedModel: "anthropic/claude-opus-4.6",
+        responseModel: "anthropic/claude-4.6-opus-20260205",
+        fallbackModels: ["x-ai/grok-4.5"],
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("retry served-model telemetry", () => {
+  it("does not label a same-model image recovery as a fallback model retry", () => {
+    expect(
+      retryUsesDifferentModel("agent-model-free", "agent-model-free"),
+    ).toBe(false);
+    expect(
+      retryUsesDifferentModel("agent-model-free", "model-minimax-m3"),
+    ).toBe(true);
+  });
+
+  it("clears prior served-model state before a retry can abort without metadata", () => {
+    const state = {
+      responseModel: "deepseek/deepseek-v4-flash",
+      fallbackServed: false,
+    };
+
+    resetServedModelTelemetryForRetry(state);
+
+    expect(state).toEqual({
+      responseModel: undefined,
+      fallbackServed: undefined,
+    });
   });
 });
 

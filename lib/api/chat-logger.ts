@@ -602,9 +602,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
     recordAnthropicPromptRepair(repair: {
       action: "appended_continue" | "trimmed";
       reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
+        "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
       trailingAssistantContentTypes?: string[];
       model: string;
     }) {
@@ -840,8 +838,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
           (error.metadata?.capReason as LimitCapReason | undefined) ??
           "unknown";
         const resetTimestamp = error.metadata?.resetTimestamp as
-          | number
-          | undefined;
+          number | undefined;
         const subscriptionTier = isSubscriptionTier(subscription)
           ? subscription
           : undefined;
@@ -1181,6 +1178,10 @@ type AgentCompletionAnalyticsArgs = {
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
+  selectedModel: string;
+  configuredModelId: string;
+  responseModel?: string;
+  fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
 };
@@ -1192,6 +1193,10 @@ export function captureAgentRun({
   subscription,
   sandboxInfo,
   outcome,
+  selectedModel,
+  configuredModelId,
+  responseModel,
+  fallbackServed,
   finishReason,
   budgetAbortDetails,
 }: {
@@ -1201,6 +1206,10 @@ export function captureAgentRun({
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  selectedModel: string;
+  configuredModelId: string;
+  responseModel?: string;
+  fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
 }) {
@@ -1213,6 +1222,11 @@ export function captureAgentRun({
       subscription,
       subscription_tier: subscription,
       outcome,
+      selected_model: selectedModel,
+      configured_model: configuredModelId,
+      ...(responseModel && { response_model: responseModel }),
+      ...(responseModel &&
+        fallbackServed !== undefined && { fallback_served: fallbackServed }),
       ...(sandboxInfo?.type && {
         sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
@@ -1290,6 +1304,10 @@ export function captureAgentCompletionAnalytics(
     subscription,
     sandboxInfo,
     outcome,
+    selectedModel: args.selectedModel,
+    configuredModelId: args.configuredModelId,
+    responseModel: args.responseModel,
+    fallbackServed: args.fallbackServed,
     finishReason: args.finishReason,
     budgetAbortDetails: args.budgetAbortDetails,
   });
@@ -1310,6 +1328,7 @@ export function captureUsageCost({
   endpoint,
   mode,
   usage,
+  responseModel,
   paidDailyFreeAllowance,
 }: {
   posthog: PostHog | null;
@@ -1320,6 +1339,7 @@ export function captureUsageCost({
   endpoint: ChatApiEndpoint;
   mode: ChatMode;
   usage: UsageCostRecord;
+  responseModel?: string;
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
@@ -1341,6 +1361,7 @@ export function captureUsageCost({
       endpoint,
       mode,
       model: usage.model,
+      ...(responseModel && { response_model: responseModel }),
       usage_type: usage.type,
       cost_dollars: usage.costDollars,
       included_cost_dollars: usage.includedCostDollars,

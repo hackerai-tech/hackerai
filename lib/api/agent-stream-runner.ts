@@ -120,6 +120,25 @@ export const resolveAgentModelForImageToolResults = (
     : modelName;
 };
 
+export const resolveFallbackServedTelemetry = ({
+  requestedModel,
+  responseModel,
+  fallbackModels,
+}: {
+  requestedModel: string;
+  responseModel?: string;
+  fallbackModels: string[];
+}): boolean | undefined => {
+  if (!responseModel) return undefined;
+  if (responseModel === requestedModel) return false;
+  return fallbackModels.includes(responseModel) ? true : undefined;
+};
+
+export const retryUsesDifferentModel = (
+  selectedModel: string,
+  retryModel: string,
+): boolean => retryModel !== selectedModel;
+
 export type RollingModelContextCheckpoint = {
   /** Latest compacted provider context, excluding later raw SDK responses. */
   baseMessages: ModelMessage[];
@@ -166,6 +185,8 @@ export type AgentStreamState = {
   streamFinishReason: string | undefined;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
+  /** Set only when provider/retry state can identify fallback serving. */
+  fallbackServed: boolean | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
   /** True when a provider rejected an image-bearing tool result. */
@@ -197,6 +218,7 @@ export function initAgentStreamState(
     streamFinishReason: undefined,
     streamUsage: undefined,
     responseModel: undefined,
+    fallbackServed: undefined,
     providerError: undefined,
     providerRejectedMultimodalToolResults: false,
     stoppedDueToTokenExhaustion: false,
@@ -213,6 +235,13 @@ export function initAgentStreamState(
     budgetAbortDetails: undefined,
   };
 }
+
+export const resetServedModelTelemetryForRetry = (
+  state: Pick<AgentStreamState, "responseModel" | "fallbackServed">,
+): void => {
+  state.responseModel = undefined;
+  state.fallbackServed = undefined;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -531,6 +560,13 @@ export async function createAgentStream(
     }
     state.responseModel = lastStep?.response?.modelId ?? state.responseModel;
     state.responseModel ??= lastRequestedSlug;
+    state.fallbackServed = resolveFallbackServedTelemetry({
+      requestedModel: lastRequestedSlug,
+      responseModel: state.responseModel,
+      fallbackModels: getFallbackSlugs(modelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      }),
+    });
 
     const openRouterMetadata = lastStep
       ? extractOpenRouterMetadata({
@@ -1274,7 +1310,12 @@ export async function createAgentStream(
       const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
       });
-      if (state.responseModel && fallbackSlugs.includes(state.responseModel)) {
+      state.fallbackServed = resolveFallbackServedTelemetry({
+        requestedModel: lastRequestedSlug,
+        responseModel: state.responseModel,
+        fallbackModels: fallbackSlugs,
+      });
+      if (state.fallbackServed && state.responseModel) {
         ctx.chatLogger?.recordModelFallback({
           requested: requestedSlug,
           served: state.responseModel,

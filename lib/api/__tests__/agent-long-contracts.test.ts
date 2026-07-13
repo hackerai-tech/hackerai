@@ -639,6 +639,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/createPaidDailyFreeAllowanceBudgetSnapshot/);
     expect(taskSrc).toMatch(/recordPaidDailyFreeAllowanceCost/);
     expect(taskSrc).toMatch(/serializeChatSDKErrorForStream/);
+    expect(taskSrc).toMatch(
+      /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
+    );
   });
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
@@ -870,6 +876,68 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(terminalProviderErrorIdx).toBeGreaterThan(retryDecisionIdx);
     expect(retryModelIdx).toBeGreaterThan(terminalProviderErrorIdx);
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
+  });
+
+  test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(
+        source.match(/resetServedModelTelemetryForRetry\(state\)/g),
+      ).toHaveLength(2);
+
+      const catchModelSwitchIdx = source.indexOf(
+        "retryUsedFallbackModel = retryUsesDifferentModel(",
+      );
+      const catchResetIdx = source.indexOf(
+        "resetServedModelTelemetryForRetry(state)",
+        catchModelSwitchIdx,
+      );
+      const catchRetryStreamIdx = source.indexOf(
+        "createStream(fallbackModel)",
+        catchResetIdx,
+      );
+
+      expect(catchModelSwitchIdx).toBeGreaterThan(-1);
+      expect(catchResetIdx).toBeGreaterThan(catchModelSwitchIdx);
+      expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
+
+      const retryModelIdx = source.indexOf(
+        "const retryModel = shouldRetryWithoutImageToolResults",
+      );
+      const modelSwitchIdx = source.indexOf(
+        "retryUsedFallbackModel = retryUsesDifferentModel(",
+        retryModelIdx,
+      );
+      const resetIdx = source.indexOf(
+        "resetServedModelTelemetryForRetry(state)",
+        modelSwitchIdx,
+      );
+      const retryStreamIdx = source.indexOf(
+        "createStream(retryModel)",
+        resetIdx,
+      );
+
+      expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
+      expect(resetIdx).toBeGreaterThan(modelSwitchIdx);
+      expect(retryStreamIdx).toBeGreaterThan(resetIdx);
+    }
+  });
+
+  test("assistant-loop abort telemetry uses the multimodal fallback chain", () => {
+    const abortStateIdx = agentStreamRunnerSrc.indexOf(
+      "const recordAssistantContentLoopAbortState",
+    );
+    const fallbackTelemetryIdx = agentStreamRunnerSrc.indexOf(
+      "state.fallbackServed = resolveFallbackServedTelemetry",
+      abortStateIdx,
+    );
+    const multimodalFallbackIdx = agentStreamRunnerSrc.indexOf(
+      "hasMultimodalToolResults: streamHasImageViewResults",
+      fallbackTelemetryIdx,
+    );
+
+    expect(abortStateIdx).toBeGreaterThan(-1);
+    expect(fallbackTelemetryIdx).toBeGreaterThan(abortStateIdx);
+    expect(multimodalFallbackIdx).toBeGreaterThan(fallbackTelemetryIdx);
   });
 
   test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
