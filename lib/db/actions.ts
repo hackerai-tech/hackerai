@@ -58,7 +58,19 @@ const GET_CHAT_RETRY_DELAYS_MS =
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
+const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+type ActiveAgentResource = {
+  chatId: string;
+  triggerRunId?: string;
+  approvalSessionId?: string;
+};
+type ChatDeletionFencePage = {
+  fencedChats: number;
+  isDone: boolean;
+  continueCursor: string;
+  resources: ActiveAgentResource[];
+};
 type SummaryReason =
   "token_threshold" | "provider_input_threshold" | "provider_pressure";
 
@@ -672,24 +684,32 @@ export async function fenceAndGetActiveAgentResourcesForUser({
   userId: string;
 }) {
   try {
+    const resourcesByChatId = new Map<string, ActiveAgentResource>();
+    let cursor: string | null = null;
+
     for (let batch = 0; batch < MAX_CHAT_DELETION_FENCE_BATCHES; batch++) {
-      const result = await getConvexClient().mutation(
+      const result: ChatDeletionFencePage = await getConvexClient().mutation(
         api.chats.fenceChatsForDeletion,
         {
           serviceKey,
           userId,
+          cursor,
         },
       );
 
-      if (!result.hasMore) {
-        return await getConvexClient().query(
-          api.chats.getActiveAgentResourcesForUser,
-          {
-            serviceKey,
-            userId,
-          },
-        );
+      for (const resource of result.resources) {
+        resourcesByChatId.set(resource.chatId, resource);
       }
+
+      if (result.isDone) {
+        const resources = [...resourcesByChatId.values()];
+        return {
+          resources: resources.slice(0, MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN),
+          hasMore: resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+        };
+      }
+
+      cursor = result.continueCursor;
     }
 
     throw new Error(
