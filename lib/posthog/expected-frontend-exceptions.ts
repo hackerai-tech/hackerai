@@ -67,6 +67,14 @@ const NEXT_GENERATED_CHUNK_SOURCE_PATTERN =
   /^(?:https?:\/\/[^/]+)?\/_next\/static\/chunks\/[^?\s]+\.js(?:\?[^#\s]*)?(?::\d+){0,2}$/i;
 const VERCEL_DEPLOYMENT_ID_PATTERN = /[?&]dpl=(dpl_[A-Za-z0-9]+)/;
 
+const INJECTED_THIRD_PARTY_SOURCE_PREFIXES = [
+  "chrome-extension://",
+  "moz-extension://",
+  "safari-web-extension://",
+  "ms-browser-extension://",
+  "iabjs://",
+];
+
 const STALE_SERVER_ACTION_MESSAGE_FRAGMENTS = [
   "Failed to find Server Action",
   "was not found on the server",
@@ -172,6 +180,14 @@ const hasOnlyNextGeneratedChunkFrames = (frameSources: string[]): boolean =>
     NEXT_GENERATED_CHUNK_SOURCE_PATTERN.test(source),
   );
 
+const hasOnlyInjectedThirdPartyFrames = (frameSources: string[]): boolean =>
+  frameSources.length > 0 &&
+  frameSources.every((source) =>
+    INJECTED_THIRD_PARTY_SOURCE_PREFIXES.some((prefix) =>
+      source.toLowerCase().startsWith(prefix),
+    ),
+  );
+
 const hasOnlyExpectedNextServerActionFrames = (
   frameSources: string[],
 ): boolean =>
@@ -267,6 +283,7 @@ export function shouldDropExpectedFrontendException(event: PostHogEventLike) {
     matchesBareBrowserTransportPattern(strings, frameSources) ||
     matchesNextServerActionTransportPattern(strings, frameSources) ||
     matchesStaleServerActionPattern(strings, frameSources) ||
+    hasOnlyInjectedThirdPartyFrames(frameSources) ||
     hasChunkLoadMessage(strings) ||
     hasExactStringFrom(strings, MANUAL_CHAT_STOP_ABORT_MESSAGES) ||
     hasExactStringFrom(strings, REACT_DOM_MUTATION_MESSAGES) ||

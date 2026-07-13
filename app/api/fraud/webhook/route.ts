@@ -9,6 +9,10 @@ import {
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
 import { getRemainingRefundAmountCents } from "@/lib/billing/fraud-refund";
+import {
+  isTerminalPaymentMethodDetachError,
+  isTerminalStripeResourceError,
+} from "@/lib/billing/stripe-terminal-errors";
 
 const WEBHOOK_LOG_PREFIX = "[Fraud Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -17,25 +21,11 @@ const WEBHOOK_LOG_CONTEXT = {
 };
 
 type SuspensionCategory =
-  | "early_fraud_warning"
-  | "dispute_fraudulent"
-  | "dispute_billing_hold";
+  "early_fraud_warning" | "dispute_fraudulent" | "dispute_billing_hold";
 
 // =============================================================================
 // Helpers
 // =============================================================================
-
-/**
- * True if a Stripe error means "the resource is already in the desired
- * end-state" — already cancelled, already detached, or no longer exists.
- * These are safe to swallow on retry; anything else (network, rate limit,
- * 5xx) is transient and must bubble so Stripe retries the webhook.
- */
-function isTerminalStripeError(err: unknown): boolean {
-  return (
-    err instanceof Stripe.errors.StripeError && err.code === "resource_missing"
-  );
-}
 
 /**
  * Cancel Stripe subscriptions that existed at the time of the originating
@@ -64,7 +54,7 @@ async function cancelAllSubscriptions(
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
-      if (isTerminalStripeError(err)) {
+      if (isTerminalStripeResourceError(err)) {
         console.log(
           `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: resource_missing`,
         );
@@ -103,9 +93,9 @@ async function detachAllPaymentMethods(
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {
-      if (isTerminalStripeError(err)) {
+      if (isTerminalPaymentMethodDetachError(err)) {
         console.log(
-          `[Fraud Webhook] Detach skipped for payment method ${pm.id}: resource_missing`,
+          `[Fraud Webhook] Detach skipped for payment method ${pm.id}: already detached or missing`,
         );
         continue;
       }

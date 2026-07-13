@@ -168,6 +168,47 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(false);
   });
 
+  it("drops exceptions whose frames come only from injected third-party scripts", () => {
+    for (const source of [
+      "moz-extension://example/userscripts/user.js",
+      "chrome-extension://example/content.js",
+      "iabjs://navigation_performance_logger_android",
+    ]) {
+      expect(
+        shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: {
+            $exception_values: ["Injected script failure"],
+            $exception_list: [
+              { stacktrace: { frames: [{ source }, { filename: source }] } },
+            ],
+          },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("keeps exceptions with both injected and application frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Application failure"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  { source: "moz-extension://example/userscripts/user.js" },
+                  { source: "turbopack:///[project]/app/components/chat.tsx" },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("keeps non-stale server action failures", () => {
     expect(
       shouldDropExpectedFrontendException({

@@ -33,6 +33,7 @@ const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
 
 describe("PostHogProvider", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
 
@@ -50,6 +51,7 @@ describe("PostHogProvider", () => {
     const posthog = {
       __loaded: false,
       init: jest.fn(),
+      set_config: jest.fn(),
       opt_in_capturing: jest.fn(),
       identify: jest.fn(),
       sessionRecordingStarted: jest.fn(() => false),
@@ -78,6 +80,43 @@ describe("PostHogProvider", () => {
         },
         capture_pageview: false,
         autocapture: false,
+      }),
+    );
+    expect(posthog.set_config).not.toHaveBeenCalled();
+  });
+
+  it("applies exception hooks when the shared client is already initialized", async () => {
+    const posthog = {
+      __loaded: true,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => expect(posthog.set_config).toHaveBeenCalledTimes(1));
+
+    expect(posthog.init).not.toHaveBeenCalled();
+    expect(posthog.set_config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        before_send: expect.any(Function),
+        capture_exceptions: {
+          capture_unhandled_errors: true,
+          capture_unhandled_rejections: true,
+          capture_console_errors: false,
+        },
       }),
     );
   });
