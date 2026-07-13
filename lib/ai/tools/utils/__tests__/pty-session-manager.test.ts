@@ -404,27 +404,30 @@ describe("PtySessionManager", () => {
       const errorSpy = jest
         .spyOn(console, "error")
         .mockImplementation(() => {});
-      const handle = makeFakeHandle();
-      handle.kill.mockRejectedValue(new Error("transport unavailable"));
-      const session = await manager.create("chat-1", {
-        createHandle: makeCreateHandleFactory(handle),
-        cols: 80,
-        rows: 24,
-        kind: "command",
-      });
+      try {
+        const handle = makeFakeHandle();
+        handle.kill.mockRejectedValue(new Error("transport unavailable"));
+        const session = await manager.create("chat-1", {
+          createHandle: makeCreateHandleFactory(handle),
+          cols: 80,
+          rows: 24,
+          kind: "command",
+        });
 
-      // The idle cleanup and five bounded backoff retries all fail. Timer
-      // callers catch those rejections, and the sixth failure releases local
-      // bookkeeping so the per-chat capacity cannot remain exhausted forever.
-      await jest.advanceTimersByTimeAsync(SESSION_IDLE_TIMEOUT_MS);
-      expect(manager.get("chat-1", session.sessionId)).toBe(session);
-      for (const retryDelay of [5_000, 10_000, 20_000, 30_000, 30_000]) {
-        await jest.advanceTimersByTimeAsync(retryDelay);
+        // The idle cleanup and five bounded backoff retries all fail. Timer
+        // callers catch those rejections, and the sixth failure releases local
+        // bookkeeping so the per-chat capacity cannot remain exhausted forever.
+        await jest.advanceTimersByTimeAsync(SESSION_IDLE_TIMEOUT_MS);
+        expect(manager.get("chat-1", session.sessionId)).toBe(session);
+        for (const retryDelay of [5_000, 10_000, 20_000, 30_000, 30_000]) {
+          await jest.advanceTimersByTimeAsync(retryDelay);
+        }
+
+        expect(handle.kill).toHaveBeenCalledTimes(6);
+        expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
+      } finally {
+        errorSpy.mockRestore();
       }
-
-      expect(handle.kill).toHaveBeenCalledTimes(6);
-      expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
-      errorSpy.mockRestore();
     });
   });
 
