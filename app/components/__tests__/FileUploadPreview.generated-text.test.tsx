@@ -4,16 +4,20 @@ import { describe, it, expect, jest, afterEach } from "@jest/globals";
 import { FileUploadPreview } from "../FileUploadPreview";
 import type { UploadedFileState } from "@/types/file";
 
-const createGeneratedTextUpload = (content: string): UploadedFileState => ({
-  file: new File([content], "pasted_content.txt", { type: "text/plain" }),
+const createGeneratedTextUpload = (
+  content: string,
+  id = "paste_1",
+  name = "pasted_content.txt",
+): UploadedFileState => ({
+  file: new File([content], name, { type: "text/plain" }),
   uploading: false,
   uploaded: true,
   storage: "s3",
-  fileId: "file_123",
+  fileId: `file_${id}`,
   url: "https://s3.example/download",
   tokens: 10,
   generatedTextAttachment: {
-    id: "paste_1",
+    id,
     content,
   },
 });
@@ -136,5 +140,50 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     });
 
     expect(onUpdateGeneratedTextFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves to the edited attachment after an earlier file is removed", () => {
+    jest.useFakeTimers();
+    const onUpdateGeneratedTextFile = jest.fn();
+    const firstFile = createGeneratedTextUpload(
+      "First pasted content",
+      "paste_1",
+      "pasted_content.txt",
+    );
+    const secondFile = createGeneratedTextUpload(
+      "Second pasted content",
+      "paste_2",
+      "pasted_content_2.txt",
+    );
+
+    const { rerender } = render(
+      <FileUploadPreview
+        uploadedFiles={[firstFile, secondFile]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={onUpdateGeneratedTextFile}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Open pasted_content_2.txt"));
+    fireEvent.change(screen.getByLabelText("Pasted text content"), {
+      target: { value: "Updated second pasted content" },
+    });
+
+    rerender(
+      <FileUploadPreview
+        uploadedFiles={[secondFile]}
+        onRemoveFile={jest.fn()}
+        onUpdateGeneratedTextFile={onUpdateGeneratedTextFile}
+      />,
+    );
+
+    act(() => {
+      jest.advanceTimersByTime(600);
+    });
+
+    expect(onUpdateGeneratedTextFile).toHaveBeenCalledWith(
+      0,
+      "Updated second pasted content",
+    );
   });
 });

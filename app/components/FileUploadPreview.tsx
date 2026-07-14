@@ -39,16 +39,17 @@ export const FileUploadPreview = ({
     src: string;
     alt: string;
   } | null>(null);
-  const [editingTextFileIndex, setEditingTextFileIndex] = useState<
-    number | null
+  const [editingTextAttachmentId, setEditingTextAttachmentId] = useState<
+    string | null
   >(null);
   const [draftTextContent, setDraftTextContent] = useState("");
   const [hasPendingTextSave, setHasPendingTextSave] = useState(false);
   const textSaveTimeoutRef = useRef<number | null>(null);
   const draftTextContentRef = useRef("");
-  const editingTextFileIndexRef = useRef<number | null>(null);
+  const editingTextAttachmentIdRef = useRef<string | null>(null);
   const hasPendingTextSaveRef = useRef(false);
   const onUpdateGeneratedTextFileRef = useRef(onUpdateGeneratedTextFile);
+  const uploadedFilesRef = useRef(uploadedFiles);
   const [selectedFile, setSelectedFile] = useState<{
     file: File | LocalDesktopFile;
     name: string;
@@ -63,16 +64,24 @@ export const FileUploadPreview = ({
   }, []);
 
   const activeTextFile =
-    editingTextFileIndex === null
-      ? null
-      : uploadedFiles[editingTextFileIndex] || null;
+    uploadedFiles.find(
+      (uploadedFile) =>
+        uploadedFile.generatedTextAttachment?.id === editingTextAttachmentId,
+    ) || null;
   const activeGeneratedText = activeTextFile?.generatedTextAttachment;
 
   const saveGeneratedTextFile = useCallback(
-    (index: number, content: string) => {
+    (attachmentId: string, content: string) => {
       const updateGeneratedTextFile = onUpdateGeneratedTextFileRef.current;
       if (!updateGeneratedTextFile) return;
-      updateGeneratedTextFile(index, content);
+
+      const currentIndex = uploadedFilesRef.current.findIndex(
+        (uploadedFile) =>
+          uploadedFile.generatedTextAttachment?.id === attachmentId,
+      );
+      if (currentIndex !== -1) {
+        updateGeneratedTextFile(currentIndex, content);
+      }
       hasPendingTextSaveRef.current = false;
       setHasPendingTextSave(false);
     },
@@ -87,10 +96,10 @@ export const FileUploadPreview = ({
   }, []);
 
   const flushPendingTextSave = useCallback(() => {
-    const index = editingTextFileIndexRef.current;
-    if (index === null || !hasPendingTextSaveRef.current) return;
+    const attachmentId = editingTextAttachmentIdRef.current;
+    if (attachmentId === null || !hasPendingTextSaveRef.current) return;
     clearTextSaveTimeout();
-    saveGeneratedTextFile(index, draftTextContentRef.current);
+    saveGeneratedTextFile(attachmentId, draftTextContentRef.current);
   }, [clearTextSaveTimeout, saveGeneratedTextFile]);
 
   const openTextEditor = useCallback(
@@ -99,8 +108,8 @@ export const FileUploadPreview = ({
       if (!generatedText || !onUpdateGeneratedTextFile) return;
 
       clearTextSaveTimeout();
-      setEditingTextFileIndex(index);
-      editingTextFileIndexRef.current = index;
+      setEditingTextAttachmentId(generatedText.id);
+      editingTextAttachmentIdRef.current = generatedText.id;
       setDraftTextContent(generatedText.content);
       draftTextContentRef.current = generatedText.content;
       hasPendingTextSaveRef.current = false;
@@ -113,8 +122,8 @@ export const FileUploadPreview = ({
     (open: boolean) => {
       if (open) return;
       flushPendingTextSave();
-      setEditingTextFileIndex(null);
-      editingTextFileIndexRef.current = null;
+      setEditingTextAttachmentId(null);
+      editingTextAttachmentIdRef.current = null;
       hasPendingTextSaveRef.current = false;
       setHasPendingTextSave(false);
     },
@@ -123,7 +132,7 @@ export const FileUploadPreview = ({
 
   const handleDraftTextChange = useCallback(
     (value: string) => {
-      if (editingTextFileIndex === null) return;
+      if (editingTextAttachmentId === null) return;
 
       setDraftTextContent(value);
       draftTextContentRef.current = value;
@@ -133,10 +142,10 @@ export const FileUploadPreview = ({
 
       textSaveTimeoutRef.current = window.setTimeout(() => {
         textSaveTimeoutRef.current = null;
-        saveGeneratedTextFile(editingTextFileIndex, value);
+        saveGeneratedTextFile(editingTextAttachmentId, value);
       }, GENERATED_TEXT_SAVE_DEBOUNCE_MS);
     },
-    [clearTextSaveTimeout, editingTextFileIndex, saveGeneratedTextFile],
+    [clearTextSaveTimeout, editingTextAttachmentId, saveGeneratedTextFile],
   );
 
   const handleRemoveUploadedFile = useCallback(
@@ -147,16 +156,23 @@ export const FileUploadPreview = ({
           current?.file === removedFile ? null : current,
         );
       }
-      if (index === editingTextFileIndex) {
+      const removedAttachmentId =
+        uploadedFiles[index]?.generatedTextAttachment?.id;
+      if (removedAttachmentId === editingTextAttachmentId) {
         clearTextSaveTimeout();
-        setEditingTextFileIndex(null);
-        editingTextFileIndexRef.current = null;
+        setEditingTextAttachmentId(null);
+        editingTextAttachmentIdRef.current = null;
         hasPendingTextSaveRef.current = false;
         setHasPendingTextSave(false);
       }
       onRemoveFile(index);
     },
-    [clearTextSaveTimeout, editingTextFileIndex, onRemoveFile, uploadedFiles],
+    [
+      clearTextSaveTimeout,
+      editingTextAttachmentId,
+      onRemoveFile,
+      uploadedFiles,
+    ],
   );
 
   useEffect(() => {
@@ -218,15 +234,25 @@ export const FileUploadPreview = ({
   }, [onUpdateGeneratedTextFile]);
 
   useEffect(() => {
+    uploadedFilesRef.current = uploadedFiles;
+  }, [uploadedFiles]);
+
+  useEffect(() => {
     return () => {
-      const index = editingTextFileIndexRef.current;
+      const attachmentId = editingTextAttachmentIdRef.current;
       const updateGeneratedTextFile = onUpdateGeneratedTextFileRef.current;
       if (
-        index !== null &&
+        attachmentId !== null &&
         hasPendingTextSaveRef.current &&
         updateGeneratedTextFile
       ) {
-        updateGeneratedTextFile(index, draftTextContentRef.current);
+        const currentIndex = uploadedFilesRef.current.findIndex(
+          (uploadedFile) =>
+            uploadedFile.generatedTextAttachment?.id === attachmentId,
+        );
+        if (currentIndex !== -1) {
+          updateGeneratedTextFile(currentIndex, draftTextContentRef.current);
+        }
       }
       clearTextSaveTimeout();
     };
@@ -491,7 +517,7 @@ export const FileUploadPreview = ({
       )}
 
       <Dialog
-        open={editingTextFileIndex !== null && !!activeGeneratedText}
+        open={editingTextAttachmentId !== null && !!activeGeneratedText}
         onOpenChange={handleTextEditorOpenChange}
       >
         <DialogContent
