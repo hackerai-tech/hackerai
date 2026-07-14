@@ -57,7 +57,7 @@ describe("Pro $20 Convex backfill action", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.STRIPE_SECRET_KEY = "sk_live_test_key";
-    process.env.WORKOS_API_KEY = "sk_test_workos";
+    process.env.WORKOS_API_KEY = "sk_live_workos";
     process.env.WORKOS_CLIENT_ID = "client_test";
     process.env.UPSTASH_REDIS_REST_URL = "https://redis.example";
     process.env.UPSTASH_REDIS_REST_TOKEN = "redis-token";
@@ -80,7 +80,7 @@ describe("Pro $20 Convex backfill action", () => {
     await callRun();
 
     expect(mockStripe).toHaveBeenCalledWith("sk_live_test_key");
-    expect(mockWorkOS).toHaveBeenCalledWith("sk_test_workos", {
+    expect(mockWorkOS).toHaveBeenCalledWith("sk_live_workos", {
       clientId: "client_test",
     });
     expect(mockRunPro20UsageBackfill).toHaveBeenCalledWith(
@@ -111,6 +111,21 @@ describe("Pro $20 Convex backfill action", () => {
     ).rejects.toThrow("Apply requires confirmation");
     expect(mockStripe).not.toHaveBeenCalled();
     expect(mockRunPro20UsageBackfill).not.toHaveBeenCalled();
+  });
+
+  it("allows a test WorkOS key for dry-run but rejects it for apply", async () => {
+    process.env.WORKOS_API_KEY = "sk_test_workos";
+
+    await expect(callRun()).resolves.toBeDefined();
+    await expect(
+      callRun({
+        apply: true,
+        expectedSubscriptions: 1,
+        expectedFingerprint: "fingerprint",
+        confirmation: "APPLY_PRO_20_USAGE_BACKFILL",
+      }),
+    ).rejects.toThrow("without a live WorkOS key");
+    expect(mockRunPro20UsageBackfill).toHaveBeenCalledTimes(1);
   });
 
   it("rejects apply without the dry-run count", async () => {

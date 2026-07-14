@@ -59,8 +59,12 @@ type ResolvedBackfillTarget = BackfillTarget & {
   subscriptionId: string;
 };
 
-function subscriptionPeriodEnd(subscription: Stripe.Subscription) {
+function subscriptionPeriodEnd(
+  subscription: Stripe.Subscription,
+  priceId: string,
+) {
   const itemEnds = subscription.items.data
+    .filter((item) => item.price.id === priceId)
     .map(
       (item) =>
         (item as Stripe.SubscriptionItem & { current_period_end?: number })
@@ -184,12 +188,13 @@ async function resolveTargets(
   stripe: Stripe,
   workos: WorkOS,
   subscriptions: Stripe.Subscription[],
+  priceId: string,
 ): Promise<{ targets: ResolvedBackfillTarget[]; unmapped: number }> {
   const targets: ResolvedBackfillTarget[] = [];
   let unmapped = 0;
 
   for (const subscription of subscriptions) {
-    const periodEnd = subscriptionPeriodEnd(subscription);
+    const periodEnd = subscriptionPeriodEnd(subscription, priceId);
     if (periodEnd === undefined) {
       unmapped++;
       continue;
@@ -302,6 +307,7 @@ export async function runPro20UsageBackfill(
     options.stripe,
     options.workos,
     active,
+    HACKERAI_PRO_20_MONTHLY_PRICE_ID,
   );
   const userTargets = groupBackfillTargets(targets);
   const fingerprint = targetFingerprint(targets);

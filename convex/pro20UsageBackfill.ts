@@ -81,6 +81,11 @@ export const run = internalAction({
     }
 
     const workosApiKey = requireEnvironment("WORKOS_API_KEY");
+    if (apply && !workosApiKey.startsWith("sk_live_")) {
+      throw new Error(
+        "Refusing to apply the Pro $20 backfill without a live WorkOS key",
+      );
+    }
     const workosClientId = requireEnvironment("WORKOS_CLIENT_ID");
     if (apply) {
       requireEnvironment("UPSTASH_REDIS_REST_URL");
