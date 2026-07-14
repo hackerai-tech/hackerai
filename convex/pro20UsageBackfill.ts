@@ -81,9 +81,9 @@ export const run = internalAction({
     }
 
     const workosApiKey = requireEnvironment("WORKOS_API_KEY");
-    if (apply && !workosApiKey.startsWith("sk_live_")) {
+    if (apply && workosApiKey.startsWith("sk_test_")) {
       throw new Error(
-        "Refusing to apply the Pro $20 backfill without a live WorkOS key",
+        "Refusing to apply the Pro $20 backfill with a WorkOS test key",
       );
     }
     const workosClientId = requireEnvironment("WORKOS_CLIENT_ID");
