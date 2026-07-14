@@ -37,6 +37,23 @@ describe("phLogger", () => {
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
+  it("falls back to the console when a structured warning cannot be emitted", () => {
+    const consoleWarn = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    mockEmitPostHogLog.mockReturnValueOnce(false);
+
+    phLogger.warn("retry_scheduled", { requestId: "req_123" });
+
+    expect(consoleWarn).toHaveBeenCalledWith("retry_scheduled", {
+      requestId: "req_123",
+    });
+    expect(mockPostHogClient).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    consoleWarn.mockRestore();
+  });
+
   it("continues sending errors to exception tracking", () => {
     phLogger.error("provider_failed", {
       userId: "user_123",
