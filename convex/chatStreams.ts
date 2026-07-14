@@ -89,6 +89,21 @@ export const cancelStreamFromClient = mutation({
   args: {
     chatId: v.string(),
     skipSave: v.optional(v.boolean()),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -119,13 +134,23 @@ export const cancelStreamFromClient = mutation({
       });
     }
 
-    // Only patch if needed
-    if (chat.active_stream_id !== undefined || chat.canceled_at === undefined) {
+    const shouldMarkCanceled =
+      chat.active_stream_id !== undefined || chat.canceled_at === undefined;
+
+    // Persist the client todo snapshot with the cancellation so an immediate
+    // steer cannot reload the older stored list before the interrupted run
+    // finishes its normal todo persistence path.
+    if (shouldMarkCanceled || args.todos !== undefined) {
       await ctx.db.patch(chat._id, {
-        active_stream_id: undefined,
-        canceled_at: Date.now(),
-        finish_reason: undefined,
-        update_time: Date.now(),
+        ...(shouldMarkCanceled
+          ? {
+              active_stream_id: undefined,
+              canceled_at: Date.now(),
+              finish_reason: undefined,
+              update_time: Date.now(),
+            }
+          : {}),
+        ...(args.todos !== undefined ? { todos: args.todos } : {}),
       });
     }
 

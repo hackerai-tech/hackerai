@@ -337,18 +337,20 @@ export const ChatInput = ({
           />
         )}
 
-        <TodoPanel status={status} />
+        <div className="flex flex-col [&>*+*]:rounded-t-none">
+          <TodoPanel status={status} />
 
-        {messageQueue.length > 0 && (
-          <QueuedMessagesPanel
-            messages={messageQueue}
-            onSendNow={onSendNow}
-            onDelete={removeQueuedMessage}
-            isStreaming={status === "streaming"}
-            queueBehavior={queueBehavior}
-            onQueueBehaviorChange={setQueueBehavior}
-          />
-        )}
+          {messageQueue.length > 0 && (
+            <QueuedMessagesPanel
+              messages={messageQueue}
+              onSendNow={onSendNow}
+              onDelete={removeQueuedMessage}
+              isStreaming={status === "streaming"}
+              queueBehavior={queueBehavior}
+              onQueueBehaviorChange={setQueueBehavior}
+            />
+          )}
+        </div>
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
