@@ -105,7 +105,8 @@ import type { createTrackedProvider } from "@/lib/ai/providers";
 import type { ProviderRequestDiagnostics } from "@/lib/logger";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
-const AGENT_VISION_MODEL = "model-kimi-k2.7-code";
+const AGENT_PRO_VISION_MODEL = "model-grok-4.5";
+const AGENT_STANDARD_VISION_MODEL = "model-kimi-k2.7-code";
 const FREE_AGENT_VISION_MODEL = "model-minimax-m3";
 
 export const resolveAgentModelForImageToolResults = (
@@ -115,9 +116,8 @@ export const resolveAgentModelForImageToolResults = (
 ): string => {
   if (mode !== "agent" || !hasImageToolResults) return modelName;
   if (modelName === "agent-model-free") return FREE_AGENT_VISION_MODEL;
-  return modelName === "model-glm-5.2" || isDeepSeekModel(modelName)
-    ? AGENT_VISION_MODEL
-    : modelName;
+  if (modelName === "model-glm-5.2") return AGENT_PRO_VISION_MODEL;
+  return isDeepSeekModel(modelName) ? AGENT_STANDARD_VISION_MODEL : modelName;
 };
 
 export const resolveFallbackServedTelemetry = ({

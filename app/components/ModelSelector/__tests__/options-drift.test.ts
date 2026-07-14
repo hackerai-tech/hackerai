@@ -78,4 +78,15 @@ describe("ModelSelector tier ↔ provider drift", () => {
         ?.poweredBy,
     ).toBe("DeepSeek V4 Pro · MiniMax M3 for images and PDFs");
   });
+
+  it("discloses the mode-specific vision provider for HackerAI Pro", () => {
+    expect(
+      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Kimi K2.7 for vision");
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Grok 4.5 for vision");
+  });
 });

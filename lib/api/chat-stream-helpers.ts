@@ -547,6 +547,12 @@ const AGENT_TEXT_FALLBACK_CHAIN = [
   ...MINIMAX_M3_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
+// Agent Pro promotes vision steps to Grok 4.5. Keep Kimi as its direct
+// multimodal fallback without routing back through the cheaper Agent chain.
+const AGENT_PRO_VISION_FALLBACK_CHAIN = [
+  "model-kimi-k2.7-code",
+] as const satisfies readonly ModelName[];
+
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
   "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
@@ -650,6 +656,9 @@ const getFallbackKeys = (
   options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
+  if (modelName === "model-grok-4.5" && mode === "agent") {
+    return AGENT_PRO_VISION_FALLBACK_CHAIN;
+  }
   if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
     if (mode === "agent" && options.hasMultimodalToolResults) {
       return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
@@ -661,8 +670,11 @@ const getFallbackKeys = (
 
 export function getRetryFallbackModel(
   modelName: ModelName,
-  _mode: ChatMode,
+  mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-grok-4.5" && mode === "agent") {
+    return "model-kimi-k2.7-code";
+  }
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||

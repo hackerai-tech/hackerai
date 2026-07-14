@@ -319,15 +319,15 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "hackerai-pro")).toBe("model-glm-5.2");
     });
 
-    it("should route HackerAI Pro to Kimi K2.7 in agent mode when an image is attached", () => {
+    it("should route HackerAI Pro to Grok 4.5 in agent mode when an image is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-kimi-k2.7-code",
+        "model-grok-4.5",
       );
     });
 
-    it("should route HackerAI Pro to Kimi K2.7 in agent mode when a PDF is attached", () => {
+    it("should route HackerAI Pro to Grok 4.5 in agent mode when a PDF is attached", () => {
       expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
-        "model-kimi-k2.7-code",
+        "model-grok-4.5",
       );
     });
 

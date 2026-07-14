@@ -171,6 +171,12 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-kimi-k2.7-code");
   });
 
+  it("switches Agent Pro GLM steps to Grok 4.5 after image tool results", () => {
+    expect(
+      resolveAgentModelForImageToolResults("model-glm-5.2", "agent", true),
+    ).toBe("model-grok-4.5");
+  });
+
   it("switches free DeepSeek Agent steps to MiniMax after image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
