@@ -176,6 +176,19 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
+  it("falls back from Agent Pro vision Grok 4.5 directly to Kimi 2.7 Code", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "model-grok-4.5",
+      "agent",
+    );
+    expect(opts.openrouter).toMatchObject({
+      models: [KIMI_SLUG],
+      user: "user-1",
+    });
+  });
+
   it.each([
     ["ask-model-free", "ask"],
     ["model-deepseek-v4-flash", "ask"],
@@ -459,6 +472,12 @@ describe("getRetryFallbackModel", () => {
     expect(getRetryFallbackModel("ask-model", "ask")).toBe("fallback-grok-4.5");
   });
 
+  it("retries Agent Pro vision Grok with Kimi 2.7 Code", () => {
+    expect(getRetryFallbackModel("model-grok-4.5", "agent")).toBe(
+      "model-kimi-k2.7-code",
+    );
+  });
+
   it.each([
     ["model-deepseek-v4-pro", "ask"],
     ["model-grok-4.5", "ask"],
@@ -520,6 +539,16 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "ask",
       }),
     ).toBe("model-grok-4.5");
+  });
+
+  it("maps Agent Pro vision Kimi fallback usage back to the Kimi cost key", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-grok-4.5",
+        responseModel: KIMI_SLUG,
+        mode: "agent",
+      }),
+    ).toBe("model-kimi-k2.7-code");
   });
 
   it("maps dated Opus provider response slugs back to the local cost key", () => {

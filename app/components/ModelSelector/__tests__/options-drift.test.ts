@@ -72,10 +72,21 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and media providers for Agent Standard", () => {
+  it("discloses the text and vision providers for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · MiniMax M3 for images and PDFs");
+    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
+  });
+
+  it("discloses the mode-specific vision provider for HackerAI Pro", () => {
+    expect(
+      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Kimi K2.7 for vision");
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Grok 4.5 for vision");
   });
 });

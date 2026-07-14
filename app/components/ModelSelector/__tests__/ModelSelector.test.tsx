@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { SubscriptionTier } from "@/types/chat";
 
@@ -10,6 +11,23 @@ const mockUseQuery = jest.fn((_query: unknown, args: unknown) =>
 );
 const mockRedirectToPricing = jest.fn();
 const mockOpenSettingsDialog = jest.fn();
+
+Object.defineProperty(globalThis, "ResizeObserver", {
+  configurable: true,
+  value: class ResizeObserverMock {
+    observe() {
+      return undefined;
+    }
+
+    unobserve() {
+      return undefined;
+    }
+
+    disconnect() {
+      return undefined;
+    }
+  },
+});
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -73,6 +91,32 @@ describe("ModelSelector", () => {
     expect(
       screen.getByRole("button", { name: /HackerAI Standard/i }),
     ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("uses consistent vision wording for Agent Standard and Pro", async () => {
+    const user = userEvent.setup();
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+
+    await user.hover(
+      screen.getByRole("button", { name: /HackerAI Standard/i }),
+    );
+    expect(
+      await screen.findAllByText(
+        "Powered by DeepSeek V4 Pro · MiniMax M3 for vision",
+      ),
+    ).not.toHaveLength(0);
+
+    await user.unhover(
+      screen.getByRole("button", { name: /HackerAI Standard/i }),
+    );
+    await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    expect(
+      await screen.findAllByText(
+        "Powered by Z.ai GLM 5.2 · Grok 4.5 for vision",
+      ),
+    ).not.toHaveLength(0);
   });
 
   it("selects Auto as a first-class option", () => {
