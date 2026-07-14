@@ -27,7 +27,7 @@ describe("AgentPermissionSelector", () => {
   });
 
   it("captures permission mode changes before updating the selection", () => {
-    render(<AgentPermissionSelector />);
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 
     fireEvent.click(screen.getByRole("button", { name: /full access/i }));
     fireEvent.click(

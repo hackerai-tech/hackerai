@@ -490,11 +490,13 @@ describe("captureUsageCost", () => {
         paid_daily_free_allowance_reset_timestamp: 1_800_000_000_000,
         $set: expect.objectContaining({
           subscription_tier: "pro",
-          agent_permission_mode: "ask_approval",
           last_usage_cost_at: expect.any(String),
         }),
       }),
     });
+    expect(capture.mock.calls[0][0].properties.$set).not.toHaveProperty(
+      "agent_permission_mode",
+    );
   });
 
   it("omits response_model when served-model metadata is unavailable", () => {

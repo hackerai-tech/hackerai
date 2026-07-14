@@ -66,7 +66,7 @@ const AgentsTab = () => {
             </div>
           </div>
           <div className="w-full sm:w-auto">
-            <AgentPermissionSelector size="md" />
+            <AgentPermissionSelector size="md" analyticsSurface="agents_tab" />
           </div>
         </div>
       </div>

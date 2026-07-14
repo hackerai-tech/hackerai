@@ -1407,9 +1407,6 @@ export function captureUsageCost({
       }),
       $set: {
         subscription_tier: subscription,
-        ...(agentPermissionMode && {
-          agent_permission_mode: agentPermissionMode,
-        }),
         last_usage_cost_at: new Date().toISOString(),
       },
     },

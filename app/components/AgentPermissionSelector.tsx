@@ -14,6 +14,7 @@ import type { AgentPermissionMode } from "@/types";
 
 type AgentPermissionSelectorProps = {
   size?: "sm" | "md";
+  analyticsSurface: "chat_input" | "agents_tab";
 };
 
 type PermissionOption = {
@@ -43,6 +44,7 @@ const options: PermissionOption[] = [
 
 export function AgentPermissionSelector({
   size = "sm",
+  analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
@@ -98,7 +100,7 @@ export function AgentPermissionSelector({
                       mode: "agent",
                       previous_agent_permission_mode: agentPermissionMode,
                       agent_permission_mode: option.id,
-                      surface: "chat_input",
+                      surface: analyticsSurface,
                       agent_permission_event_version: 1,
                       $set: {
                         agent_permission_mode: option.id,
