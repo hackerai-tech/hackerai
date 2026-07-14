@@ -17,9 +17,10 @@ const messages: QueuedMessage[] = [
 ];
 
 describe("QueuedMessagesPanel", () => {
-  it("shows a single queued message directly with compact steer actions", () => {
+  it("shows a single queued message directly with compact steer actions", async () => {
     const onSendNow = jest.fn();
     const onDelete = jest.fn();
+    const onQueueBehaviorChange = jest.fn();
 
     render(
       <QueuedMessagesPanel
@@ -27,6 +28,7 @@ describe("QueuedMessagesPanel", () => {
         onSendNow={onSendNow}
         onDelete={onDelete}
         isStreaming
+        onQueueBehaviorChange={onQueueBehaviorChange}
       />,
     );
 
@@ -46,15 +48,29 @@ describe("QueuedMessagesPanel", () => {
     expect(
       screen.getByRole("button", { name: "Queue settings" }),
     ).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Queue settings" }), {
+      key: "Enter",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", {
+        name: "Stop & send right away",
+      }),
+    );
+
+    expect(onQueueBehaviorChange).toHaveBeenCalledWith("stop-and-send");
   });
 
-  it("keeps the collapsible count view for multiple queued messages", () => {
+  it("keeps the collapsible count view for multiple queued messages", async () => {
+    const onQueueBehaviorChange = jest.fn();
+
     render(
       <QueuedMessagesPanel
         messages={messages}
         onSendNow={jest.fn()}
         onDelete={jest.fn()}
         isStreaming
+        onQueueBehaviorChange={onQueueBehaviorChange}
       />,
     );
 
@@ -69,5 +85,19 @@ describe("QueuedMessagesPanel", () => {
     expect(
       screen.getByRole("button", { name: "Expand queued messages" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Queue settings" }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Queue settings" }), {
+      key: "Enter",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", {
+        name: "Stop & send right away",
+      }),
+    );
+
+    expect(onQueueBehaviorChange).toHaveBeenCalledWith("stop-and-send");
   });
 });

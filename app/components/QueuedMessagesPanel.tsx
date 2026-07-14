@@ -5,14 +5,14 @@ import {
   ChevronDown,
   ChevronRight,
   MoreHorizontal,
-  Check,
 } from "lucide-react";
 import type { QueuedMessage, QueueBehavior } from "@/types/chat";
 import { useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -58,16 +58,22 @@ const QueueSettingsMenu = ({
       <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
         When to send follow-ups
       </div>
-      {queueBehaviorOptions.map((option) => (
-        <DropdownMenuItem
-          key={option.value}
-          onClick={() => onQueueBehaviorChange?.(option.value)}
-          className="flex items-center justify-between cursor-pointer"
-        >
-          <span>{option.label}</span>
-          {queueBehavior === option.value && <Check className="w-4 h-4" />}
-        </DropdownMenuItem>
-      ))}
+      <DropdownMenuRadioGroup
+        value={queueBehavior}
+        onValueChange={(value) =>
+          onQueueBehaviorChange?.(value as QueueBehavior)
+        }
+      >
+        {queueBehaviorOptions.map((option) => (
+          <DropdownMenuRadioItem
+            key={option.value}
+            value={option.value}
+            className="cursor-pointer"
+          >
+            {option.label}
+          </DropdownMenuRadioItem>
+        ))}
+      </DropdownMenuRadioGroup>
     </DropdownMenuContent>
   </DropdownMenu>
 );
@@ -155,7 +161,7 @@ export const QueuedMessagesPanel = ({
             <button
               type="button"
               onClick={handleToggleExpand}
-              className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer focus:outline-none rounded-md p-1 -m-1 flex-1"
+              className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-md p-1 -m-1 flex-1"
               aria-label={
                 isExpanded
                   ? "Collapse queued messages"
