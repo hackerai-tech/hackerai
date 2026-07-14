@@ -37,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "DeepSeek V4 Pro · MiniMax M3 for images and PDFs",
+    poweredBy: "DeepSeek V4 Pro · MiniMax M3 for vision",
     thinking: true,
   },
   {

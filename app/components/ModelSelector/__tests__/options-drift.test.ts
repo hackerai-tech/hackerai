@@ -72,11 +72,11 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and media providers for Agent Standard", () => {
+  it("discloses the text and vision providers for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · MiniMax M3 for images and PDFs");
+    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
   });
 
   it("discloses the mode-specific vision provider for HackerAI Pro", () => {
