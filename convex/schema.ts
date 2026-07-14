@@ -121,6 +121,7 @@ export default defineSchema({
       "active_trigger_run_id",
     ])
     .index("by_user_and_pinned", ["user_id", "pinned_at"])
+    .index("by_user_project_and_pinned", ["user_id", "project_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
       searchField: "title",

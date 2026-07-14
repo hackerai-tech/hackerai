@@ -6,6 +6,7 @@ import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const MAX_FOLDER_PATH_LENGTH = 4096;
+const MAX_PROJECTS_PER_USER = 100;
 
 const emptyPage = () => ({
   page: [],
@@ -86,7 +87,7 @@ export const listProjects = query({
         q.eq("user_id", identity.subject),
       )
       .order("desc")
-      .collect();
+      .take(MAX_PROJECTS_PER_USER);
   },
 });
 

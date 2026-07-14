@@ -28,7 +28,7 @@ jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn().mockResolvedValue(undefined),
 }));
 
-const { createProject, getProjectThreads } =
+const { createProject, getProjectThreads, listProjects } =
   require("../projects") as typeof import("../projects");
 
 describe("projects", () => {
@@ -86,5 +86,35 @@ describe("projects", () => {
       }),
     ).resolves.toEqual({ page: [], isDone: true, continueCursor: "" });
     expect(ctx.db.query).not.toHaveBeenCalled();
+  });
+
+  it("bounds the project list returned for a user", async () => {
+    const take = jest.fn<any>().mockResolvedValue([]);
+    const order = jest.fn<any>().mockReturnValue({ take });
+    const eq = jest.fn<any>().mockReturnThis();
+    const withIndex = jest.fn<any>((_indexName, applyIndex) => {
+      applyIndex({ eq });
+      return { order };
+    });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-1" }),
+      },
+      db: {
+        query: jest.fn<any>().mockReturnValue({ withIndex }),
+      },
+    };
+
+    await expect(listProjects.handler(ctx as any, {})).resolves.toEqual([]);
+
+    expect(withIndex).toHaveBeenCalledWith(
+      "by_user_and_updated",
+      expect.any(Function),
+    );
+    expect(eq).toHaveBeenCalledWith("user_id", "user-1");
+    expect(order).toHaveBeenCalledWith("desc");
+    expect(take).toHaveBeenCalledWith(100);
   });
 });

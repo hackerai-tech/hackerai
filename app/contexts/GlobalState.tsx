@@ -381,6 +381,19 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("project");
   });
+
+  useEffect(() => {
+    const syncActiveProjectFromUrl = () => {
+      setActiveProjectId(
+        new URLSearchParams(window.location.search).get("project"),
+      );
+    };
+
+    window.addEventListener("popstate", syncActiveProjectFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncActiveProjectFromUrl);
+    };
+  }, []);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
   const mergeTodos = useCallback((newTodos: TodoLike[]) => {

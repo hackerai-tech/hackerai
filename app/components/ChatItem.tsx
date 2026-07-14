@@ -47,6 +47,7 @@ import {
   Pin,
   PinOff,
   LoaderCircle,
+  FolderInput,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -54,6 +55,7 @@ import { removeDraft } from "@/lib/utils/client-storage";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { cancelAgentLongRealtimeStreams } from "@/lib/chat/agent-long-transport";
 import { ShareDialog } from "./ShareDialog";
+import { MoveChatToProjectDialog } from "./MoveChatToProjectDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
 import { setSidebarChatDragData } from "./sidebar-chat-drag";
 
@@ -94,9 +96,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const router = useRouter();
   const pathname = usePathname();
   const [isHovered, setIsHovered] = useState(false);
+  const [isFocusedWithin, setIsFocusedWithin] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showMoveProjectDialog, setShowMoveProjectDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [editTitle, setEditTitle] = useState(title);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -124,7 +128,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
-  const showActions = Boolean(isHovered || isDropdownOpen || isMobile);
+  const showActions = Boolean(
+    isHovered || isFocusedWithin || isDropdownOpen || isMobile,
+  );
   const showStreamingIndicator =
     isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
   const rightPaddingClass =
@@ -157,7 +163,13 @@ const ChatItem: React.FC<ChatItemProps> = ({
     if (suppressClickAfterDragRef.current) return;
 
     // Don't navigate if dialog is open or dropdown is open
-    if (showRenameDialog || isDropdownOpen) {
+    if (
+      showRenameDialog ||
+      showShareDialog ||
+      showMoveProjectDialog ||
+      showDeleteDialog ||
+      isDropdownOpen
+    ) {
       return;
     }
 
@@ -268,6 +280,16 @@ const ChatItem: React.FC<ChatItemProps> = ({
     }, 50);
   };
 
+  const handleMoveToProject = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropdownOpen(false);
+
+    setTimeout(() => {
+      setShowMoveProjectDialog(true);
+    }, 50);
+  };
+
   const handlePin = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -340,7 +362,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't handle keyboard events if dialog or dropdown is open
-    if (showRenameDialog || isDropdownOpen || showDeleteDialog) return;
+    if (
+      showRenameDialog ||
+      showMoveProjectDialog ||
+      isDropdownOpen ||
+      showDeleteDialog
+    ) {
+      return;
+    }
 
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -360,6 +389,12 @@ const ChatItem: React.FC<ChatItemProps> = ({
       onDragEnd={handleDragEnd}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onFocus={() => setIsFocusedWithin(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setIsFocusedWithin(false);
+        }
+      }}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       title={title}
@@ -464,6 +499,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
                 <Share className="mr-2 h-4 w-4" />
                 Share
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleMoveToProject}>
+                <FolderInput className="mr-2 h-4 w-4" />
+                Move to project…
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={handleDeleteClick}
                 className="text-destructive focus:text-destructive"
@@ -526,6 +565,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
         chatTitle={title}
         existingShareId={shareId}
       />
+
+      {showMoveProjectDialog ? (
+        <MoveChatToProjectDialog
+          chatId={id}
+          open={showMoveProjectDialog}
+          onOpenChange={setShowMoveProjectDialog}
+        />
+      ) : null}
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>

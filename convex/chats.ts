@@ -883,10 +883,12 @@ export const getUserChats = query({
       const pinnedChats = isFirstPage
         ? await ctx.db
             .query("chats")
-            .withIndex("by_user_and_pinned", (q) =>
-              q.eq("user_id", identity.subject).gt("pinned_at", 0),
+            .withIndex("by_user_project_and_pinned", (q) =>
+              q
+                .eq("user_id", identity.subject)
+                .eq("project_id", undefined)
+                .gt("pinned_at", 0),
             )
-            .filter((q) => q.eq(q.field("project_id"), undefined))
             .order("asc")
             .take(MAX_PINNED_CHATS)
         : [];
