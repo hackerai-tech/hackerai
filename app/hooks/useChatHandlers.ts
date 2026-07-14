@@ -313,6 +313,18 @@ export const useChatHandlers = ({
     if (isUploadingFiles) {
       return false;
     }
+    const hasUnavailableLocalFiles = uploadedFiles.some(
+      (file) =>
+        file.storage === "local-desktop" &&
+        (file.unavailable || !file.localAttachmentId || !file.localPath),
+    );
+    if (hasUnavailableLocalFiles) {
+      toast.error("Local attachment is unavailable", {
+        description:
+          "Open this draft on the Desktop device where the file was created, or remove the attachment before sending.",
+      });
+      return false;
+    }
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
     if (!input.trim() && !hasValidFiles) {

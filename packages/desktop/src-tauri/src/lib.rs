@@ -107,6 +107,17 @@ struct LocalFileData {
     base64: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalTextFileData {
+    path: String,
+    name: String,
+    media_type: String,
+    size: u64,
+    last_modified: u64,
+    content: String,
+}
+
 fn json_error_body(message: &str) -> String {
     serde_json::to_string(&serde_json::json!({ "error": message }))
         .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
@@ -177,6 +188,94 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
         size: metadata.len(),
         last_modified,
     })
+}
+
+fn sanitize_generated_text_segment(value: &str, fallback: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('.');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn generated_text_attachment_path(
+    app: &tauri::AppHandle,
+    attachment_id: &str,
+    file_name: &str,
+    create_dir: bool,
+) -> Result<PathBuf, String> {
+    let base_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data dir error: {}", e))?
+        .join("generated-text-attachments")
+        .join(sanitize_generated_text_segment(attachment_id, "attachment"));
+
+    if create_dir {
+        fs::create_dir_all(&base_dir).map_err(|e| format!("Directory error: {}", e))?;
+    }
+
+    Ok(base_dir.join(sanitize_generated_text_segment(
+        file_name,
+        "pasted_content.txt",
+    )))
+}
+
+#[tauri::command]
+fn write_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+    content: String,
+) -> Result<LocalFileMetadata, String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
+    fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
+    get_local_file_metadata(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn read_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+) -> Result<LocalTextFileData, String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
+    let metadata = get_local_file_metadata(path.to_string_lossy().to_string())?;
+    let content = fs::read_to_string(&metadata.path).map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(LocalTextFileData {
+        path: metadata.path,
+        name: metadata.name,
+        media_type: metadata.media_type,
+        size: metadata.size,
+        last_modified: metadata.last_modified,
+        content,
+    })
+}
+
+#[tauri::command]
+fn remove_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+) -> Result<(), String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Remove error: {}", error)),
+    }
 }
 
 #[tauri::command]
@@ -1630,6 +1729,9 @@ pub fn run() {
             prepare_desktop_auth_state,
             get_cmd_server_info,
             get_local_file_metadata,
+            write_generated_text_attachment,
+            read_generated_text_attachment,
+            remove_generated_text_attachment,
             read_local_file,
             execute_command,
             execute_stream_command,

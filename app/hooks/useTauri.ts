@@ -184,6 +184,10 @@ export type LocalFileData = LocalFileMetadata & {
   base64: string;
 };
 
+export type LocalTextFileData = LocalFileMetadata & {
+  content: string;
+};
+
 export async function pickLocalFiles(): Promise<string[]> {
   if (!detectTauri()) return [];
 
@@ -233,6 +237,65 @@ export async function readLocalFile(
     console.error("[Tauri] Failed to read local file:", err);
     toast.error("Failed to read local file");
     return null;
+  }
+}
+
+export async function writeGeneratedTextAttachment(
+  attachmentId: string,
+  fileName: string,
+  content: string,
+): Promise<LocalFileMetadata | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalFileMetadata>("write_generated_text_attachment", {
+      attachmentId,
+      fileName,
+      content,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to write generated text attachment:", err);
+    toast.error("Failed to save pasted text locally");
+    return null;
+  }
+}
+
+export async function readGeneratedTextAttachment(
+  attachmentId: string,
+  fileName: string,
+): Promise<LocalTextFileData | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<LocalTextFileData>("read_generated_text_attachment", {
+      attachmentId,
+      fileName,
+    });
+  } catch (err) {
+    console.error("[Tauri] Failed to read generated text attachment:", err);
+    toast.error("Failed to read pasted text attachment");
+    return null;
+  }
+}
+
+export async function removeGeneratedTextAttachment(
+  attachmentId: string,
+  fileName: string,
+): Promise<boolean> {
+  if (!detectTauri()) return false;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("remove_generated_text_attachment", {
+      attachmentId,
+      fileName,
+    });
+    return true;
+  } catch (err) {
+    console.error("[Tauri] Failed to remove generated text attachment:", err);
+    return false;
   }
 }
 

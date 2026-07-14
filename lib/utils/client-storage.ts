@@ -16,11 +16,13 @@ export type ConversationDraft = {
 
 export type ConversationDraftAttachment = {
   kind: "file" | "pasted-text";
-  fileId: string;
+  storage?: "s3" | "local-desktop";
+  fileId?: string;
   name: string;
   mediaType: string;
   size: number;
   generatedSource?: "pasted-text";
+  generatedTextAttachmentId?: string;
   tokens?: number;
   timestamp: number;
 };
@@ -203,27 +205,67 @@ const normalizeDraftAttachments = (
   if (!Array.isArray(attachments)) return [];
   const cutoff = Date.now() - DRAFT_ATTACHMENT_RESTORE_TTL_MS;
 
-  return attachments.filter(
-    (attachment): attachment is ConversationDraftAttachment => {
-      if (!attachment || typeof attachment !== "object") return false;
-      const value = attachment as Partial<ConversationDraftAttachment>;
-      const validKind = value.kind === "file" || value.kind === "pasted-text";
+  return attachments.flatMap((attachment) => {
+    if (!attachment || typeof attachment !== "object") return [];
+    const value = attachment as Partial<ConversationDraftAttachment>;
+    const kind = value.kind;
+    const validKind = kind === "file" || kind === "pasted-text";
+    const storage = value.storage === "local-desktop" ? "local-desktop" : "s3";
+    const hasFileId =
+      typeof value.fileId === "string" && value.fileId.length > 0;
+    const hasGeneratedTextAttachmentId =
+      typeof value.generatedTextAttachmentId === "string" &&
+      value.generatedTextAttachmentId.length > 0;
 
-      return (
-        validKind &&
-        (typeof value.generatedSource === "undefined" ||
-          value.generatedSource === "pasted-text") &&
-        typeof value.fileId === "string" &&
-        value.fileId.length > 0 &&
-        typeof value.name === "string" &&
-        value.name.length > 0 &&
-        typeof value.mediaType === "string" &&
-        typeof value.size === "number" &&
-        typeof value.timestamp === "number" &&
-        value.timestamp > cutoff
-      );
-    },
-  );
+    if (
+      !validKind ||
+      (typeof value.generatedSource !== "undefined" &&
+        value.generatedSource !== "pasted-text") ||
+      (storage === "s3" && !hasFileId) ||
+      (storage === "local-desktop" &&
+        (kind !== "pasted-text" || !hasGeneratedTextAttachmentId)) ||
+      typeof value.name !== "string" ||
+      value.name.length === 0 ||
+      typeof value.mediaType !== "string" ||
+      typeof value.size !== "number" ||
+      typeof value.timestamp !== "number" ||
+      value.timestamp <= cutoff
+    ) {
+      return [];
+    }
+
+    const normalized: ConversationDraftAttachment = {
+      kind,
+      name: value.name,
+      mediaType: value.mediaType,
+      size: value.size,
+      timestamp: value.timestamp,
+    };
+
+    if (storage === "local-desktop") {
+      normalized.storage = "local-desktop";
+    }
+
+    if (hasFileId) {
+      normalized.fileId = value.fileId;
+    }
+
+    if (typeof value.tokens === "number") {
+      normalized.tokens = value.tokens;
+    }
+
+    if (value.generatedSource === "pasted-text") {
+      normalized.generatedSource = "pasted-text";
+    }
+
+    if (kind === "pasted-text") {
+      if (typeof value.generatedTextAttachmentId === "string") {
+        normalized.generatedTextAttachmentId = value.generatedTextAttachmentId;
+      }
+    }
+
+    return [normalized];
+  });
 };
 
 export const getDraftAttachmentsById = (

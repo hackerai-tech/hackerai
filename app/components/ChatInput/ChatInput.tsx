@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -8,6 +8,7 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
+import { readGeneratedTextAttachment } from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -28,6 +29,9 @@ import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import type { UploadedFileState } from "@/types/file";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
@@ -61,6 +65,12 @@ const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
 const draftAttachmentToUploadedFile = (
   attachment: ConversationDraftAttachment,
 ): UploadedFileState => {
+  const isLocalDesktop = attachment.storage === "local-desktop";
+  const generatedTextAttachmentId =
+    attachment.generatedTextAttachmentId ||
+    (!isLocalDesktop && attachment.kind === "pasted-text"
+      ? attachment.fileId
+      : undefined);
   const uploadedFile: UploadedFileState = {
     file: {
       name: attachment.name,
@@ -70,16 +80,23 @@ const draftAttachmentToUploadedFile = (
     },
     uploading: false,
     uploaded: true,
-    storage: "s3",
-    fileId: attachment.fileId,
+    storage: isLocalDesktop ? "local-desktop" : "s3",
     tokens: attachment.tokens,
   };
+
+  if (attachment.fileId) {
+    uploadedFile.fileId = attachment.fileId;
+  }
 
   if (
     attachment.kind === "pasted-text" ||
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
+    uploadedFile.generatedTextAttachmentId = generatedTextAttachmentId;
+    if (isLocalDesktop && generatedTextAttachmentId) {
+      uploadedFile.localAttachmentId = generatedTextAttachmentId;
+    }
   }
 
   return uploadedFile;
@@ -88,19 +105,49 @@ const draftAttachmentToUploadedFile = (
 const uploadedFileToDraftAttachment = (
   uploadedFile: UploadedFileState,
 ): ConversationDraftAttachment | null => {
+  const generatedTextAttachment = uploadedFile.generatedTextAttachment;
+  const generatedTextAttachmentId =
+    generatedTextAttachment?.id || uploadedFile.generatedTextAttachmentId;
+  const isGeneratedPastedText =
+    uploadedFile.generatedSource === "pasted-text" ||
+    Boolean(generatedTextAttachmentId);
+  const hasCommittedGeneratedTextFile =
+    isGeneratedPastedText &&
+    (uploadedFile.storage === "local-desktop"
+      ? Boolean(generatedTextAttachmentId)
+      : Boolean(uploadedFile.fileId));
+
   if (
-    !uploadedFile.uploaded ||
-    uploadedFile.uploading ||
-    uploadedFile.error ||
-    !uploadedFile.fileId ||
-    uploadedFile.storage === "local-desktop"
+    (!uploadedFile.uploaded || uploadedFile.uploading || uploadedFile.error) &&
+    !hasCommittedGeneratedTextFile
   ) {
     return null;
   }
 
+  if (uploadedFile.storage === "local-desktop") {
+    if (!isGeneratedPastedText || !generatedTextAttachmentId) {
+      return null;
+    }
+
+    return {
+      kind: "pasted-text",
+      storage: "local-desktop",
+      name: uploadedFile.file.name,
+      mediaType: uploadedFile.file.type || "text/plain",
+      size: uploadedFile.file.size,
+      tokens: uploadedFile.tokens,
+      timestamp: uploadedFile.file.lastModified,
+      generatedSource: "pasted-text",
+      generatedTextAttachmentId,
+    };
+  }
+
+  if (!uploadedFile.fileId) {
+    return null;
+  }
+
   return {
-    kind:
-      uploadedFile.generatedSource === "pasted-text" ? "pasted-text" : "file",
+    kind: isGeneratedPastedText ? "pasted-text" : "file",
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     mediaType: uploadedFile.file.type || "application/octet-stream",
@@ -109,6 +156,16 @@ const uploadedFileToDraftAttachment = (
     timestamp: isBrowserFile(uploadedFile.file)
       ? Date.now()
       : uploadedFile.file.lastModified,
+    ...(isGeneratedPastedText
+      ? {
+          generatedSource: "pasted-text" as const,
+        }
+      : {}),
+    ...(generatedTextAttachmentId
+      ? {
+          generatedTextAttachmentId,
+        }
+      : {}),
   };
 };
 
@@ -159,6 +216,7 @@ export const ChatInput = ({
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
@@ -195,10 +253,207 @@ export const ChatInput = ({
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  const draftTextFileIds = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage !== "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              uploadedFile.fileId
+            ) {
+              return [uploadedFile.fileId as Id<"files">];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
+  const draftTextFileContents = useQuery(
+    api.fileStorage.getTextFileContentForCurrentUser,
+    draftTextFileIds.length > 0 ? { fileIds: draftTextFileIds } : "skip",
+  );
+  const localDraftTextFiles = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile, index) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage === "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              !uploadedFile.unavailable &&
+              uploadedFile.generatedTextAttachmentId
+            ) {
+              return [
+                {
+                  index,
+                  attachmentId: uploadedFile.generatedTextAttachmentId,
+                  fileName: uploadedFile.file.name,
+                },
+              ];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
   });
+
+  useEffect(() => {
+    if (!draftTextFileContents || draftTextFileContents.length === 0) {
+      return;
+    }
+
+    const contentByFileId = new Map<
+      string,
+      { content: string; tokenSize: number }
+    >(
+      draftTextFileContents.flatMap((fileContent) => {
+        if (!fileContent || typeof fileContent.content !== "string") {
+          return [];
+        }
+
+        return [
+          [
+            fileContent.id as string,
+            {
+              content: fileContent.content,
+              tokenSize: fileContent.tokenSize,
+            },
+          ],
+        ];
+      }),
+    );
+
+    if (contentByFileId.size === 0) {
+      return;
+    }
+
+    let didHydrate = false;
+    const nextUploadedFiles = uploadedFilesRef.current.map((uploadedFile) => {
+      if (
+        uploadedFile.generatedTextAttachment ||
+        uploadedFile.generatedSource !== "pasted-text" ||
+        !uploadedFile.fileId ||
+        !uploadedFile.generatedTextAttachmentId
+      ) {
+        return uploadedFile;
+      }
+
+      const fileContent = contentByFileId.get(uploadedFile.fileId);
+      if (!fileContent) {
+        return uploadedFile;
+      }
+
+      didHydrate = true;
+      return {
+        ...uploadedFile,
+        tokens: fileContent.tokenSize,
+        generatedTextAttachment: {
+          id: uploadedFile.generatedTextAttachmentId,
+          content: fileContent.content,
+        },
+      };
+    });
+
+    if (didHydrate) {
+      setUploadedFiles(nextUploadedFiles);
+    }
+  }, [draftTextFileContents, setUploadedFiles]);
+
+  useEffect(() => {
+    if (localDraftTextFiles.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateLocalGeneratedTextFiles = async () => {
+      const hydratedFiles = await Promise.all(
+        localDraftTextFiles.map(async (file) => ({
+          ...file,
+          content: await readGeneratedTextAttachment(
+            file.attachmentId,
+            file.fileName,
+          ),
+        })),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      let didHydrate = false;
+      const hydratedByIndex = new Map(
+        hydratedFiles.map((file) => [file.index, file]),
+      );
+
+      const nextUploadedFiles = uploadedFilesRef.current.map(
+        (uploadedFile, index) => {
+          const hydratedFile = hydratedByIndex.get(index);
+          if (!hydratedFile) {
+            return uploadedFile;
+          }
+
+          if (
+            uploadedFile.generatedTextAttachment ||
+            uploadedFile.generatedTextAttachmentId !==
+              hydratedFile.attachmentId ||
+            uploadedFile.storage !== "local-desktop"
+          ) {
+            return uploadedFile;
+          }
+
+          didHydrate = true;
+          if (!hydratedFile.content) {
+            return {
+              ...uploadedFile,
+              unavailable: true,
+            };
+          }
+
+          return {
+            ...uploadedFile,
+            unavailable: false,
+            file: {
+              name: hydratedFile.content.name,
+              type: hydratedFile.content.mediaType || "text/plain",
+              size: hydratedFile.content.size,
+              lastModified: hydratedFile.content.lastModified || Date.now(),
+            },
+            localAttachmentId: hydratedFile.attachmentId,
+            localPath: hydratedFile.content.path,
+            generatedTextAttachment: {
+              id: hydratedFile.attachmentId,
+              content: hydratedFile.content.content,
+            },
+          };
+        },
+      );
+
+      if (didHydrate) {
+        setUploadedFiles(nextUploadedFiles);
+      }
+    };
+
+    void hydrateLocalGeneratedTextFiles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [localDraftTextFiles, setUploadedFiles]);
 
   useEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
@@ -354,6 +609,7 @@ export const ChatInput = ({
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
+            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
           />
         )}
 

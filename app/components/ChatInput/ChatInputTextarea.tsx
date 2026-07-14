@@ -16,6 +16,7 @@ import {
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
   draftId: string;
@@ -89,17 +90,13 @@ export function ChatInputTextarea({
         return;
       }
 
-      const hasClipboardFiles = Array.from(clipboardData.items ?? []).some(
-        (item) => item.kind === "file",
-      );
-      if (hasClipboardFiles) {
-        await handlePasteEvent(e);
+      const handledAsFile = await handlePasteEvent(e);
+      if (handledAsFile) {
         return;
       }
 
       const pastedText = clipboardData.getData("text");
       if (!pastedText) {
-        await handlePasteEvent(e);
         return;
       }
 
@@ -109,7 +106,7 @@ export function ChatInputTextarea({
       });
       if (tokenCount > maxTokens) {
         e.preventDefault();
-        if (subscription !== "free") {
+        if (isAgentMode(chatMode) && subscription !== "free") {
           await handlePastedTextAttachment(pastedText);
           return;
         }
@@ -120,8 +117,6 @@ export function ChatInputTextarea({
         });
         return;
       }
-
-      await handlePasteEvent(e);
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);

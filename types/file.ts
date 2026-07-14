@@ -33,11 +33,17 @@ export interface UploadedFileState {
   error?: string;
   storage?: "s3" | "local-desktop";
   generatedSource?: "pasted-text";
+  generatedTextAttachmentId?: string;
+  unavailable?: boolean;
   localAttachmentId?: string;
   localPath?: string;
   fileId?: string; // Database file ID for backend operations
   url?: string; // Store the resolved URL
   tokens?: number; // Token count for the file
+  generatedTextAttachment?: {
+    id: string;
+    content: string;
+  };
 }
 
 // File part interface for rendering components
@@ -66,6 +72,7 @@ export interface FilePartRendererProps {
 export interface FileUploadPreviewProps {
   uploadedFiles: UploadedFileState[];
   onRemoveFile: (index: number) => void;
+  onUpdateGeneratedTextFile?: (index: number, content: string) => void;
 }
 
 export interface FilePreview {
