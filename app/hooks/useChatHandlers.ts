@@ -16,10 +16,10 @@ import {
 } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
-  countInputTokens,
-  getMaxTokensForSubscription,
   getMaxFileTokens,
-} from "@/lib/token-utils";
+  getMaxTokensForSubscription,
+} from "@/lib/token-limits";
+import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
@@ -368,7 +368,6 @@ export const useChatHandlers = ({
       }
     }
     // Check token limit before sending based on user plan
-    const tokenCount = countInputTokens(input, uploadedFiles);
     const maxTokens = getMaxTokensForSubscription(subscription, {
       mode: currentChatMode,
     });
@@ -389,11 +388,16 @@ export const useChatHandlers = ({
       }
     }
 
-    if (tokenCount > maxTokens) {
+    const tokenLimitStatus = await getInputTokenLimitStatus(
+      input,
+      uploadedFiles,
+      maxTokens,
+    );
+    if (tokenLimitStatus.exceedsLimit) {
       const hasFiles = uploadedFiles.length > 0;
       const planText = subscription !== "free" ? "" : " (Free plan limit)";
       toast.error("Message is too long", {
-        description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
+        description: `Your message is too large (${tokenLimitStatus.tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
       });
       return false;
     }

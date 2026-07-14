@@ -12,7 +12,7 @@ import {
   isImageFile,
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
-import { getMaxFileTokens } from "@/lib/token-utils";
+import { getMaxFileTokens } from "@/lib/token-limits";
 import {
   FileProcessingResult,
   FileSource,
