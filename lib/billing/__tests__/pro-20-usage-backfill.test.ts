@@ -161,6 +161,21 @@ describe("runPro20UsageBackfill", () => {
     expect(capAllocation).not.toHaveBeenCalled();
   });
 
+  it("requires a reviewed fingerprint for every apply caller", async () => {
+    const { stripe, workos, capAllocation } = makeDependencies();
+
+    await expect(
+      runPro20UsageBackfill({
+        stripe: stripe as never,
+        workos: workos as never,
+        apply: true,
+        expectedSubscriptions: 1,
+        capAllocation: capAllocation as never,
+      }),
+    ).rejects.toThrow("Apply requires expectedFingerprint");
+    expect(capAllocation).not.toHaveBeenCalled();
+  });
+
   it("applies the exact reviewed snapshot", async () => {
     const { stripe, workos, capAllocation } = makeDependencies();
     const dryRun = await runPro20UsageBackfill({

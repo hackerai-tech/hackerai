@@ -326,10 +326,10 @@ export async function runPro20UsageBackfill(
   };
 
   if (!apply) return { summary };
-  if (
-    options.expectedFingerprint !== undefined &&
-    options.expectedFingerprint !== fingerprint
-  ) {
+  if (!options.expectedFingerprint) {
+    throw new Error("Apply requires expectedFingerprint");
+  }
+  if (options.expectedFingerprint !== fingerprint) {
     throw new Error(
       `Safety check failed: expected target fingerprint ${options.expectedFingerprint}, found ${fingerprint}`,
     );
