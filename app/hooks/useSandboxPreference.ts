@@ -81,7 +81,7 @@ export function useSandboxPreference(
           disconnectDesktop: (args) => disconnectRef.current(args),
         });
 
-        const connectionId = await bridge.start();
+        await bridge.start();
         if (cancelled) {
           bridge.stop();
           return;

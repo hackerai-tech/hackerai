@@ -11,7 +11,6 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Copy, Check, Loader2, X as XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
@@ -24,7 +23,6 @@ interface ShareDialogProps {
   chatId: string;
   chatTitle: string;
   existingShareId?: string;
-  existingShareDate?: number;
 }
 
 export const ShareDialog = ({
@@ -33,12 +31,8 @@ export const ShareDialog = ({
   chatId,
   chatTitle,
   existingShareId,
-  existingShareDate,
 }: ShareDialogProps) => {
   const [shareUrl, setShareUrl] = useState<string>("");
-  const [shareDate, setShareDate] = useState<number | undefined>(
-    existingShareDate,
-  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string>("");
   const [copied, setCopied] = useState(false);
@@ -65,16 +59,14 @@ export const ShareDialog = ({
         try {
           if (existingShareId) {
             // Update existing share to include new messages
-            const result = await updateShareDate({ chatId });
+            await updateShareDate({ chatId });
             const url = `${window.location.origin}/share/${existingShareId}`;
             setShareUrl(url);
-            setShareDate(result.shareDate);
           } else {
             // Create new share
             const result = await shareChat({ chatId });
             const url = `${window.location.origin}/share/${result.shareId}`;
             setShareUrl(url);
-            setShareDate(result.shareDate);
           }
         } catch (err) {
           setError("Failed to generate share link. Please try again.");
@@ -170,17 +162,15 @@ export const ShareDialog = ({
                   setIsGenerating(true);
                   try {
                     if (existingShareId) {
-                      const result = await updateShareDate({ chatId });
+                      await updateShareDate({ chatId });
                       setShareUrl(
                         `${window.location.origin}/share/${existingShareId}`,
                       );
-                      setShareDate(result.shareDate);
                     } else {
                       const result = await shareChat({ chatId });
                       setShareUrl(
                         `${window.location.origin}/share/${result.shareId}`,
                       );
-                      setShareDate(result.shareDate);
                     }
                   } catch (err) {
                     setError(

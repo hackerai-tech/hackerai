@@ -35,7 +35,6 @@ interface ChatHeaderProps {
         title?: string;
         branched_from_chat_id?: string;
         share_id?: string;
-        share_date?: number;
       }
     | null
     | undefined;
@@ -293,7 +292,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           chatId={id || ""}
           chatTitle={chatTitle || ""}
           existingShareId={chatData?.share_id}
-          existingShareDate={chatData?.share_date}
         />
         <div className="px-4 bg-background flex-shrink-0">
           <div className="flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">

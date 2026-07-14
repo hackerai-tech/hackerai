@@ -69,7 +69,6 @@ import {
   normalizeSelectedModelForSubscription,
   type Todo,
   type ChatMessage,
-  type ChatMode,
 } from "@/types";
 import {
   getAgentToolApprovalPromptDetail,
@@ -490,7 +489,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setChatMode,
     sidebarOpen,
     chatSidebarOpen,
-    setChatSidebarOpen,
     initializeChat,
     setTodos,
     temporaryChatsEnabled,
@@ -1324,12 +1322,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           (t: Todo) => !t.sourceMessageId,
         );
 
-        const prevManual: Todo[] = [];
-        // We can't access previous value directly here without functional setter.
-        // Fallback: since server is source of truth, treat incoming manual todos as updates only for ids we already have.
-        // The actual merge of manual todos will be handled elsewhere when tool updates come in.
-
-        // Build manual map from previous
         // Replace assistant todos entirely with incoming assistant todos and keep incoming manual ones as-is
         return [...incomingAssistant, ...incomingManual] as Todo[];
       })();

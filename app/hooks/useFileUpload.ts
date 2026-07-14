@@ -13,11 +13,7 @@ import {
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
 import { getMaxFileTokens } from "@/lib/token-limits";
-import {
-  FileProcessingResult,
-  FileSource,
-  LocalDesktopFile,
-} from "@/types/file";
+import { FileProcessingResult, LocalDesktopFile } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
@@ -205,11 +201,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Helper function to show feedback messages
   const showProcessingFeedback = useCallback(
-    (
-      result: FileProcessingResult,
-      source: FileSource,
-      hasRemainingSlots: boolean = true,
-    ) => {
+    (result: FileProcessingResult, hasRemainingSlots: boolean = true) => {
       const messages: string[] = [];
 
       // Handle case where no slots are available
@@ -611,7 +603,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const processFiles = useCallback(
     async (
       files: File[],
-      source: FileSource,
       options: {
         generatedSource?: "pasted-text";
       } = {},
@@ -630,7 +621,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const hasRemainingSlots = remainingSlots > 0;
 
       // Show feedback messages
-      showProcessingFeedback(result, source, hasRemainingSlots);
+      showProcessingFeedback(result, hasRemainingSlots);
 
       // Start uploads for valid files
       if (result.validFiles.length > 0 && hasRemainingSlots) {
@@ -656,7 +647,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    await processFiles(Array.from(selectedFiles), "upload");
+    await processFiles(Array.from(selectedFiles));
 
     // Clear the input
     if (fileInputRef.current) {
@@ -723,7 +714,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         lastModified: Date.now(),
       });
 
-      const started = await processFiles([file], "paste", {
+      const started = await processFiles([file], {
         generatedSource: "pasted-text",
       });
       if (started) {
@@ -756,7 +747,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     // Prevent default paste behavior to avoid pasting file names as text
     event.preventDefault();
 
-    await processFiles(files, "paste");
+    await processFiles(files);
     return true;
   };
 
@@ -828,7 +819,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
 
-      await processFiles(Array.from(files), "drop");
+      await processFiles(Array.from(files));
     },
     [processFiles],
   );
