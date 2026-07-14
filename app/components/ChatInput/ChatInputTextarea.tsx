@@ -10,10 +10,11 @@ import {
   upsertDraft,
   removeDraft,
 } from "@/lib/utils/client-storage";
+import { getMaxTokensForSubscription } from "@/lib/token-limits";
 import {
-  countInputTokens,
-  getMaxTokensForSubscription,
-} from "@/lib/token-utils";
+  getInputTokenLimitStatus,
+  inputTokenCountCouldExceedLimit,
+} from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
 
@@ -103,12 +104,24 @@ export function ChatInputTextarea({
         return;
       }
 
-      const tokenCount = countInputTokens(pastedText, []);
       const maxTokens = getMaxTokensForSubscription(subscription, {
         mode: chatMode,
       });
-      if (tokenCount > maxTokens) {
-        e.preventDefault();
+      if (!inputTokenCountCouldExceedLimit(pastedText, [], maxTokens)) {
+        await handlePasteEvent(e);
+        return;
+      }
+
+      // Async tokenization cannot cancel a native paste after dispatch ends.
+      // Intercept only potentially oversized content, then manually insert it
+      // below when exact tokenization shows that it fits.
+      e.preventDefault();
+      const tokenLimitStatus = await getInputTokenLimitStatus(
+        pastedText,
+        [],
+        maxTokens,
+      );
+      if (tokenLimitStatus.exceedsLimit) {
         if (subscription !== "free") {
           await handlePastedTextAttachment(pastedText);
           return;
@@ -116,16 +129,36 @@ export function ChatInputTextarea({
 
         const planText = subscription !== "free" ? "" : " (Free plan limit)";
         toast.error("Content is too long to paste", {
-          description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
+          description: `The content you're trying to paste is too large (${tokenLimitStatus.tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
         });
         return;
       }
 
-      await handlePasteEvent(e);
+      const textarea = textareaRef.current;
+      const currentInput = inputRef.current;
+      const selectionStart = textarea?.selectionStart ?? currentInput.length;
+      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+      const nextInput =
+        currentInput.slice(0, selectionStart) +
+        pastedText +
+        currentInput.slice(selectionEnd);
+      const nextCursorPosition = selectionStart + pastedText.length;
+
+      setInput(nextInput);
+      requestAnimationFrame(() => {
+        textarea?.focus();
+        textarea?.setSelectionRange(nextCursorPosition, nextCursorPosition);
+      });
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
-  }, [chatMode, handlePasteEvent, handlePastedTextAttachment, subscription]);
+  }, [
+    chatMode,
+    handlePasteEvent,
+    handlePastedTextAttachment,
+    setInput,
+    subscription,
+  ]);
 
   return (
     <div className="overflow-y-auto pl-4 pr-2">

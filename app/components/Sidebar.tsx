@@ -90,7 +90,7 @@ const MainSidebar: FC<{
   const isMobile = useIsMobile();
   const { setChatSidebarOpen } = useGlobalState();
   // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
-  const chatListDataFromHook = useChats();
+  const chatListDataFromHook = useChats(chatListDataProp === undefined);
   const chatListData = chatListDataProp ?? chatListDataFromHook;
 
   const handleCloseSidebar = () => {

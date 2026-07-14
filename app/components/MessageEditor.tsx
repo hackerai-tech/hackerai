@@ -4,10 +4,8 @@ import TextareaAutosize from "react-textarea-autosize";
 import Image from "next/image";
 import { X, File } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
-import {
-  countInputTokens,
-  getMaxTokensForSubscription,
-} from "@/lib/token-utils";
+import { getMaxTokensForSubscription } from "@/lib/token-limits";
+import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 
 export interface EditableFile {
@@ -49,26 +47,39 @@ export const MessageEditor = ({
     setFiles((prev) => prev.filter((f) => f.fileId !== fileId));
   }, []);
 
-  const handleSave = () => {
+  const saveMessage = async () => {
     const trimmedContent = content.trim();
 
     // Must have either content or files
     if (!trimmedContent && files.length === 0) return;
 
     // Check token limit for edited content based on user plan
-    const tokenCount = countInputTokens(trimmedContent, []);
     const maxTokens = getMaxTokensForSubscription(subscription);
+    const tokenLimitStatus = await getInputTokenLimitStatus(
+      trimmedContent,
+      [],
+      maxTokens,
+    );
 
-    if (tokenCount > maxTokens) {
+    if (tokenLimitStatus.exceedsLimit) {
       const planText = subscription !== "free" ? "" : " (Free plan limit)";
       toast.error("Message is too long", {
-        description: `Your edited message is too large (${tokenCount.toLocaleString()} tokens). Maximum is ${maxTokens.toLocaleString()} tokens${planText}.`,
+        description: `Your edited message is too large (${tokenLimitStatus.tokenCount.toLocaleString()} tokens). Maximum is ${maxTokens.toLocaleString()} tokens${planText}.`,
       });
       return;
     }
 
     const remainingFileIds = files.map((f) => f.fileId);
     onSave(trimmedContent, remainingFileIds);
+  };
+
+  const handleSave = () => {
+    void saveMessage().catch((error) => {
+      console.error("Failed to validate edited message:", error);
+      toast.error("Could not validate message", {
+        description: "Please try again.",
+      });
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
