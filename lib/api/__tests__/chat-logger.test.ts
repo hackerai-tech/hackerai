@@ -86,6 +86,7 @@ describe("captureAgentRun", () => {
       outcome: "success",
       selectedModel: "agent-model",
       configuredModelId: "deepseek/deepseek-v4-pro",
+      agentPermissionMode: "ask_approval",
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
     });
@@ -100,6 +101,7 @@ describe("captureAgentRun", () => {
         outcome: "success",
         selected_model: "agent-model",
         configured_model: "deepseek/deepseek-v4-pro",
+        agent_permission_mode: "ask_approval",
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
         sandboxType: "remote-connection",
@@ -421,6 +423,7 @@ describe("captureUsageCost", () => {
       chatId: "chat_123",
       endpoint: "/api/chat",
       mode: "agent",
+      agentPermissionMode: "ask_approval",
       responseModel: "deepseek/deepseek-v4-pro",
       usage: {
         model: "auto",
@@ -462,6 +465,7 @@ describe("captureUsageCost", () => {
         chat_id: "chat_123",
         endpoint: "/api/chat",
         mode: "agent",
+        agent_permission_mode: "ask_approval",
         model: "auto",
         response_model: "deepseek/deepseek-v4-pro",
         usage_type: "extra",
@@ -490,6 +494,9 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+    expect(capture.mock.calls[0][0].properties.$set).not.toHaveProperty(
+      "agent_permission_mode",
+    );
   });
 
   it("omits response_model when served-model metadata is unavailable", () => {

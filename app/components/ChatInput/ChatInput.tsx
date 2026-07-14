@@ -418,7 +418,7 @@ export const ChatInput = ({
               onChange={setSandboxPreference}
             />
             <div className="min-w-0 md:hidden">
-              <AgentPermissionSelector />
+              <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
           </div>
         )}

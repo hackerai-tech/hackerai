@@ -14,6 +14,7 @@ import {
 } from "@/lib/logger";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type {
+  AgentPermissionMode,
   ChatMode,
   ExtraUsageConfig,
   SandboxInfo,
@@ -1184,6 +1185,7 @@ type AgentCompletionAnalyticsArgs = {
   fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
+  agentPermissionMode?: AgentPermissionMode;
 };
 
 export function captureAgentRun({
@@ -1199,6 +1201,7 @@ export function captureAgentRun({
   fallbackServed,
   finishReason,
   budgetAbortDetails,
+  agentPermissionMode,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1212,6 +1215,7 @@ export function captureAgentRun({
   fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
+  agentPermissionMode?: AgentPermissionMode;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1224,6 +1228,9 @@ export function captureAgentRun({
       outcome,
       selected_model: selectedModel,
       configured_model: configuredModelId,
+      ...(agentPermissionMode && {
+        agent_permission_mode: agentPermissionMode,
+      }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
@@ -1310,6 +1317,7 @@ export function captureAgentCompletionAnalytics(
     fallbackServed: args.fallbackServed,
     finishReason: args.finishReason,
     budgetAbortDetails: args.budgetAbortDetails,
+    agentPermissionMode: args.agentPermissionMode,
   });
   captureFreeAgentValueReached(args);
 }
@@ -1327,6 +1335,7 @@ export function captureUsageCost({
   chatId,
   endpoint,
   mode,
+  agentPermissionMode,
   usage,
   responseModel,
   paidDailyFreeAllowance,
@@ -1338,6 +1347,7 @@ export function captureUsageCost({
   chatId: string;
   endpoint: ChatApiEndpoint;
   mode: ChatMode;
+  agentPermissionMode?: AgentPermissionMode;
   usage: UsageCostRecord;
   responseModel?: string;
   paidDailyFreeAllowance?: {
@@ -1360,6 +1370,9 @@ export function captureUsageCost({
       chat_id: chatId,
       endpoint,
       mode,
+      ...(agentPermissionMode && {
+        agent_permission_mode: agentPermissionMode,
+      }),
       model: usage.model,
       ...(responseModel && { response_model: responseModel }),
       usage_type: usage.type,

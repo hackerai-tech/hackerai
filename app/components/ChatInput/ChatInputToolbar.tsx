@@ -32,7 +32,7 @@ export function ChatInputToolbar({
       <ChatModeSelector />
       {isAgentMode(chatMode) ? (
         <div className="hidden md:block">
-          <AgentPermissionSelector />
+          <AgentPermissionSelector analyticsSurface="chat_input" />
         </div>
       ) : null}
       <div className="ml-auto shrink-0 flex items-center gap-2.5">

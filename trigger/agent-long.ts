@@ -2569,6 +2569,7 @@ export const agentLongTask = task({
                   chatId,
                   endpoint,
                   mode,
+                  agentPermissionMode,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
                   ...(paidDailyFreeAllowanceReservation && {
@@ -3059,6 +3060,7 @@ export const agentLongTask = task({
                                     finishReason: state.streamFinishReason,
                                     budgetAbortDetails:
                                       state.budgetAbortDetails,
+                                    agentPermissionMode,
                                   });
                                   if (!isTerminalProviderStreamError(state)) {
                                     chatLogger?.emitSuccess({
@@ -3196,6 +3198,7 @@ export const agentLongTask = task({
                             : state.fallbackServed,
                         finishReason: state.streamFinishReason,
                         budgetAbortDetails: state.budgetAbortDetails,
+                        agentPermissionMode,
                       });
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({
