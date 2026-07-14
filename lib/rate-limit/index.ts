@@ -33,6 +33,7 @@ export {
   deductUsageDelta,
   refundUsage,
   resetRateLimitBuckets,
+  capCurrentCycleAllocation,
   stashOldBucketRemaining,
   popOldBucketRemaining,
   initProratedBucket,
@@ -51,6 +52,7 @@ export {
   POINTS_PER_DOLLAR,
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
+  type CycleAllocationCapResult,
 } from "./token-bucket";
 
 // Re-export sliding window functions

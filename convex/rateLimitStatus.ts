@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import {
   getBudgetLimits,
   getMonthlyBucketKey,
+  POINTS_PER_DOLLAR,
   getSubscriptionPrice,
 } from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
@@ -131,18 +132,15 @@ export const getAgentRateLimitStatus = action({
         await redis.hget(monthlyStorageKey, "cycleAllocation"),
       );
 
-      const monthlyRemaining = Math.min(
-        Math.max(0, monthlyResult.remaining),
-        monthlyLimit,
-      );
       const cycleAllocation =
         storedCycleAllocation === null
           ? monthlyLimit
           : Math.min(storedCycleAllocation, monthlyLimit);
-      const effectiveMonthlyLimit = Math.min(
-        monthlyLimit,
-        Math.max(monthlyRemaining, cycleAllocation),
+      const monthlyRemaining = Math.min(
+        Math.max(0, monthlyResult.remaining),
+        cycleAllocation,
       );
+      const effectiveMonthlyLimit = cycleAllocation;
       const monthlyUsed = Math.max(0, effectiveMonthlyLimit - monthlyRemaining);
 
       return {
@@ -156,7 +154,7 @@ export const getAgentRateLimitStatus = action({
               : 0,
           resetTime: new Date(monthlyResult.reset).toISOString(),
         },
-        monthlyBudgetUsd,
+        monthlyBudgetUsd: effectiveMonthlyLimit / POINTS_PER_DOLLAR,
       };
     } catch (error) {
       console.error("Failed to get rate limit status:", error);
