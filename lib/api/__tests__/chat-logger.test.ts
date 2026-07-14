@@ -13,6 +13,7 @@ const {
   captureToolCalls,
   captureUsageCost,
   captureUsageSettlement,
+  isUsageSettlementSuccessSampled,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
@@ -452,6 +453,10 @@ describe("captureUsageCost", () => {
         costLimitDollars: 0.25,
         resetTimestamp: 1_800_000_000_000,
       },
+      usageSettlement: {
+        id: "settlement_123",
+        midRunCount: 7,
+      },
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -482,6 +487,12 @@ describe("captureUsageCost", () => {
         cache_read_tokens: 200,
         cache_write_tokens: 0,
         cost_source: "provider",
+        usage_settlement_id: "settlement_123",
+        mid_run_usage_settlement_count: 7,
+        usage_settlement_step_events_sampled:
+          isUsageSettlementSuccessSampled("settlement_123"),
+        usage_settlement_success_sample_rate: 0.05,
+        usage_settlement_summary_version: 1,
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,
         paid_daily_free_allowance_cut_off: false,
@@ -536,7 +547,7 @@ describe("captureUsageCost", () => {
 });
 
 describe("captureUsageSettlement", () => {
-  it("captures one queryable event for an actual provider-step settlement", () => {
+  it("always captures an anomalous provider-step settlement", () => {
     const capture = jest.fn();
 
     captureUsageSettlement({
@@ -586,9 +597,70 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        settlement_event_version: 1,
+        settlement_capture_reason: "anomaly",
+        settlement_run_sampled:
+          isUsageSettlementSuccessSampled("settlement_123"),
+        settlement_success_sample_rate: 0.05,
+        settlement_event_version: 2,
       },
     });
+  });
+
+  it("keeps or drops every routine step in a run consistently", () => {
+    const sampledId = Array.from(
+      { length: 1_000 },
+      (_, index) => `sampled_${index}`,
+    ).find(isUsageSettlementSuccessSampled);
+    const unsampledId = Array.from(
+      { length: 1_000 },
+      (_, index) => `unsampled_${index}`,
+    ).find((id) => !isUsageSettlementSuccessSampled(id));
+
+    expect(sampledId).toBeDefined();
+    expect(unsampledId).toBeDefined();
+
+    for (const [usageSettlementId, expectedCaptureCount] of [
+      [sampledId, 2],
+      [unsampledId, 0],
+    ] as const) {
+      const capture = jest.fn();
+      for (const settlementSequence of [1, 2]) {
+        captureUsageSettlement({
+          posthog: { capture } as any,
+          userId: "user_123",
+          subscription: "pro",
+          chatId: "chat_123",
+          endpoint: "/api/chat",
+          mode: "agent",
+          model: "agent-model",
+          usageSettlementId: usageSettlementId!,
+          settlementSequence,
+          currentCostDollars: settlementSequence / 10,
+          requestedDeltaPoints: 1_400,
+          deduction: {
+            includedPointsDeducted: 1_400,
+            extraUsagePointsDeducted: 0,
+            uncoveredPoints: 0,
+            usageDeductionFailed: false,
+          },
+          forced: false,
+        });
+      }
+
+      expect(capture).toHaveBeenCalledTimes(expectedCaptureCount);
+      for (const call of capture.mock.calls) {
+        expect(call[0]).toEqual(
+          expect.objectContaining({
+            properties: expect.objectContaining({
+              settlement_capture_reason: "sampled_success",
+              settlement_run_sampled: true,
+              settlement_success_sample_rate: 0.05,
+              settlement_event_version: 2,
+            }),
+          }),
+        );
+      }
+    }
   });
 
   it("does nothing without a PostHog client", () => {
