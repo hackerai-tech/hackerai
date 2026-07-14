@@ -9,6 +9,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
 
 type AgentPermissionSelectorProps = {
@@ -92,6 +93,20 @@ export function AgentPermissionSelector({
                 type="button"
                 aria-pressed={selected}
                 onClick={() => {
+                  if (option.id !== agentPermissionMode) {
+                    captureAuthenticatedEvent("agent_permission_mode_changed", {
+                      mode: "agent",
+                      previous_agent_permission_mode: agentPermissionMode,
+                      agent_permission_mode: option.id,
+                      surface: "chat_input",
+                      agent_permission_event_version: 1,
+                      $set: {
+                        agent_permission_mode: option.id,
+                        last_agent_permission_mode_changed_at:
+                          new Date().toISOString(),
+                      },
+                    });
+                  }
                   setAgentPermissionMode(option.id);
                   setOpen(false);
                 }}
