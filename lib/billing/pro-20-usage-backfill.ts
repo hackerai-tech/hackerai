@@ -1,21 +1,12 @@
-#!/usr/bin/env tsx
-
-import { config } from "dotenv";
-import { resolve } from "path";
-import Stripe from "stripe";
-import { WorkOS } from "@workos-inc/node";
+import { createHash } from "node:crypto";
+import type Stripe from "stripe";
+import type { WorkOS } from "@workos-inc/node";
 import {
   HACKERAI_PRO_20_MONTHLY_PRICE_ID,
   PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
   PRO_20_MONTHLY_INCLUDED_USAGE_POINTS,
-} from "../lib/billing/included-usage";
-import { capCurrentCycleAllocation } from "../lib/rate-limit/token-bucket";
-
-type Options = {
-  apply: boolean;
-  envFile: string;
-  expectedSubscriptions?: number;
-};
+} from "./included-usage";
+import { capCurrentCycleAllocation } from "../rate-limit/token-bucket";
 
 export type BackfillTarget = {
   periodEnd: number;
@@ -34,82 +25,46 @@ type ApplyBackfillOptions = {
   unmapped: number;
 };
 
-function printUsage() {
-  console.log(`
-Backfill the current-cycle included usage for active grandfathered $20 Pro subscriptions.
+export type Pro20UsageBackfillSummary = {
+  mode: "dry-run" | "apply";
+  stripeLiveMode: true;
+  targetFingerprint: string;
+  currentPriceActiveSubscriptions: number;
+  currentPricePastDueSubscriptions: number;
+  eligibleSubscriptions: number;
+  eligibleUsers: number;
+  unmappedActiveSubscriptions: number;
+  legacyPriceActiveSubscriptions: number;
+  legacyPricePastDueSubscriptions: number;
+  targetIncludedUsagePoints: number;
+};
 
-Dry-run is the default. Apply requires the exact subscription count printed by
-the immediately preceding dry-run.
+export type Pro20UsageBackfillApplyResult = {
+  applied: true;
+  usersProcessed: number;
+  bucketsCreated: number;
+  pointsRemoved: number;
+};
 
-Usage:
-  pnpm exec tsx scripts/backfill-pro-20-usage.ts --env-file=/tmp/hackerai-production.env
-  pnpm exec tsx scripts/backfill-pro-20-usage.ts --env-file=/tmp/hackerai-production.env --apply --expected-subscriptions=105
+type RunPro20UsageBackfillOptions = {
+  stripe: Stripe;
+  workos: WorkOS;
+  apply?: boolean;
+  expectedSubscriptions?: number;
+  expectedFingerprint?: string;
+  capAllocation?: typeof capCurrentCycleAllocation;
+};
 
-Options:
-  --env-file <path>                Environment file. Default: .env.local
-  --apply                          Cap live Redis buckets at $20 of usage.
-  --expected-subscriptions <count> Required with --apply.
-  --help                           Show this message.
-`);
-}
+type ResolvedBackfillTarget = BackfillTarget & {
+  subscriptionId: string;
+};
 
-export function parseBackfillArgs(argv: string[]): Options {
-  const options: Options = {
-    apply: false,
-    envFile: ".env.local",
-  };
-
-  for (let index = 0; index < argv.length; index++) {
-    const arg = argv[index];
-    if (arg === "--help" || arg === "-h") {
-      printUsage();
-      process.exit(0);
-    }
-    if (arg === "--apply") {
-      options.apply = true;
-      continue;
-    }
-    if (arg === "--env-file") {
-      const value = argv[++index];
-      if (!value) throw new Error("--env-file requires a value");
-      options.envFile = value;
-      continue;
-    }
-    if (arg.startsWith("--env-file=")) {
-      options.envFile = arg.slice("--env-file=".length);
-      continue;
-    }
-    if (arg === "--expected-subscriptions") {
-      const value = argv[++index];
-      if (!value) throw new Error("--expected-subscriptions requires a value");
-      options.expectedSubscriptions = Number(value);
-      continue;
-    }
-    if (arg.startsWith("--expected-subscriptions=")) {
-      options.expectedSubscriptions = Number(
-        arg.slice("--expected-subscriptions=".length),
-      );
-      continue;
-    }
-    throw new Error(`Unknown argument: ${arg}`);
-  }
-
-  if (
-    options.expectedSubscriptions !== undefined &&
-    (!Number.isInteger(options.expectedSubscriptions) ||
-      options.expectedSubscriptions < 0)
-  ) {
-    throw new Error("--expected-subscriptions must be a non-negative integer");
-  }
-  if (options.apply && options.expectedSubscriptions === undefined) {
-    throw new Error("--apply requires --expected-subscriptions");
-  }
-
-  return options;
-}
-
-function subscriptionPeriodEnd(subscription: Stripe.Subscription) {
+function subscriptionPeriodEnd(
+  subscription: Stripe.Subscription,
+  priceId: string,
+) {
   const itemEnds = subscription.items.data
+    .filter((item) => item.price.id === priceId)
     .map(
       (item) =>
         (item as Stripe.SubscriptionItem & { current_period_end?: number })
@@ -169,7 +124,7 @@ export function groupBackfillTargets(
 export async function applyBackfill(
   options: ApplyBackfillOptions,
   capAllocation: typeof capCurrentCycleAllocation = capCurrentCycleAllocation,
-) {
+): Promise<Pro20UsageBackfillApplyResult> {
   const userTargets = groupBackfillTargets(options.targets);
 
   if (options.activeSubscriptionCount !== options.expectedSubscriptions) {
@@ -200,7 +155,7 @@ export async function applyBackfill(
   }
 
   return {
-    applied: true as const,
+    applied: true,
     usersProcessed: userTargets.length,
     bucketsCreated,
     pointsRemoved,
@@ -233,12 +188,13 @@ async function resolveTargets(
   stripe: Stripe,
   workos: WorkOS,
   subscriptions: Stripe.Subscription[],
-): Promise<{ targets: BackfillTarget[]; unmapped: number }> {
-  const targets: BackfillTarget[] = [];
+  priceId: string,
+): Promise<{ targets: ResolvedBackfillTarget[]; unmapped: number }> {
+  const targets: ResolvedBackfillTarget[] = [];
   let unmapped = 0;
 
   for (const subscription of subscriptions) {
-    const periodEnd = subscriptionPeriodEnd(subscription);
+    const periodEnd = subscriptionPeriodEnd(subscription, priceId);
     if (periodEnd === undefined) {
       unmapped++;
       continue;
@@ -275,6 +231,7 @@ async function resolveTargets(
     }
 
     targets.push({
+      subscriptionId: subscription.id,
       periodEnd,
       userIds,
     });
@@ -283,41 +240,81 @@ async function resolveTargets(
   return { targets, unmapped };
 }
 
-async function main() {
-  const options = parseBackfillArgs(process.argv.slice(2));
-  config({ path: resolve(process.cwd(), options.envFile), override: true });
+function targetFingerprint(targets: ResolvedBackfillTarget[]): string {
+  const stableTargets = targets
+    .map((target) => ({
+      subscriptionId: target.subscriptionId,
+      periodEnd: target.periodEnd,
+      userIds: [...target.userIds].sort(),
+    }))
+    .sort((a, b) => a.subscriptionId.localeCompare(b.subscriptionId));
 
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-  const workosApiKey = process.env.WORKOS_API_KEY;
-  const workosClientId = process.env.WORKOS_CLIENT_ID;
-  if (!stripeSecretKey || !workosApiKey || !workosClientId) {
-    throw new Error(
-      "STRIPE_SECRET_KEY, WORKOS_API_KEY, and WORKOS_CLIENT_ID must be set",
-    );
-  }
+  return createHash("sha256")
+    .update(JSON.stringify(stableTargets))
+    .digest("hex");
+}
+
+/** Inspect the live write set and optionally apply the guarded Redis backfill. */
+export async function runPro20UsageBackfill(
+  options: RunPro20UsageBackfillOptions,
+): Promise<{
+  summary: Pro20UsageBackfillSummary;
+  applyResult?: Pro20UsageBackfillApplyResult;
+}> {
+  const apply = options.apply === true;
   if (
-    options.apply &&
-    (!process.env.UPSTASH_REDIS_REST_URL ||
-      !process.env.UPSTASH_REDIS_REST_TOKEN)
+    options.expectedSubscriptions !== undefined &&
+    (!Number.isInteger(options.expectedSubscriptions) ||
+      options.expectedSubscriptions < 0)
   ) {
-    throw new Error(
-      "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set with --apply",
-    );
+    throw new Error("expectedSubscriptions must be a non-negative integer");
+  }
+  if (apply && options.expectedSubscriptions === undefined) {
+    throw new Error("Apply requires expectedSubscriptions");
   }
 
-  const stripe = new Stripe(stripeSecretKey);
-  const workos = new WorkOS(workosApiKey, { clientId: workosClientId });
-  const [active, pastDue, legacyActive, legacyPastDue] = await Promise.all([
-    listSubscriptions(stripe, HACKERAI_PRO_20_MONTHLY_PRICE_ID, "active"),
-    listSubscriptions(stripe, HACKERAI_PRO_20_MONTHLY_PRICE_ID, "past_due"),
-    listSubscriptions(stripe, PENTESTGPT_PRO_20_MONTHLY_PRICE_ID, "active"),
-    listSubscriptions(stripe, PENTESTGPT_PRO_20_MONTHLY_PRICE_ID, "past_due"),
+  const [currentPrice, legacyPrice] = await Promise.all([
+    options.stripe.prices.retrieve(HACKERAI_PRO_20_MONTHLY_PRICE_ID),
+    options.stripe.prices.retrieve(PENTESTGPT_PRO_20_MONTHLY_PRICE_ID),
   ]);
-  const { targets, unmapped } = await resolveTargets(stripe, workos, active);
-  const userTargets = groupBackfillTargets(targets);
+  if (!currentPrice.livemode || !legacyPrice.livemode) {
+    throw new Error("Refusing to run the Pro $20 backfill in Stripe test mode");
+  }
 
-  const summary = {
-    mode: options.apply ? "apply" : "dry-run",
+  const [active, pastDue, legacyActive, legacyPastDue] = await Promise.all([
+    listSubscriptions(
+      options.stripe,
+      HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+      "active",
+    ),
+    listSubscriptions(
+      options.stripe,
+      HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+      "past_due",
+    ),
+    listSubscriptions(
+      options.stripe,
+      PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+      "active",
+    ),
+    listSubscriptions(
+      options.stripe,
+      PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+      "past_due",
+    ),
+  ]);
+  const { targets, unmapped } = await resolveTargets(
+    options.stripe,
+    options.workos,
+    active,
+    HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+  );
+  const userTargets = groupBackfillTargets(targets);
+  const fingerprint = targetFingerprint(targets);
+  const summary: Pro20UsageBackfillSummary = {
+    mode: apply ? "apply" : "dry-run",
+    stripeLiveMode: true,
+    targetFingerprint: fingerprint,
     currentPriceActiveSubscriptions: active.length,
     currentPricePastDueSubscriptions: pastDue.length,
     eligibleSubscriptions: targets.length,
@@ -327,27 +324,25 @@ async function main() {
     legacyPricePastDueSubscriptions: legacyPastDue.length,
     targetIncludedUsagePoints: PRO_20_MONTHLY_INCLUDED_USAGE_POINTS,
   };
-  console.log(JSON.stringify(summary, null, 2));
 
-  if (!options.apply) {
-    console.log(
-      `Dry-run only. Re-run with --apply --expected-subscriptions=${active.length} after reviewing these counts.`,
+  if (!apply) return { summary };
+  if (
+    options.expectedFingerprint !== undefined &&
+    options.expectedFingerprint !== fingerprint
+  ) {
+    throw new Error(
+      `Safety check failed: expected target fingerprint ${options.expectedFingerprint}, found ${fingerprint}`,
     );
-    return;
   }
 
-  const result = await applyBackfill({
-    activeSubscriptionCount: active.length,
-    expectedSubscriptions: options.expectedSubscriptions!,
-    targets,
-    unmapped,
-  });
-  console.log(JSON.stringify(result, null, 2));
-}
-
-if (process.env.NODE_ENV !== "test") {
-  main().catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+  const applyResult = await applyBackfill(
+    {
+      activeSubscriptionCount: active.length,
+      expectedSubscriptions: options.expectedSubscriptions!,
+      targets,
+      unmapped,
+    },
+    options.capAllocation,
+  );
+  return { summary, applyResult };
 }
