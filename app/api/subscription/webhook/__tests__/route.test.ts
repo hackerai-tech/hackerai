@@ -6,6 +6,7 @@ import {
   beforeEach,
   afterEach,
 } from "@jest/globals";
+import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
 
 const mockConstructEvent = jest.fn();
 const mockRetrieveCustomer = jest.fn();
@@ -517,6 +518,75 @@ describe("POST /api/subscription/webhook", () => {
     );
     expect(console.info).toHaveBeenCalledWith(
       "[Subscription Webhook] invoice.paid: skipping legacy PentestGPT subscription sub_legacy for invoice in_migrated_legacy",
+    );
+  });
+
+  it("resets the grandfathered $20 Pro price to $20 of included usage", async () => {
+    const periodEnd = 1_785_000_000;
+    mockConstructEvent.mockReturnValue({
+      id: "evt_invoice_paid_pro_20",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_pro_20",
+          customer: "cus_pro_20",
+          amount_paid: 2000,
+          currency: "usd",
+          billing_reason: "subscription_cycle",
+          parent: {
+            subscription_details: {
+              subscription: "sub_pro_20",
+            },
+          },
+          status_transitions: {
+            paid_at: 1_782_000_000,
+          },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_pro_20",
+      metadata: {
+        workOSOrganizationId: "org_pro_20",
+      },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_pro_20" }]),
+    } as never);
+    mockRetrieveSubscription.mockResolvedValue({
+      id: "sub_pro_20",
+      metadata: {},
+      items: {
+        data: [
+          {
+            quantity: 1,
+            current_period_end: periodEnd,
+            price: {
+              id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+              lookup_key: null,
+              recurring: { interval: "month", interval_count: 1 },
+              product: {
+                id: "prod_hackerai_pro",
+                name: "HackerAI Pro",
+                metadata: {},
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockResetRateLimitBuckets).toHaveBeenCalledWith(
+      "user_pro_20",
+      "pro",
+      periodEnd,
+      200_000,
     );
   });
 

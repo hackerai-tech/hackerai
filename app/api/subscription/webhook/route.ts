@@ -35,6 +35,7 @@ import {
   subscriptionPaymentFailureProperties,
   type BillingFailureProperties,
 } from "@/lib/billing/subscription-payment-failure";
+import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -112,6 +113,18 @@ const metadataString = (
 function subscriptionCurrentPeriodEndSeconds(
   subscription: Stripe.Subscription,
 ): number | undefined {
+  const itemPeriodEnds = subscription.items?.data
+    ?.map(
+      (item) => (item as { current_period_end?: unknown }).current_period_end,
+    )
+    .filter(
+      (periodEnd): periodEnd is number =>
+        typeof periodEnd === "number" &&
+        Number.isFinite(periodEnd) &&
+        periodEnd > 0,
+    );
+  if (itemPeriodEnds?.length) return Math.max(...itemPeriodEnds);
+
   const periodEnd = (subscription as { current_period_end?: unknown })
     .current_period_end;
   return typeof periodEnd === "number" &&
@@ -656,6 +669,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const { tier, subscription } = resolved;
+  const includedUsagePoints = includedUsagePointsForStripePrice(
+    subscription.items?.data[0]?.price?.id,
+  );
 
   await setReferralCodesPaidEligibility({
     userIds,
@@ -713,8 +729,15 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
         `[Subscription Webhook] invoice.paid (upgrade): prorating ${tier} buckets for ${tierChangeUsers.length} user(s)`,
       );
 
-      const periodStart = (subscription as any).current_period_start as number;
-      const periodEnd = (subscription as any).current_period_end as number;
+      const subscriptionItem = subscription.items?.data[0] as
+        | { current_period_start?: number; current_period_end?: number }
+        | undefined;
+      const periodStart =
+        subscriptionItem?.current_period_start ??
+        ((subscription as any).current_period_start as number);
+      const periodEnd =
+        subscriptionItem?.current_period_end ??
+        ((subscription as any).current_period_end as number);
       const now = Math.floor(Date.now() / 1000);
       const totalDuration = periodEnd - periodStart;
       const remaining = periodEnd - now;
@@ -732,6 +755,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
             proratedRatio,
             stash!.consumed,
             periodEnd,
+            includedUsagePoints,
           ),
         ),
       );
@@ -743,7 +767,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
           monthlyUsagePeriodEndSeconds(subscription);
         await Promise.all(
           nonTierChangeUsers.map(({ uid }) =>
-            resetRateLimitBuckets(uid, tier, fallbackUsagePeriodEnd),
+            resetRateLimitBuckets(
+              uid,
+              tier,
+              fallbackUsagePeriodEnd,
+              includedUsagePoints,
+            ),
           ),
         );
       }
@@ -763,7 +792,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   );
   const usagePeriodEnd = monthlyUsagePeriodEndSeconds(subscription);
   await Promise.all(
-    userIds.map((uid) => resetRateLimitBuckets(uid, tier, usagePeriodEnd)),
+    userIds.map((uid) =>
+      resetRateLimitBuckets(uid, tier, usagePeriodEnd, includedUsagePoints),
+    ),
   );
 
   if (resetMode.reason === "subscription_create") {

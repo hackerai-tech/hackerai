@@ -123,6 +123,11 @@ const nonNegativePoints = (value: number | undefined): number =>
     ? Math.max(0, Math.round(value))
     : 0;
 
+const finiteNonNegativePoints = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : null;
+
 const getDeductionFailureReason = (
   result: DeductBalanceResult,
 ): UsageDeductionFailureReason => {
@@ -352,6 +357,25 @@ export const getSubscriptionPrice = (
 export const getMonthlyBucketKey = (userId: string, tier: SubscriptionTier) =>
   `usage:monthly:${userId}:${tier}`;
 
+const normalizeCycleAllocation = (
+  tierMax: number,
+  requestedAllocation?: number,
+): number => {
+  const normalized = finiteNonNegativePoints(requestedAllocation);
+  return normalized === null ? tierMax : Math.min(tierMax, normalized);
+};
+
+const getStoredCycleAllocation = async (
+  redis: RedisClient,
+  monthlyKey: string,
+  tierMax: number,
+): Promise<number | null> => {
+  const stored = finiteNonNegativePoints(
+    await redis.hget(monthlyKey, "cycleAllocation"),
+  );
+  return stored === null ? null : Math.min(tierMax, stored);
+};
+
 export const getCycleExpireSeconds = (
   periodEndSeconds?: number,
   nowSeconds: number = Math.floor(Date.now() / 1000),
@@ -508,6 +532,8 @@ export const checkTokenBucketLimit = async (
       );
     };
 
+    let effectiveMonthlyLimit = monthlyLimit;
+
     // Helper to build RateLimitInfo from a limiter result
     const buildResult = (
       result: { remaining: number; reset: number },
@@ -516,10 +542,10 @@ export const checkTokenBucketLimit = async (
     ): RateLimitInfo => ({
       remaining: result.remaining,
       resetTime: new Date(result.reset),
-      limit: monthlyLimit,
+      limit: effectiveMonthlyLimit,
       monthly: {
         remaining: result.remaining,
-        limit: monthlyLimit,
+        limit: effectiveMonthlyLimit,
         resetTime: new Date(result.reset),
       },
       pointsDeducted,
@@ -536,6 +562,25 @@ export const checkTokenBucketLimit = async (
       await applyTeamSeatDebt(userId, organizationId!);
       // Re-peek after debt burn to get accurate remaining
       monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    }
+
+    // Price-specific and prorated cycles store their authoritative allowance
+    // in the bucket. Re-apply the cap if Upstash's 30-day refill races ahead
+    // of the Stripe renewal webhook.
+    const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
+    const storedCycleAllocation = await getStoredCycleAllocation(
+      redis,
+      monthlyStorageKey,
+      monthlyLimit,
+    );
+    effectiveMonthlyLimit = storedCycleAllocation ?? monthlyLimit;
+    if (monthlyCheck.remaining > effectiveMonthlyLimit) {
+      monthlyCheck = await monthly.limiter.limit(monthly.key, {
+        rate: monthlyCheck.remaining - effectiveMonthlyLimit,
+      });
+      if (monthlyCheck.success === false) {
+        throw monthlyLimitError(monthlyCheck.reset);
+      }
     }
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
@@ -976,9 +1021,17 @@ const refundBucketTokens = async (
       pointsToRefund,
     );
 
-    // Cap at limit if we exceeded it (edge case)
-    if (monthlyTokens > monthlyLimit) {
-      await redis.hset(monthlyKey, { tokens: monthlyLimit });
+    const cycleAllocation = await getStoredCycleAllocation(
+      redis,
+      monthlyKey,
+      monthlyLimit,
+    );
+    const refundCap = cycleAllocation ?? monthlyLimit;
+
+    // Cap refunds at the current cycle allocation, which may be lower than
+    // the broad subscription tier for grandfathered or prorated users.
+    if (monthlyTokens > refundCap) {
+      await redis.hset(monthlyKey, { tokens: refundCap });
     }
   } catch (error) {
     console.error("Failed to refund bucket tokens:", error);
@@ -994,8 +1047,136 @@ export const resetRateLimitBuckets = async (
   userId: string,
   subscription: SubscriptionTier,
   periodEndSeconds?: number,
+  cycleAllocationPoints?: number,
 ): Promise<void> => {
-  await initProratedBucket(userId, subscription, 1.0, 0, periodEndSeconds);
+  await initProratedBucket(
+    userId,
+    subscription,
+    1.0,
+    0,
+    periodEndSeconds,
+    cycleAllocationPoints,
+  );
+};
+
+export type CycleAllocationCapResult = {
+  created: boolean;
+  previousAllocation: number;
+  previousRemaining: number;
+  targetAllocation: number;
+  targetRemaining: number;
+  pointsRemoved: number;
+};
+
+/**
+ * Lower an existing cycle allocation without restoring already-consumed usage.
+ * Used by one-time billing migrations; safe to rerun.
+ */
+export const capCurrentCycleAllocation = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  requestedAllocation: number,
+  periodEndSeconds?: number,
+): Promise<CycleAllocationCapResult> => {
+  const redis = createRedisClient();
+  if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+
+  const { monthly: tierMax } = getBudgetLimits(subscription);
+  if (tierMax <= 0) {
+    throw new Error(`Cannot set a cycle allocation for tier "${subscription}"`);
+  }
+
+  const requestedTargetAllocation = normalizeCycleAllocation(
+    tierMax,
+    requestedAllocation,
+  );
+  const monthlyKey = getMonthlyBucketKey(userId, subscription);
+  const keyExists = Boolean(await redis.exists(monthlyKey));
+
+  if (!keyExists) {
+    await initProratedBucket(
+      userId,
+      subscription,
+      1.0,
+      0,
+      periodEndSeconds,
+      requestedTargetAllocation,
+    );
+    const createdAllocation = await getStoredCycleAllocation(
+      redis,
+      monthlyKey,
+      tierMax,
+    );
+    if (createdAllocation !== requestedTargetAllocation) {
+      throw new Error(
+        `Failed to initialize the current cycle for user ${userId}`,
+      );
+    }
+    await redis.expire(monthlyKey, getCycleExpireSeconds(periodEndSeconds));
+    return {
+      created: true,
+      previousAllocation: tierMax,
+      previousRemaining: tierMax,
+      targetAllocation: requestedTargetAllocation,
+      targetRemaining: requestedTargetAllocation,
+      pointsRemoved: 0,
+    };
+  }
+
+  const { monthly } = createRateLimiter(redis, userId, subscription);
+  const current = await monthly.limiter.limit(monthly.key, { rate: 0 });
+  const previousAllocation =
+    (await getStoredCycleAllocation(redis, monthlyKey, tierMax)) ?? tierMax;
+  const targetAllocation = Math.min(
+    previousAllocation,
+    requestedTargetAllocation,
+  );
+  const previousRemainingForUsage = Math.min(
+    previousAllocation,
+    Math.max(0, current.remaining),
+  );
+  const consumed = Math.max(0, previousAllocation - previousRemainingForUsage);
+  const targetRemaining = Math.max(0, targetAllocation - consumed);
+  const pointsRemoved = Math.max(
+    0,
+    Math.max(0, current.remaining) - targetRemaining,
+  );
+
+  if (pointsRemoved > 0) {
+    const capped = await monthly.limiter.limit(monthly.key, {
+      rate: pointsRemoved,
+    });
+    if (capped.success === false) {
+      throw new Error(`Failed to cap the current cycle for user ${userId}`);
+    }
+  }
+
+  const metadata: Record<string, number> = {
+    cycleAllocation: targetAllocation,
+    cycleTierMax: tierMax,
+  };
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (
+    periodEndSeconds &&
+    Number.isFinite(periodEndSeconds) &&
+    periodEndSeconds > nowSeconds
+  ) {
+    metadata.refilledAt = (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
+  }
+  await redis.hset(monthlyKey, metadata);
+  await redis.expire(
+    monthlyKey,
+    getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+  );
+
+  return {
+    created: false,
+    previousAllocation,
+    previousRemaining: Math.max(0, current.remaining),
+    targetAllocation,
+    targetRemaining,
+    pointsRemoved,
+  };
 };
 
 /**
@@ -1154,6 +1335,7 @@ export const initProratedBucket = async (
   proratedRatio: number,
   consumedCredits: number = 0,
   periodEndSeconds?: number,
+  cycleAllocationPoints?: number,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -1161,11 +1343,13 @@ export const initProratedBucket = async (
   const newTierMax = MONTHLY_CREDITS[newTier] ?? 0;
   if (newTierMax === 0) return;
 
-  const { burnAmount, totalCredits } = calculateProratedCredits(
-    newTierMax,
+  const cycleMax = normalizeCycleAllocation(newTierMax, cycleAllocationPoints);
+  const { totalCredits } = calculateProratedCredits(
+    cycleMax,
     proratedRatio,
     consumedCredits,
   );
+  const burnAmount = newTierMax - totalCredits;
   const monthlyKey = getMonthlyBucketKey(userId, newTier);
 
   try {
