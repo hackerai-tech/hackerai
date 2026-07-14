@@ -67,6 +67,12 @@ const isTransientCommandTimeoutError = (error: unknown): boolean =>
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export const escapePromptText = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
 export function parseSandboxMessage(
   data: unknown,
 ): CommandResponseMessage | null {
@@ -275,7 +281,7 @@ export class CentrifugoSandbox extends EventEmitter {
           ? "where agent-browser && agent-browser --version"
           : "command -v agent-browser && agent-browser --version";
       const projectContext = this.workingDirectory
-        ? `\nActive project folder: ${this.escapePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
+        ? `\nActive project folder: ${escapePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
         : "";
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 ${shellInfo}
@@ -871,13 +877,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // Escape paths for shell using single quotes (prevents $(), backticks, etc.)
   private static escapePath(path: string): string {
     return `'${path.replace(/'/g, "'\\''")}'`;
-  }
-
-  private escapePromptText(value: string): string {
-    return value
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
   }
 
   private resolveWorkingPath(path: string): string {

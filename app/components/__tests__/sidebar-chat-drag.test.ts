@@ -7,11 +7,14 @@ import {
 
 describe("sidebar chat drag data", () => {
   it("writes a move payload that project rows recognize", () => {
-    const setData = jest.fn();
+    const types: string[] = [];
+    const setData = jest.fn((type: string) => {
+      if (!types.includes(type)) types.push(type);
+    });
     const dataTransfer = {
       effectAllowed: "none",
       setData,
-      types: [SIDEBAR_CHAT_DRAG_TYPE],
+      types,
     } as unknown as DataTransfer;
 
     setSidebarChatDragData(dataTransfer, "chat-1");

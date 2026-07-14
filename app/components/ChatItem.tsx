@@ -400,7 +400,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
       title={title}
       role="button"
       tabIndex={0}
-      aria-grabbed={isDragging}
       aria-label={`Open chat: ${title}${
         isAwaitingApproval ? " awaiting approval" : ""
       }`}

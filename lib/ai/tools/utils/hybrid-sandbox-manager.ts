@@ -6,7 +6,11 @@ import type {
   SandboxType,
   SubscriptionTier,
 } from "@/types";
-import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
+import {
+  CentrifugoSandbox,
+  escapePromptText,
+  type CentrifugoConfig,
+} from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -58,12 +62,6 @@ interface PresenceFilterResult {
   availableConnections: ConnectionInfo[];
   staleConnections: ConnectionInfo[];
 }
-
-const escapePromptText = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 
 const logStructured = (
   level: "warn" | "error",
