@@ -329,6 +329,23 @@ describe("POST /api/delete-account", () => {
     expect(body.error).toBe("WorkOS temporarily unavailable");
   });
 
+  it("keeps other WorkOS NotFoundExceptions visible", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    const unrelatedNotFoundError = new Error(
+      "Organization not found: 'org_123'.",
+    );
+    unrelatedNotFoundError.name = "NotFoundException";
+    mockDeleteUser.mockRejectedValueOnce(unrelatedNotFoundError as never);
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("Organization not found: 'org_123'.");
+  });
+
   it("does not delete WorkOS or billing resources if Convex cleanup fails", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
