@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
@@ -7,11 +7,15 @@ import { isSidebarFile } from "@/types/chat";
 import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import {
+  getToolApprovalDisplayState,
+  ToolApprovalControls,
+} from "./ToolApprovalControls";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
   path: string;
-  brief: string;
+  brief?: string;
   text?: string;
   range?: [number, number];
   edits?: Array<{ find: string; replace: string; all?: boolean }>;
@@ -21,6 +25,18 @@ interface FileHandlerProps {
   part: any;
   status: ChatStatus;
 }
+
+const FILE_APPROVAL_TITLES: Partial<Record<FileInput["action"], string>> = {
+  write: "Allow HackerAI to create this file?",
+  append: "Allow HackerAI to append to this file?",
+  edit: "Allow HackerAI to edit this file?",
+};
+
+const FILE_APPROVAL_OPERATIONS = {
+  write: "file_write",
+  append: "file_append",
+  edit: "file_edit",
+} as const;
 
 interface FileViewOutput {
   action?: "view";
@@ -47,6 +63,7 @@ function areFilePropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.approval?.id !== next.part.approval?.id) return false;
   if (prev.part.errorText !== next.part.errorText) return false;
   if (prev.part.input !== next.part.input) return false;
   return true;
@@ -269,6 +286,53 @@ export const FileHandler = memo(function FileHandler({
   });
 
   const isClickable = !!sidebarContent;
+  const renderApprovalRequest = ({
+    icon,
+    target,
+    approvedAction,
+  }: {
+    icon: ReactNode;
+    target?: string;
+    approvedAction: string;
+  }) => (
+    <ToolApprovalControls
+      key={part.toolCallId}
+      approvalId={part.approval?.id}
+      toolCallId={part.toolCallId}
+      title={
+        FILE_APPROVAL_TITLES[action ?? "write"] ??
+        "Allow HackerAI to change this file?"
+      }
+      target={target}
+      detail="Approve to continue, or deny to stop this file change."
+      kind="file"
+      operation={
+        action === "write" || action === "append" || action === "edit"
+          ? FILE_APPROVAL_OPERATIONS[action]
+          : undefined
+      }
+    >
+      {(sendState) => {
+        const display = getToolApprovalDisplayState({
+          sendState,
+          approvedAction,
+          deniedAction: "File change denied",
+        });
+
+        return (
+          <ToolBlock
+            icon={icon}
+            action={display.action}
+            target={target}
+            isShimmer={display.isShimmer}
+            isClickable={isClickable}
+            onClick={isClickable ? handleOpenInSidebar : undefined}
+            onKeyDown={isClickable ? handleKeyDown : undefined}
+          />
+        );
+      }}
+    </ToolApprovalControls>
+  );
 
   const renderViewAction = () => {
     const { toolCallId, state } = part;
@@ -449,6 +513,12 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FilePlus />,
+          target: input?.path,
+          approvedAction: "Writing to",
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;
@@ -537,6 +607,12 @@ export const FileHandler = memo(function FileHandler({
             onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FileOutput />,
+          target: input?.path,
+          approvedAction: "Appending to",
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;
@@ -609,6 +685,12 @@ export const FileHandler = memo(function FileHandler({
             isShimmer={true}
           />
         ) : null;
+      case "approval-requested":
+        return renderApprovalRequest({
+          icon: <FilePen />,
+          target: input?.path,
+          approvedAction: "Editing",
+        });
       case "output-available":
       case "output-error": {
         if (!input) return null;

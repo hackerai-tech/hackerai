@@ -4,6 +4,8 @@ import {
   normalizeAgentFirstSandboxType,
   type AgentFirstDefaultEligibility,
   shouldDefaultFreeUserToAgent,
+  shouldDefaultPaidUserToAgent,
+  shouldDefaultProPlusUserToAgent,
   shouldDefaultUltraUserToAgent,
 } from "../agent-first-default";
 
@@ -155,6 +157,115 @@ describe("shouldDefaultUltraUserToAgent", () => {
   });
 });
 
+describe("shouldDefaultProPlusUserToAgent", () => {
+  const proPlusEligibility: AgentFirstDefaultEligibility = {
+    ...baseEligibility,
+    defaultLocalSandboxPreference: null,
+    hasLocalSandbox: false,
+    subscription: "pro-plus",
+  };
+
+  it("defaults an eligible first-time Pro Plus user to Agent without requiring a local sandbox", () => {
+    expect(shouldDefaultProPlusUserToAgent(proPlusEligibility)).toBe(true);
+  });
+
+  it("does not override a saved mode preference", () => {
+    expect(
+      shouldDefaultProPlusUserToAgent({
+        ...proPlusEligibility,
+        hasSavedChatMode: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not override a mode selected during the current session", () => {
+    expect(
+      shouldDefaultProPlusUserToAgent({
+        ...proPlusEligibility,
+        hasUserSelectedModeThisSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not default Pro or Ultra users through the Pro Plus default", () => {
+    expect(
+      shouldDefaultProPlusUserToAgent({
+        ...proPlusEligibility,
+        subscription: "pro",
+      }),
+    ).toBe(false);
+    expect(
+      shouldDefaultProPlusUserToAgent({
+        ...proPlusEligibility,
+        subscription: "ultra",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not default temporary chats to Agent", () => {
+    expect(
+      shouldDefaultProPlusUserToAgent({
+        ...proPlusEligibility,
+        temporaryChatsEnabled: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldDefaultPaidUserToAgent", () => {
+  const paidEligibility: AgentFirstDefaultEligibility = {
+    ...baseEligibility,
+    defaultLocalSandboxPreference: null,
+    hasLocalSandbox: false,
+  };
+
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "defaults eligible first-time %s users to Agent without requiring a local sandbox",
+    (subscription) => {
+      expect(
+        shouldDefaultPaidUserToAgent({
+          ...paidEligibility,
+          subscription,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("does not treat the free local-sandbox default as a paid default", () => {
+    expect(shouldDefaultPaidUserToAgent(baseEligibility)).toBe(false);
+  });
+
+  it("does not override a saved mode preference", () => {
+    expect(
+      shouldDefaultPaidUserToAgent({
+        ...paidEligibility,
+        subscription: "pro",
+        hasSavedChatMode: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not override a mode selected during the current session", () => {
+    expect(
+      shouldDefaultPaidUserToAgent({
+        ...paidEligibility,
+        subscription: "pro",
+        hasUserSelectedModeThisSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not default temporary chats to Agent", () => {
+    expect(
+      shouldDefaultPaidUserToAgent({
+        ...paidEligibility,
+        subscription: "pro",
+        temporaryChatsEnabled: true,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("getAgentFirstDefaultDecision", () => {
   it("returns the free-user decision with the local sandbox requirement", () => {
     expect(getAgentFirstDefaultDecision(baseEligibility)).toEqual({
@@ -162,6 +273,22 @@ describe("getAgentFirstDefaultDecision", () => {
       experimentKey: "free_agent_first_v1",
       selectionReason: "eligible_free_user_local_sandbox",
       useDefaultLocalSandbox: true,
+    });
+  });
+
+  it("returns the Pro decision without the local sandbox requirement", () => {
+    expect(
+      getAgentFirstDefaultDecision({
+        ...baseEligibility,
+        defaultLocalSandboxPreference: null,
+        hasLocalSandbox: false,
+        subscription: "pro",
+      }),
+    ).toEqual({
+      eligibleSubscriptionTier: "pro",
+      experimentKey: "pro_agent_default_v1",
+      selectionReason: "eligible_pro_user",
+      useDefaultLocalSandbox: false,
     });
   });
 
@@ -177,6 +304,38 @@ describe("getAgentFirstDefaultDecision", () => {
       eligibleSubscriptionTier: "ultra",
       experimentKey: "ultra_agent_default_v1",
       selectionReason: "eligible_ultra_user",
+      useDefaultLocalSandbox: false,
+    });
+  });
+
+  it("returns the Pro Plus decision without the local sandbox requirement", () => {
+    expect(
+      getAgentFirstDefaultDecision({
+        ...baseEligibility,
+        defaultLocalSandboxPreference: null,
+        hasLocalSandbox: false,
+        subscription: "pro-plus",
+      }),
+    ).toEqual({
+      eligibleSubscriptionTier: "pro-plus",
+      experimentKey: "pro_plus_agent_default_v1",
+      selectionReason: "eligible_pro_plus_user",
+      useDefaultLocalSandbox: false,
+    });
+  });
+
+  it("returns the Team decision without the local sandbox requirement", () => {
+    expect(
+      getAgentFirstDefaultDecision({
+        ...baseEligibility,
+        defaultLocalSandboxPreference: null,
+        hasLocalSandbox: false,
+        subscription: "team",
+      }),
+    ).toEqual({
+      eligibleSubscriptionTier: "team",
+      experimentKey: "team_agent_default_v1",
+      selectionReason: "eligible_team_user",
       useDefaultLocalSandbox: false,
     });
   });

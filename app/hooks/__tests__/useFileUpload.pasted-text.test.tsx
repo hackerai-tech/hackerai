@@ -104,7 +104,7 @@ describe("useFileUpload generated pasted text attachments", () => {
   it("converts large plain-text paste payloads into uploaded text files", async () => {
     const pastedText = `${"A".repeat(4100)}\nsource material`;
     const event = createTextPasteEvent(pastedText);
-    const { result } = renderHook(() => useFileUpload("ask"));
+    const { result } = renderHook(() => useFileUpload("agent"));
 
     let handled = false;
     await act(async () => {
@@ -134,9 +134,24 @@ describe("useFileUpload generated pasted text attachments", () => {
         fileName: "pasted_content.txt",
         contentType: "text/plain",
         size: addedFile.size,
-        mode: "ask",
+        mode: "agent",
       });
     });
+  });
+
+  it("keeps large plain-text paste payloads inline in Ask mode", async () => {
+    const event = createTextPasteEvent("A".repeat(4100));
+    const { result } = renderHook(() => useFileUpload("ask"));
+
+    let handled = true;
+    await act(async () => {
+      handled = await result.current.handlePasteEvent(event);
+    });
+
+    expect(handled).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
   });
 
   it("does not intercept small text snippets", async () => {
@@ -181,7 +196,7 @@ describe("useFileUpload generated pasted text attachments", () => {
       },
     ];
     const event = createTextPasteEvent("B".repeat(4100));
-    const { result } = renderHook(() => useFileUpload("ask"));
+    const { result } = renderHook(() => useFileUpload("agent"));
 
     await act(async () => {
       await result.current.handlePasteEvent(event);
@@ -238,7 +253,13 @@ describe("useFileUpload generated pasted text attachments", () => {
     });
 
     await waitFor(() => {
-      expect(updateUploadedFile).toHaveBeenLastCalledWith(0, previousUpload);
+      expect(updateUploadedFile).toHaveBeenLastCalledWith(
+        0,
+        expect.objectContaining({
+          ...previousUpload,
+          error: expect.stringContaining("Failed to upload file"),
+        }),
+      );
     });
     expect(deleteFile).not.toHaveBeenCalledWith({ fileId: "file_old" });
   });

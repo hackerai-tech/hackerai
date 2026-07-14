@@ -1,7 +1,7 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Value } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
@@ -19,11 +19,16 @@ import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "../lib/auth/entitlements";
+import { parseSandboxScopedAgentApprovalTargetPrefix } from "../types/agent";
 import { convexLogger } from "./lib/logger";
-import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
+import {
+  CHAT_ACCESS_SUSPENDED_CODE,
+  assertUserCanAccessChatHistory,
+} from "./lib/suspensionGuards";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
+const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE = 1000;
@@ -35,6 +40,71 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
   "cost",
   "estimated_compacted_input_tokens",
 ] as const;
+
+const activeAgentApprovalRequestValidator = v.object({
+  approvalId: v.string(),
+  toolCallId: v.string(),
+  operation: v.optional(
+    v.union(
+      v.literal("terminal_execute"),
+      v.literal("terminal_interact"),
+      v.literal("file_write"),
+      v.literal("file_append"),
+      v.literal("file_edit"),
+    ),
+  ),
+  target: v.optional(v.string()),
+  justification: v.optional(v.string()),
+  prefixRule: v.optional(v.array(v.string())),
+  title: v.optional(v.string()),
+  detail: v.optional(v.string()),
+  kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
+  createdAt: v.optional(v.number()),
+});
+
+const agentApprovalTargetGrantValidator = v.union(
+  v.object({
+    kind: v.literal("terminal_command"),
+    targetPrefix: v.string(),
+    executable: v.string(),
+    argv: v.array(v.string()),
+  }),
+  v.object({
+    kind: v.literal("file_change"),
+    targetPrefix: v.string(),
+    path: v.string(),
+    pathFlavor: v.union(v.literal("posix"), v.literal("windows")),
+  }),
+);
+
+const activeAgentResourceValidator = v.object({
+  chatId: v.string(),
+  triggerRunId: v.optional(v.string()),
+  approvalSessionId: v.optional(v.string()),
+});
+
+const MAX_AGENT_APPROVAL_GRANTS_PER_CHAT = 100;
+
+const getErrorName = (error: unknown): string =>
+  error instanceof Error ? error.name : typeof error;
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const getConvexErrorData = (error: unknown): Value | undefined => {
+  if (!error || typeof error !== "object") return undefined;
+  const data = (error as { data?: unknown }).data;
+  return data === undefined ? undefined : (data as Value);
+};
+
+const getConvexErrorCode = (data: Value | undefined): string | undefined => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+
+  const code = (data as Record<string, unknown>).code;
+  return typeof code === "string" ? code : undefined;
+};
 
 function normalizeTelemetryCleanupBatchSize(batchSize?: number): number {
   if (!Number.isFinite(batchSize) || !batchSize) {
@@ -64,6 +134,12 @@ const CHAT_SUMMARY_TELEMETRY_CLEAR_PATCH = {
   cost: undefined,
   estimated_compacted_input_tokens: undefined,
 };
+
+const emptyChatsPage = () => ({
+  page: [],
+  isDone: true,
+  continueCursor: "",
+});
 
 async function getMessageCreationTimeById(
   ctx: MutationCtx,
@@ -112,6 +188,8 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
   if (
     chat.active_stream_id === undefined &&
     chat.active_trigger_run_id === undefined &&
+    chat.active_agent_approval_pending === undefined &&
+    chat.active_agent_approval_request === undefined &&
     chat.canceled_at !== undefined
   ) {
     return;
@@ -124,7 +202,11 @@ async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
   await ctx.db.patch(chat._id, {
     active_stream_id: undefined,
     active_trigger_run_id: undefined,
+    active_agent_approval_session_id: undefined,
+    active_agent_approval_pending: undefined,
+    active_agent_approval_request: undefined,
     canceled_at: Date.now(),
+    deletion_started_at: chat.deletion_started_at ?? Date.now(),
     finish_reason: undefined,
   });
 }
@@ -291,6 +373,7 @@ export const getChatByIdFromClient = query({
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
+      deletion_started_at: v.optional(v.number()),
       default_model_slug: v.optional(
         v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
       ),
@@ -317,6 +400,11 @@ export const getChatByIdFromClient = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_agent_approval_session_id: v.optional(v.string()),
+      active_agent_approval_pending: v.optional(v.boolean()),
+      active_agent_approval_request: v.optional(
+        activeAgentApprovalRequestValidator,
+      ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -346,7 +434,11 @@ export const getChatByIdFromClient = query({
 
       // Drop legacy codex_thread_id from the response — preserved on the row
       // for old data but not exposed to clients.
-      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      const {
+        codex_thread_id: _legacy,
+        agent_approval_grants: _privateApprovalGrants,
+        ...chatPublic
+      } = chat;
 
       // Fetch branched_from_title if this chat is branched from another chat
       if (chatPublic.branched_from_chat_id) {
@@ -387,6 +479,7 @@ export const getChatById = query({
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
+      deletion_started_at: v.optional(v.number()),
       default_model_slug: v.optional(
         v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
       ),
@@ -412,6 +505,14 @@ export const getChatById = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      active_agent_approval_session_id: v.optional(v.string()),
+      active_agent_approval_pending: v.optional(v.boolean()),
+      active_agent_approval_request: v.optional(
+        activeAgentApprovalRequestValidator,
+      ),
+      agent_approval_grants: v.optional(
+        v.array(agentApprovalTargetGrantValidator),
+      ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
     }),
@@ -454,8 +555,29 @@ export const saveChat = mutation({
   handler: async (ctx, args) => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
+    let failureStage = "start";
 
     try {
+      failureStage = "find_existing_chat";
+      const existingChat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+        .unique();
+
+      if (existingChat) {
+        if (existingChat.user_id !== args.userId) {
+          throw new ConvexError({
+            code: "CHAT_UNAUTHORIZED",
+            message: "Chat id belongs to another user",
+            operation: "chats.saveChat",
+            chatId: args.id,
+          });
+        }
+
+        return existingChat._id;
+      }
+
+      failureStage = "insert_chat";
       const chatId = await ctx.db.insert("chats", {
         id: args.id,
         title: args.title,
@@ -465,8 +587,38 @@ export const saveChat = mutation({
 
       return chatId;
     } catch (error) {
-      console.error("Failed to save chat:", error);
-      throw new Error("Failed to save chat");
+      const causeData = getConvexErrorData(error);
+      if (getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED") {
+        throw error;
+      }
+
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "convex_chat_save_failed",
+          service: "convex",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.saveChat",
+          failure_stage: failureStage,
+          chat_id: args.id,
+          user_id: args.userId,
+          title_length: args.title.length,
+          error_name: getErrorName(error),
+          error_message: getErrorMessage(error),
+          convex_error_data: causeData,
+        }),
+      );
+      throw new ConvexError({
+        code: "CHAT_SAVE_FAILED",
+        message: "Failed to save chat",
+        failureStage,
+        causeName: getErrorName(error),
+        causeMessage: getErrorMessage(error),
+        causeData,
+        operation: "chats.saveChat",
+        chatId: args.id,
+        titleLength: args.title.length,
+      });
     }
   },
 });
@@ -666,13 +818,21 @@ export const getUserChats = query({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      return {
-        page: [],
-        isDone: true,
-        continueCursor: "",
-      };
+      return emptyChatsPage();
     }
-    await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    try {
+      await assertUserCanAccessChatHistory(ctx, identity.subject);
+    } catch (error) {
+      if (
+        getConvexErrorCode(getConvexErrorData(error)) ===
+        CHAT_ACCESS_SUSPENDED_CODE
+      ) {
+        return emptyChatsPage();
+      }
+
+      throw error;
+    }
 
     try {
       const MAX_PINNED_CHATS = 100;
@@ -772,11 +932,7 @@ export const getUserChats = query({
             ? { name: error.name, message: error.message }
             : String(error),
       });
-      return {
-        page: [],
-        isDone: true,
-        continueCursor: "",
-      };
+      return emptyChatsPage();
     }
   },
 });
@@ -923,8 +1079,14 @@ export const deleteChatForBackend = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
+    expectedTriggerRunId: v.union(v.string(), v.null()),
+    expectedApprovalSessionId: v.union(v.string(), v.null()),
   },
-  returns: v.null(),
+  returns: v.union(
+    v.literal("deleted"),
+    v.literal("not_found"),
+    v.literal("stale"),
+  ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
@@ -934,7 +1096,7 @@ export const deleteChatForBackend = mutation({
       .first();
 
     if (!chat) {
-      return null;
+      return "not_found" as const;
     }
 
     if (chat.user_id !== args.userId) {
@@ -944,8 +1106,16 @@ export const deleteChatForBackend = mutation({
       });
     }
 
+    if (
+      (chat.active_trigger_run_id ?? null) !== args.expectedTriggerRunId ||
+      (chat.active_agent_approval_session_id ?? null) !==
+        args.expectedApprovalSessionId
+    ) {
+      return "stale" as const;
+    }
+
     await deleteChatDocument(ctx, chat);
-    return null;
+    return "deleted" as const;
   },
 });
 
@@ -1108,7 +1278,69 @@ export const deleteAllChatsBatch = internalMutation({
 });
 
 /**
- * Set the active trigger.dev run id for a chat (used by /api/agent-long when
+ * Fence existing chats in bounded batches before their active agent resources
+ * are enumerated. The dedicated marker cannot be cleared by normal stream
+ * cleanup, so late run associations remain blocked throughout deletion.
+ */
+export const fenceChatsForDeletion = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({
+    fencedChats: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    resources: v.array(activeAgentResourceValidator),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const page = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
+      .paginate({
+        cursor: args.cursor,
+        numItems: CHAT_DELETION_FENCE_BATCH_SIZE,
+      });
+    const now = Date.now();
+    let fencedChats = 0;
+
+    for (const chat of page.page) {
+      if (chat.deletion_started_at === undefined) {
+        await ctx.db.patch(chat._id, { deletion_started_at: now });
+        fencedChats++;
+      }
+    }
+
+    return {
+      fencedChats,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      resources: page.page.flatMap((chat) =>
+        chat.active_trigger_run_id || chat.active_agent_approval_session_id
+          ? [
+              {
+                chatId: chat.id,
+                ...(chat.active_trigger_run_id
+                  ? { triggerRunId: chat.active_trigger_run_id }
+                  : {}),
+                ...(chat.active_agent_approval_session_id
+                  ? {
+                      approvalSessionId: chat.active_agent_approval_session_id,
+                    }
+                  : {}),
+              },
+            ]
+          : [],
+      ),
+    };
+  },
+});
+
+/**
+ * Set the active trigger.dev run id for a chat (used by /api/agent when
  * kicking off a long-running task). Stored on the chat row so the cancel
  * endpoint and reconnect flow can find the in-flight run by chatId.
  */
@@ -1117,7 +1349,70 @@ export const setActiveTriggerRun = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     triggerRunId: v.union(v.string(), v.null()),
+    approvalSessionId: v.optional(v.union(v.string(), v.null())),
     expectedRunId: v.optional(v.string()),
+    expectedApprovalSessionId: v.optional(v.string()),
+    clearApprovalPending: v.optional(v.boolean()),
+  },
+  returns: v.union(
+    v.literal("updated"),
+    v.literal("not_found"),
+    v.literal("stale"),
+    v.literal("deleting"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) return "not_found" as const;
+    if (chat.deletion_started_at !== undefined && args.triggerRunId !== null) {
+      return "deleting" as const;
+    }
+    if (
+      args.expectedRunId !== undefined &&
+      chat.active_trigger_run_id !== args.expectedRunId
+    ) {
+      return "stale" as const;
+    }
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
+    ) {
+      return "stale" as const;
+    }
+    const shouldClearApprovalPending =
+      args.clearApprovalPending === true || args.triggerRunId !== null;
+
+    await ctx.db.patch(chat._id, {
+      active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
+      ...(args.approvalSessionId !== undefined
+        ? {
+            active_agent_approval_session_id:
+              args.approvalSessionId ?? undefined,
+          }
+        : {}),
+      ...(shouldClearApprovalPending
+        ? {
+            active_agent_approval_pending: undefined,
+            active_agent_approval_request: undefined,
+          }
+        : {}),
+    });
+    return "updated" as const;
+  },
+});
+
+export const setActiveAgentApprovalPending = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    pending: v.boolean(),
+    request: v.optional(activeAgentApprovalRequestValidator),
+    expectedRunId: v.optional(v.string()),
+    expectedApprovalSessionId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1133,8 +1428,55 @@ export const setActiveTriggerRun = mutation({
     ) {
       return null;
     }
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
+    ) {
+      return null;
+    }
     await ctx.db.patch(chat._id, {
-      active_trigger_run_id: args.triggerRunId ?? undefined,
+      active_agent_approval_pending: args.pending ? true : undefined,
+      active_agent_approval_request: args.pending ? args.request : undefined,
+    });
+    return null;
+  },
+});
+
+export const persistAgentApprovalGrant = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    grant: agentApprovalTargetGrantValidator,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat || chat.user_id !== args.userId) return null;
+
+    // Reusable grants must be bound to the actual sandbox that approved them.
+    // Legacy unscoped grants remain readable for migration but are not stored
+    // or reused by current workers.
+    if (!parseSandboxScopedAgentApprovalTargetPrefix(args.grant.targetPrefix)) {
+      return null;
+    }
+
+    const current = chat.agent_approval_grants ?? [];
+    const alreadyStored = current.some(
+      (grant) =>
+        grant.kind === args.grant.kind &&
+        grant.targetPrefix === args.grant.targetPrefix,
+    );
+    if (alreadyStored) return null;
+
+    await ctx.db.patch(chat._id, {
+      agent_approval_grants: [...current, args.grant].slice(
+        -MAX_AGENT_APPROVAL_GRANTS_PER_CHAT,
+      ),
     });
     return null;
   },
@@ -1168,6 +1510,7 @@ export const getActiveTriggerRunsForUser = query({
       v.object({
         chatId: v.string(),
         triggerRunId: v.string(),
+        approvalSessionId: v.optional(v.string()),
       }),
     ),
     hasMore: v.boolean(),
@@ -1196,6 +1539,11 @@ export const getActiveTriggerRunsForUser = query({
               {
                 chatId: chat.id,
                 triggerRunId: chat.active_trigger_run_id,
+                ...(chat.active_agent_approval_session_id
+                  ? {
+                      approvalSessionId: chat.active_agent_approval_session_id,
+                    }
+                  : {}),
               },
             ]
           : [],

@@ -60,7 +60,35 @@ describe("RateLimitWarning", () => {
     expect(screen.getByText(/free Agent requests/i)).toBeInTheDocument();
   });
 
-  it("renders Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
+  it("explains when a paid Agent run uses the daily free allowance", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "paid-daily-free-allowance",
+          resetTime: new Date(Date.now() + 60_000),
+          subscription: "pro",
+          mode: "agent",
+          costLimitDollars: 0.25,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/this Agent response/i)).toHaveTextContent(
+      "today's free $0.25 allowance",
+    );
+    expect(screen.getByText(/this Agent response/i)).toHaveTextContent(
+      "low-cost model",
+    );
+    expect(
+      screen.getByRole("button", { name: /view usage/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /upgrade plan/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders legacy Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
     render(
       <RateLimitWarning
         data={{
@@ -81,6 +109,9 @@ describe("RateLimitWarning", () => {
     expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
       "$5.24",
     );
+    expect(screen.getByText(/legacy per-run safety cap/i)).toHaveTextContent(
+      "Continue to keep working",
+    );
     expect(
       screen.queryByRole("button", { name: /upgrade plan/i }),
     ).not.toBeInTheDocument();
@@ -89,7 +120,7 @@ describe("RateLimitWarning", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("points spend-cap continuation to Standard when premium continuation is unavailable", () => {
+  it("uses current-model continuation copy when premium continuation is unavailable", () => {
     render(
       <RateLimitWarning
         data={{
@@ -108,7 +139,7 @@ describe("RateLimitWarning", () => {
     );
 
     expect(screen.getByText(/Pro Agent run paused/i)).toHaveTextContent(
-      "Continue with Standard",
+      "Continue to keep working",
     );
   });
 

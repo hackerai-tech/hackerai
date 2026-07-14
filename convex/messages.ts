@@ -15,6 +15,11 @@ import {
   assertUserCanAccessChatHistory,
   isUserBlockedByActiveFraudDispute,
 } from "./lib/suspensionGuards";
+import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import {
+  MAX_MESSAGE_SEARCH_QUERY_LENGTH,
+  MIN_MESSAGE_SEARCH_QUERY_LENGTH,
+} from "../lib/utils/message-search";
 
 /**
  * Extract text content from message parts for search and display
@@ -992,8 +997,7 @@ export const getMessagesByChatId = query({
           if (feedbackDoc) {
             feedback = {
               feedbackType: feedbackDoc.feedback_type as
-                | "positive"
-                | "negative",
+                "positive" | "negative",
             };
           }
         }
@@ -1462,10 +1466,12 @@ export const searchMessages = query({
     }
     await assertUserCanAccessChatHistory(ctx, user.subject);
 
-    const searchQuery = args.searchQuery.trim().replace(/\s+/g, " ");
-    const MIN_SEARCH_QUERY_LENGTH = 3;
+    const searchQuery = args.searchQuery
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, MAX_MESSAGE_SEARCH_QUERY_LENGTH);
 
-    if (!searchQuery || searchQuery.length < MIN_SEARCH_QUERY_LENGTH) {
+    if (!searchQuery || searchQuery.length < MIN_MESSAGE_SEARCH_QUERY_LENGTH) {
       return {
         page: [],
         isDone: true,
@@ -2008,14 +2014,12 @@ export const regenerateWithNewContent = mutation({
       return null;
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
-      if (
-        !(
-          error instanceof Error &&
-          (error.message.includes("Message not found") ||
-            error.message.includes("CHAT_NOT_FOUND") ||
-            error.message.includes("CHAT_UNAUTHORIZED"))
-        )
-      ) {
+      if (!(
+        error instanceof Error &&
+        (error.message.includes("Message not found") ||
+          error.message.includes("CHAT_NOT_FOUND") ||
+          error.message.includes("CHAT_UNAUTHORIZED"))
+      )) {
         console.error("Failed to regenerate with new content:", error);
       }
       // Do not surface benign errors to the client
@@ -2111,20 +2115,22 @@ export const getSharedMessages = query({
         content: msg.content,
         update_time: msg.update_time,
         // Process parts to replace files/images with placeholders
-        parts: msg.parts.map((part: any) => {
-          // Replace file references with placeholder
-          if (part.type === "file") {
-            // Determine if it's an image based on mediaType
-            const isImage = part.mediaType?.startsWith("image/");
-            return {
-              type: isImage ? "image" : "file",
-              placeholder: true,
-              // SECURITY: Do NOT include url, file_id, name, or mediaType
-            };
-          }
-          // Keep text parts as-is
-          return part;
-        }),
+        parts: stripOpenRouterReasoningMetadataFromParts(msg.parts).map(
+          (part: any) => {
+            // Replace file references with placeholder
+            if (part.type === "file") {
+              // Determine if it's an image based on mediaType
+              const isImage = part.mediaType?.startsWith("image/");
+              return {
+                type: isImage ? "image" : "file",
+                placeholder: true,
+                // SECURITY: Do NOT include url, file_id, name, or mediaType
+              };
+            }
+            // Keep text parts as-is
+            return part;
+          },
+        ),
         // SECURITY: user_id is NOT included in response (anonymity)
       }));
     } catch (error) {
@@ -2234,7 +2240,7 @@ export const getPreviewMessages = query({
           id: m.id,
           role: m.role,
           content: m.content,
-          parts: m.parts,
+          parts: stripOpenRouterReasoningMetadataFromParts(m.parts),
           fileDetails,
         };
       });

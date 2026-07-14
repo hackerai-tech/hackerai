@@ -11,8 +11,6 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-// Caido proxy temporarily disabled for all users — see lib/api/chat-handler.ts kill switch.
-// import { createProxyTools } from "./proxy-tool";
 import {
   createCreateNote,
   createListNotes,
@@ -31,7 +29,8 @@ import type {
   AppendMetadataStreamFn,
   SubscriptionTier,
   SandboxBootInfo,
-  CaidoReadyInfo,
+  ToolFailureLogger,
+  AgentToolApprovalRequester,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -39,6 +38,7 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { isE2BSandbox } from "./utils/sandbox-types";
+import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 
 export { isE2BSandbox };
 
@@ -55,15 +55,13 @@ export const createTools = (
   assistantMessageId?: string,
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
-  guardrailsConfig?: string,
-  caidoEnabled: boolean = false,
-  caidoPort?: number,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   subscription?: SubscriptionTier,
   onSandboxBoot?: (info: SandboxBootInfo) => void,
-  onCaidoReady?: (info: CaidoReadyInfo) => void,
   modelName?: string,
+  onToolFailure?: ToolFailureLogger,
+  requestToolApproval?: AgentToolApprovalRequester,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -127,12 +125,10 @@ export const createTools = (
     getCurrentModelName: () => currentModelName,
     subscription,
     isE2BSandbox,
-    guardrailsConfig,
-    caidoEnabled,
-    caidoPort,
     appendMetadataStream,
     onToolCost,
-    onCaidoReady,
+    onToolFailure,
+    requestToolApproval,
   };
 
   const buildTools = (): ToolSet => {
@@ -155,10 +151,8 @@ export const createTools = (
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
       }),
-      // Caido proxy temporarily disabled for all users.
-      // ...(caidoEnabled && createProxyTools(context)),
       ...(process.env.JINA_API_KEY && {
-        open_url: createOpenUrlTool(),
+        open_url: createOpenUrlTool(context),
       }),
     };
 
@@ -176,7 +170,7 @@ export const createTools = (
             web_search: createWebSearch(context),
           }),
           ...(process.env.JINA_API_KEY && {
-            open_url: createOpenUrlTool(),
+            open_url: createOpenUrlTool(context),
           }),
         }
       : allTools;
@@ -192,7 +186,9 @@ export const createTools = (
     if (options?.refresh) {
       await sandboxManager.resetSandbox?.(options.reason);
     }
-    const { sandbox: ensured } = await sandboxManager.getSandbox();
+    const { sandbox: ensured } = await getSandboxWithFallbackGuard({
+      sandboxManager,
+    });
     return ensured;
   };
   const getTodoManager = () => todoManager;

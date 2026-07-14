@@ -55,8 +55,6 @@ export async function POST(req: NextRequest) {
       challenge: verification.challenge,
     });
   } catch (error) {
-    console.error("MFA verification error:", error);
-
     // Handle specific WorkOS errors
     if (error instanceof Error) {
       if (error.message.includes("already verified")) {
@@ -71,7 +69,18 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
+      if (error.message.includes("too many failed attempts")) {
+        return NextResponse.json(
+          {
+            error:
+              "Too many failed attempts. Start a new verification challenge.",
+          },
+          { status: 400 },
+        );
+      }
     }
+
+    console.error("MFA verification error:", error);
 
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(

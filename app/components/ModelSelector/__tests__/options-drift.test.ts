@@ -31,21 +31,21 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to different providers per mode", () => {
+  it("HackerAI Standard resolves to DeepSeek in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
       "model-deepseek-v4-pro",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-minimax-m3",
+      "model-deepseek-v4-pro",
     );
   });
 
-  it("HackerAI Pro resolves to Sonnet in both modes", () => {
+  it("HackerAI Pro resolves to GLM in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-sonnet-4.6",
+      "model-glm-5.2",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-sonnet-4.6",
+      "model-glm-5.2",
     );
   });
 
@@ -70,5 +70,23 @@ describe("ModelSelector tier ↔ provider drift", () => {
       expect(option.description).toBeTruthy();
       expect(option.poweredBy).toBeTruthy();
     }
+  });
+
+  it("discloses the text and vision providers for Agent Standard", () => {
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
+        ?.poweredBy,
+    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
+  });
+
+  it("discloses the mode-specific vision provider for HackerAI Pro", () => {
+    expect(
+      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Kimi K2.7 for vision");
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
+        ?.poweredBy,
+    ).toBe("Z.ai GLM 5.2 · Grok 4.5 for vision");
   });
 });

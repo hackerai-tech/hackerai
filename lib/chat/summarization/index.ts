@@ -11,11 +11,17 @@ import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import { countMessagesTokens } from "@/lib/token-utils";
 import {
+  writeSummarizationCleared,
   writeSummarizationStarted,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
+import {
+  GROK_4_5_SLUG,
+  KIMI_K2_7_CODE_SLUG,
+  myProvider,
+} from "@/lib/ai/providers";
 import type { ProviderPromptPressure } from "./provider-pressure";
 
 import {
@@ -45,9 +51,237 @@ export type { SummarizationResult, SummarizationUsage } from "./helpers";
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
 type CompactionLogReason =
-  | "provider_pressure"
-  | "provider_input_tokens"
-  | "estimated_token_threshold";
+  "provider_pressure" | "provider_input_tokens" | "estimated_token_threshold";
+
+type SummarizationAttempt = "primary" | "fallback";
+
+const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
+  ask: "fallback-ask-model",
+  agent: "fallback-agent-model",
+};
+const SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS = [
+  KIMI_K2_7_CODE_SLUG,
+  GROK_4_5_SLUG,
+] as const;
+const SUMMARIZATION_ATTEMPT_ERROR_KEY = "__hackeraiSummarizationAttempt";
+
+const getLanguageModelId = (
+  languageModel: LanguageModel,
+): string | undefined => {
+  const modelId = (languageModel as { modelId?: unknown }).modelId;
+  return typeof modelId === "string" && modelId.length > 0
+    ? modelId
+    : undefined;
+};
+
+const getErrorRecord = (error: unknown): Record<string, unknown> | null =>
+  typeof error === "object" && error !== null
+    ? (error as Record<string, unknown>)
+    : null;
+
+const getHeaderValue = (
+  headers: unknown,
+  headerName: string,
+): string | undefined => {
+  if (!headers) return undefined;
+  if (headers instanceof Headers) {
+    return (
+      headers.get(headerName) ??
+      headers.get(headerName.toLowerCase()) ??
+      undefined
+    );
+  }
+  if (typeof headers !== "object" || headers === null) return undefined;
+
+  const lowerHeaderName = headerName.toLowerCase();
+  for (const [key, value] of Object.entries(
+    headers as Record<string, unknown>,
+  )) {
+    if (key.toLowerCase() !== lowerHeaderName) continue;
+    return typeof value === "string" ? value : undefined;
+  }
+
+  return undefined;
+};
+
+const getBoundedErrorMessage = (error: unknown): string | undefined => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > 300 ? `${message.slice(0, 300)}...` : message;
+};
+
+const getBoundedErrorStack = (error: unknown): string | undefined => {
+  if (!(error instanceof Error) || !error.stack) return undefined;
+  return error.stack.length > 1200
+    ? `${error.stack.slice(0, 1200)}...`
+    : error.stack;
+};
+
+const markSummarizationAttemptError = (
+  error: unknown,
+  attempt: SummarizationAttempt,
+) => {
+  const record = getErrorRecord(error);
+  if (record) {
+    record[SUMMARIZATION_ATTEMPT_ERROR_KEY] = attempt;
+  }
+};
+
+const getSummarizationAttemptFromError = (
+  error: unknown,
+): SummarizationAttempt => {
+  const record = getErrorRecord(error);
+  return record?.[SUMMARIZATION_ATTEMPT_ERROR_KEY] === "fallback"
+    ? "fallback"
+    : "primary";
+};
+
+const summarizeSummarizationErrorForLog = (error: unknown) => {
+  const record = getErrorRecord(error);
+  const responseBody =
+    typeof record?.responseBody === "string" ? record.responseBody : undefined;
+
+  return {
+    error_name:
+      error instanceof Error && error.name ? error.name : typeof error,
+    error_message: getBoundedErrorMessage(error),
+    error_stack: getBoundedErrorStack(error),
+    provider_status_code:
+      typeof record?.statusCode === "number" ? record.statusCode : undefined,
+    openrouter_generation_id: getHeaderValue(
+      record?.responseHeaders,
+      "x-generation-id",
+    ),
+    response_body_empty:
+      responseBody !== undefined ? responseBody.trim().length === 0 : undefined,
+    response_body_length: responseBody?.length,
+  };
+};
+
+const isMalformedProviderJsonError = (
+  error: unknown,
+  depth: number = 0,
+): boolean => {
+  if (depth > 4) return false;
+
+  const message = error instanceof Error ? error.message : String(error);
+  const record = getErrorRecord(error);
+  const responseBody =
+    typeof record?.responseBody === "string" ? record.responseBody : undefined;
+  const statusCode =
+    typeof record?.statusCode === "number" ? record.statusCode : undefined;
+
+  if (
+    message.includes("Invalid JSON response") ||
+    message.includes("JSON parsing failed") ||
+    (error instanceof Error && error.name === "AI_JSONParseError") ||
+    (statusCode === 200 &&
+      responseBody !== undefined &&
+      responseBody.trim().length === 0)
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(record?.errors)) {
+    return record.errors.some((nestedError) =>
+      isMalformedProviderJsonError(nestedError, depth + 1),
+    );
+  }
+
+  return record?.cause !== undefined
+    ? isMalformedProviderJsonError(record.cause, depth + 1)
+    : false;
+};
+
+const buildSummarizationRetryProviderOptions = (
+  providerOptions?: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> => {
+  const retryProviderOptions: Record<string, Record<string, unknown>> = {};
+  for (const [providerName, options] of Object.entries(providerOptions ?? {})) {
+    retryProviderOptions[providerName] = { ...options };
+  }
+
+  retryProviderOptions.openrouter = {
+    ...(retryProviderOptions.openrouter ?? {}),
+    models: [...SUMMARIZATION_RETRY_FALLBACK_MODEL_SLUGS],
+  };
+
+  return retryProviderOptions;
+};
+
+const logContextCompactionRetrying = ({
+  chatId,
+  mode,
+  subscription,
+  reason,
+  attempt,
+  languageModel,
+  retryModelName,
+  error,
+}: {
+  chatId: string | null;
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  reason: CompactionLogReason;
+  attempt: SummarizationAttempt;
+  languageModel: LanguageModel;
+  retryModelName: string;
+  error: unknown;
+}) => {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "chat_context_compaction_retrying",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      chat_id: chatId ?? undefined,
+      mode,
+      subscription,
+      reason,
+      summarization_attempt: attempt,
+      model_id: getLanguageModelId(languageModel),
+      retry_model_name: retryModelName,
+      retry_without_tools: true,
+      ...summarizeSummarizationErrorForLog(error),
+    }),
+  );
+};
+
+const logContextCompactionFailed = ({
+  chatId,
+  mode,
+  subscription,
+  reason,
+  attempt,
+  languageModel,
+  fallbackResult,
+  error,
+}: {
+  chatId: string | null;
+  mode: ChatMode;
+  subscription: SubscriptionTier;
+  reason: CompactionLogReason;
+  attempt: SummarizationAttempt;
+  languageModel: LanguageModel;
+  fallbackResult: "no_summarization";
+  error: unknown;
+}) => {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event: "chat_context_compaction_failed",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      chat_id: chatId ?? undefined,
+      mode,
+      subscription,
+      reason,
+      summarization_attempt: attempt,
+      model_id: getLanguageModelId(languageModel),
+      fallback_result: fallbackResult,
+      ...summarizeSummarizationErrorForLog(error),
+    }),
+  );
+};
 
 export interface CheckAndSummarizeOptions {
   uiMessages: UIMessage[];
@@ -190,6 +424,274 @@ const logContextCompactionStarted = ({
       retained_tail_projected_part_count: retainedTail?.projected_part_count,
     }),
   );
+};
+
+const generateSummaryTextWithRetry = async ({
+  messagesToSummarize,
+  modelMessages,
+  languageModel,
+  mode,
+  chatSystemPrompt,
+  hasExistingSummary,
+  tools,
+  providerOptions,
+  abortSignal,
+  summaryInputMaxTokens,
+  chatId,
+  subscription,
+  reason,
+}: {
+  messagesToSummarize: UIMessage[];
+  modelMessages?: ModelMessage[];
+  languageModel: LanguageModel;
+  mode: ChatMode;
+  chatSystemPrompt: string;
+  hasExistingSummary: boolean;
+  tools?: ToolSet;
+  providerOptions?: Record<string, Record<string, unknown>>;
+  abortSignal?: AbortSignal;
+  summaryInputMaxTokens: number;
+  chatId: string | null;
+  subscription: SubscriptionTier;
+  reason: CompactionLogReason;
+}): Promise<
+  Awaited<ReturnType<typeof generateSummaryText>> & {
+    languageModel: LanguageModel;
+    attempt: SummarizationAttempt;
+  }
+> => {
+  try {
+    const result = await generateSummaryText(
+      messagesToSummarize,
+      languageModel,
+      mode,
+      chatSystemPrompt,
+      hasExistingSummary,
+      tools,
+      providerOptions,
+      abortSignal,
+      modelMessages,
+      summaryInputMaxTokens,
+    );
+
+    return {
+      ...result,
+      languageModel,
+      attempt: "primary",
+    };
+  } catch (error) {
+    if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
+      throw error;
+    }
+
+    const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
+    const retryLanguageModel = myProvider.languageModel(retryModelName);
+    logContextCompactionRetrying({
+      chatId,
+      mode,
+      subscription,
+      reason,
+      attempt: "primary",
+      languageModel,
+      retryModelName,
+      error,
+    });
+
+    let result: Awaited<ReturnType<typeof generateSummaryText>>;
+    try {
+      result = await generateSummaryText(
+        messagesToSummarize,
+        retryLanguageModel,
+        mode,
+        chatSystemPrompt,
+        hasExistingSummary,
+        undefined,
+        buildSummarizationRetryProviderOptions(providerOptions),
+        abortSignal,
+        modelMessages,
+        summaryInputMaxTokens,
+      );
+    } catch (retryError) {
+      markSummarizationAttemptError(retryError, "fallback");
+      throw retryError;
+    }
+
+    return {
+      ...result,
+      languageModel: retryLanguageModel,
+      attempt: "fallback",
+    };
+  }
+};
+
+export interface CompactModelMessagesInRunOptions {
+  modelMessages: ModelMessage[];
+  /** Raw cumulative SDK history used only for the transcript sidecar. */
+  transcriptModelMessages: ModelMessage[];
+  subscription: SubscriptionTier;
+  languageModel: LanguageModel;
+  mode: ChatMode;
+  writer: UIMessageStreamWriter;
+  chatId: string | null;
+  todos?: Todo[];
+  abortSignal?: AbortSignal;
+  ensureSandbox?: EnsureSandbox;
+  systemPromptTokens?: number;
+  providerInputTokens?: number;
+  chatSystemPrompt?: string;
+  tools?: ToolSet;
+  providerOptions?: Record<string, Record<string, unknown>>;
+  maxTokens: number;
+  providerPromptPressure?: ProviderPromptPressure | null;
+  compactionIndex: number;
+  hasExistingSummary: boolean;
+}
+
+export interface InRunModelCompactionResult {
+  summaryMessage: UIMessage;
+  summaryText: string;
+  summarizationUsage: SummarizationResult["summarizationUsage"];
+}
+
+/**
+ * Compacts the live ModelMessage history without updating latest_summary_id.
+ *
+ * In-flight assistant/tool messages do not have a durable chat message cutoff
+ * yet, so persisting this summary would make reloads duplicate that work. The
+ * caller keeps the result as a run-scoped rolling checkpoint instead.
+ */
+export const compactModelMessagesInRun = async ({
+  modelMessages,
+  transcriptModelMessages,
+  subscription,
+  languageModel,
+  mode,
+  writer,
+  chatId,
+  todos = [],
+  abortSignal,
+  ensureSandbox,
+  systemPromptTokens = 0,
+  providerInputTokens = 0,
+  chatSystemPrompt = "",
+  tools,
+  providerOptions,
+  maxTokens,
+  providerPromptPressure,
+  compactionIndex,
+  hasExistingSummary,
+}: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
+  const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
+  const compactionReason = getCompactionLogReason({
+    providerPromptPressure,
+    providerInputTokens,
+    summarizationThreshold,
+  });
+
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "agent_in_run_context_compaction_started",
+      service: "chat-handler",
+      timestamp: new Date().toISOString(),
+      chat_id: chatId ?? undefined,
+      mode,
+      subscription,
+      reason: compactionReason,
+      compaction_index: compactionIndex,
+      persistence: "run_scoped",
+      model_message_count: modelMessages.length,
+      provider_input_tokens: providerInputTokens,
+      max_tokens: maxTokens,
+      threshold_tokens: summarizationThreshold,
+      system_prompt_tokens: systemPromptTokens,
+      provider_pressure_reason: providerPromptPressure?.reason,
+      provider_pressure_serialized_message_bytes:
+        providerPromptPressure?.serializedMessageBytes,
+    }),
+  );
+  writeSummarizationStarted(writer, compactionIndex);
+
+  try {
+    const summaryPromise = generateSummaryTextWithRetry({
+      messagesToSummarize: [],
+      modelMessages,
+      languageModel,
+      mode,
+      chatSystemPrompt,
+      hasExistingSummary,
+      tools,
+      providerOptions,
+      abortSignal,
+      summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
+      chatId,
+      subscription,
+      reason: compactionReason,
+    });
+    const transcriptPromise: Promise<string | null> =
+      ensureSandbox && mode === "agent"
+        ? ensureSandbox()
+            .then((sandbox) =>
+              saveTranscriptToSandbox([], sandbox, transcriptModelMessages),
+            )
+            .catch((error) => {
+              console.error(
+                "[Summarization] Failed to ensure sandbox for in-run transcript:",
+                error,
+              );
+              return null;
+            })
+        : Promise.resolve(null);
+
+    const [summaryResult, savedPath] = await Promise.all([
+      summaryPromise,
+      transcriptPromise,
+    ]);
+    let finalSummaryText = summaryResult.text;
+    if (savedPath) finalSummaryText += buildTranscriptNotice(savedPath);
+
+    console.info(
+      JSON.stringify({
+        level: "info",
+        event: "agent_in_run_context_compaction_generated",
+        service: "chat-handler",
+        timestamp: new Date().toISOString(),
+        chat_id: chatId ?? undefined,
+        mode,
+        subscription,
+        compaction_index: compactionIndex,
+        persistence: "run_scoped",
+        summary_input_tokens: summaryResult.usage.inputTokens,
+        summary_output_tokens: summaryResult.usage.outputTokens,
+        estimated_compacted_input_tokens:
+          summaryResult.usage.estimatedCompactedInputTokens,
+      }),
+    );
+
+    return {
+      summaryMessage: buildSummaryMessage(finalSummaryText, todos),
+      summaryText: finalSummaryText,
+      summarizationUsage: summaryResult.usage,
+    };
+  } catch (error) {
+    if (abortSignal?.aborted) throw error;
+    const failedAttempt = getSummarizationAttemptFromError(error);
+    logContextCompactionFailed({
+      chatId,
+      mode,
+      subscription,
+      reason: compactionReason,
+      attempt: failedAttempt,
+      languageModel:
+        failedAttempt === "fallback"
+          ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
+          : languageModel,
+      fallbackResult: "no_summarization",
+      error,
+    });
+    writeSummarizationCleared(writer, compactionIndex);
+    return null;
+  }
 };
 
 /**
@@ -358,15 +860,16 @@ export const checkAndSummarizeIfNeeded = async ({
     : tailSelection.headMessages;
 
   const cutoffMessageId = tailSelection.cutoffMessageId;
+  const compactionReason = getCompactionLogReason({
+    providerPromptPressure,
+    providerInputTokens,
+    summarizationThreshold,
+  });
   logContextCompactionStarted({
     chatId,
     mode,
     subscription,
-    reason: getCompactionLogReason({
-      providerPromptPressure,
-      providerInputTokens,
-      summarizationThreshold,
-    }),
+    reason: compactionReason,
     totalEstimatedTokens,
     systemPromptTokens,
     providerInputTokens,
@@ -378,23 +881,25 @@ export const checkAndSummarizeIfNeeded = async ({
     retainedTail: tailSelection.retainedTail,
   });
 
-  writeSummarizationStarted(writer);
+  writeSummarizationStarted(writer, 1);
 
   try {
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
-    const summaryPromise = generateSummaryText(
+    const summaryPromise = generateSummaryTextWithRetry({
       messagesToSummarize,
       languageModel,
       mode,
       chatSystemPrompt,
-      !!existingSummaryText,
+      hasExistingSummary: !!existingSummaryText,
       tools,
       providerOptions,
       abortSignal,
-      undefined,
-      getSummaryInputMaxTokens(maxTokens),
-    );
+      summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
+      chatId,
+      subscription,
+      reason: compactionReason,
+    });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
     // so the agent can consult the raw conversation later if context is lost
@@ -422,7 +927,11 @@ export const checkAndSummarizeIfNeeded = async ({
       transcriptPromise,
     ]);
 
-    const { text: summaryText, usage: summarizationUsage } = summaryResult;
+    const {
+      text: summaryText,
+      usage: summarizationUsage,
+      languageModel: summaryLanguageModel,
+    } = summaryResult;
     let finalSummaryText = summaryText;
     if (savedPath) {
       finalSummaryText += buildTranscriptNotice(savedPath);
@@ -432,7 +941,7 @@ export const checkAndSummarizeIfNeeded = async ({
     const metadata = buildSummaryPersistenceMetadata({
       providerInputTokens,
       threshold: summarizationThreshold,
-      languageModel,
+      languageModel: summaryLanguageModel,
       transcriptPath: savedPath,
       retainedTail: tailSelection.retainedTail,
       reason: providerPromptPressure ? "provider_pressure" : undefined,
@@ -441,6 +950,7 @@ export const checkAndSummarizeIfNeeded = async ({
     await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
 
     return {
+      summarizationAttempted: true,
       needsSummarization: true,
       summarizedMessages: [summaryMessage, ...tailSelection.tailMessages],
       cutoffMessageId,
@@ -451,11 +961,27 @@ export const checkAndSummarizeIfNeeded = async ({
     if (abortSignal?.aborted) {
       throw error;
     }
-    console.error("[Summarization] Failed:", error);
-    return NO_SUMMARIZATION(uiMessages);
+    const failedAttempt = getSummarizationAttemptFromError(error);
+    logContextCompactionFailed({
+      chatId,
+      mode,
+      subscription,
+      reason: compactionReason,
+      attempt: failedAttempt,
+      languageModel:
+        failedAttempt === "fallback"
+          ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
+          : languageModel,
+      fallbackResult: "no_summarization",
+      error,
+    });
+    return {
+      ...NO_SUMMARIZATION(uiMessages),
+      summarizationAttempted: true,
+    };
   } finally {
     if (!abortSignal?.aborted) {
-      writeSummarizationCompleted(writer);
+      writeSummarizationCompleted(writer, 1);
     }
   }
 };

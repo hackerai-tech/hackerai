@@ -6,7 +6,10 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
-import { splitWorkedForParts } from "./worked-for-parts";
+import {
+  isExpandableWorkedForPart,
+  splitWorkedForParts,
+} from "./worked-for-parts";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import {
   WorkedFor,
@@ -203,6 +206,10 @@ export const MessageItem = memo(function MessageItem({
     () => splitWorkedForParts(message.parts),
     [message.parts],
   );
+  const hasExpandableWork = useMemo(
+    () => workParts.some(isExpandableWorkedForPart),
+    [workParts],
+  );
 
   const shouldCollapseUserMessage =
     isUser &&
@@ -238,6 +245,8 @@ export const MessageItem = memo(function MessageItem({
       : undefined;
   const shouldShowWorkingTimer = isStreamingThisMessage;
   const shouldUseWorkedFor = message.metadata?.mode === "agent";
+  const deferReasoningCollapseUntilWorkedFor =
+    shouldUseWorkedFor && workParts.length > 0 && trailingTextParts.length > 0;
 
   // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
   const terminalOutputByToolCallId = useMemo(() => {
@@ -279,6 +288,8 @@ export const MessageItem = memo(function MessageItem({
       partIndex={partIndex}
       status={effectiveStatus}
       isLastMessage={isLastMessage}
+      keepLatestReasoningOpenDuringStreaming={shouldUseWorkedFor}
+      deferReasoningCollapseUntilParent={deferReasoningCollapseUntilWorkedFor}
       terminalOutputByToolCallId={terminalOutputByToolCallId}
       sharedFileDetails={effectiveFileDetails}
     />
@@ -455,7 +466,7 @@ export const MessageItem = memo(function MessageItem({
                     {workParts.length > 0 && (
                       <WorkedFor
                         key="work"
-                        hasWork
+                        hasWork={hasExpandableWork}
                         defaultOpen
                         isTiming={shouldShowWorkingTimer}
                       >
@@ -503,7 +514,7 @@ export const MessageItem = memo(function MessageItem({
                     {workParts.length > 0 && (
                       <WorkedFor
                         key="work"
-                        hasWork
+                        hasWork={hasExpandableWork}
                         isTiming={shouldShowWorkingTimer}
                       >
                         <WorkedForTrigger durationMs={generationTimeMs} />

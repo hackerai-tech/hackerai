@@ -3,6 +3,7 @@ import { createUIMessageStream, JsonToSseTransformStream } from "ai";
 import { ChatSDKError } from "@/lib/errors";
 import type { ChatMessage } from "@/types/chat";
 import { getStreamContext } from "@/lib/api/chat-handler";
+import { getChatById } from "@/lib/db/actions";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import {
@@ -43,12 +44,10 @@ export async function GET(
   // Load chat and enforce ownership
   let chat: any | null = null;
   try {
-    chat = await getConvexClient().query(api.chats.getChatById, {
-      serviceKey,
-      id: chatId,
-    });
-  } catch {
-    return new ChatSDKError("not_found:chat").toResponse();
+    chat = await getChatById({ id: chatId });
+  } catch (error) {
+    if (error instanceof ChatSDKError) return error.toResponse();
+    throw error;
   }
 
   if (!chat) {
@@ -135,6 +134,8 @@ export async function GET(
           chatId,
           endpoint: "/api/chat/[id]/stream",
           abortController,
+          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          userId,
         });
 
         // Abort on client disconnect (tab close, network error, etc.)

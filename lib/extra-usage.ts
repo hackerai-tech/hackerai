@@ -1,11 +1,13 @@
-import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
+import {
+  EXTRA_USAGE_MULTIPLIER,
+  extraUsagePointsToDollars,
+} from "@/convex/lib/extraUsagePricing";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 
-/** Extra usage pricing multiplier */
-export const EXTRA_USAGE_MULTIPLIER = 1.05;
+export { EXTRA_USAGE_MULTIPLIER };
 
 const errorName = (error: unknown) =>
   error instanceof Error ? error.name : "UnknownError";
@@ -16,6 +18,7 @@ const logExtraUsageConvexFailure = ({
   userId,
   organizationId,
   amountPoints,
+  usageSettlementId,
   convexFunction,
   operation,
   startedAt,
@@ -26,6 +29,7 @@ const logExtraUsageConvexFailure = ({
   userId?: string;
   organizationId?: string;
   amountPoints?: number;
+  usageSettlementId?: string;
   convexFunction: string;
   operation: string;
   startedAt: number;
@@ -36,6 +40,7 @@ const logExtraUsageConvexFailure = ({
     userId,
     organization_id: organizationId,
     amount_points: amountPoints,
+    usage_settlement_id: usageSettlementId,
     convex_function: convexFunction,
     operation,
     component: "extra_usage",
@@ -84,8 +89,7 @@ export interface DeductBalanceResult {
  * Points are internal units (1 point = $0.0001)
  */
 export function pointsToDollars(points: number): number {
-  const dollars = (points / POINTS_PER_DOLLAR) * EXTRA_USAGE_MULTIPLIER;
-  return Math.ceil(dollars * 100) / 100; // Round up to nearest cent
+  return extraUsagePointsToDollars(points);
 }
 
 /**
@@ -213,6 +217,7 @@ export async function refundToBalance(
 export async function deductFromBalance(
   userId: string,
   pointsUsed: number,
+  usageSettlementId?: string,
 ): Promise<DeductBalanceResult> {
   // No-op: nothing to deduct, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsUsed <= 0) {
@@ -237,6 +242,7 @@ export async function deductFromBalance(
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
         amountPoints: pointsUsed,
+        usageSettlementId,
       },
     );
 
@@ -254,6 +260,7 @@ export async function deductFromBalance(
       message: "Extra usage deduction failed",
       userId,
       amountPoints: pointsUsed,
+      usageSettlementId,
       convexFunction: "extraUsageActions.deductWithAutoReload",
       operation: "deduct_extra_usage_balance",
       startedAt,
@@ -345,6 +352,7 @@ export async function deductFromTeamBalance(
   organizationId: string,
   userId: string,
   pointsUsed: number,
+  usageSettlementId?: string,
 ): Promise<DeductBalanceResult> {
   if (pointsUsed <= 0) {
     return {
@@ -366,6 +374,7 @@ export async function deductFromTeamBalance(
         organizationId,
         userId,
         amountPoints: pointsUsed,
+        usageSettlementId,
       },
     );
 
@@ -387,6 +396,7 @@ export async function deductFromTeamBalance(
       userId,
       organizationId,
       amountPoints: pointsUsed,
+      usageSettlementId,
       convexFunction: "teamExtraUsageActions.deductWithAutoReloadForTeam",
       operation: "deduct_team_extra_usage_balance",
       startedAt,

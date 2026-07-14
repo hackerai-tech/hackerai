@@ -8,6 +8,14 @@ type SandboxContextForPromptManager = {
   consumeFallbackInfo?: () => SandboxFallbackInfo | null;
 };
 
+type SandboxAcquisitionManager<TSandbox> = {
+  getSandbox: () => Promise<{ sandbox: TSandbox }>;
+  resetSandbox?: (reason?: string) => Promise<void>;
+  peekFallbackInfo?: () => SandboxFallbackInfo | null;
+  consumeFallbackInfo?: () => SandboxFallbackInfo | null;
+  clearFallbackInfo?: () => void;
+};
+
 const escapePromptText = (value: string): string =>
   value
     .replaceAll("&", "&amp;")
@@ -70,6 +78,62 @@ export function writeSandboxFallbackEvent(
     id,
     data: fallbackInfo,
   });
+}
+
+export async function getSandboxWithFallbackGuard<TSandbox>({
+  sandboxManager,
+  requireLocalSandbox = false,
+}: {
+  sandboxManager: SandboxAcquisitionManager<TSandbox>;
+  requireLocalSandbox?: boolean;
+}): Promise<{ sandbox: TSandbox }> {
+  const result = await sandboxManager.getSandbox();
+  const fallbackInfo =
+    sandboxManager.peekFallbackInfo?.() ??
+    sandboxManager.consumeFallbackInfo?.() ??
+    null;
+
+  if (fallbackInfo?.occurred) {
+    try {
+      assertLocalSandboxFallbackAllowed({
+        fallbackInfo,
+        requireLocalSandbox,
+      });
+    } catch (error) {
+      try {
+        await sandboxManager.resetSandbox?.("blocked_local_sandbox_fallback");
+      } catch (cleanupError) {
+        console.warn(
+          "[sandbox-fallback] Failed to reset blocked fallback sandbox:",
+          cleanupError,
+        );
+      }
+      sandboxManager.clearFallbackInfo?.();
+      throw error;
+    }
+  }
+
+  return result;
+}
+
+export function getSandboxFallbackErrorMessage(error: unknown): string | null {
+  if (
+    error instanceof ChatSDKError &&
+    typeof error.cause === "string" &&
+    (error.metadata?.localSandboxFallbackBlocked ||
+      error.metadata?.localSandboxRequired)
+  ) {
+    return error.cause;
+  }
+
+  return null;
+}
+
+export function resolveToolErrorMessage(error: unknown): string {
+  return (
+    getSandboxFallbackErrorMessage(error) ??
+    (error instanceof Error ? error.message : String(error))
+  );
 }
 
 export async function prepareSandboxContextForPrompt({

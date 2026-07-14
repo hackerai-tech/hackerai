@@ -1,5 +1,4 @@
-import { tool } from "ai";
-import { z } from "zod";
+import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
@@ -8,7 +7,6 @@ import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
-import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
   waitForSandboxReady,
@@ -19,14 +17,11 @@ import {
   buildSandboxCommandOptions,
   augmentCommandPath,
 } from "./utils/sandbox-command-options";
-import {
-  parseGuardrailConfig,
-  getEffectiveGuardrails,
-  checkCommandGuardrails,
-} from "./utils/guardrails";
-import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
-import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
+import {
+  createCommandSessionHandle,
+  type CommandSessionHandle,
+} from "./utils/command-session-handle";
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
@@ -34,8 +29,8 @@ import {
 } from "./utils/pty-session-manager";
 import { getSessionSnapshots } from "./utils/pty-output-formatter";
 import {
-  assertLocalSandboxFallbackAllowed,
-  writeSandboxFallbackEvent,
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
   waitForOutput,
@@ -44,107 +39,76 @@ import {
   peekExited,
 } from "./utils/pty-wait-utils";
 import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
+import {
+  RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
+  RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
+  createRunTerminalCmdToolSchema,
+} from "./schemas";
 
-const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
-const MAX_TIMEOUT_SECONDS = 600;
+const DEFAULT_STREAM_TIMEOUT_SECONDS =
+  RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
+const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
+const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
 
+type RunTerminalCmdInput = {
+  command: string;
+  brief?: string;
+  justification?: string;
+  prefix_rule?: string[];
+  is_background: boolean;
+  timeout?: number;
+  interactive: boolean;
+};
+
+type E2BCommandHandle = {
+  readonly pid: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode?: number;
+  wait(): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  }>;
+  kill(): Promise<boolean>;
+};
+
+const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
+  pid
+    ? `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated (PID: ${pid}).`
+    : `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated.`;
+
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
     sandboxManager,
     writer,
     backgroundProcessTracker,
-    guardrailsConfig,
-    caidoEnabled,
-    caidoPort,
     ptySessionManager,
     chatId,
   } = context;
-
-  // Parse user guardrail configuration and get effective guardrails
-  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
-  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
-
-  // Caido proxy is set up eagerly only on E2B sandboxes (controlled image where
-  // capturing all agent HTTP traffic is the point). On local sandboxes the proxy
-  // is lazy: it spins up only when the agent reaches for a proxy tool, so plain
-  // terminal commands don't pay the install/start cost or route through Caido.
-  // Permanently disabled on first setup failure to avoid retrying every command.
-  const caidoConfig = getCaidoConfig(caidoPort);
-  let caidoSetupDisabled = false;
+  const runTerminalCmdTool = createRunTerminalCmdToolSchema({
+    approvalGated: !!context.requestToolApproval,
+    // The conditional schema adds approval-only fields, but both branches
+    // normalize to the same execution input handled below.
+  }) as unknown as Tool<RunTerminalCmdInput, unknown>;
 
   return tool({
-    description: `Execute a command on behalf of the user.
-If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
-Commands execute immediately without requiring user approval.
-In using these tools, adhere to the following guidelines:
-1. Use command chaining and pipes for efficiency:
-   - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
-   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)
-2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
-3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
-4. If the command would use a pager, append \` | cat\` to the command.
-5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-6. Dont include any newlines in the command.
-7. Handle large outputs and save scan results to files:
-  - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
-  - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
-    - Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
-    - Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
-    - Anti-pattern: Never let full verbose output return to context (causes overflow)
-  - Always redirect excessive output to files to avoid context overflow.
-8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
-9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
-11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
-12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
-   - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
-    inputSchema: z.object({
-      command: z.string().describe("The shell command to execute"),
-      brief: z
-        .string()
-        .optional()
-        .describe(
-          "Optional one-sentence preamble describing the purpose of this operation",
-        ),
-      is_background: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
-        ),
-      timeout: z
-        .number()
-        .optional()
-        .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
-        .describe(
-          `Timeout in seconds to wait for command output before returning. For interactive=false, the command keeps running in background on timeout. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
-        ),
-      interactive: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe(
-          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
-        ),
-    }),
+    ...runTerminalCmdTool,
     execute: async (
       {
         command,
+        brief,
+        justification,
+        prefix_rule,
         is_background,
         timeout,
         interactive,
-      }: {
-        command: string;
-        is_background: boolean;
-        timeout?: number;
-        interactive: boolean;
-      },
+      }: RunTerminalCmdInput,
       { toolCallId, abortSignal },
     ) => {
       // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
@@ -199,17 +163,23 @@ In using these tools, adhere to the following guidelines:
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
-      // Check guardrails before executing the command
-      const guardrailResult = checkCommandGuardrails(
-        command,
-        effectiveGuardrails,
-      );
-      if (!guardrailResult.allowed) {
+
+      const approval = await context.requestToolApproval?.({
+        toolCallId,
+        toolName: "run_terminal_cmd",
+        operation: "terminal_execute",
+        target: command,
+        brief,
+        justification,
+        prefixRule: prefix_rule,
+      });
+      if (approval && !approval.approved) {
         return {
           result: {
             output: "",
             exitCode: 1,
-            error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
+            error: approval.reason,
+            approvalDenied: true,
           },
         };
       }
@@ -217,16 +187,9 @@ In using these tools, adhere to the following guidelines:
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
         try {
-          const { sandbox } = await sandboxManager.getSandbox();
-          const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
-          if (fallbackInfo?.occurred) {
-            writeSandboxFallbackEvent(
-              writer,
-              fallbackInfo,
-              `sandbox-fallback-${toolCallId}`,
-            );
-            assertLocalSandboxFallbackAllowed({ fallbackInfo });
-          }
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
@@ -265,24 +228,6 @@ In using these tools, adhere to the following guidelines:
             isBackground: false,
           });
 
-          // Set up Caido proxy env vars before spawning the PTY so the session
-          // launches with proxy env pointing at a running Caido. Mirrors the
-          // non-interactive `executeCommand` flow: only eager on E2B; on
-          // failure, permanently disable for the rest of this tool instance.
-          let caidoEnvVars: Record<string, string> | undefined;
-          if (caidoEnabled && isE2B && !caidoSetupDisabled) {
-            try {
-              await ensureCaido(context);
-              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
-            } catch (e) {
-              console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
-                e instanceof Error ? e.message : e,
-              );
-              caidoSetupDisabled = true;
-            }
-          }
-
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
@@ -297,13 +242,11 @@ In using these tools, adhere to the following guidelines:
                   command,
                   cols,
                   rows,
-                  envs: caidoEnvVars,
                 });
               }
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
-                envs: caidoEnvVars,
               });
             },
           });
@@ -358,10 +301,7 @@ In using these tools, adhere to the following guidelines:
             result: {
               output: "",
               exitCode: 1,
-              error:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to create interactive PTY session.",
+              error: resolveToolErrorMessage(err),
             },
           };
         }
@@ -369,18 +309,9 @@ In using these tools, adhere to the following guidelines:
 
       try {
         // Get fresh sandbox and verify it's ready
-        const { sandbox } = await sandboxManager.getSandbox();
-
-        // Check for sandbox fallback and notify frontend
-        const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
-        if (fallbackInfo?.occurred) {
-          writeSandboxFallbackEvent(
-            writer,
-            fallbackInfo,
-            `sandbox-fallback-${toolCallId}`,
-          );
-          assertLocalSandboxFallbackAllowed({ fallbackInfo });
-        }
+        const { sandbox } = await getSandboxWithFallbackGuard({
+          sandboxManager,
+        });
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -435,7 +366,11 @@ In using these tools, adhere to the following guidelines:
 
             // Reset cached instance to force ensureSandboxConnection to create a fresh one
             sandboxManager.setSandbox(null as any);
-            const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
+            const { sandbox: freshSandbox } = await getSandboxWithFallbackGuard(
+              {
+                sandboxManager,
+              },
+            );
 
             // Verify the fresh sandbox is ready
             try {
@@ -474,28 +409,6 @@ In using these tools, adhere to the following guidelines:
             isBackground: is_background,
           });
 
-          // Ensure Caido proxy is running + authenticated before commands route through it.
-          // Only eager on E2B; local sandboxes defer setup to proxy tool invocations.
-          // This is a no-op after the first successful call (cached per session).
-          // If setup fails, permanently disable proxy env vars for all future commands.
-          let caidoEnvVars: Record<string, string> | undefined;
-          if (
-            caidoEnabled &&
-            isE2BSandbox(sandboxInstance) &&
-            !caidoSetupDisabled
-          ) {
-            try {
-              await ensureCaido(context);
-              caidoEnvVars = buildCaidoProxyEnvVars(caidoConfig);
-            } catch (e) {
-              console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
-                e instanceof Error ? e.message : e,
-              );
-              caidoSetupDisabled = true;
-            }
-          }
-
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
@@ -515,6 +428,80 @@ In using these tools, adhere to the following guidelines:
             let execution: any = null;
             let handler: ReturnType<typeof createTerminalHandler> | null = null;
             let processId: number | null = null; // Store PID for all processes
+            let commandSession: PtySession | null = null;
+            let commandHandle: CommandSessionHandle | null = null;
+            let commandSessionExposed = false;
+            const commandAbortController = new AbortController();
+
+            const forgetUnexposedCommandSession = () => {
+              if (!commandSession || commandSessionExposed) return;
+              ptySessionManager.forget(chatId, commandSession.sessionId);
+            };
+
+            const terminateManagedCommand = async (): Promise<boolean> => {
+              if (isCentrifugoSandbox(sandboxInstance)) {
+                if (!commandAbortController.signal.aborted) {
+                  commandAbortController.abort();
+                }
+                return true;
+              }
+
+              if (!processId && execution?.pid) {
+                processId = execution.pid;
+              }
+              if (!processId && !execution?.kill) return false;
+              if (processId) commandHandle?.setPid(processId);
+              return terminateProcessReliably(
+                sandboxInstance,
+                execution,
+                processId,
+              );
+            };
+
+            const shouldTerminateNoisyTimedOutCommand = () => {
+              if (is_background || !handler) return false;
+              return (
+                handler.wasTruncated() ||
+                handler.wasFullOutputCapped() ||
+                handler.getBufferedCharCount() >=
+                  NOISY_TIMEOUT_MIN_BUFFERED_CHARS
+              );
+            };
+
+            const logNoisyTimeout = (fields: {
+              terminationAttempted: boolean;
+              terminationSucceeded: boolean;
+              processId: number | null;
+              terminationError?: unknown;
+            }) => {
+              console.warn(
+                JSON.stringify({
+                  level: "warn",
+                  event: "agent_terminal_noisy_timeout",
+                  service: "chat-handler",
+                  timestamp: new Date().toISOString(),
+                  chat_id: chatId,
+                  user_id: context.userID,
+                  mode: context.mode,
+                  subscription: context.subscription,
+                  tool_call_id: toolCallId,
+                  timeout_seconds: effectiveStreamTimeout,
+                  output_chars_buffered: handler?.getBufferedCharCount() ?? 0,
+                  output_truncated: handler?.wasTruncated() ?? false,
+                  output_full_output_capped:
+                    handler?.wasFullOutputCapped() ?? false,
+                  sandbox_type:
+                    sandboxManager.getSandboxType("run_terminal_cmd"),
+                  pid: fields.processId ?? undefined,
+                  termination_attempted: fields.terminationAttempted,
+                  termination_succeeded: fields.terminationSucceeded,
+                  termination_error:
+                    fields.terminationError instanceof Error
+                      ? fields.terminationError.message
+                      : undefined,
+                }),
+              );
+            };
 
             // Handle abort signal
             const onAbort = async () => {
@@ -527,7 +514,21 @@ In using these tools, adhere to the following guidelines:
               // from the killed process might trigger retries
               resolved = true;
 
-              if (isCentrifugoSandbox(sandboxInstance)) {
+              if (commandHandle) {
+                try {
+                  const terminated = await terminateManagedCommand();
+                  if (!terminated) {
+                    console.warn(
+                      "[Terminal Command] Managed command could not be terminated during abort",
+                    );
+                  }
+                } catch (error) {
+                  console.error(
+                    "[Terminal Command] Error during managed command abort:",
+                    error,
+                  );
+                }
+              } else if (isCentrifugoSandbox(sandboxInstance)) {
                 const result = handler ? handler.getResult() : { output: "" };
                 if (handler) {
                   handler.cleanup();
@@ -540,36 +541,31 @@ In using these tools, adhere to the following guidelines:
                   },
                 });
                 return;
-              }
+              } else {
+                // Try to get PID from execution object first (cheap, no shell call)
+                if (!processId && execution && (execution as any)?.pid) {
+                  processId = (execution as any).pid;
+                }
 
-              // Try to get PID from execution object first (cheap, no shell call)
-              if (!processId && execution && (execution as any)?.pid) {
-                processId = (execution as any).pid;
-              }
-
-              // Fall back to PID discovery via pgrep/ps for any command type
-              if (!processId) {
-                processId = await findProcessPid(sandboxInstance, command);
-              }
-
-              // Terminate the current process
-              try {
-                if ((execution && execution.kill) || processId) {
-                  await terminateProcessReliably(
-                    sandboxInstance,
-                    execution,
-                    processId,
-                  );
-                } else {
-                  console.warn(
-                    "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                // Terminate the current process
+                try {
+                  if ((execution && execution.kill) || processId) {
+                    await terminateProcessReliably(
+                      sandboxInstance,
+                      execution,
+                      processId,
+                    );
+                  } else {
+                    console.warn(
+                      "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                    );
+                  }
+                } catch (error) {
+                  console.error(
+                    "[Terminal Command] Error during abort termination:",
+                    error,
                   );
                 }
-              } catch (error) {
-                console.error(
-                  "[Terminal Command] Error during abort termination:",
-                  error,
-                );
               }
 
               // Clean up and resolve
@@ -608,35 +604,96 @@ In using these tools, adhere to the following guidelines:
                   if (resolved) {
                     return;
                   }
+                  // Claim completion before any async PID/termination work so
+                  // a command exiting at the timeout boundary cannot win the
+                  // race and unregister the session we are about to return.
+                  resolved = true;
+                  if (commandSession) commandSessionExposed = true;
 
                   // Try to get PID from execution object first (if available)
                   if (!processId && execution && (execution as any)?.pid) {
                     processId = (execution as any).pid;
                   }
 
-                  // For foreground commands on stream timeout, try to discover PID for user reference
-                  // DO NOT kill the process - it may still be working and saving to files
-                  // The process has its own MAX_COMMAND_EXECUTION_TIME timeout via commonOptions
-                  if (!processId && !is_background) {
-                    processId = await findProcessPid(sandboxInstance, command);
+                  const terminateNoisyCommand =
+                    shouldTerminateNoisyTimedOutCommand();
+
+                  if (processId) commandHandle?.setPid(processId);
+
+                  let terminationAttempted = false;
+                  let terminationSucceeded = false;
+                  let terminationError: unknown;
+                  if (terminateNoisyCommand) {
+                    terminationAttempted = Boolean(
+                      commandHandle ||
+                      (execution && execution.kill) ||
+                      processId,
+                    );
+                    try {
+                      if (terminationAttempted) {
+                        terminationSucceeded = commandHandle
+                          ? await terminateManagedCommand()
+                          : await terminateProcessReliably(
+                              sandboxInstance,
+                              execution,
+                              processId,
+                            );
+                      }
+                    } catch (error) {
+                      terminationError = error;
+                    }
+                    logNoisyTimeout({
+                      terminationAttempted,
+                      terminationSucceeded,
+                      processId,
+                      terminationError,
+                    });
                   }
 
-                  await createTerminalWriter(
-                    TIMEOUT_MESSAGE(
-                      effectiveStreamTimeout,
-                      processId ?? undefined,
-                    ),
-                  );
+                  const commandTerminated =
+                    terminateNoisyCommand && terminationSucceeded;
+                  if (commandTerminated) {
+                    commandSessionExposed = false;
+                  }
+                  const resumableSession = commandTerminated
+                    ? undefined
+                    : commandSession?.sessionId;
+                  if (resumableSession) commandSessionExposed = true;
+                  const timeoutMessage = commandTerminated
+                    ? TERMINATED_TIMEOUT_MESSAGE(
+                        effectiveStreamTimeout,
+                        processId ?? undefined,
+                      )
+                    : TIMEOUT_MESSAGE(
+                        effectiveStreamTimeout,
+                        processId ?? undefined,
+                        resumableSession,
+                      );
 
-                  resolved = true;
+                  await createTerminalWriter(timeoutMessage);
+
+                  abortSignal?.removeEventListener("abort", onAbort);
                   const result = handler
-                    ? handler.getResult(processId ?? undefined)
+                    ? handler.getResult(processId ?? undefined, {
+                        timeoutMessage,
+                      })
                     : { output: "" };
                   if (handler) {
                     handler.cleanup();
                   }
                   resolve({
-                    result: { output: result.output, exitCode: null },
+                    result: {
+                      output: result.output,
+                      exitCode: commandTerminated ? 124 : null,
+                      timedOut: true,
+                      ...(resumableSession && {
+                        session: resumableSession,
+                        ...(processId ? { pid: processId } : {}),
+                      }),
+                      ...(commandTerminated && {
+                        terminatedOnTimeout: true,
+                      }),
+                    },
                   });
                 },
               },
@@ -645,19 +702,48 @@ In using these tools, adhere to the following guidelines:
             // Register abort listener
             abortSignal?.addEventListener("abort", onAbort, { once: true });
 
+            const commandSessionReady: Promise<void> = is_background
+              ? Promise.resolve()
+              : (() => {
+                  commandHandle = createCommandSessionHandle({
+                    kill: terminateManagedCommand,
+                  });
+                  return ptySessionManager
+                    .create(chatId, {
+                      cols,
+                      rows,
+                      kind: "command",
+                      createHandle: async () => commandHandle!,
+                    })
+                    .then((session) => {
+                      commandSession = session;
+                    });
+                })();
+
+            const forwardCommandOutput = (output: string) => {
+              void handler?.stdout(output);
+              commandHandle?.emitText(output);
+            };
+
             const commonOptions = buildSandboxCommandOptions(
               sandboxInstance,
               is_background
                 ? undefined
                 : {
-                    onStdout: handler!.stdout,
-                    onStderr: handler!.stderr,
+                    onStdout: forwardCommandOutput,
+                    onStderr: forwardCommandOutput,
                   },
-              caidoEnvVars,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
-              ? { ...commonOptions, signal: abortSignal }
-              : commonOptions;
+              ? {
+                  ...commonOptions,
+                  signal: is_background
+                    ? abortSignal
+                    : commandAbortController.signal,
+                }
+              : isE2BSandbox(sandboxInstance)
+                ? { ...commonOptions, signal: abortSignal }
+                : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
@@ -688,11 +774,21 @@ In using these tools, adhere to the following guidelines:
 
             // Augment PATH for local sandboxes so user-installed tools
             // (e.g. ~/go/bin/waybackurls) are found without full paths.
-            // Keep the original `command` for PID discovery (findProcessPid).
             const effectiveCommand = augmentCommandPath(
               command,
               sandboxInstance,
             );
+
+            const retryOptions = {
+              maxRetries: 6,
+              baseDelayMs: 500,
+              jitterMs: 50,
+              signal: abortSignal,
+              isPermanentError: (error: unknown) =>
+                resolved || isPermanentError(error),
+              // Retry logs are too noisy - they're expected behavior
+              logger: () => {},
+            };
 
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
@@ -702,60 +798,73 @@ In using these tools, adhere to the following guidelines:
               stderr: string;
               exitCode: number;
               pid?: number;
-            }> = is_background
-              ? retryWithBackoff(
-                  async () => {
-                    const result = await sandboxInstance.commands.run(
-                      effectiveCommand,
-                      {
-                        ...runOptions,
-                        background: true,
-                      },
-                    );
-                    // Normalize the result to include exitCode
-                    return {
-                      stdout: result.stdout,
-                      stderr: result.stderr,
-                      exitCode: result.exitCode ?? 0,
-                      pid: (result as { pid?: number }).pid,
-                    };
-                  },
-                  {
-                    maxRetries: 6,
-                    baseDelayMs: 500,
-                    jitterMs: 50,
-                    isPermanentError,
-                    // Retry logs are too noisy - they're expected behavior
-                    logger: () => {},
-                  },
-                )
-              : retryWithBackoff(
+            }> = commandSessionReady.then(async () => {
+              if (resolved || abortSignal?.aborted) {
+                return { stdout: "", stderr: "", exitCode: 130 };
+              }
+
+              if (is_background) {
+                return retryWithBackoff(async () => {
+                  const result = await sandboxInstance.commands.run(
+                    effectiveCommand,
+                    {
+                      ...runOptions,
+                      background: true,
+                    },
+                  );
+                  return {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exitCode: result.exitCode ?? 0,
+                    pid: (result as { pid?: number }).pid,
+                  };
+                }, retryOptions);
+              }
+
+              if (isE2BSandbox(sandboxInstance)) {
+                // E2B's foreground `run()` only returns after exit, so it
+                // cannot provide identity while a command is still running.
+                // Start it through the SDK's background handle, retain that
+                // exact handle/PID for lifecycle operations, then wait here
+                // to preserve foreground behavior for the caller.
+                const started = (await retryWithBackoff(
                   () =>
-                    sandboxInstance.commands.run(effectiveCommand, runOptions),
-                  {
-                    maxRetries: 6,
-                    baseDelayMs: 500,
-                    jitterMs: 50,
-                    isPermanentError,
-                    // Retry logs are too noisy - they're expected behavior
-                    logger: () => {},
-                  },
-                );
+                    sandboxInstance.commands.run(effectiveCommand, {
+                      ...runOptions,
+                      background: true,
+                    }),
+                  retryOptions,
+                )) as unknown as E2BCommandHandle;
+                execution = started;
+                processId = started.pid;
+                commandHandle?.setPid(started.pid);
+                const result = await started.wait();
+                return { ...result, pid: started.pid };
+              }
+
+              return retryWithBackoff(
+                () =>
+                  sandboxInstance.commands.run(effectiveCommand, runOptions),
+                retryOptions,
+              );
+            });
 
             runPromise
               .then(async (exec) => {
                 execution = exec;
 
-                // Capture PID for background processes
-                if (is_background && exec?.pid) {
+                if (exec?.pid) {
                   processId = exec.pid;
+                  commandHandle?.setPid(exec.pid);
                 }
+                commandHandle?.resolveExit(exec.exitCode ?? 0);
 
                 if (handler) {
                   handler.cleanup();
                 }
 
                 if (!resolved) {
+                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   const finalResult = handler
@@ -767,7 +876,7 @@ In using these tools, adhere to the following guidelines:
 
                   // Track background processes with their output files
                   if (is_background && processId) {
-                    const backgroundOutput = `Background process started with PID: ${processId}\n`;
+                    const backgroundOutput = `Detached background process started with PID: ${processId}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`;
                     await createTerminalWriter(backgroundOutput);
 
                     const outputFiles =
@@ -797,7 +906,8 @@ In using these tools, adhere to the following guidelines:
                     result: is_background
                       ? {
                           pid: processId,
-                          output: `Background process started with PID: ${processId ?? "unknown"}\n`,
+                          resumable: false,
+                          output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
                           exitCode: exec.exitCode ?? 0,
@@ -808,13 +918,23 @@ In using these tools, adhere to the following guidelines:
                               : undefined,
                         },
                   });
+                } else {
+                  // Abort/noisy-timeout paths do not expose a resumable
+                  // session, so discard their bookkeeping once execution
+                  // eventually settles. Exposed timeout sessions stay
+                  // available for wait/view until stream cleanup.
+                  forgetUnexposedCommandSession();
                 }
               })
               .catch(async (error) => {
+                commandHandle?.resolveExit(
+                  error instanceof CommandExitError ? error.exitCode : null,
+                );
                 if (handler) {
                   handler.cleanup();
                 }
                 if (!resolved) {
+                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   // Handle CommandExitError as a valid result (non-zero exit code)
@@ -847,6 +967,8 @@ In using these tools, adhere to the following guidelines:
                   } else {
                     reject(error);
                   }
+                } else {
+                  forgetUnexposedCommandSession();
                 }
               });
           });
@@ -856,7 +978,7 @@ In using these tools, adhere to the following guidelines:
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: resolveToolErrorMessage(error),
           },
         };
       }

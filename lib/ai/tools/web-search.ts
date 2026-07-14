@@ -1,6 +1,5 @@
 import { tool } from "ai";
-import { z } from "zod";
-import { ToolContext } from "@/types";
+import type { ToolContext } from "@/types";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import {
   PerplexityApiError,
@@ -12,6 +11,12 @@ import {
   isRetryablePerplexityStatus,
   summarizePerplexityErrorBody,
 } from "./utils/perplexity";
+import { reportToolFailure } from "./tool-failure";
+import {
+  PERPLEXITY_QUERY_MAX_LENGTH,
+  webSearchTool,
+  type WebSearchToolInput,
+} from "./schemas";
 
 /**
  * Web search tool using Perplexity Search API
@@ -23,16 +28,9 @@ const PERPLEXITY_SEARCH_URL = "https://api.perplexity.ai/search";
 const WEB_SEARCH_MAX_ATTEMPTS = 3;
 const WEB_SEARCH_RETRY_BASE_DELAY_MS = 300;
 const WEB_SEARCH_RETRY_JITTER_MS = 75;
-const PERPLEXITY_QUERY_MAX_LENGTH = 8192;
 const EMPTY_QUERY_TOOL_ERROR =
   "Error performing web search: Provide at least one non-empty query.";
 const QUERY_TOO_LONG_TOOL_ERROR = `Error performing web search: Each query must be ${PERPLEXITY_QUERY_MAX_LENGTH} characters or fewer.`;
-
-const webSearchQuerySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(PERPLEXITY_QUERY_MAX_LENGTH);
 
 const sleep = (delayMs: number, signal?: AbortSignal): Promise<void> => {
   if (delayMs <= 0) return Promise.resolve();
@@ -187,49 +185,9 @@ export const createWebSearch = (context: ToolContext) => {
   const { userLocation, onToolCost } = context;
 
   return tool({
-    description: `Search for information across various sources.
-
-<instructions>
-- MUST use this tool to access up-to-date or external information when needed; DO NOT rely solely on internal knowledge
-- Each search MUST contain exactly 1 to 3 \`queries\` (NEVER more than 3). Queries MUST be variants of the same intent (i.e., query expansions), NOT different goals
-- For non-English queries, MUST include at least one English query as the final variant to expand coverage
-- For complex searches, MUST break down into step-by-step searches instead of using a single complex query
-- Access multiple URLs from search results for comprehensive information or cross-validation
-- CAN use Google dork syntax (site:, filetype:, inurl:, intitle:, etc.) for targeted reconnaissance and pentest enumeration
-- Only use \`time\` parameter when explicitly required by task, otherwise leave time range unrestricted
-- Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
-- Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
-- For commands/installations, prioritize Kali Linux compatibility using apt or pre-installed tools
-</instructions>`,
-    inputSchema: z.object({
-      queries: z
-        .array(webSearchQuerySchema)
-        .min(1)
-        .max(3)
-        .describe(
-          "MAXIMUM 3 non-empty query variants (1-3 items only). Express the same search intent with different wording.",
-        ),
-      time: z
-        .enum(["all", "past_day", "past_week", "past_month", "past_year"])
-        .optional()
-        .describe(
-          "Optional time filter to limit results to a recent time range",
-        ),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
-    }),
+    ...webSearchTool,
     execute: async (
-      {
-        queries: rawQueries,
-        time,
-      }: {
-        brief: string;
-        queries: string[];
-        time?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
-      },
+      { queries: rawQueries, time }: WebSearchToolInput,
       { abortSignal },
     ) => {
       try {
@@ -275,20 +233,37 @@ export const createWebSearch = (context: ToolContext) => {
         }
 
         if (error instanceof PerplexityApiError) {
-          console.error("Web search tool error:", {
+          const attempts = error.retryable ? WEB_SEARCH_MAX_ATTEMPTS : 1;
+          const logFields = {
             name: error.name,
             status: error.status,
             statusText: error.statusText,
             retryable: error.retryable,
             bodySummary: error.bodySummary,
+          };
+          reportToolFailure(context.onToolFailure, {
+            event: "web_search_provider_failed",
+            tool_name: "web_search",
+            provider: "perplexity",
+            status: error.status,
+            status_text: error.statusText,
+            retryable: error.retryable,
+            attempts,
+            error_name: error.name,
+            body_summary: error.bodySummary,
           });
-          return formatPerplexityFailureForTool(
-            error,
-            error.retryable ? WEB_SEARCH_MAX_ATTEMPTS : 1,
-          );
+          console.error("Web search tool error:", logFields);
+          return formatPerplexityFailureForTool(error, attempts);
         }
 
         const errorMessage = stringifyRedactedError(error);
+        reportToolFailure(context.onToolFailure, {
+          event: "web_search_tool_failed",
+          tool_name: "web_search",
+          provider: "perplexity",
+          error_name: error instanceof Error ? error.name : "UnknownError",
+          error_message: errorMessage,
+        });
         console.error("Web search tool error:", errorMessage);
         return `Error performing web search: ${errorMessage}`;
       }

@@ -23,11 +23,14 @@ import type {
   RateLimitInfo,
   ExtraUsageConfig,
 } from "@/types";
+import { canUseExtraUsage } from "@/types";
+import { ChatSDKError } from "@/lib/errors";
 
 // Re-export token bucket functions
 export {
   checkTokenBucketLimit,
   deductUsage,
+  deductUsageDelta,
   refundUsage,
   resetRateLimitBuckets,
   stashOldBucketRemaining,
@@ -38,6 +41,7 @@ export {
   addOrgRemovedUsage,
   clearOrgRemovedUsage,
   applyTeamSeatDebt,
+  billableCostDollarsToPoints,
   calculateTokenCost,
   calculateRawTokenCost,
   getBudgetLimits,
@@ -45,18 +49,31 @@ export {
   getMonthlyBucketKey,
   getCycleExpireSeconds,
   POINTS_PER_DOLLAR,
+  type UsageDeductionFailureReason,
+  type UsageDeductionResult,
 } from "./token-bucket";
 
 // Re-export sliding window functions
 export {
   checkFreeUserRateLimit,
   checkFreeAgentRateLimit,
+  checkFreeUserRateLimitCapacity,
+  checkFreeAgentRateLimitCapacity,
   grantFreeReferralBonusUnits,
 } from "./sliding-window";
 
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
 export { UsageRefundTracker } from "./refund";
+export {
+  addUsageDeductionDelta,
+  createUsageSettlementState,
+  getUsageSettlementInitialDeduction,
+  getUnsettledUsagePoints,
+  shouldSettleUsageMidRun,
+  replaceUsageSettlementState,
+  type UsageSettlementState,
+} from "./usage-settlement";
 export { acquireFreeRunConcurrencyLock } from "./free-concurrency";
 export {
   checkFreeMonthlyCostLimit,
@@ -85,6 +102,8 @@ import { checkTokenBucketLimit } from "./token-bucket";
 import {
   checkFreeUserRateLimit,
   checkFreeAgentRateLimit,
+  checkFreeUserRateLimitCapacity,
+  checkFreeAgentRateLimitCapacity,
 } from "./sliding-window";
 
 /**
@@ -130,5 +149,43 @@ export const checkRateLimit = async (
     extraUsageConfig,
     modelName,
     organizationId,
+  );
+};
+
+/**
+ * Revalidate capacity after a durable wait without consuming request units or
+ * deducting estimated model cost a second time.
+ */
+export const checkRateLimitCapacity = async (
+  userId: string,
+  mode: ChatMode,
+  subscription: SubscriptionTier,
+  extraUsageConfig?: ExtraUsageConfig,
+  modelName?: string,
+  organizationId?: string,
+  freeQuotaSubject?: string,
+): Promise<RateLimitInfo> => {
+  if (subscription === "free") {
+    const quotaSubject = freeQuotaSubject ?? userId;
+    return isAgentMode(mode)
+      ? checkFreeAgentRateLimitCapacity(quotaSubject)
+      : checkFreeUserRateLimitCapacity(quotaSubject);
+  }
+
+  const current = await checkTokenBucketLimit(
+    userId,
+    subscription,
+    0,
+    extraUsageConfig,
+    modelName,
+    organizationId,
+  );
+  if (current.remaining > 0 || canUseExtraUsage(extraUsageConfig)) {
+    return current;
+  }
+
+  throw new ChatSDKError(
+    "rate_limit:chat",
+    "Your current usage limit no longer allows this approved operation. Start a new Agent request after your limit resets or add extra usage credits.",
   );
 };

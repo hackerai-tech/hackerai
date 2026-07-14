@@ -12,8 +12,9 @@ import {
   type ProviderRequestDiagnostics,
   type WideEventBuilder,
 } from "@/lib/logger";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type {
-  CaidoReadyInfo,
+  AgentPermissionMode,
   ChatMode,
   ExtraUsageConfig,
   SandboxInfo,
@@ -29,6 +30,7 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
@@ -47,7 +49,7 @@ import {
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
 }
 
 export interface RequestDetails {
@@ -89,8 +91,12 @@ export interface StreamResult {
 function posthogProviderException(
   error: unknown,
   details: Record<string, unknown>,
+  providerErrorFingerprint?: string,
 ): Error {
-  const message = getProviderDiagnosticMessage(details);
+  const message = getPostHogProviderExceptionMessage(
+    details,
+    providerErrorFingerprint,
+  );
   if (!(error instanceof Error)) {
     const enriched = new Error(message);
     const errorName = details.errorName;
@@ -210,6 +216,11 @@ const compactChatErrorMetadata = (
   return Object.keys(compact).length > 0 ? compact : undefined;
 };
 
+const isRetriableChatSDKError = (error: ChatSDKError): boolean =>
+  error.type === "rate_limit" ||
+  error.metadata?.providerErrorRetriable === true ||
+  error.metadata?.upload_failure_transient_sandbox_command === true;
+
 const providerErrorEventName = (category: ProviderErrorCategory): string =>
   category === "content_blocked"
     ? "provider_content_blocked"
@@ -227,6 +238,36 @@ const providerErrorMessage = (category: ProviderErrorCategory): string =>
         : "Provider streaming error";
 
 const SYNTHETIC_SSE_JSON_ERROR_MESSAGE = "JSON error injected into SSE stream";
+
+const sanitizeProviderFingerprintPart = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:/-]+/g, "_")
+    .slice(0, 160);
+
+const buildProviderErrorFingerprint = (details: {
+  category: ProviderErrorCategory;
+  statusCode?: number;
+  requestedModelSlug?: string;
+  modelProviderSlug?: string;
+  providerName?: string;
+}): string => {
+  const providerPart = details.providerName ?? details.modelProviderSlug;
+  return [
+    "provider_error",
+    details.category,
+    details.statusCode ? `status_${details.statusCode}` : undefined,
+    providerPart
+      ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
+      : undefined,
+    details.requestedModelSlug
+      ? `model_${sanitizeProviderFingerprintPart(details.requestedModelSlug)}`
+      : undefined,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("|");
+};
 
 const providerCategoryDiagnosticMessage = (
   category: ProviderErrorCategory,
@@ -290,6 +331,17 @@ const getProviderDiagnosticMessage = (
   }
 
   return "Provider streaming error";
+};
+
+const getPostHogProviderExceptionMessage = (
+  details: Record<string, unknown>,
+  providerErrorFingerprint?: string,
+): string => {
+  const message = getProviderDiagnosticMessage(details);
+  return details.errorMessage === SYNTHETIC_SSE_JSON_ERROR_MESSAGE &&
+    providerErrorFingerprint
+    ? `${message} [${providerErrorFingerprint}]`
+    : message;
 };
 
 const isRetriableProviderCategory = (
@@ -522,13 +574,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
-     * Record Caido proxy setup timing (first call wins within a request).
-     */
-    setCaidoReady(info: CaidoReadyInfo) {
-      builder.setCaidoReady(info);
-    },
-
-    /**
      * Record a tool call
      */
     recordToolCall(name: string, sandboxType?: string) {
@@ -558,9 +603,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
     recordAnthropicPromptRepair(repair: {
       action: "appended_continue" | "trimmed";
       reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
+        "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
       trailingAssistantContentTypes?: string[];
       model: string;
     }) {
@@ -660,6 +703,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
       const openrouterGenerationId = nonEmptyString(
         details.openrouterGenerationId,
       );
+      const providerErrorFingerprint = buildProviderErrorFingerprint({
+        category,
+        statusCode: providerStatusCode,
+        requestedModelSlug,
+        modelProviderSlug,
+        providerName,
+      });
       const normalizedProviderContext = {
         ...(providerName && {
           provider_name: providerName,
@@ -684,6 +734,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...details,
         ...normalizedProviderContext,
         provider_diagnostic_message: diagnosticMessage,
+        provider_error_fingerprint: providerErrorFingerprint,
         ...(providerStatusCode && { provider_status_code: providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
@@ -708,6 +759,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...details,
         ...normalizedProviderContext,
         providerDiagnosticMessage: diagnosticMessage,
+        providerErrorFingerprint,
         ...(providerStatusCode && { providerStatusCode }),
         ...(attempts && { provider_attempts: attempts }),
         ...(providerRequest && { provider_request: providerRequest }),
@@ -717,7 +769,11 @@ export function createChatLogger(config: ChatLoggerConfig) {
         phLogger.warn(providerErrorMessage(category), phContext);
       } else {
         phLogger.error(providerErrorMessage(category), {
-          error: posthogProviderException(error, details),
+          error: posthogProviderException(
+            error,
+            details,
+            providerErrorFingerprint,
+          ),
           ...phContext,
         });
       }
@@ -740,6 +796,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         requestedModelSlug,
         modelProviderSlug,
         openrouterGenerationId,
+        providerErrorFingerprint,
         attempts,
       });
     },
@@ -772,7 +829,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         message: error.message,
         cause,
         statusCode: error.statusCode,
-        retriable: error.type === "rate_limit",
+        retriable: isRetriableChatSDKError(error),
         metadata: compactChatErrorMetadata(error.metadata),
       });
       logger.info(builder.build());
@@ -782,8 +839,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
           (error.metadata?.capReason as LimitCapReason | undefined) ??
           "unknown";
         const resetTimestamp = error.metadata?.resetTimestamp as
-          | number
-          | undefined;
+          number | undefined;
         const subscriptionTier = isSubscriptionTier(subscription)
           ? subscription
           : undefined;
@@ -998,7 +1054,7 @@ export function captureAgentBudgetAbort({
   userId: string;
   subscription: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   selectedModel: string;
   selectedModelOverride?: string;
@@ -1117,14 +1173,19 @@ type AgentCompletionAnalyticsArgs = {
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   chatLogger: ChatLogger | undefined;
+  selectedModel: string;
+  configuredModelId: string;
+  responseModel?: string;
+  fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
+  agentPermissionMode?: AgentPermissionMode;
 };
 
 export function captureAgentRun({
@@ -1134,8 +1195,13 @@ export function captureAgentRun({
   subscription,
   sandboxInfo,
   outcome,
+  selectedModel,
+  configuredModelId,
+  responseModel,
+  fallbackServed,
   finishReason,
   budgetAbortDetails,
+  agentPermissionMode,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1143,8 +1209,13 @@ export function captureAgentRun({
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  selectedModel: string;
+  configuredModelId: string;
+  responseModel?: string;
+  fallbackServed?: boolean;
   finishReason?: string;
   budgetAbortDetails?: BudgetAbortDetails;
+  agentPermissionMode?: AgentPermissionMode;
 }) {
   if (!posthog || mode !== "agent") return;
   posthog.capture({
@@ -1155,6 +1226,14 @@ export function captureAgentRun({
       subscription,
       subscription_tier: subscription,
       outcome,
+      selected_model: selectedModel,
+      configured_model: configuredModelId,
+      ...(agentPermissionMode && {
+        agent_permission_mode: agentPermissionMode,
+      }),
+      ...(responseModel && { response_model: responseModel }),
+      ...(responseModel &&
+        fallbackServed !== undefined && { fallback_served: fallbackServed }),
       ...(sandboxInfo?.type && {
         sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
@@ -1183,7 +1262,7 @@ export function captureFreeAgentValueReached({
   posthog: PostHog | null;
   userId: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
   subscription: string;
   sandboxInfo: SandboxInfo | null;
@@ -1232,8 +1311,13 @@ export function captureAgentCompletionAnalytics(
     subscription,
     sandboxInfo,
     outcome,
+    selectedModel: args.selectedModel,
+    configuredModelId: args.configuredModelId,
+    responseModel: args.responseModel,
+    fallbackServed: args.fallbackServed,
     finishReason: args.finishReason,
     budgetAbortDetails: args.budgetAbortDetails,
+    agentPermissionMode: args.agentPermissionMode,
   });
   captureFreeAgentValueReached(args);
 }
@@ -1251,7 +1335,9 @@ export function captureUsageCost({
   chatId,
   endpoint,
   mode,
+  agentPermissionMode,
   usage,
+  responseModel,
   paidDailyFreeAllowance,
 }: {
   posthog: PostHog | null;
@@ -1259,9 +1345,11 @@ export function captureUsageCost({
   subscription: string;
   organizationId?: string;
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   mode: ChatMode;
+  agentPermissionMode?: AgentPermissionMode;
   usage: UsageCostRecord;
+  responseModel?: string;
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
@@ -1282,13 +1370,21 @@ export function captureUsageCost({
       chat_id: chatId,
       endpoint,
       mode,
+      ...(agentPermissionMode && {
+        agent_permission_mode: agentPermissionMode,
+      }),
       model: usage.model,
+      ...(responseModel && { response_model: responseModel }),
       usage_type: usage.type,
       cost_dollars: usage.costDollars,
       included_cost_dollars: usage.includedCostDollars,
       extra_usage_cost_dollars: usage.extraUsageCostDollars,
+      uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
+      uncovered_points: usage.uncoveredPoints,
+      usage_deduction_failed: usage.usageDeductionFailed,
+      usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
       input_tokens: usage.inputTokens,
@@ -1313,6 +1409,73 @@ export function captureUsageCost({
         subscription_tier: subscription,
         last_usage_cost_at: new Date().toISOString(),
       },
+    },
+  });
+}
+
+/**
+ * Capture one event for each positive provider-step settlement attempt. This
+ * complements the request-level hackerai-usage_cost aggregate with the exact
+ * wallet outcome that determined whether the next provider step could start.
+ */
+export function captureUsageSettlement({
+  posthog,
+  userId,
+  subscription,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  model,
+  requestId,
+  usageSettlementId,
+  settlementSequence,
+  currentCostDollars,
+  requestedDeltaPoints,
+  deduction,
+  forced,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  subscription: string;
+  organizationId?: string;
+  chatId: string;
+  endpoint: ChatApiEndpoint;
+  mode: ChatMode;
+  model: string;
+  requestId?: string;
+  usageSettlementId: string;
+  settlementSequence: number;
+  currentCostDollars: number;
+  requestedDeltaPoints: number;
+  deduction: UsageDeductionResult;
+  forced: boolean;
+}) {
+  if (!posthog) return;
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-usage_settlement",
+    properties: {
+      user_id: userId,
+      subscription,
+      subscription_tier: subscription,
+      ...(organizationId && { organization_id: organizationId }),
+      chat_id: chatId,
+      ...(requestId && { request_id: requestId }),
+      usage_settlement_id: usageSettlementId,
+      endpoint,
+      mode,
+      model,
+      settlement_sequence: settlementSequence,
+      current_cost_dollars: currentCostDollars,
+      requested_delta_points: requestedDeltaPoints,
+      included_points_deducted: deduction.includedPointsDeducted,
+      extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
+      uncovered_points: deduction.uncoveredPoints,
+      usage_deduction_failed: deduction.usageDeductionFailed,
+      usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
+      forced,
+      settlement_event_version: 1,
     },
   });
 }

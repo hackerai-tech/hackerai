@@ -22,11 +22,7 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import {
-  isAnthropicModel,
-  isDeepSeekModel,
-  myProvider,
-} from "@/lib/ai/providers";
+import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -136,9 +132,30 @@ export function sendRateLimitWarnings(
       rateLimitSkipped?: boolean;
     };
     extraUsageConfig?: ExtraUsageConfig;
+    paidDailyFreeAllowance?: {
+      costLimitDollars: number;
+      resetTime: Date;
+    };
   },
 ): void {
-  const { subscription, mode, rateLimitInfo, extraUsageConfig } = options;
+  const {
+    subscription,
+    mode,
+    rateLimitInfo,
+    extraUsageConfig,
+    paidDailyFreeAllowance,
+  } = options;
+
+  if (paidDailyFreeAllowance) {
+    writeRateLimitWarning(writer, {
+      warningType: "paid-daily-free-allowance",
+      resetTime: paidDailyFreeAllowance.resetTime.toISOString(),
+      subscription,
+      mode,
+      costLimitDollars: paidDailyFreeAllowance.costLimitDollars,
+    });
+    return;
+  }
 
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
@@ -278,7 +295,7 @@ export function isXaiSafetyError(error: unknown): boolean {
 
 /**
  * Check if an error is a provider API error that should trigger fallback
- * Specifically targets Google/Gemini INVALID_ARGUMENT errors
+ * Specifically targets provider-side invalid argument errors before streaming.
  */
 export function isProviderApiError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -333,6 +350,7 @@ export function isContextUsageEnabled(
 }
 
 export interface SummarizationStepResult {
+  summarizationAttempted: boolean;
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
   contextUsage?: ContextUsageData;
@@ -361,31 +379,35 @@ export async function runSummarizationStep(options: {
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
 }): Promise<SummarizationStepResult> {
-  const { needsSummarization, summarizedMessages, summarizationUsage } =
-    await checkAndSummarizeIfNeeded({
-      uiMessages: options.messages,
-      subscription: options.subscription,
-      languageModel: options.languageModel,
-      mode: options.mode,
-      writer: options.writer,
-      chatId: options.chatId,
-      fileTokens: options.fileTokens,
-      todos: options.todos,
-      abortSignal: options.abortSignal,
-      ensureSandbox: options.ensureSandbox,
-      systemPromptTokens: options.systemPromptTokens,
-      providerInputTokens: options.providerInputTokens ?? 0,
-      chatSystemPrompt: options.chatSystemPrompt,
-      tools: options.tools,
-      providerOptions: options.providerOptions,
-      modelMessages: options.modelMessages,
-      transcriptMessages: options.transcriptMessages,
-      maxTokensOverride: options.ctxMaxTokens,
-      providerPromptPressure: options.providerPromptPressure,
-    });
+  const {
+    summarizationAttempted,
+    needsSummarization,
+    summarizedMessages,
+    summarizationUsage,
+  } = await checkAndSummarizeIfNeeded({
+    uiMessages: options.messages,
+    subscription: options.subscription,
+    languageModel: options.languageModel,
+    mode: options.mode,
+    writer: options.writer,
+    chatId: options.chatId,
+    fileTokens: options.fileTokens,
+    todos: options.todos,
+    abortSignal: options.abortSignal,
+    ensureSandbox: options.ensureSandbox,
+    systemPromptTokens: options.systemPromptTokens,
+    providerInputTokens: options.providerInputTokens ?? 0,
+    chatSystemPrompt: options.chatSystemPrompt,
+    tools: options.tools,
+    providerOptions: options.providerOptions,
+    modelMessages: options.modelMessages,
+    transcriptMessages: options.transcriptMessages,
+    maxTokensOverride: options.ctxMaxTokens,
+    providerPromptPressure: options.providerPromptPressure,
+  });
 
   if (!needsSummarization) {
-    return { needsSummarization: false };
+    return { summarizationAttempted, needsSummarization: false };
   }
 
   const contextUsage = isContextUsageEnabled(options.subscription, options.mode)
@@ -398,6 +420,7 @@ export async function runSummarizationStep(options: {
     : undefined;
 
   return {
+    summarizationAttempted,
     needsSummarization: true,
     summarizedMessages,
     contextUsage,
@@ -411,8 +434,14 @@ export async function runSummarizationStep(options: {
  */
 export class SummarizationTracker {
   hasSummarized = false;
-  private parts: UIMessagePart<any, any>[] = [];
-  private atStep: number | undefined;
+  private records: Array<{
+    part: UIMessagePart<any, any>;
+    atStep: number;
+  }> = [];
+
+  get summarizationCount(): number {
+    return this.records.length;
+  }
 
   /**
    * Record that summarization completed at the given step and accumulate
@@ -424,15 +453,35 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     this.hasSummarized = true;
-    this.atStep = stepNumber;
-    this.parts.push(createSummarizationCompletedPart());
+    const part = createSummarizationCompletedPart();
+    this.records.push({
+      part: {
+        ...part,
+        id: `summarization-status-${this.records.length + 1}`,
+      } as UIMessagePart<any, any>,
+      atStep: stepNumber,
+    });
 
+    this.recordSummarizationUsage(usage, usageTracker);
+  }
+
+  /** Account for generated-summary usage, whether accepted or rejected. */
+  recordSummarizationUsage(
+    usage: SummarizationUsage | undefined,
+    usageTracker: UsageTracker,
+  ): void {
     if (usage) {
       usageTracker.inputTokens += usage.inputTokens;
+      usageTracker.summarizationInputTokens += usage.inputTokens;
       usageTracker.outputTokens += usage.outputTokens;
       usageTracker.summarizationOutputTokens += usage.outputTokens;
-      usageTracker.cacheReadTokens += usage.cacheReadTokens || 0;
-      usageTracker.cacheWriteTokens += usage.cacheWriteTokens || 0;
+      usageTracker.totalTokens += usage.inputTokens + usage.outputTokens;
+      const cacheReadTokens = usage.cacheReadTokens || 0;
+      const cacheWriteTokens = usage.cacheWriteTokens || 0;
+      usageTracker.cacheReadTokens += cacheReadTokens;
+      usageTracker.summarizationCacheReadTokens += cacheReadTokens;
+      usageTracker.cacheWriteTokens += cacheWriteTokens;
+      usageTracker.summarizationCacheWriteTokens += cacheWriteTokens;
       if (usage.cost) {
         usageTracker.providerCost += usage.cost;
       }
@@ -447,12 +496,27 @@ export class SummarizationTracker {
   processMessageForSave<T extends { role: string; parts: any[] }>(
     message: T,
   ): T {
-    if (message.role !== "assistant" || this.parts.length === 0) {
+    if (message.role !== "assistant" || this.records.length === 0) {
       return message;
     }
     const parts = [...message.parts];
-    const idx = findSummarizationInsertIndex(parts, this.atStep ?? 0);
-    parts.splice(idx, 0, ...this.parts);
+    const insertions = this.records
+      .map((record, recordIndex) => ({
+        ...record,
+        recordIndex,
+        insertionIndex: findSummarizationInsertIndex(
+          message.parts,
+          record.atStep,
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          b.insertionIndex - a.insertionIndex || b.recordIndex - a.recordIndex,
+      );
+
+    for (const insertion of insertions) {
+      parts.splice(insertion.insertionIndex, 0, insertion.part);
+    }
     return { ...message, parts };
   }
 }
@@ -473,18 +537,37 @@ export class SummarizationTracker {
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
+const MINIMAX_M3_FALLBACK_CHAIN = [
+  "model-kimi-k2.7-code",
+  "fallback-grok-4.5",
+] as const satisfies readonly ModelName[];
+
+const AGENT_TEXT_FALLBACK_CHAIN = [
+  "model-minimax-m3",
+  ...MINIMAX_M3_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
+// Agent Pro promotes vision steps to Grok 4.5. Keep Kimi as its direct
+// multimodal fallback without routing back through the cheaper Agent chain.
+const AGENT_PRO_VISION_FALLBACK_CHAIN = [
+  "model-kimi-k2.7-code",
+] as const satisfies readonly ModelName[];
+
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": ["fallback-ask-model"],
-  "agent-model-free": ["fallback-agent-model"],
-  "model-deepseek-v4-flash": ["fallback-ask-model"],
-  "model-deepseek-v4-pro": ["fallback-ask-model"],
-  "ask-model": ["fallback-ask-model"],
-  "agent-model": ["model-kimi-k2.6", "fallback-grok-4.3"],
-  "model-grok-4.3": ["fallback-ask-model"],
-  "model-gemini-3-flash": ["fallback-ask-model"],
-  "model-minimax-m3": ["model-kimi-k2.6", "fallback-grok-4.3"],
-  "model-kimi-k2.7-code": ["fallback-grok-4.3"],
-  "model-kimi-k2.6": ["fallback-grok-4.3"],
+  "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
+  "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "model-grok-4.5": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
+  "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
+  "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
+  "model-kimi-k2.7-code": ["fallback-grok-4.5"],
+  "model-kimi-k2.6": ["fallback-grok-4.5"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
@@ -510,33 +593,42 @@ export function isAutoModelSelectionForRetry({
 
 const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
   {
-    agent: ["model-minimax-m3", "model-kimi-k2.6", "fallback-grok-4.3"],
-    ask: ["model-grok-4.3"],
+    agent: AGENT_TEXT_FALLBACK_CHAIN,
+    ask: ["model-grok-4.5"],
   };
 
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = [
-  "fallback-grok-4.3",
-] as const satisfies readonly ModelName[];
+const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
 
-// Standard Ask can route text-only prompts to DeepSeek and media prompts to
-// Grok. Keep those route keys and their persisted Grok alias on one effort
-// level so they do not drift.
+// Standard Ask can route text-only prompts to DeepSeek, image prompts to
+// MiniMax, and PDF prompts to Grok. Keep those route keys and their persisted
+// Grok aliases, including the app-side retry key, on one effort level so they
+// do not drift. Grok 4.5 rejects requests that explicitly disable reasoning.
 const ASK_STANDARD_REASONING_MODELS = [
   "model-deepseek-v4-pro",
   "ask-model",
-  "model-grok-4.3",
+  "model-minimax-m3",
+  "model-grok-4.5",
   "model-gemini-3-flash",
+  "fallback-grok-4.5",
 ] as const satisfies readonly ModelName[];
 
 const ASK_MEDIUM_REASONING_MODELS = [
   ...ASK_STANDARD_REASONING_MODELS,
-  "model-sonnet-4.6",
-  "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
 const isAskMediumReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+
+const HIGH_REASONING_MODELS = [
+  "model-glm-5.2",
+  "model-sonnet-4.6",
+  "model-opus-4.6",
+] as const satisfies readonly ModelName[];
+
+const isHighReasoningModel = (modelName?: string): boolean =>
+  typeof modelName === "string" &&
+  (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 const ASK_KIMI_REASONING_MODELS = [
   "model-kimi-k2.7-code",
@@ -564,6 +656,9 @@ const getFallbackKeys = (
   options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
+  if (modelName === "model-grok-4.5" && mode === "agent") {
+    return AGENT_PRO_VISION_FALLBACK_CHAIN;
+  }
   if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
     if (mode === "agent" && options.hasMultimodalToolResults) {
       return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
@@ -577,17 +672,20 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
 ): ModelName {
-  if (isDeepSeekModel(modelName)) {
-    return mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
+  if (modelName === "model-grok-4.5" && mode === "agent") {
+    return "model-kimi-k2.7-code";
   }
   if (
-    modelName === "ask-model" ||
-    modelName === "model-grok-4.3" ||
+    modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
+    modelName === "model-deepseek-v4-flash" ||
+    modelName === "model-deepseek-v4-pro" ||
+    modelName === "model-grok-4.5" ||
     modelName === "model-gemini-3-flash"
   ) {
-    return "fallback-ask-model";
+    return "model-minimax-m3";
   }
-  return "fallback-grok-4.3";
+  return "fallback-grok-4.5";
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -621,6 +719,61 @@ export function getFallbackSlugs(
   );
 }
 
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+  "anthropic/claude-opus-4.6": "model-opus-4.6",
+  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
+  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+  "x-ai/grok-4.5": "model-grok-4.5",
+  "z-ai/glm-5.2": "model-glm-5.2",
+  "z-ai/glm-5.2-20260616": "model-glm-5.2",
+  "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
+  "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
+};
+
+function resolveOpenRouterResponseModelCostKey(
+  responseModel: string,
+): ModelName | undefined {
+  const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
+  if (exactKey) return exactKey;
+  // Scope Claude response aliases to the priced generation. Families like
+  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
+    return "model-opus-4.6";
+  }
+  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
+    return "model-sonnet-4.6";
+  }
+  return undefined;
+}
+
+export function resolveServedModelForCostAccounting({
+  modelName,
+  responseModel,
+  mode,
+  options = {},
+}: {
+  modelName: string;
+  responseModel?: string;
+  mode?: ChatMode;
+  options?: FallbackOptions;
+}): string {
+  if (!responseModel) return modelName;
+
+  const candidateKeys = [
+    modelName as ModelName,
+    ...(getFallbackKeys(modelName, mode, options) ?? []),
+  ];
+  const matchedKey = candidateKeys.find(
+    (key) => resolveSlug(key) === responseModel,
+  );
+
+  return (
+    matchedKey ??
+    resolveOpenRouterResponseModelCostKey(responseModel) ??
+    responseModel
+  );
+}
+
 /**
  * Build provider options for streamText
  */
@@ -636,21 +789,26 @@ export function buildProviderOptions(
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoning =
     options.reasoningOverride ??
-    (isReasoningModel
+    (isHighReasoningModel(modelName)
       ? {
           enabled: true,
-          ...(isDeepSeekV4 && { effort: "xhigh" }),
+          effort: "high",
         }
-      : mode === "ask" && isAskKimiReasoningModel(modelName)
+      : isReasoningModel
         ? {
             enabled: true,
+            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
           }
-        : mode === "ask" && isAskMediumReasoningModel(modelName)
+        : mode === "ask" && isAskKimiReasoningModel(modelName)
           ? {
               enabled: true,
-              effort: "medium",
             }
-          : { enabled: false });
+          : mode === "ask" && isAskMediumReasoningModel(modelName)
+            ? {
+                enabled: true,
+                effort: "medium",
+              }
+            : { enabled: false });
 
   return {
     openrouter: {
@@ -972,6 +1130,22 @@ export function assertFreeAgentGates(args: {
 }
 
 /**
+ * Temporary chats are a paid-plan feature. Enforce this at the API boundary so
+ * free users cannot bypass the client-side entitlement check.
+ */
+export function assertTemporaryChatAccess(args: {
+  isTemporary: boolean;
+  subscription: SubscriptionTier;
+}): void {
+  if (!args.isTemporary || args.subscription !== "free") return;
+
+  throw new ChatSDKError(
+    "forbidden:chat",
+    "Temporary chats are available on paid plans. Upgrade to Pro to use this feature.",
+  );
+}
+
+/**
  * Build the extra-usage config for paid users with `extra_usage_enabled`.
  * Falls back to an optimistic config if the balance lookup fails so a
  * transient Convex error doesn't silently disable extra usage and force
@@ -982,8 +1156,15 @@ export async function buildExtraUsageConfig(args: {
   subscription: SubscriptionTier;
   userCustomization: UserCustomization | null | undefined;
   organizationId?: string;
+  failClosedOnLookupError?: boolean;
 }): Promise<ExtraUsageConfig | undefined> {
-  const { userId, subscription, userCustomization, organizationId } = args;
+  const {
+    userId,
+    subscription,
+    userCustomization,
+    organizationId,
+    failClosedOnLookupError = false,
+  } = args;
   if (subscription === "free") return undefined;
 
   // Team users: extra usage is org-funded and admin-controlled. Personal
@@ -992,6 +1173,12 @@ export async function buildExtraUsageConfig(args: {
     if (!organizationId) return undefined;
     const state = await getTeamExtraUsageState(organizationId, userId);
     if (!state) {
+      if (failClosedOnLookupError) {
+        throw new ChatSDKError(
+          "rate_limit:chat",
+          "Current team billing authorization could not be verified. Start a new Agent request and try again.",
+        );
+      }
       console.warn(
         `[chat-handler] getTeamExtraUsageState returned null for org ${organizationId}, using optimistic extra usage config`,
       );
@@ -1020,6 +1207,12 @@ export async function buildExtraUsageConfig(args: {
   const balanceInfo = await getExtraUsageBalance(userId);
 
   if (!balanceInfo) {
+    if (failClosedOnLookupError) {
+      throw new ChatSDKError(
+        "rate_limit:chat",
+        "Current extra usage authorization could not be verified. Start a new Agent request and try again.",
+      );
+    }
     console.warn(
       `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
     );

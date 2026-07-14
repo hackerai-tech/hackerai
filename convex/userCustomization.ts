@@ -19,9 +19,6 @@ export const saveUserCustomization = mutation({
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     include_notes: v.optional(v.boolean()),
-    guardrails_config: v.optional(v.string()),
-    caido_enabled: v.optional(v.boolean()),
-    caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
   },
   returns: v.null(),
@@ -35,7 +32,6 @@ export const saveUserCustomization = mutation({
     }
 
     const MAX_CHAR_LIMIT = 1500;
-    const MAX_GUARDRAILS_LIMIT = 5000;
 
     // Validate character limits
     if (args.nickname && args.nickname.length > MAX_CHAR_LIMIT) {
@@ -68,29 +64,6 @@ export const saveUserCustomization = mutation({
         message: `Additional info exceeds ${MAX_CHAR_LIMIT} character limit`,
       });
     }
-    if (
-      args.guardrails_config &&
-      args.guardrails_config.length > MAX_GUARDRAILS_LIMIT
-    ) {
-      throw new ConvexError({
-        code: "VALIDATION_ERROR",
-        message: `Guardrails config exceeds ${MAX_GUARDRAILS_LIMIT} character limit`,
-      });
-    }
-
-    if (
-      args.caido_port !== undefined &&
-      args.caido_port !== 0 &&
-      (!Number.isInteger(args.caido_port) ||
-        args.caido_port < 1 ||
-        args.caido_port > 65535)
-    ) {
-      throw new ConvexError({
-        code: "VALIDATION_ERROR",
-        message: "Caido port must be an integer between 1 and 65535",
-      });
-    }
-
     try {
       // Check if user already has customization data
       const existing = await ctx.db
@@ -113,12 +86,6 @@ export const saveUserCustomization = mutation({
           patch.additional_info = args.additional_info.trim() || undefined;
         if (args.include_notes !== undefined)
           patch.include_notes = args.include_notes;
-        if (args.guardrails_config !== undefined)
-          patch.guardrails_config = args.guardrails_config.trim() || undefined;
-        if (args.caido_enabled !== undefined)
-          patch.caido_enabled = args.caido_enabled;
-        if (args.caido_port !== undefined)
-          patch.caido_port = args.caido_port ? args.caido_port : undefined;
         if (args.extra_usage_enabled !== undefined)
           patch.extra_usage_enabled = args.extra_usage_enabled;
 
@@ -133,9 +100,6 @@ export const saveUserCustomization = mutation({
           traits: args.traits?.trim() || undefined,
           additional_info: args.additional_info?.trim() || undefined,
           include_notes: args.include_notes ?? true,
-          guardrails_config: args.guardrails_config?.trim() || undefined,
-          caido_enabled: args.caido_enabled,
-          caido_port: args.caido_port ? args.caido_port : undefined,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
           updated_at: Date.now(),
         });
@@ -170,9 +134,6 @@ export const getUserCustomization = query({
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
-      guardrails_config: v.optional(v.string()),
-      caido_enabled: v.boolean(),
-      caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       updated_at: v.number(),
     }),
@@ -200,9 +161,6 @@ export const getUserCustomization = query({
         traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
-        guardrails_config: customization.guardrails_config,
-        caido_enabled: customization.caido_enabled ?? false,
-        caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };
@@ -230,9 +188,6 @@ export const getUserCustomizationForBackend = query({
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
-      guardrails_config: v.optional(v.string()),
-      caido_enabled: v.boolean(),
-      caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       updated_at: v.number(),
     }),
@@ -257,9 +212,6 @@ export const getUserCustomizationForBackend = query({
         traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
-        guardrails_config: customization.guardrails_config,
-        caido_enabled: customization.caido_enabled ?? false,
-        caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };

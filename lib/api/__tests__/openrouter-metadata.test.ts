@@ -1,6 +1,5 @@
 import {
   extractOpenRouterMetadata,
-  fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
 } from "../openrouter-metadata";
 
@@ -61,44 +60,6 @@ describe("OpenRouter metadata extraction", () => {
     });
   });
 
-  it("uses generation API metadata when stream metadata is incomplete", async () => {
-    const fetchImpl = jest.fn(async () => {
-      return {
-        ok: true,
-        json: async () => ({
-          data: {
-            provider_name: "Azure",
-            request_id: "req-openrouter",
-            is_byok: true,
-            router: "openrouter/auto",
-            upstream_id: "chatcmpl-upstream",
-          },
-        }),
-      } as Response;
-    });
-
-    const metadata = await fetchOpenRouterGenerationMetadata("gen-123", {
-      apiKey: "sk-test",
-      fetchImpl,
-      timeoutMs: 100,
-    });
-
-    expect(metadata).toEqual({
-      provider_name: "Azure",
-      openrouter_generation_id: "gen-123",
-      openrouter_request_id: "req-openrouter",
-      openrouter_is_byok: true,
-      openrouter_router: "openrouter/auto",
-      openrouter_upstream_id: "chatcmpl-upstream",
-    });
-
-    const [url, init] = fetchImpl.mock.calls[0];
-    expect(String(url)).toContain("id=gen-123");
-    expect((init?.headers as Record<string, string>).Authorization).toBe(
-      "Bearer sk-test",
-    );
-  });
-
   it("extracts the direct provider field exposed by the OpenRouter SDK", () => {
     const metadata = extractOpenRouterMetadata({
       response: {
@@ -107,6 +68,7 @@ describe("OpenRouter metadata extraction", () => {
       providerMetadata: {
         openrouter: {
           provider: "Google Vertex",
+          upstreamInferenceCost: 0.00016,
           usage: {
             promptTokens: 10,
             completionTokens: 1,
@@ -119,6 +81,45 @@ describe("OpenRouter metadata extraction", () => {
     expect(metadata).toEqual({
       provider_name: "Google Vertex",
       openrouter_generation_id: "gen-sdk-provider",
+      openrouter_upstream_inference_cost: 0.00016,
+    });
+  });
+
+  it("extracts camelCase upstream cost from direct OpenRouter SDK metadata", () => {
+    const metadata = extractOpenRouterMetadata({
+      response: {
+        id: "gen-sdk-cost-only",
+      },
+      providerMetadata: {
+        openrouter: {
+          upstreamInferenceCost: 0.00016,
+        },
+      },
+    });
+
+    expect(metadata).toEqual({
+      openrouter_generation_id: "gen-sdk-cost-only",
+      openrouter_upstream_inference_cost: 0.00016,
+    });
+  });
+
+  it("ignores non-positive upstream inference costs from provider metadata", () => {
+    const metadata = extractOpenRouterMetadata({
+      response: {
+        id: "gen-zero-cost",
+      },
+      providerMetadata: {
+        openrouter: {
+          provider: "Anthropic",
+          upstream_inference_cost: 0,
+          upstreamInferenceCost: Number.NaN,
+        },
+      },
+    });
+
+    expect(metadata).toEqual({
+      provider_name: "Anthropic",
+      openrouter_generation_id: "gen-zero-cost",
     });
   });
 
@@ -134,6 +135,7 @@ describe("OpenRouter metadata extraction", () => {
         provider_name: "Google",
         openrouter_request_id: "req-123",
         openrouter_router: "openrouter/auto",
+        openrouter_upstream_inference_cost: 0.00016,
       },
     );
 
@@ -143,6 +145,7 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_strategy: "direct",
       openrouter_request_id: "req-123",
       openrouter_router: "openrouter/auto",
+      openrouter_upstream_inference_cost: 0.00016,
     });
   });
 

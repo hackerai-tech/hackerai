@@ -26,6 +26,9 @@ import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
+const mockProviderLanguageModel = jest.fn(
+  (modelName: string) => ({ modelId: modelName }) as unknown as LanguageModel,
+);
 
 jest.doMock("server-only", () => ({}));
 jest.doMock("ai", () => ({
@@ -36,12 +39,14 @@ jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
+  GROK_4_5_SLUG: "x-ai/grok-4.5",
+  KIMI_K2_7_CODE_SLUG: "moonshotai/kimi-k2.7-code:exacto",
   myProvider: {
-    languageModel: () => ({}) as LanguageModel,
+    languageModel: mockProviderLanguageModel,
   },
 }));
 
-const { checkAndSummarizeIfNeeded } =
+const { checkAndSummarizeIfNeeded, compactModelMessagesInRun } =
   require("../index") as typeof import("../index");
 const {
   isSummaryMessage,
@@ -169,6 +174,8 @@ describe("checkAndSummarizeIfNeeded", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, "info").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "error").mockImplementation(() => {});
     mockSaveChatSummary.mockResolvedValue(undefined);
     mockWriter = createMockWriter();
   });
@@ -182,6 +189,85 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(getSummarizationThresholdTokens(400_000)).toBe(
       400_000 - SUMMARIZATION_RESERVED_MAX_TOKENS,
     );
+  });
+
+  it("compacts live model history without persisting an in-flight cutoff", async () => {
+    mockGenerateText.mockResolvedValue({
+      text: "Runtime summary",
+      usage: { inputTokens: 120, outputTokens: 20 },
+    });
+    const modelMessages: ModelMessage[] = [
+      { role: "user", content: "durable user request" },
+      { role: "assistant", content: "new in-flight tool work" },
+    ];
+
+    const result = await compactModelMessagesInRun({
+      modelMessages,
+      transcriptModelMessages: modelMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "chat-runtime-compaction",
+      maxTokens: 128_000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+    });
+
+    expect(result?.summaryText).toBe("Runtime summary");
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining(modelMessages),
+      }),
+    );
+    expect((mockWriter.write as jest.Mock).mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          type: "data-summarization",
+          id: "summarization-status-2",
+          data: expect.objectContaining({ status: "started" }),
+        }),
+      ],
+    ]);
+  });
+
+  it("clears the transient in-run status when summary generation fails", async () => {
+    mockGenerateText.mockRejectedValue(new Error("provider failed"));
+    const modelMessages: ModelMessage[] = [
+      { role: "user", content: "live context" },
+    ];
+
+    const result = await compactModelMessagesInRun({
+      modelMessages,
+      transcriptModelMessages: modelMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "chat-runtime-failure",
+      maxTokens: 128_000,
+      compactionIndex: 3,
+      hasExistingSummary: false,
+    });
+
+    expect(result).toBeNull();
+    expect((mockWriter.write as jest.Mock).mock.calls).toEqual([
+      [
+        expect.objectContaining({
+          id: "summarization-status-3",
+          data: expect.objectContaining({ status: "started" }),
+        }),
+      ],
+      [
+        expect.objectContaining({
+          id: "summarization-status-3",
+          data: { status: "completed", message: "" },
+          transient: true,
+        }),
+      ],
+    ]);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
   it("should allow a lower summarization threshold in development", () => {
@@ -245,6 +331,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(messages);
     expect(result.cutoffMessageId).toBeNull();
@@ -268,6 +355,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       "test-system-prompt",
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
   });
@@ -292,6 +380,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       },
     });
 
+    expect(result.summarizationAttempted).toBe(true);
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Pressure summary");
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
@@ -391,6 +480,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       0,
     );
 
+    expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
     expect(mockGenerateText).not.toHaveBeenCalled();
@@ -434,8 +524,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(serializedSummaryInput).not.toContain("[msg-4]");
   });
 
-  it("should not summarize the original payload for a tail-only projected oversized part", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Projected-only summary" });
+  it("should not retain a placeholder for a tail-only oversized tool part", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Oversized tool summary" });
 
     const hugeOutput = Array.from(
       { length: 20_000 },
@@ -485,24 +575,25 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.cutoffMessageId).toBe("assistant-huge");
-    expect(result.summarizedMessages).toHaveLength(2);
-    expect(result.summarizedMessages[1].id).toBe("assistant-huge");
+    expect(result.summarizedMessages).toHaveLength(1);
 
     const serializedSummaryInput = JSON.stringify(
       mockGenerateText.mock.calls[0][0].messages,
     );
-    expect(serializedSummaryInput).not.toContain("unique-projected-tail-line");
+    expect(serializedSummaryInput).toContain(
+      "[run_terminal_cmd output preview:",
+    );
+    expect(serializedSummaryInput).not.toContain("retained tail");
     expect(JSON.stringify(result.summarizedMessages)).not.toContain(hugeOutput);
+    expect(JSON.stringify(result.summarizedMessages)).not.toContain(
+      "retained tail",
+    );
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: "chat-tail-only",
         summaryUpToMessageId: "assistant-huge",
-        metadata: expect.objectContaining({
-          retainedTail: expect.objectContaining({
-            start_message_id: "assistant-huge",
-            start_part_index: 0,
-            projected_part_count: 1,
-          }),
+        metadata: expect.not.objectContaining({
+          retainedTail: expect.anything(),
         }),
       }),
     );
@@ -751,8 +842,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     const saveSummaryCall =
       mockSaveChatSummary.mock.calls[mockSaveChatSummary.mock.calls.length - 1];
     const persistedMetadata = saveSummaryCall?.[0].metadata as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     expect(persistedMetadata?.inputTokens).toBeUndefined();
     expect(persistedMetadata?.outputTokens).toBeUndefined();
     expect(persistedMetadata?.cacheReadTokens).toBeUndefined();
@@ -804,6 +894,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(false);
     expect(result.summaryText).toBeNull();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
 
     const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
     const completedWrite = writeCalls.find(
@@ -812,6 +903,200 @@ describe("checkAndSummarizeIfNeeded", () => {
         call[0]?.data?.status === "completed",
     );
     expect(completedWrite).toBeDefined();
+  });
+
+  it("retries malformed provider JSON with the fallback summarization model", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("Invalid JSON response"),
+      {
+        statusCode: 200,
+        responseBody: "\n         \n\n",
+        responseHeaders: {
+          "x-generation-id": "gen-primary",
+        },
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(malformedJsonError)
+      .mockResolvedValueOnce({
+        text: "Fallback summary",
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-retry",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+      {
+        runCommand: {
+          description: "run a command",
+          inputSchema: {} as any,
+          execute: jest.fn(),
+        },
+      } as unknown as ToolSet,
+      {
+        openrouter: {
+          user: "user_123",
+          reasoning: { enabled: false },
+          models: ["minimax/minimax-m3"],
+        },
+      },
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Fallback summary");
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(mockProviderLanguageModel).toHaveBeenCalledWith(
+      "fallback-ask-model",
+    );
+
+    const retryCall = mockGenerateText.mock.calls[1][0];
+    expect(retryCall.model).toMatchObject({ modelId: "fallback-ask-model" });
+    expect(retryCall.tools).toBeUndefined();
+    expect(retryCall.providerOptions).toEqual({
+      openrouter: {
+        user: "user_123",
+        reasoning: { enabled: false },
+        models: ["moonshotai/kimi-k2.7-code:exacto", "x-ai/grok-4.5"],
+      },
+    });
+
+    const retryLogCall = (console.warn as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('"event":"chat_context_compaction_retrying"'),
+    );
+    expect(retryLogCall).toBeTruthy();
+
+    const retryLog = JSON.parse(String(retryLogCall?.[0]));
+    expect(retryLog).toMatchObject({
+      level: "warn",
+      event: "chat_context_compaction_retrying",
+      service: "chat-handler",
+      chat_id: "chat-retry",
+      mode: "ask",
+      subscription: "free",
+      summarization_attempt: "primary",
+      retry_model_name: "fallback-ask-model",
+      retry_without_tools: true,
+      provider_status_code: 200,
+      openrouter_generation_id: "gen-primary",
+      response_body_empty: true,
+    });
+
+    expect(mockSaveChatSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-retry",
+        metadata: expect.objectContaining({
+          model: "fallback-ask-model",
+        }),
+      }),
+    );
+  });
+
+  it("retries malformed provider JSON nested in retry wrapper errors", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("JSON parsing failed: Unexpected end of JSON input"),
+      {
+        statusCode: 200,
+        responseBody: "   \n\n",
+      },
+    );
+    const retryWrapperError = Object.assign(
+      new Error("AI retry attempts exhausted"),
+      {
+        errors: [malformedJsonError],
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(retryWrapperError)
+      .mockResolvedValueOnce({
+        text: "Nested fallback summary",
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-nested-retry",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toBe("Nested fallback summary");
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(mockProviderLanguageModel).toHaveBeenCalledWith(
+      "fallback-ask-model",
+    );
+  });
+
+  it("logs structured compaction failure when malformed JSON retry also fails", async () => {
+    const malformedJsonError = Object.assign(
+      new Error("Invalid JSON response"),
+      {
+        statusCode: 200,
+        responseBody: "\n\n",
+      },
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(malformedJsonError)
+      .mockRejectedValueOnce(new Error("Fallback provider unavailable"));
+
+    const result = await checkAndSummarizeForTest(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-retry-failed",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
+    );
+
+    expect(result.summarizationAttempted).toBe(true);
+    expect(result.needsSummarization).toBe(false);
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+
+    const failedLogCall = (console.error as jest.Mock).mock.calls.find((call) =>
+      String(call[0]).includes('"event":"chat_context_compaction_failed"'),
+    );
+    expect(failedLogCall).toBeTruthy();
+
+    const failedLog = JSON.parse(String(failedLogCall?.[0]));
+    expect(failedLog).toMatchObject({
+      level: "error",
+      event: "chat_context_compaction_failed",
+      service: "chat-handler",
+      chat_id: "chat-retry-failed",
+      mode: "ask",
+      subscription: "free",
+      summarization_attempt: "fallback",
+      model_id: "fallback-ask-model",
+      fallback_result: "no_summarization",
+      error_message: "Fallback provider unavailable",
+    });
   });
 
   it("should write summarization completed even when database save fails", async () => {

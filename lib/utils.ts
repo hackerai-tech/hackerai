@@ -4,6 +4,7 @@ import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage, type ChatMode } from "@/types/chat";
 import { UIMessagePart } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
+import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
 
 export interface MessageRecord {
   id: string;
@@ -40,8 +41,33 @@ export async function fetchWithErrorHandlers(
     const response = await fetch(input, init);
 
     if (!response.ok) {
-      const { code, cause, metadata } = await response.json();
-      throw new ChatSDKError(code as ErrorCode, cause, metadata);
+      let errorBody: unknown;
+      try {
+        errorBody = await response.clone().json();
+      } catch {
+        errorBody = await response.text();
+      }
+      const errorRecord =
+        errorBody && typeof errorBody === "object"
+          ? (errorBody as Record<string, unknown>)
+          : null;
+      const code =
+        typeof errorRecord?.code === "string"
+          ? (errorRecord.code as ErrorCode)
+          : "bad_request:api";
+      const cause =
+        typeof errorRecord?.cause === "string"
+          ? errorRecord.cause
+          : typeof errorRecord?.message === "string"
+            ? errorRecord.message
+            : typeof errorBody === "string" && errorBody.trim()
+              ? errorBody.trim()
+              : `Request failed with status ${response.status}`;
+      const metadata =
+        errorRecord?.metadata && typeof errorRecord.metadata === "object"
+          ? (errorRecord.metadata as Record<string, unknown>)
+          : undefined;
+      throw new ChatSDKError(code, cause, metadata);
     }
 
     return response;
@@ -63,13 +89,15 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
       : {}),
     // Sanitize parts: remove any old URLs that may be stored in database
     // URLs expire, so we always fetch fresh ones via fileId
-    parts: message.parts.map((part: any) => {
-      if (part.type === "file" && part.url) {
-        const { url, ...partWithoutUrl } = part;
-        return partWithoutUrl;
-      }
-      return part;
-    }),
+    parts: stripOpenRouterReasoningMetadataFromParts(message.parts).map(
+      (part: any) => {
+        if (part.type === "file" && part.url) {
+          const { url, ...partWithoutUrl } = part;
+          return partWithoutUrl;
+        }
+        return part;
+      },
+    ),
     sourceMessageId: message.source_message_id,
     metadata:
       message.feedback ||

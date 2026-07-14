@@ -1,5 +1,4 @@
 import { tool } from "ai";
-import { z } from "zod";
 import type { ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
 import {
@@ -12,17 +11,18 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { TMUX_SPECIAL_KEYS, translateInput } from "./utils/pty-keys";
+import { translateInput } from "./utils/pty-keys";
 import {
-  parseGuardrailConfig,
-  getEffectiveGuardrails,
-  checkCommandGuardrails,
-} from "./utils/guardrails";
+  INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
+  INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  interactTerminalSessionTool,
+} from "./schemas";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
-const DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
-const MAX_WAIT_TIMEOUT_SECONDS = 300;
+const DEFAULT_WAIT_TIMEOUT_SECONDS =
+  INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS;
+const MAX_WAIT_TIMEOUT_SECONDS = INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS;
 // Brief window to capture the immediate response to a `send` (e.g. a prompt
 // echoing "Hello, X!"). Too short and we miss instant CLI replies; too long
 // and we block the agent on long-running processes that need explicit `wait`.
@@ -31,126 +31,23 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 // as "process settled" — typically a redrawn prompt or completed command.
 // `timeout` remains the hard ceiling for processes that never settle.
 const WAIT_QUIET_WINDOW_MS = 500;
-const CLEAR_PENDING_INPUT_KEYS = new Set(["C-c", "C-u"]);
-const BACKSPACE_KEYS = new Set(["BSpace", "Backspace", "C-h"]);
-const SUBMIT_INPUT_KEYS = new Set(["Enter", "Return", "C-j"]);
-
-const getGuardrailInputFragment = (input: string): string => {
-  if (SUBMIT_INPUT_KEYS.has(input)) return "\n";
-  if (input === "Space") return " ";
-  if (input === "Tab" || input === "C-i") return "\t";
-  if (
-    TMUX_SPECIAL_KEYS.has(input) ||
-    (input.startsWith("M-") && input.length === 3) ||
-    (input.startsWith("C-S-") && input.length === 5)
-  ) {
-    return "";
-  }
-  return input;
-};
-
-const getGuardrailInputState = (
-  pendingInput: string,
-  input: string,
-): { checkInput: string; nextPendingInput: string } => {
-  if (CLEAR_PENDING_INPUT_KEYS.has(input)) {
-    return { checkInput: pendingInput, nextPendingInput: "" };
-  }
-  if (BACKSPACE_KEYS.has(input)) {
-    const nextPendingInput = pendingInput.slice(0, -1);
-    return { checkInput: nextPendingInput, nextPendingInput };
-  }
-
-  const checkInput = (pendingInput + getGuardrailInputFragment(input))
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-  const lastNewlineIndex = checkInput.lastIndexOf("\n");
-  const nextPendingInput =
-    lastNewlineIndex === -1
-      ? checkInput
-      : checkInput.slice(lastNewlineIndex + 1);
-
-  return { checkInput, nextPendingInput };
-};
 
 export const createInteractTerminalSession = (context: ToolContext) => {
-  const { writer, chatId, ptySessionManager, guardrailsConfig } = context;
-  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
-  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
+  const { writer, chatId, ptySessionManager } = context;
 
   return tool({
-    description: `Interact with persistent shell sessions in the sandbox environment.
-
-<supported_actions>
-- \`view\`: View the content of a shell session
-- \`wait\`: Wait for the running process in a shell session to return
-- \`send\`: Send input to the active process (stdin) in a shell session
-- \`kill\`: Terminate the running process in a shell session
-</supported_actions>
-
-<instructions>
-- Sessions are created by \`run_terminal_cmd\` with \`interactive=true\`; pass the returned \`session\` id here
-- When using \`view\` action, ensure command has completed execution before using its output
-- Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
-- Processes are NEVER killed on timeout — they keep running in the session; \`timeout\` only controls how long to wait for output before returning
-- Use \`wait\` action when a process needs additional time to complete and return
-- Only use \`wait\` after \`send\` (or after \`run_terminal_cmd\` returned without finishing); decide whether to wait based on the prior output
-- DO NOT use \`wait\` for long-running daemon processes
-- \`send\` writes input and captures only the immediate response chunk; if the process needs more time before it replies, follow up with \`action=wait\`
-- \`input\` is sent verbatim. Without a trailing \\n (or \`Enter\`), the line is typed but NOT submitted — a follow-up \`send\` will append to the same line. ALWAYS include \\n unless you specifically want to type without pressing Enter (e.g. building up a key sequence)
-- For special keys, use official tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Home, End, Escape, Tab, Enter, Space, F1-F12, PageUp, PageDown
-- For modifier combinations: M-key (Alt), C-S-key (Ctrl+Shift)
-- Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
-- For non-key strings in \`input\`, DO NOT perform any escaping; send the raw string directly
-- Raw input is checked against command guardrails, including text accumulated across split sends; never forward untrusted content
-</instructions>
-
-<recommended_usage>
-- Use \`view\` to check shell session history and latest status
-- Use \`wait\` to wait for the completion of long-running commands
-- Use \`send\` to interact with processes that require user input (e.g., responding to prompts)
-- Use \`send\` with special keys like C-c to interrupt, C-d to send EOF
-- Use \`kill\` to stop background processes that are no longer needed
-- Use \`kill\` to clean up dead or unresponsive processes
-</recommended_usage>`,
-    inputSchema: z.object({
-      action: z
-        .enum(["view", "wait", "send", "kill"])
-        .describe("The action to perform"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
-      input: z
-        .string()
-        .optional()
-        .describe(
-          'Input text to send to the interactive session. Required for `send`. Sent verbatim — without a trailing \\n (or `Enter`) the line is typed but NOT submitted, and a subsequent `send` will append to the same line. To submit just Enter, pass `"Enter"` or `"\\n"`.',
-        ),
-      session: z
-        .string()
-        .describe(
-          "The unique identifier of the target shell session (returned by `run_terminal_cmd` with `interactive=true`)",
-        ),
-      timeout: z
-        .number()
-        .int()
-        .optional()
-        .default(DEFAULT_WAIT_TIMEOUT_SECONDS)
-        .describe(
-          `Timeout in seconds to wait for output. Only used for \`wait\` action. Defaults to ${DEFAULT_WAIT_TIMEOUT_SECONDS} seconds. Max ${MAX_WAIT_TIMEOUT_SECONDS} seconds.`,
-        ),
-    }),
+    ...interactTerminalSessionTool,
     execute: async (
       {
         session: sessionId,
         action,
+        brief,
         input,
         timeout,
       }: {
         session: string;
         action: "send" | "wait" | "view" | "kill";
+        brief?: string;
         input?: string;
         timeout?: number;
       },
@@ -210,7 +107,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         }
         const found = ptySessionManager.get(chatId, sid);
         if (!found) {
-          return { error: errorResult(`Session ${sid} not found.`) };
+          return {
+            error: errorResult(
+              `Session ${sid} not found. Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one.`,
+            ),
+          };
         }
         return { session: found };
       };
@@ -247,6 +148,26 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         },
       });
 
+      const requestTerminalInteractionApproval = async (
+        target: string,
+      ): Promise<ActionResult | null> => {
+        const approval = await context.requestToolApproval?.({
+          toolCallId,
+          toolName: "interact_terminal_session",
+          operation: "terminal_interact",
+          target,
+          brief,
+        });
+        if (!approval || approval.approved) return null;
+        return {
+          result: {
+            output: "",
+            error: approval.reason,
+            approvalDenied: true,
+          },
+        };
+      };
+
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
         if (input === undefined || input.length === 0) {
@@ -257,6 +178,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
+        if (session.kind === "command") {
+          return errorResult(
+            `Session ${sessionId} belongs to a non-interactive command and does not accept input. Use action=wait, view, or kill.`,
+          );
+        }
 
         // Fast-fail if the PTY already exited — otherwise sendInput on E2B
         // rejects with an opaque `[not_found] process with pid N not found`
@@ -264,24 +190,16 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const priorExit = peekSessionExit(session);
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
+        const approvalDenied = await requestTerminalInteractionApproval(
+          `send to ${sessionId}: ${input}`,
+        );
+        if (approvalDenied) return approvalDenied;
+
         emitPriorContext(session);
 
         // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
         // raw text passes through unchanged with trailing newline normalized
         // to CR so "echo hi\n" submits the line as a real Enter.
-        const { checkInput, nextPendingInput } = getGuardrailInputState(
-          session.pendingGuardrailInput,
-          input,
-        );
-        const guardrailResult = checkCommandGuardrails(
-          checkInput,
-          effectiveGuardrails,
-        );
-        if (!guardrailResult.allowed) {
-          return errorResult(
-            `Input blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This input pattern has been blocked for safety.`,
-          );
-        }
         const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
@@ -299,7 +217,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-        session.pendingGuardrailInput = nextPendingInput;
         session.lastActivityAt = Date.now();
         // Capture the immediate response chunk — prompts that echo a reply
         // ("Hello, X!") show up here. Use action=wait for processes that
@@ -342,13 +259,14 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         );
         await drainEmitQueue();
         const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const exited = alreadyExited ?? (await peekExited(session));
         const out: Record<string, unknown> = {
           output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
           sessionSnapshot: snapshots.cleaned,
           rawSnapshot: snapshots.raw,
         };
         if (session.bufferTruncated) out.bufferTruncated = true;
-        if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
+        if (exited) out.exited = { exitCode: exited.exitCode };
         return { result: out };
       };
 
@@ -384,15 +302,30 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
+        const approvalDenied = await requestTerminalInteractionApproval(
+          `kill ${sessionId}`,
+        );
+        if (approvalDenied) return approvalDenied;
+
         // Skip the snapshot dump — the user already saw the final state via
         // prior view/wait/send blocks; a one-line confirmation reads cleaner
         // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
-        await ptySessionManager.close(chatId, session.sessionId);
+        try {
+          await ptySessionManager.close(chatId, session.sessionId);
+        } catch (err) {
+          const retained = ptySessionManager.get(chatId, session.sessionId);
+          return errorResult(
+            `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. ${retained ? "The session was retained so cleanup can be retried." : "The bounded cleanup limit was reached, so local session tracking was removed."}`,
+          );
+        }
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
         return {
           result: {
-            output: "Successfully killed interactive shell.",
+            output:
+              session.kind === "pty"
+                ? "Successfully killed interactive shell."
+                : "Successfully killed non-interactive command session.",
             exitCode: exit.exitCode,
           },
         };

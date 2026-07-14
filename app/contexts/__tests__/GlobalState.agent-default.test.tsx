@@ -42,6 +42,16 @@ function GlobalStateProbe() {
   );
 }
 
+function TemporaryChatProbe() {
+  const { temporaryChatsEnabled } = useGlobalState();
+
+  return (
+    <div data-testid="temporary-chat-enabled">
+      {String(temporaryChatsEnabled)}
+    </div>
+  );
+}
+
 describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -58,6 +68,64 @@ describe("GlobalStateProvider agent defaults", () => {
     mockAuthUser([]);
   });
 
+  it("clears a temporary chat URL request for free users", async () => {
+    window.history.pushState({}, "", "/?temporary-chat=true");
+
+    render(
+      <GlobalStateProvider>
+        <TemporaryChatProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(window.location.search).toBe("");
+  });
+
+  it("clears a temporary chat URL request after unauthenticated auth resolves", async () => {
+    mockAuthUser([], {
+      user: null,
+      loading: false,
+      isAuthenticated: false,
+      organizationId: undefined,
+    });
+    window.history.pushState({}, "", "/?temporary-chat=true");
+
+    render(
+      <GlobalStateProvider>
+        <TemporaryChatProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(window.location.search).toBe("");
+  });
+
+  it("preserves a temporary chat URL request for paid users", async () => {
+    mockAuthUser(["pro-plan"]);
+    window.history.pushState({}, "", "/?temporary-chat=true");
+
+    render(
+      <GlobalStateProvider>
+        <TemporaryChatProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("temporary-chat-enabled")).toHaveTextContent(
+        "true",
+      );
+    });
+    expect(window.location.search).toBe("?temporary-chat=true");
+  });
+
   it("defaults first-time Ultra users to Agent with the auto model and cloud sandbox", async () => {
     window.localStorage.setItem("selected_model", "hackerai-max");
     mockAuthUser(["ultra-plan"]);
@@ -72,6 +140,25 @@ describe("GlobalStateProvider agent defaults", () => {
       expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
     });
 
+    expect(screen.getByTestId("selected-model")).toHaveTextContent("auto");
+    expect(screen.getByTestId("sandbox-preference")).toHaveTextContent("e2b");
+  });
+
+  it("defaults first-time Pro Plus users to Agent with the auto model and cloud sandbox", async () => {
+    window.localStorage.setItem("selected_model", "hackerai-max");
+    mockAuthUser(["pro-plus-plan"]);
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
+    });
+
+    expect(screen.getByTestId("subscription")).toHaveTextContent("pro-plus");
     expect(screen.getByTestId("selected-model")).toHaveTextContent("auto");
     expect(screen.getByTestId("sandbox-preference")).toHaveTextContent("e2b");
   });

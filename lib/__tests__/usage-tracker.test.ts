@@ -9,6 +9,16 @@ describe("UsageTracker", () => {
     jest.clearAllMocks();
   });
 
+  describe("usage settlement correlation", () => {
+    it("uses one stable identifier for the tracker lifetime", () => {
+      expect(tracker.usageSettlementId).toEqual(expect.any(String));
+      expect(tracker.usageSettlementId).toBe(tracker.usageSettlementId);
+      expect(new UsageTracker().usageSettlementId).not.toBe(
+        tracker.usageSettlementId,
+      );
+    });
+  });
+
   describe("accumulateStep", () => {
     it("should sum tokens across multiple steps", () => {
       tracker.accumulateStep({
@@ -191,6 +201,156 @@ describe("UsageTracker", () => {
       expect(tracker.computeCostDollars("model-default")).toBe(0.05);
     });
 
+    it("should use OpenRouter upstream inference cost from raw cost details when raw cost is zero", () => {
+      tracker.accumulateStep({
+        inputTokens: 5264,
+        outputTokens: 18,
+        raw: {
+          cost: 0,
+          cost_details: {
+            upstream_inference_cost: 0.0030955,
+          },
+        },
+      });
+
+      expect(tracker.hasAuthoritativeModelCost).toBe(true);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0030955);
+      expect(tracker.computeModelCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+      expect(tracker.computeCostDollars("model-opus-4.6")).toBeCloseTo(
+        0.0030955,
+      );
+    });
+
+    it("should prefer OpenRouter upstream inference cost over raw provider cost", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0.003,
+          },
+        },
+      });
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.003);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+    });
+
+    it("should fall back to raw provider cost when OpenRouter upstream inference cost is not positive", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.001,
+          cost_details: {
+            upstream_inference_cost: 0,
+            upstreamInferenceCost: Number.NaN,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.001);
+    });
+
+    it("should accept camelCase OpenRouter upstream inference cost from raw cost details", () => {
+      tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0,
+          cost_details: {},
+          costDetails: {
+            upstreamInferenceCost: 0.002,
+          },
+        },
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.002);
+    });
+
+    it("should use authoritative model cost from provider metadata when raw cost is missing", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      expect(tracker.computeModelCostDollars("model-default")).toBe(0.00016);
+      expect(tracker.computeCostDollars("model-default")).toBe(0.00016);
+    });
+
+    it("should sum authoritative metadata costs across model steps", () => {
+      const firstStepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      const secondStepCostIndex = tracker.accumulateStep({
+        inputTokens: 20,
+        outputTokens: 5,
+        raw: { cost: 0 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(firstStepCostIndex, 0.00016);
+      tracker.setAuthoritativeModelCostForStep(secondStepCostIndex, 0.0002);
+
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00036,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00036);
+    });
+
+    it("should use token estimates when any model step lacks authoritative cost", () => {
+      const firstStepCostIndex = tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0 },
+      });
+      tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(firstStepCostIndex, 0.00016);
+
+      expect(tracker.computeCostDollars("model-default")).toBe(0.5);
+    });
+
+    it("should prefer authoritative metadata cost over raw provider cost while preserving non-model spend", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.05 },
+      });
+      tracker.providerCost += 0.01;
+      tracker.nonModelCost = 0.01;
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00016);
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00016,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.01016);
+    });
+
+    it("should ignore non-positive metadata cost", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.05 },
+      });
+
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0);
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, Number.NaN);
+
+      expect(tracker.computeCostDollars("model-default")).toBe(0.05);
+    });
+
     it("should fall back to token calculation when no provider cost", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 
@@ -263,6 +423,40 @@ describe("UsageTracker", () => {
       });
       expect(result).toBe("included");
     });
+
+    it("should return 'extra' when only uncovered usage remains", () => {
+      const result = tracker.resolveUsageType(
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 0,
+        },
+        {
+          includedPointsDeducted: 0,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 50,
+        },
+      );
+      expect(result).toBe("extra");
+    });
+
+    it("should return 'mixed' when included and uncovered usage were both used", () => {
+      const result = tracker.resolveUsageType(
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 50,
+        },
+        {
+          includedPointsDeducted: 50,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 50,
+        },
+      );
+      expect(result).toBe("mixed");
+    });
   });
 
   describe("resolveCostBreakdown", () => {
@@ -287,6 +481,35 @@ describe("UsageTracker", () => {
       });
       expect(result.includedCostDollars).toBeCloseTo(2);
       expect(result.extraUsageCostDollars).toBeCloseTo(1);
+      expect(result.uncoveredCostDollars).toBeCloseTo(0);
+      expect(result.uncoveredPoints).toBe(0);
+      expect(result.usageDeductionFailed).toBe(false);
+    });
+
+    it("splits uncovered cost away from paid extra usage", () => {
+      const result = tracker.resolveCostBreakdown(
+        10,
+        {
+          remaining: 0,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 0,
+        },
+        {
+          includedPointsDeducted: 0,
+          extraUsagePointsDeducted: 50_000,
+          uncoveredPoints: 50_000,
+          usageDeductionFailed: true,
+          usageDeductionFailureReason: "insufficient_funds",
+        },
+      );
+
+      expect(result.includedCostDollars).toBeCloseTo(0);
+      expect(result.extraUsageCostDollars).toBeCloseTo(5);
+      expect(result.uncoveredCostDollars).toBeCloseTo(5);
+      expect(result.uncoveredPoints).toBe(50_000);
+      expect(result.usageDeductionFailed).toBe(true);
+      expect(result.usageDeductionFailureReason).toBe("insufficient_funds");
     });
   });
 
@@ -376,6 +599,7 @@ describe("UsageTracker", () => {
       });
 
       expect(localMockLog).toHaveBeenCalledWith({
+        usageSettlementId: expect.any(String),
         userId: "user-123",
         organizationId: undefined,
         chatId: undefined,
@@ -386,8 +610,12 @@ describe("UsageTracker", () => {
         type: "included",
         includedCostDollars: 0.01,
         extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
         includedPointsDeducted: 100,
         extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+        usageDeductionFailureReason: undefined,
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
@@ -416,6 +644,144 @@ describe("UsageTracker", () => {
 
       expect(usage.costDollars).toBe(0.5);
       expect(usage.costSource).toBe("raw_token_estimate");
+    });
+
+    it("uses served fallback model pricing when raw provider cost is absent", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.model).toBe("auto");
+      expect(usage.modelCostDollars).toBe(4.95);
+      expect(usage.costDollars).toBe(4.95);
+      expect(usage.costSource).toBe("raw_token_estimate");
+    });
+
+    it("keeps raw provider cost ahead of served fallback token estimates", () => {
+      tracker.accumulateStep({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        raw: { cost: 0.42 },
+      });
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.model).toBe("auto");
+      expect(usage.modelCostDollars).toBe(0.42);
+      expect(usage.costDollars).toBe(0.42);
+      expect(usage.costSource).toBe("provider");
+    });
+
+    it("keeps upstream metadata cost ahead of token estimates when raw cost is zero", () => {
+      const stepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(stepCostIndex, 0.00016);
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "model-opus-4.6",
+        accountingModel: "model-opus-4.6",
+        configuredModelId: "anthropic/claude-4.6-opus-20260205",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.modelCostDollars).toBe(0.00016);
+      expect(usage.costDollars).toBe(0.00016);
+      expect(usage.costSource).toBe("provider");
+    });
+
+    it("keeps non-model spend after fallback reset and bills fallback authoritative metadata cost", () => {
+      tracker.accumulateStep({
+        inputTokens: 500_000,
+        outputTokens: 0,
+        raw: { cost: 0.25 },
+      });
+      tracker.providerCost += 0.05;
+      tracker.nonModelCost = 0.05;
+      tracker.resetModelLeg();
+
+      const fallbackStepCostIndex = tracker.accumulateStep({
+        inputTokens: 12,
+        outputTokens: 4,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(fallbackStepCostIndex, 0.00016);
+
+      expect(tracker.inputTokens).toBe(12);
+      expect(tracker.outputTokens).toBe(4);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00016);
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.00016,
+      );
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.05016);
+
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "agent-model-free",
+        accountingModel: "model-kimi-k2.7-code",
+        configuredModelId: "minimax/minimax-m3",
+        rateLimitInfo: {
+          remaining: 1000,
+          resetTime: new Date(),
+          limit: 250000,
+          pointsDeducted: 100,
+        },
+      });
+
+      expect(usage.modelCostDollars).toBeCloseTo(0.00016);
+      expect(usage.nonModelCostDollars).toBeCloseTo(0.05);
+      expect(usage.costDollars).toBeCloseTo(0.05016);
+      expect(usage.costSource).toBe("provider");
+    });
+
+    it("preserves summarization usage across fallback reset", () => {
+      tracker.inputTokens = 1_200;
+      tracker.summarizationInputTokens = 200;
+      tracker.outputTokens = 140;
+      tracker.summarizationOutputTokens = 40;
+      tracker.totalTokens = 1_340;
+      tracker.cacheReadTokens = 90;
+      tracker.summarizationCacheReadTokens = 20;
+      tracker.cacheWriteTokens = 50;
+      tracker.summarizationCacheWriteTokens = 10;
+
+      tracker.resetModelLeg();
+
+      expect(tracker.inputTokens).toBe(200);
+      expect(tracker.outputTokens).toBe(40);
+      expect(tracker.totalTokens).toBe(240);
+      expect(tracker.cacheReadTokens).toBe(20);
+      expect(tracker.cacheWriteTokens).toBe(10);
+      expect(tracker.streamOutputTokens).toBe(0);
     });
 
     it("labels post-run overflow as mixed when final deduction uses extra usage", () => {

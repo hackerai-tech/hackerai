@@ -65,6 +65,7 @@ interface ChatItemProps {
   shareDate?: number;
   isPinned?: boolean;
   isStreaming?: boolean;
+  isAwaitingApproval?: boolean;
 }
 
 const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
@@ -87,6 +88,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   shareDate,
   isPinned = false,
   isStreaming = false,
+  isAwaitingApproval = false,
 }) => {
   const router = useRouter();
   const pathname = usePathname();
@@ -119,6 +121,15 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // During a route transition, prefer the clicked chat immediately so a busy
   // streaming chat does not keep the old row highlighted until navigation commits.
   const isCurrentlyActive = selectedChatId === id;
+  const showActions = Boolean(isHovered || isDropdownOpen || isMobile);
+  const showStreamingIndicator =
+    isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
+  const rightPaddingClass =
+    isMobile && showActions && showStreamingIndicator
+      ? "pr-14"
+      : showActions || showStreamingIndicator
+        ? "pr-7"
+        : "";
 
   useEffect(() => {
     if (optimisticChatId && optimisticChatId === routeChatId) {
@@ -333,24 +344,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
       title={title}
       role="button"
       tabIndex={0}
-      aria-label={`Open chat: ${title}`}
+      aria-label={`Open chat: ${title}${
+        isAwaitingApproval ? " awaiting approval" : ""
+      }`}
       data-testid={`chat-item-${id}`}
     >
       <div
-        className={`mr-2 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium ${
-          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
-            ? "[-webkit-mask-image:var(--sidebar-mask-active)] [mask-image:var(--sidebar-mask-active)]"
-            : "[-webkit-mask-image:var(--sidebar-mask)] [mask-image:var(--sidebar-mask)]"
+        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${
+          rightPaddingClass
         }`}
         dir="auto"
       >
-        <span className="flex items-center gap-1.5">
-          {isStreaming && (
-            <LoaderCircle
-              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
-              data-testid="chat-item-streaming-icon"
-            />
-          )}
+        <span className="flex min-w-0 items-center gap-1.5">
           {isPinned && !isStreaming && (
             <Pin
               className="size-3 flex-shrink-0 text-muted-foreground"
@@ -369,67 +374,86 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          {title}
+          <span className="min-w-0 truncate">{title}</span>
+          {isAwaitingApproval && (
+            <span
+              className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400"
+              data-testid="chat-item-awaiting-approval"
+            >
+              Awaiting approval
+            </span>
+          )}
         </span>
       </div>
 
       <div
-        className={`absolute right-2 opacity-0 transition-opacity ${
-          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
+        className={`absolute right-2 flex items-center gap-1 transition-opacity ${
+          showActions || showStreamingIndicator
             ? "opacity-100"
-            : ""
+            : "pointer-events-none opacity-0"
         }`}
+        aria-hidden={!showActions && !showStreamingIndicator}
       >
-        <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 hover:bg-sidebar-accent"
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              aria-label="Open conversation options"
+        {showStreamingIndicator ? (
+          <LoaderCircle
+            className="size-4 flex-shrink-0 animate-spin text-muted-foreground"
+            data-testid="chat-item-streaming-icon"
+            aria-hidden="true"
+          />
+        ) : null}
+        {showActions ? (
+          <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0 hover:bg-sidebar-accent"
+                tabIndex={showActions ? 0 : -1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                aria-label="Open conversation options"
+              >
+                <Ellipsis className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              side="bottom"
+              sideOffset={5}
+              className="z-50 py-2"
+              onClick={(e) => e.stopPropagation()}
             >
-              <Ellipsis className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="start"
-            side="bottom"
-            sideOffset={5}
-            className="z-50 py-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <DropdownMenuItem onClick={handleRename}>
-              <Edit2 className="mr-2 h-4 w-4" />
-              Rename
-            </DropdownMenuItem>
-            {isPinned ? (
-              <DropdownMenuItem onClick={handleUnpin}>
-                <PinOff className="mr-2 h-4 w-4" />
-                Unpin
+              <DropdownMenuItem onClick={handleRename}>
+                <Edit2 className="mr-2 h-4 w-4" />
+                Rename
               </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem onClick={handlePin}>
-                <Pin className="mr-2 h-4 w-4" />
-                Pin
+              {isPinned ? (
+                <DropdownMenuItem onClick={handleUnpin}>
+                  <PinOff className="mr-2 h-4 w-4" />
+                  Unpin
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onClick={handlePin}>
+                  <Pin className="mr-2 h-4 w-4" />
+                  Pin
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={handleShare}>
+                <Share className="mr-2 h-4 w-4" />
+                Share
               </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onClick={handleShare}>
-              <Share className="mr-2 h-4 w-4" />
-              Share
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={handleDeleteClick}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuItem
+                onClick={handleDeleteClick}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
 
       {/* Rename Dialog */}

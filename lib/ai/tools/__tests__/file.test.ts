@@ -59,7 +59,6 @@ function makeContext(
     modelName: "openai/gpt-5",
     subscription: "pro",
     isE2BSandbox: (() => true) as never,
-    caidoEnabled: false,
     ...overrides,
   };
 }
@@ -115,7 +114,86 @@ function makeSandbox(
   };
 }
 
+function makeNativeDesktopSandbox() {
+  const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+  return {
+    sandbox: {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => true,
+      supportsNativeFileRelay: () => true,
+      commands: { run: commandRun },
+      files: {
+        stat: jest.fn(async () => ({
+          kind: "file" as const,
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 18,
+        })),
+        readText: jest.fn(async () => ({
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 18,
+          totalLines: 2,
+          content: "line one\nline two\n",
+          startLine: 1,
+          truncated: false,
+        })),
+        append: jest.fn(async () => undefined),
+        read: jest.fn(async () => "line one\nline two\n"),
+        write: jest.fn(async () => undefined),
+        remove: jest.fn(async () => undefined),
+        list: jest.fn(),
+      },
+    },
+    commandRun,
+  };
+}
+
 describe("file tool large text safety", () => {
+  test("blocks file operations when a selected local sandbox falls back", async () => {
+    const commandRun = jest.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const writerWrites: unknown[] = [];
+    const context = makeContext(sandbox, {
+      sandboxManager: {
+        getSandbox: jest.fn(async () => ({ sandbox })),
+        setSandbox: jest.fn(),
+        getSandboxType: jest.fn(),
+        getSandboxInfo: jest.fn(() => null),
+        getEffectivePreference: jest.fn(() => "e2b"),
+        recordHealthFailure: jest.fn(() => false),
+        resetHealthFailures: jest.fn(),
+        isSandboxUnavailable: jest.fn(() => false),
+        consumeFallbackInfo: jest.fn(() => ({
+          occurred: true,
+          reason: "no_local_connections",
+          requestedPreference: "desktop",
+          actualSandbox: "e2b",
+          actualSandboxName: "Cloud",
+        })),
+      } as never,
+      writer: {
+        write: (part: unknown) => writerWrites.push(part),
+      } as never,
+    });
+    const tool = createFile(context);
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "/home/user/report.txt",
+      brief: "Read file",
+    })) as { error: string };
+
+    expect(result.error).toContain("HackerAI did not switch this run to Cloud");
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+    expect(commandRun).not.toHaveBeenCalled();
+    expect(writerWrites).not.toContainEqual(
+      expect.objectContaining({ type: "data-sandbox-fallback" }),
+    );
+  });
+
   test("does not load oversized files for full reads", async () => {
     const commandRun = jest.fn(async () => ({
       stdout: JSON.stringify({
@@ -301,6 +379,67 @@ describe("file tool large text safety", () => {
     expect(sandbox.files.read).not.toHaveBeenCalled();
   });
 
+  test("uses native desktop readText for Windows desktop reads", async () => {
+    const { sandbox, commandRun } = makeNativeDesktopSandbox();
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "read",
+      path: "C:\\repo\\app.ts",
+      brief: "Read through native desktop bridge",
+    })) as { content: string };
+
+    expect(result.content).toContain("     1|line one");
+    expect(result.content).toContain("     2|line two");
+    expect(sandbox.files.readText).toHaveBeenCalledWith("C:\\repo\\app.ts", {
+      maxFullBytes: 1024 * 1024,
+      maxResultBytes: 1024 * 1024,
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("normalizes edit strings to the existing CRLF line endings", async () => {
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        kind: "file",
+        path: "C:\\repo\\app.ts",
+        sizeBytes: 32,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const write = jest.fn(async () => undefined);
+    const sandbox = {
+      commands: { run: commandRun },
+      files: {
+        read: jest.fn(async () => "const a = 1;\r\nconst b = 2;\r\n"),
+        write,
+        remove: jest.fn(async () => undefined),
+        list: jest.fn(),
+      },
+    };
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "edit",
+      path: "C:\\repo\\app.ts",
+      brief: "Edit CRLF file",
+      edits: [
+        {
+          find: "const a = 1;\nconst b = 2;",
+          replace: "const a = 1;\nconst b = 3;",
+        },
+      ],
+    })) as { content: string };
+
+    expect(result.content).toContain("Multi-edit completed");
+    expect(write).toHaveBeenCalledWith(
+      "C:\\repo\\app.ts",
+      "const a = 1;\r\nconst b = 3;\r\n",
+      { user: "user" },
+    );
+  });
+
   test("oversized append on Windows does not use POSIX cat/rm commands", async () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
@@ -479,6 +618,8 @@ describe("file tool image view", () => {
         success: false,
         failure_reason: "file_not_found",
         failure_detail: "file_not_found",
+        failure_category: "missing_file",
+        expected_failure: false,
         error_name: "Error",
         error_message_hash: expect.any(String),
         file_extension: undefined,
@@ -491,6 +632,40 @@ describe("file tool image view", () => {
       }),
     );
     expect(mockPhEvent.mock.calls[0][1]).not.toHaveProperty("path");
+  });
+
+  test("classifies unavailable sandbox failures separately from inspection errors", async () => {
+    const sandboxError = new Error("Sandbox is no longer available");
+    sandboxError.name = "SandboxNotFoundError";
+    const commandRun = jest.fn(async () => {
+      throw sandboxError;
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(makeContext(sandbox));
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect a screenshot after sandbox expiry",
+    });
+
+    expect(result).toEqual({ error: "Sandbox is no longer available" });
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "file_view_image_used",
+      expect.objectContaining({
+        stage: "initial_inspection",
+        outcome: "inspection_failed",
+        success: false,
+        failure_reason: "sandbox_unavailable",
+        failure_detail: "sandbox_not_found",
+        failure_category: "sandbox_lifecycle",
+        expected_failure: false,
+        error_name: "SandboxNotFoundError",
+        error_message_hash: expect.any(String),
+        file_extension: "png",
+        path_prefix_class: "tmp",
+      }),
+    );
   });
 
   test("keeps successful image handoff when success telemetry throws", async () => {
@@ -585,8 +760,11 @@ describe("file tool image view", () => {
         stage: "model_output",
         outcome: "inspection_failed",
         success: false,
-        failure_reason: "inspection_error",
+        failure_reason: "image_validation_failed",
         failure_detail: "invalid_image_data",
+        failure_category: "image_validation",
+        expected_failure: false,
+        image_validation_reason: "missing_png_ihdr",
         error_name: "Error",
         error_message_hash: expect.any(String),
         media_type: "image/png",

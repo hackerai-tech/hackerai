@@ -414,7 +414,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             const previousUploadedFile =
               options.expectedGeneratedTextAttachment?.previousUploadedFile;
             if (previousUploadedFile) {
-              applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+              applyUploadedFileUpdate(currentUploadIndex, {
+                ...previousUploadedFile,
+                error: `${file.name} exceeds the Ask mode token limit`,
+              });
             } else {
               removeUploadedFile(currentUploadIndex);
             }
@@ -496,7 +499,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         const previousUploadedFile =
           options.expectedGeneratedTextAttachment?.previousUploadedFile;
         if (previousUploadedFile) {
-          applyUploadedFileUpdate(currentUploadIndex, previousUploadedFile);
+          applyUploadedFileUpdate(currentUploadIndex, {
+            ...previousUploadedFile,
+            error: errorMessage,
+          });
           toast.error(errorMessage);
           return;
         }
@@ -974,6 +980,19 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return;
         }
 
+        const getCurrentLocalTextIndex = () =>
+          uploadedFilesRef.current.findIndex((currentFile) => {
+            const currentGeneratedId =
+              currentFile.generatedTextAttachment?.id ||
+              currentFile.generatedTextAttachmentId ||
+              currentFile.localAttachmentId;
+
+            return (
+              currentGeneratedId === generatedTextAttachmentId &&
+              currentFile.generatedTextAttachment?.content === content
+            );
+          });
+
         const pendingUploadedFile: UploadedFileState = {
           ...uploadedFile,
           file: {
@@ -997,10 +1016,6 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           },
         };
 
-        uploadedFilesRef.current = uploadedFilesRef.current.map(
-          (file, index) =>
-            index === indexToUpdate ? pendingUploadedFile : file,
-        );
         applyUploadedFileUpdate(indexToUpdate, pendingUploadedFile);
 
         writeGeneratedTextAttachment(
@@ -1009,20 +1024,16 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           content,
         )
           .then((localMetadata) => {
-            const currentFile = uploadedFilesRef.current[indexToUpdate];
-            const currentGeneratedId =
-              currentFile?.generatedTextAttachment?.id ||
-              currentFile?.generatedTextAttachmentId ||
-              currentFile?.localAttachmentId;
+            const currentIndex = getCurrentLocalTextIndex();
+            if (currentIndex < 0) {
+              return;
+            }
 
-            if (
-              !localMetadata ||
-              currentGeneratedId !== generatedTextAttachmentId ||
-              currentFile?.generatedTextAttachment?.content !== content
-            ) {
-              if (!localMetadata) {
-                applyUploadedFileUpdate(indexToUpdate, uploadedFile);
-              }
+            if (!localMetadata) {
+              applyUploadedFileUpdate(currentIndex, {
+                ...uploadedFile,
+                error: "Failed to save pasted text locally",
+              });
               return;
             }
 
@@ -1038,15 +1049,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
               tokens: 0,
             };
 
-            uploadedFilesRef.current = uploadedFilesRef.current.map(
-              (file, index) =>
-                index === indexToUpdate ? updatedUploadedFile : file,
-            );
-            applyUploadedFileUpdate(indexToUpdate, updatedUploadedFile);
+            applyUploadedFileUpdate(currentIndex, updatedUploadedFile);
           })
           .catch((error) => {
             console.error("Failed to update local generated text file:", error);
-            applyUploadedFileUpdate(indexToUpdate, uploadedFile);
+            const currentIndex = getCurrentLocalTextIndex();
+            if (currentIndex >= 0) {
+              applyUploadedFileUpdate(currentIndex, {
+                ...uploadedFile,
+                error: "Failed to save pasted text locally",
+              });
+            }
             toast.error("Failed to save pasted text locally");
           });
         return;
@@ -1119,7 +1132,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handlePastedTextAttachment = useCallback(
     async (text: string): Promise<boolean> => {
-      if (!text.trim()) return false;
+      if (!isAgentMode(mode) || !text.trim()) return false;
 
       const started = await processGeneratedPastedText(text);
       if (started) {
@@ -1127,7 +1140,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       }
       return started;
     },
-    [processGeneratedPastedText],
+    [mode, processGeneratedPastedText],
   );
 
   const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
@@ -1144,6 +1157,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     }
 
     if (
+      isAgentMode(mode) &&
       pastedText.length >= PASTED_TEXT_ATTACHMENT_MIN_CHARS &&
       (!items || Array.from(items).every((item) => item.kind !== "file"))
     ) {

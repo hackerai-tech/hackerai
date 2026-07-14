@@ -163,6 +163,14 @@ Three test users are configured for different subscription tiers:
 
    Copy `.env.e2e.example` to `.env.e2e` if it doesn't exist, and ensure all test user credentials are set.
 
+   `PLAYWRIGHT_BASE_URL` controls both the test target and the local Next.js
+   dev-server port. Authenticated tests also require the WorkOS redirect URI to
+   use the same origin. If you change the test port, update
+   `NEXT_PUBLIC_WORKOS_REDIRECT_URI` and the matching WorkOS redirect allowlist.
+   Isolated chat, file, and Agent specs also validate the saved authenticated
+   shell before acting; refresh storage state with the setup project when they
+   report that it is missing or stale.
+
 ### Running Tests
 
 Run all e2e tests:

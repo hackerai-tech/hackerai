@@ -1,15 +1,14 @@
-import type {
-  ChatMode,
-  ExtraUsageConfig,
-  SelectedModel,
-  SubscriptionTier,
+import {
+  canUseExtraUsage,
+  normalizeMaxModelForSubscription,
+  type ChatMode,
+  type ExtraUsageConfig,
+  type SelectedModel,
+  type SubscriptionTier,
 } from "@/types";
 
 export const AGENT_RUN_SPEND_CAP_REASON = "agent_run_spend_cap" as const;
 export const AGENT_RUN_SPEND_CAP_FINISH_REASON = "agent-run-spend-cap" as const;
-export const PRO_AGENT_RUN_SPEND_CAP_DOLLARS = 5;
-export const AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL =
-  "hackerai-standard" as const satisfies SelectedModel;
 
 export const AGENT_RUN_SPEND_CAP_BASES = ["fixed_5_dollars"] as const;
 
@@ -40,17 +39,7 @@ export function isAgentRunSpendCapBasis(
 export function canContinueProAgentRunWithPremium(
   extraUsageConfig: ExtraUsageConfig | undefined,
 ): boolean {
-  if (!extraUsageConfig?.enabled) return false;
-  if (
-    extraUsageConfig.monthlyRemainingDollars !== undefined &&
-    extraUsageConfig.monthlyRemainingDollars <= 0
-  ) {
-    return false;
-  }
-
-  return Boolean(
-    extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled,
-  );
+  return canUseExtraUsage(extraUsageConfig);
 }
 
 export function resolveAgentRunSpendCapContinuationModel(args: {
@@ -61,26 +50,15 @@ export function resolveAgentRunSpendCapContinuationModel(args: {
   selectedModelOverride: SelectedModel | undefined;
   extraUsageConfig: ExtraUsageConfig | undefined;
 }): SelectedModel | undefined {
-  const {
-    finishReason,
-    mode,
-    subscription,
-    selectedModelOverride,
-    extraUsageConfig,
-  } = args;
-
-  const isAlreadyStandardContinuation =
-    selectedModelOverride === AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL;
-
-  if (
-    finishReason !== AGENT_RUN_SPEND_CAP_FINISH_REASON ||
-    mode !== "agent" ||
-    subscription !== "pro" ||
-    isAlreadyStandardContinuation ||
-    canContinueProAgentRunWithPremium(extraUsageConfig)
-  ) {
-    return selectedModelOverride;
-  }
-
-  return AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL;
+  return (
+    normalizeMaxModelForSubscription(
+      args.selectedModelOverride,
+      args.subscription,
+      {
+        extraUsageAvailable: canContinueProAgentRunWithPremium(
+          args.extraUsageConfig,
+        ),
+      },
+    ) ?? undefined
+  );
 }

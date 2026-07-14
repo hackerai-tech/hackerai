@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -24,17 +24,23 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
+import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import type { UploadedFileState } from "@/types/file";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import {
+  type ActiveAgentToolApprovalRequest,
+  useAgentApproval,
+} from "@/app/contexts/AgentApprovalContext";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
-  onStop: () => void;
+  onStop: () => void | boolean | Promise<void | boolean>;
+  onReconnect?: () => void;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
@@ -50,6 +56,7 @@ interface ChatInputProps {
   placeholder?: string;
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
+  storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
 }
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
@@ -98,16 +105,24 @@ const draftAttachmentToUploadedFile = (
 const uploadedFileToDraftAttachment = (
   uploadedFile: UploadedFileState,
 ): ConversationDraftAttachment | null => {
-  if (!uploadedFile.uploaded || uploadedFile.uploading || uploadedFile.error) {
-    return null;
-  }
-
   const generatedTextAttachment = uploadedFile.generatedTextAttachment;
   const generatedTextAttachmentId =
     generatedTextAttachment?.id || uploadedFile.generatedTextAttachmentId;
   const isGeneratedPastedText =
     uploadedFile.generatedSource === "pasted-text" ||
     Boolean(generatedTextAttachmentId);
+  const hasCommittedGeneratedTextFile =
+    isGeneratedPastedText &&
+    (uploadedFile.storage === "local-desktop"
+      ? Boolean(generatedTextAttachmentId)
+      : Boolean(uploadedFile.fileId));
+
+  if (
+    (!uploadedFile.uploaded || uploadedFile.uploading || uploadedFile.error) &&
+    !hasCommittedGeneratedTextFile
+  ) {
+    return null;
+  }
 
   if (uploadedFile.storage === "local-desktop") {
     if (!isGeneratedPastedText || !generatedTextAttachmentId) {
@@ -157,6 +172,7 @@ const uploadedFileToDraftAttachment = (
 export const ChatInput = ({
   onSubmit,
   onStop,
+  onReconnect,
   onSendNow,
   status,
   isCentered = false,
@@ -172,6 +188,7 @@ export const ChatInput = ({
   placeholder,
   autoFocus,
   restoreDraftAttachments = true,
+  storedApprovalRequest,
 }: ChatInputProps) => {
   const {
     input,
@@ -195,7 +212,6 @@ export const ChatInput = ({
     hasLocalSandbox,
     defaultLocalSandboxPreference,
   } = useGlobalState();
-  const isMobile = useIsMobile();
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -203,9 +219,31 @@ export const ChatInput = ({
     handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
+  const { activeToolApprovalRequest } = useAgentApproval();
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
+  const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
+
+  useEffect(() => {
+    if (!isGenerating && !approvalRequest) {
+      setIsStoppingAgent(false);
+    }
+  }, [approvalRequest, isGenerating]);
+
+  const handleAgentStop = async () => {
+    setIsStoppingAgent(true);
+    try {
+      const stopped = await onStop();
+      if (stopped === false) {
+        setIsStoppingAgent(false);
+      }
+    } catch {
+      setIsStoppingAgent(false);
+    }
+  };
 
   const draftId =
     isNewChat && (!hasMessages || temporaryChatsEnabled)
@@ -251,6 +289,7 @@ export const ChatInput = ({
               uploadedFile.storage === "local-desktop" &&
               uploadedFile.generatedSource === "pasted-text" &&
               !uploadedFile.generatedTextAttachment &&
+              !uploadedFile.unavailable &&
               uploadedFile.generatedTextAttachmentId
             ) {
               return [
@@ -357,17 +396,9 @@ export const ChatInput = ({
       }
 
       let didHydrate = false;
-      const hydratedByIndex = new Map<
-        number,
-        (typeof hydratedFiles)[number] & {
-          content: NonNullable<(typeof hydratedFiles)[number]["content"]>;
-        }
-      >();
-      hydratedFiles.forEach((file) => {
-        if (file.content) {
-          hydratedByIndex.set(file.index, { ...file, content: file.content });
-        }
-      });
+      const hydratedByIndex = new Map(
+        hydratedFiles.map((file) => [file.index, file]),
+      );
 
       const nextUploadedFiles = uploadedFilesRef.current.map(
         (uploadedFile, index) => {
@@ -386,8 +417,16 @@ export const ChatInput = ({
           }
 
           didHydrate = true;
+          if (!hydratedFile.content) {
+            return {
+              ...uploadedFile,
+              unavailable: true,
+            };
+          }
+
           return {
             ...uploadedFile,
+            unavailable: false,
             file: {
               name: hydratedFile.content.name,
               type: hydratedFile.content.mediaType || "text/plain",
@@ -566,19 +605,6 @@ export const ChatInput = ({
           />
         )}
 
-        {/* Sandbox selector for new chats on mobile: shown above input & file upload.
-            Once the first message is sent, switches to below-input placement immediately
-            (isNewChat doesn't flip until the stream finishes, so we also check hasMessages).
-            On desktop, it's shown below the input (order-3). */}
-        {isMobile && isNewChat && !hasMessages && isAgentMode(chatMode) && (
-          <div className="flex px-1 pb-2 min-h-9">
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-          </div>
-        )}
-
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
@@ -597,44 +623,59 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
-        <div
-          className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
-        >
-          <ChatInputTextarea
-            draftId={draftId}
-            chatMode={chatMode}
-            onEnterSubmit={handleSubmit}
-            minRows={isCentered ? 3 : 1}
-            placeholder={placeholder}
-            autoFocus={autoFocus}
+        {showAgentApprovalPrompt ? (
+          <AgentApprovalPrompt
+            request={approvalRequest}
+            hasConnectionError={status === "error"}
+            onRetryConnection={onReconnect}
+            onStop={() => void handleAgentStop()}
           />
-          <ChatInputToolbar
-            onAttachClick={handleAttachClick}
-            isGenerating={isGenerating}
-            hideStop={hideStop}
-            onStop={onStop}
-            onSubmit={handleSubmit}
-            status={status}
-            isUploadingFiles={isUploadingFiles}
-            input={input}
-            uploadedFiles={uploadedFiles}
-            chatMode={chatMode}
-          />
-        </div>
+        ) : (
+          <div
+            className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          >
+            <ChatInputTextarea
+              draftId={draftId}
+              chatMode={chatMode}
+              onEnterSubmit={handleSubmit}
+              minRows={isCentered ? 3 : 1}
+              placeholder={placeholder}
+              autoFocus={autoFocus}
+            />
+            <ChatInputToolbar
+              onAttachClick={handleAttachClick}
+              isGenerating={isGenerating}
+              hideStop={hideStop}
+              onStop={() => void handleAgentStop()}
+              onSubmit={handleSubmit}
+              status={status}
+              isUploadingFiles={isUploadingFiles}
+              input={input}
+              uploadedFiles={uploadedFiles}
+              chatMode={chatMode}
+            />
+          </div>
+        )}
 
-        {/* Sandbox selector below input.
+        {/* Agent controls below input.
             Desktop centered new chats (no messages yet): absolutely positioned to avoid
             shifting the centered layout.
-            Existing chats / after first message sent (all screens): normal flow.
-            Mobile new chats with no messages: hidden (uses above-input placement). */}
-        {isAgent && (!isMobile || !isNewChat || hasMessages) && (
+            On mobile, permission approval sits beside the sandbox selector. */}
+        {isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`order-3 flex items-center px-1 pt-2 ${isNewChat && !hasMessages ? "absolute left-4 right-4 top-full" : ""}`}
+            className={`order-3 flex items-center gap-2 px-1 pt-2 min-w-0 ${
+              isNewChat && !hasMessages
+                ? "md:absolute md:left-4 md:right-4 md:top-full"
+                : ""
+            }`}
           >
             <SandboxSelector
               value={sandboxPreference}
               onChange={setSandboxPreference}
             />
+            <div className="min-w-0 md:hidden">
+              <AgentPermissionSelector analyticsSurface="chat_input" />
+            </div>
           </div>
         )}
 

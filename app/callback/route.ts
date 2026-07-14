@@ -1,10 +1,7 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
 import {
-  isAuthVerifierMissingError,
-  isAuthCookieMissingError,
-  isMissingRequiredAuthParameterError,
-  isOAuthStateMismatchError,
-  isOauthCodeAlreadyExchangedError,
+  getRecoverableAuthkitCallbackErrorBucket,
+  type RecoverableAuthkitCallbackErrorBucket,
   withRecoverableAuthkitCallbackErrorSuppressed,
 } from "@/lib/auth/authkit-callback-logging";
 import { cookies } from "next/headers";
@@ -21,31 +18,10 @@ const PKCE_COOKIE_PREFIX = "wos-auth-verifier";
 const hasPkceCookie = (request: NextRequest): boolean =>
   request.cookies.getAll().some((c) => c.name.startsWith(PKCE_COOKIE_PREFIX));
 
-type RecoveryBucket =
-  | "missing_auth_parameter"
-  | "state_mismatch"
-  | "verifier_missing"
-  | "cookie_missing"
-  | "code_already_exchanged"
-  | "unknown";
+type RecoveryBucket = RecoverableAuthkitCallbackErrorBucket | "unknown";
 
 const classifyCallbackError = (error: unknown): RecoveryBucket => {
-  if (isOauthCodeAlreadyExchangedError(error)) {
-    return "code_already_exchanged";
-  }
-  if (isMissingRequiredAuthParameterError(error)) {
-    return "missing_auth_parameter";
-  }
-  if (isAuthCookieMissingError(error)) {
-    return "cookie_missing";
-  }
-  if (isAuthVerifierMissingError(error)) {
-    return "verifier_missing";
-  }
-  if (isOAuthStateMismatchError(error)) {
-    return "state_mismatch";
-  }
-  return "unknown";
+  return getRecoverableAuthkitCallbackErrorBucket(error) ?? "unknown";
 };
 
 const buildRecoveryResponse = async (
@@ -104,8 +80,8 @@ const buildRecoveryResponse = async (
   }
 
   // Recoverable cases (stale flow, multi-tab, scanner prefetch, ITP,
-  // cross-device link, embedded webview, missing cookie, duplicate callback):
-  // one-click recovery.
+  // cross-device link, embedded webview, missing cookie, duplicate callback,
+  // expired sign-in session): one-click recovery.
   // Preserve post_login_redirect intent so the retry lands where they wanted.
   const loginUrl = new URL("/login", request.url);
   const loginResponse = NextResponse.redirect(loginUrl);

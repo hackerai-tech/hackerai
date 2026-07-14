@@ -56,6 +56,93 @@ export function isImageFile(file: File | LocalDesktopFile): boolean {
   return file.type.startsWith("image/");
 }
 
+/** Media types (besides text/*) whose content can be shown as plain text */
+const TEXT_VIEWABLE_MEDIA_TYPES = new Set([
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-javascript",
+  "application/typescript",
+  "application/x-typescript",
+  "application/x-sh",
+  "application/x-yaml",
+  "application/yaml",
+  "application/csv",
+  "application/sql",
+]);
+
+/** File extensions whose content can be shown as plain text */
+const TEXT_VIEWABLE_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "mdx",
+  "csv",
+  "tsv",
+  "json",
+  "jsonl",
+  "xml",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "env",
+  "log",
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
+  "mjs",
+  "cjs",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "sass",
+  "less",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "java",
+  "kt",
+  "c",
+  "h",
+  "cpp",
+  "cc",
+  "hpp",
+  "cs",
+  "php",
+  "sh",
+  "bash",
+  "zsh",
+  "sql",
+  "graphql",
+  "gql",
+]);
+
+/**
+ * Check if a file is a PDF by media type only.
+ * Extension-only detection can route active content into the PDF iframe preview.
+ */
+export function isPdfFile(file: File | LocalDesktopFile): boolean {
+  return file.type?.split(";")[0]?.trim().toLowerCase() === "application/pdf";
+}
+
+/**
+ * Check if a file's content can be previewed as plain text.
+ * Uses the media type first, then falls back to the file extension for
+ * files that arrive with a generic/empty type.
+ */
+export function isTextViewableFile(file: File | LocalDesktopFile): boolean {
+  const mediaType = file.type?.toLowerCase() ?? "";
+  if (mediaType.startsWith("text/")) return true;
+  if (TEXT_VIEWABLE_MEDIA_TYPES.has(mediaType)) return true;
+
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return TEXT_VIEWABLE_EXTENSIONS.has(extension);
+}
+
 /**
  * Validate file for upload
  */

@@ -22,6 +22,21 @@ export interface UseAutoResumeParams {
   hasActiveStream: boolean | undefined;
 }
 
+export function mergeResumedMessage(
+  currentMessages: ChatMessage[],
+  initialMessages: ChatMessage[],
+  resumedMessage: ChatMessage,
+): ChatMessage[] {
+  const baseMessages =
+    currentMessages.length > 0 ? currentMessages : initialMessages;
+
+  if (baseMessages.some((message) => message.id === resumedMessage.id)) {
+    return baseMessages;
+  }
+
+  return [...baseMessages, resumedMessage];
+}
+
 export function useAutoResume({
   chatId,
   autoResume,
@@ -71,7 +86,9 @@ export function useAutoResume({
     if (!dataPart) return;
     if (dataPart.type === "data-appendMessage") {
       const message = JSON.parse(dataPart.data);
-      setMessages([...initialMessages, message]);
+      setMessages((currentMessages) =>
+        mergeResumedMessage(currentMessages, initialMessages, message),
+      );
       // First message arrived, we can allow Stop button again
       setIsAutoResuming(false);
     }

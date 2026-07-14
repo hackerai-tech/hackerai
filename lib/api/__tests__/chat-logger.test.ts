@@ -12,10 +12,10 @@ const {
   captureFreeAgentValueReached,
   captureToolCalls,
   captureUsageCost,
+  captureUsageSettlement,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
-
 describe("captureToolCalls", () => {
   it("aggregates repeated tool calls by tool before sending PostHog events", () => {
     const capture = jest.fn();
@@ -84,6 +84,11 @@ describe("captureAgentRun", () => {
       subscription: "pro",
       sandboxInfo: { type: "remote-connection", name: "Work laptop" },
       outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      agentPermissionMode: "ask_approval",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledWith({
@@ -94,10 +99,67 @@ describe("captureAgentRun", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        selected_model: "agent-model",
+        configured_model: "deepseek/deepseek-v4-pro",
+        agent_permission_mode: "ask_approval",
+        response_model: "deepseek/deepseek-v4-pro",
+        fallback_served: false,
         sandboxType: "remote-connection",
         sandbox_type: "remote-connection",
       },
     });
+  });
+
+  it("attributes a served fallback without inferring it from model names", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "free",
+      sandboxInfo: { type: "e2b" },
+      outcome: "success",
+      selectedModel: "agent-model-free",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      responseModel: "minimax/minimax-m3",
+      fallbackServed: true,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-agent_run",
+      properties: expect.objectContaining({
+        selected_model: "agent-model-free",
+        configured_model: "deepseek/deepseek-v4-flash",
+        response_model: "minimax/minimax-m3",
+        fallback_served: true,
+      }),
+    });
+  });
+
+  it("omits served-model attribution when the provider reports no response model", () => {
+    const capture = jest.fn();
+
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "error",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
+    });
+
+    const properties = capture.mock.calls[0][0].properties;
+    expect(properties).toMatchObject({
+      selected_model: "agent-model",
+      configured_model: "deepseek/deepseek-v4-pro",
+    });
+    expect(properties).not.toHaveProperty("response_model");
+    expect(properties).not.toHaveProperty("fallback_served");
   });
 
   it("does not capture agent run events for ask mode", () => {
@@ -110,6 +172,10 @@ describe("captureAgentRun", () => {
       subscription: "pro",
       sandboxInfo: { type: "e2b" },
       outcome: "success",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).not.toHaveBeenCalled();
@@ -269,6 +335,10 @@ describe("captureAgentCompletionAnalytics", () => {
       sandboxInfo: { type: "e2b" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+      selectedModel: "agent-model-free",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      responseModel: "deepseek/deepseek-v4-flash",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledTimes(2);
@@ -280,6 +350,10 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "free",
         subscription_tier: "free",
         outcome: "success",
+        selected_model: "agent-model-free",
+        configured_model: "deepseek/deepseek-v4-flash",
+        response_model: "deepseek/deepseek-v4-flash",
+        fallback_served: false,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },
@@ -311,6 +385,10 @@ describe("captureAgentCompletionAnalytics", () => {
       sandboxInfo: { type: "e2b" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
     });
 
     expect(capture).toHaveBeenCalledTimes(1);
@@ -322,6 +400,10 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "pro",
         subscription_tier: "pro",
         outcome: "success",
+        selected_model: "agent-model",
+        configured_model: "deepseek/deepseek-v4-pro",
+        response_model: "deepseek/deepseek-v4-pro",
+        fallback_served: false,
         sandboxType: "e2b",
         sandbox_type: "e2b",
       },
@@ -330,7 +412,7 @@ describe("captureAgentCompletionAnalytics", () => {
 });
 
 describe("captureUsageCost", () => {
-  it("captures a user-scoped cost event with queryable dollar fields", () => {
+  it("keeps model=auto while adding the actual served model and allowance fields", () => {
     const capture = jest.fn();
 
     captureUsageCost({
@@ -341,8 +423,10 @@ describe("captureUsageCost", () => {
       chatId: "chat_123",
       endpoint: "/api/chat",
       mode: "agent",
+      agentPermissionMode: "ask_approval",
+      responseModel: "deepseek/deepseek-v4-pro",
       usage: {
-        model: "claude-sonnet",
+        model: "auto",
         type: "extra",
         inputTokens: 1000,
         outputTokens: 500,
@@ -352,8 +436,11 @@ describe("captureUsageCost", () => {
         costDollars: 0.42,
         includedCostDollars: 0.1,
         extraUsageCostDollars: 0.32,
+        uncoveredCostDollars: 0,
         includedPointsDeducted: 1000,
         extraUsagePointsDeducted: 3200,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
         modelCostDollars: 0.3,
         nonModelCostDollars: 0.12,
         costSource: "provider",
@@ -378,7 +465,9 @@ describe("captureUsageCost", () => {
         chat_id: "chat_123",
         endpoint: "/api/chat",
         mode: "agent",
-        model: "claude-sonnet",
+        agent_permission_mode: "ask_approval",
+        model: "auto",
+        response_model: "deepseek/deepseek-v4-pro",
         usage_type: "extra",
         cost_dollars: 0.42,
         included_cost_dollars: 0.1,
@@ -405,6 +494,126 @@ describe("captureUsageCost", () => {
         }),
       }),
     });
+    expect(capture.mock.calls[0][0].properties.$set).not.toHaveProperty(
+      "agent_permission_mode",
+    );
+  });
+
+  it("omits response_model when served-model metadata is unavailable", () => {
+    const capture = jest.fn();
+
+    captureUsageCost({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "pro",
+      chatId: "chat_123",
+      endpoint: "/api/chat",
+      mode: "agent",
+      usage: {
+        model: "auto",
+        type: "included",
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 150,
+        costDollars: 0.01,
+        includedCostDollars: 0.01,
+        extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
+        includedPointsDeducted: 100,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+        modelCostDollars: 0.01,
+        nonModelCostDollars: 0,
+        costSource: "provider",
+      },
+    });
+
+    expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
+      "response_model",
+    );
+  });
+});
+
+describe("captureUsageSettlement", () => {
+  it("captures one queryable event for an actual provider-step settlement", () => {
+    const capture = jest.fn();
+
+    captureUsageSettlement({
+      posthog: { capture } as any,
+      userId: "user_123",
+      subscription: "team",
+      organizationId: "org_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      model: "anthropic/claude-opus",
+      requestId: "run_123",
+      usageSettlementId: "settlement_123",
+      settlementSequence: 2,
+      currentCostDollars: 1.75,
+      requestedDeltaPoints: 12_500,
+      deduction: {
+        includedPointsDeducted: 2_500,
+        extraUsagePointsDeducted: 8_000,
+        uncoveredPoints: 2_000,
+        usageDeductionFailed: true,
+        usageDeductionFailureReason: "monthly_cap_exceeded",
+      },
+      forced: false,
+    });
+
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "hackerai-usage_settlement",
+      properties: {
+        user_id: "user_123",
+        subscription: "team",
+        subscription_tier: "team",
+        organization_id: "org_123",
+        chat_id: "chat_123",
+        request_id: "run_123",
+        usage_settlement_id: "settlement_123",
+        endpoint: "/api/agent-long",
+        mode: "agent",
+        model: "anthropic/claude-opus",
+        settlement_sequence: 2,
+        current_cost_dollars: 1.75,
+        requested_delta_points: 12_500,
+        included_points_deducted: 2_500,
+        extra_usage_points_deducted: 8_000,
+        uncovered_points: 2_000,
+        usage_deduction_failed: true,
+        usage_deduction_failure_reason: "monthly_cap_exceeded",
+        forced: false,
+        settlement_event_version: 1,
+      },
+    });
+  });
+
+  it("does nothing without a PostHog client", () => {
+    expect(() =>
+      captureUsageSettlement({
+        posthog: null,
+        userId: "user_123",
+        subscription: "pro",
+        chatId: "chat_123",
+        endpoint: "/api/chat",
+        mode: "agent",
+        model: "agent-model",
+        usageSettlementId: "settlement_123",
+        settlementSequence: 1,
+        currentCostDollars: 0.1,
+        requestedDeltaPoints: 1_400,
+        deduction: {
+          includedPointsDeducted: 1_400,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 0,
+          usageDeductionFailed: false,
+        },
+        forced: false,
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -564,7 +773,7 @@ describe("createChatLogger provider stream termination", () => {
         active_tools_mode: "all",
         reasoning_enabled: true,
         fallback_model_count: 1,
-        fallback_model_slugs: ["x-ai/grok-4.3"],
+        fallback_model_slugs: ["x-ai/grok-4.5"],
         has_user_attribution: true,
         has_multimodal_tool_results: true,
       };
@@ -719,8 +928,7 @@ describe("createChatLogger provider stream termination", () => {
       );
       const fields = posthogErrorCall?.[1] as { error?: unknown } | undefined;
       const capturedError = fields?.error as
-        | (Error & { cause?: unknown })
-        | undefined;
+        (Error & { cause?: unknown }) | undefined;
 
       expect(capturedError).toBeInstanceOf(Error);
       expect(capturedError?.name).toBe("AI_APICallError");
@@ -733,7 +941,7 @@ describe("createChatLogger provider stream termination", () => {
     }
   });
 
-  it("normalizes synthetic SSE JSON wrapper errors using provider status", () => {
+  it("normalizes and fingerprints synthetic SSE JSON wrapper errors using provider status", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
@@ -745,16 +953,27 @@ describe("createChatLogger provider stream termination", () => {
       const err = {
         name: "Error",
         message: "JSON error injected into SSE stream",
-        code: 429,
+        code: 502,
+        data: {
+          id: "gen-sse-json-wrapper",
+          error: {
+            code: 502,
+            metadata: {
+              provider_name: "Fireworks",
+            },
+          },
+        },
       };
 
       chatLogger.recordProviderError(err, {
         mode: "ask",
-        model: "ask-model",
-        requestedModelSlug: "x-ai/grok-4.3",
+        model: "ask-model-free",
+        requestedModelSlug: "deepseek/deepseek-v4-flash",
       });
       chatLogger.emitUnexpectedError(err);
 
+      const expectedFingerprint =
+        "provider_error|provider_5xx|status_502|provider_fireworks|model_deepseek/deepseek-v4-flash";
       const structuredErrorLog = errorSpy.mock.calls
         .map((call) => call[0])
         .find(
@@ -769,25 +988,37 @@ describe("createChatLogger provider stream termination", () => {
           call[1] !== null,
       );
       const fields = posthogErrorCall?.[1] as
-        | { error?: unknown; providerDiagnosticMessage?: unknown }
+        | {
+            error?: unknown;
+            providerDiagnosticMessage?: unknown;
+            providerErrorFingerprint?: unknown;
+          }
         | undefined;
       const capturedError = fields?.error as Error | undefined;
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
 
       expect(structuredErrorLog).toContain(
-        '"provider_diagnostic_message":"Provider rate limited (429)"',
+        '"provider_diagnostic_message":"Provider server error (502)"',
       );
-      expect(structuredErrorLog).toContain('"provider_status_code":429');
+      expect(structuredErrorLog).toContain('"provider_status_code":502');
+      expect(structuredErrorLog).toContain(
+        `"provider_error_fingerprint":"${expectedFingerprint}"`,
+      );
       expect(capturedError).toBeInstanceOf(Error);
-      expect(capturedError?.message).toBe("Provider rate limited (429)");
-      expect(fields?.providerDiagnosticMessage).toBe(
-        "Provider rate limited (429)",
+      expect(capturedError?.message).toBe(
+        `Provider server error (502) [${expectedFingerprint}]`,
       );
-      expect(wideEvent.error.message).toBe("Provider rate limited (429)");
+      expect(fields?.providerDiagnosticMessage).toBe(
+        "Provider server error (502)",
+      );
+      expect(fields?.providerErrorFingerprint).toBe(expectedFingerprint);
+      expect(wideEvent.error.message).toBe("Provider server error (502)");
       expect(wideEvent.provider_error).toMatchObject({
-        category: "rate_limited",
-        status_code: 429,
-        message: "Provider rate limited (429)",
+        category: "provider_5xx",
+        status_code: 502,
+        message: "Provider server error (502)",
+        provider_name: "Fireworks",
+        provider_error_fingerprint: expectedFingerprint,
       });
     } finally {
       errorSpy.mockRestore();
@@ -911,6 +1142,51 @@ describe("createChatLogger ChatSDKError metadata", () => {
         actualSandbox: "remote-connection-1",
       });
       expect(wideEvent.error.metadata).not.toHaveProperty("actualSandboxName");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("marks transient sandbox upload failures retriable", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_upload_timeout",
+        endpoint: "/api/agent",
+      });
+
+      chatLogger.emitChatError(
+        new ChatSDKError(
+          "bad_request:sandbox",
+          "Failed to upload 1 attachment to the computer. Please try again.",
+          {
+            upload_failure_kind: "url",
+            upload_failure_cause:
+              "Command timeout after 35000ms [firstMsg: no]",
+            upload_failure_transient_sandbox_command: true,
+            upload_failure_protocol: "https",
+            upload_failure_url_length: 512,
+            ignored_detail: "too noisy",
+          },
+        ),
+      );
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.error).toMatchObject({
+        code: "bad_request:sandbox",
+        message: "The computer attachment upload failed.",
+        cause:
+          "Failed to upload 1 attachment to the computer. Please try again.",
+        retriable: true,
+      });
+      expect(wideEvent.error.metadata).toEqual({
+        upload_failure_kind: "url",
+        upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
+        upload_failure_transient_sandbox_command: true,
+        upload_failure_protocol: "https",
+        upload_failure_url_length: 512,
+      });
     } finally {
       logSpy.mockRestore();
     }
@@ -1131,6 +1407,7 @@ describe("createChatLogger OpenRouter metadata", () => {
           openrouter_generation_id: "gen-123",
           openrouter_request_id: "req-123",
           openrouter_strategy: "direct",
+          openrouter_upstream_inference_cost: 0.00016,
         },
       );
       chatLogger.emitSuccess({
@@ -1148,8 +1425,64 @@ describe("createChatLogger OpenRouter metadata", () => {
         openrouter_generation_id: "gen-123",
         openrouter_request_id: "req-123",
         openrouter_strategy: "direct",
+        openrouter_upstream_inference_cost: 0.00016,
       });
       expect(wideEvent.model).not.toHaveProperty("provider_gateway");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("uses OpenRouter upstream inference cost from raw usage cost details in wide events", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_provider_usage_cost_details",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({
+        mode: "ask",
+        isTemporary: false,
+        isRegenerate: false,
+      });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          notesEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        {
+          inputTokens: 5264,
+          outputTokens: 18,
+          raw: {
+            cost: 0,
+            cost_details: {
+              upstream_inference_cost: 0.0030955,
+            },
+          },
+        },
+        {
+          provider_name: "Google",
+          openrouter_generation_id: "gen-123",
+          openrouter_is_byok: true,
+        },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.usage.total_cost).toBeCloseTo(0.0030955);
     } finally {
       logSpy.mockRestore();
     }

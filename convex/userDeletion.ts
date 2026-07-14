@@ -30,6 +30,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "referral_attributions",
     "referral_rewards",
     "revenue_events",
+    "extra_usage_purchases",
     "paid_start_events",
     "unit_economics_daily",
     "user_suspensions",
@@ -52,12 +53,30 @@ type CleanupStats = {
   deleted: Record<string, number>;
   anonymized: Record<string, number>;
   retained: Record<string, number>;
+  hasMore: boolean;
   orphanChatSummariesDeleted: number;
   orphanChatSummariesScanned: number;
   orphanChatSummariesIsDone: boolean;
   orphanChatSummariesContinueCursor?: string;
   s3ObjectsQueued: number;
 };
+
+type IndexedBatch<T extends AnyDoc> = {
+  docs: T[];
+  hasMore: boolean;
+};
+
+const cleanupStatsValidator = v.object({
+  deleted: v.any(),
+  anonymized: v.any(),
+  retained: v.any(),
+  hasMore: v.boolean(),
+  orphanChatSummariesDeleted: v.number(),
+  orphanChatSummariesScanned: v.number(),
+  orphanChatSummariesIsDone: v.boolean(),
+  orphanChatSummariesContinueCursor: v.optional(v.string()),
+  s3ObjectsQueued: v.number(),
+});
 
 function createStats(): CleanupStats {
   return {
@@ -66,6 +85,7 @@ function createStats(): CleanupStats {
     retained: Object.fromEntries(
       USER_DELETION_TABLE_POLICY.retain.map((table) => [table, 0]),
     ),
+    hasMore: false,
     orphanChatSummariesDeleted: 0,
     orphanChatSummariesScanned: 0,
     orphanChatSummariesIsDone: true,
@@ -89,6 +109,7 @@ function mergeStats(target: CleanupStats, source: CleanupStats) {
   for (const [table, count] of Object.entries(source.anonymized)) {
     increment(target.anonymized, table, count);
   }
+  target.hasMore ||= source.hasMore;
   target.orphanChatSummariesDeleted += source.orphanChatSummariesDeleted;
   target.orphanChatSummariesScanned += source.orphanChatSummariesScanned;
   target.s3ObjectsQueued += source.s3ObjectsQueued;
@@ -106,23 +127,25 @@ function uniqueDocs<T extends AnyDoc>(docs: Array<T | null | undefined>): T[] {
   return Array.from(byId.values());
 }
 
-async function collectByIndex<T extends AnyDoc>(
+async function collectByIndexBatch<T extends AnyDoc>(
   ctx: MutationCtx,
   table: string,
   indexName: string,
   build: (q: any) => any,
-): Promise<T[]> {
-  const rows = await (ctx.db.query(table as any) as any)
-    .withIndex(indexName, build)
-    .take(MAX_CLEANUP_DOCS_PER_INDEX + 1);
-
-  if (rows.length > MAX_CLEANUP_DOCS_PER_INDEX) {
-    throw new Error(
-      `Account cleanup matched more than ${MAX_CLEANUP_DOCS_PER_INDEX} rows in ${table}.${indexName}; run a narrower cleanup before deleting this account.`,
-    );
+  limit = MAX_CLEANUP_DOCS_PER_INDEX,
+): Promise<IndexedBatch<T>> {
+  if (limit <= 0) {
+    return { docs: [], hasMore: true };
   }
 
-  return rows;
+  const rows = await (ctx.db.query(table as any) as any)
+    .withIndex(indexName, build)
+    .take(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const docs = hasMore ? rows.slice(0, limit) : rows;
+
+  return { docs, hasMore };
 }
 
 async function firstByIndex<T extends AnyDoc>(
@@ -175,25 +198,56 @@ async function anonymizeDocs(
 async function collectChatSummariesForChats(
   ctx: MutationCtx,
   chats: Doc<"chats">[],
+  stats: CleanupStats,
 ) {
-  const summariesByChat = await Promise.all(
-    chats.map((chat) =>
-      collectByIndex<Doc<"chat_summaries">>(
-        ctx,
-        "chat_summaries",
-        "by_chat_id",
-        (q) => q.eq("chat_id", chat.id),
-      ),
-    ),
-  );
+  const summaries: Doc<"chat_summaries">[] = [];
+  const incompleteChatIds = new Set<string>();
+  let remainingSummaryReads = MAX_CLEANUP_DOCS_PER_INDEX;
 
-  const latestSummaries = await Promise.all(
-    chats.map((chat) =>
-      chat.latest_summary_id ? ctx.db.get(chat.latest_summary_id) : null,
-    ),
-  );
+  for (const chat of chats) {
+    if (remainingSummaryReads <= 0) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
 
-  return uniqueDocs([...summariesByChat.flat(), ...latestSummaries]);
+    const batch = await collectByIndexBatch<Doc<"chat_summaries">>(
+      ctx,
+      "chat_summaries",
+      "by_chat_id",
+      (q) => q.eq("chat_id", chat.id),
+      remainingSummaryReads,
+    );
+    summaries.push(...batch.docs);
+    remainingSummaryReads -= batch.docs.length;
+
+    if (batch.hasMore) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+
+    if (!chat.latest_summary_id) {
+      continue;
+    }
+
+    if (remainingSummaryReads <= 0) {
+      stats.hasMore = true;
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+
+    const latestSummary = await ctx.db.get(chat.latest_summary_id);
+    remainingSummaryReads -= 1;
+    if (latestSummary) {
+      summaries.push(latestSummary);
+    }
+  }
+
+  return {
+    summaries: uniqueDocs(summaries),
+    incompleteChatIds,
+  };
 }
 
 async function deleteFiles(
@@ -238,64 +292,73 @@ async function cleanupUserDataForUser(
   const now = Date.now();
 
   const [
-    chats,
-    files,
-    notes,
-    customization,
-    messages,
-    tempStreams,
-    localSandboxTokens,
-    localSandboxConnections,
-    extraUsage,
-    teamMemberUsage,
-    cancellationReasonDetails,
+    chatsBatch,
+    filesBatch,
+    notesBatch,
+    customizationBatch,
+    messagesBatch,
+    tempStreamsBatch,
+    localSandboxTokensBatch,
+    localSandboxConnectionsBatch,
+    extraUsageBatch,
+    teamMemberUsageBatch,
+    cancellationReasonDetailsBatch,
   ] = await Promise.all([
-    collectByIndex<Doc<"chats">>(ctx, "chats", "by_user_and_updated", (q) =>
+    collectByIndexBatch<Doc<"chats">>(
+      ctx,
+      "chats",
+      "by_user_and_updated",
+      (q) => q.eq("user_id", userId),
+    ),
+    collectByIndexBatch<Doc<"files">>(ctx, "files", "by_user_id", (q) =>
       q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"files">>(ctx, "files", "by_user_id", (q) =>
-      q.eq("user_id", userId),
+    collectByIndexBatch<Doc<"notes">>(
+      ctx,
+      "notes",
+      "by_user_and_updated",
+      (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"notes">>(ctx, "notes", "by_user_and_updated", (q) =>
-      q.eq("user_id", userId),
-    ),
-    collectByIndex<Doc<"user_customization">>(
+    collectByIndexBatch<Doc<"user_customization">>(
       ctx,
       "user_customization",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"messages">>(ctx, "messages", "by_user_id", (q) =>
+    collectByIndexBatch<Doc<"messages">>(ctx, "messages", "by_user_id", (q) =>
       q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"temp_streams">>(
+    collectByIndexBatch<Doc<"temp_streams">>(
       ctx,
       "temp_streams",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"local_sandbox_tokens">>(
+    collectByIndexBatch<Doc<"local_sandbox_tokens">>(
       ctx,
       "local_sandbox_tokens",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"local_sandbox_connections">>(
+    collectByIndexBatch<Doc<"local_sandbox_connections">>(
       ctx,
       "local_sandbox_connections",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"extra_usage">>(ctx, "extra_usage", "by_user_id", (q) =>
-      q.eq("user_id", userId),
+    collectByIndexBatch<Doc<"extra_usage">>(
+      ctx,
+      "extra_usage",
+      "by_user_id",
+      (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"team_member_usage">>(
+    collectByIndexBatch<Doc<"team_member_usage">>(
       ctx,
       "team_member_usage",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"cancellation_reason_details">>(
+    collectByIndexBatch<Doc<"cancellation_reason_details">>(
       ctx,
       "cancellation_reason_details",
       "by_user_id_and_created_at",
@@ -303,16 +366,50 @@ async function cleanupUserDataForUser(
     ),
   ]);
 
+  const deletionBatches = [
+    chatsBatch,
+    filesBatch,
+    notesBatch,
+    customizationBatch,
+    messagesBatch,
+    tempStreamsBatch,
+    localSandboxTokensBatch,
+    localSandboxConnectionsBatch,
+    extraUsageBatch,
+    teamMemberUsageBatch,
+    cancellationReasonDetailsBatch,
+  ];
+  stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
+
+  const chats = chatsBatch.docs;
+  const files = filesBatch.docs;
+  const notes = notesBatch.docs;
+  const customization = customizationBatch.docs;
+  const messages = messagesBatch.docs;
+  const tempStreams = tempStreamsBatch.docs;
+  const localSandboxTokens = localSandboxTokensBatch.docs;
+  const localSandboxConnections = localSandboxConnectionsBatch.docs;
+  const extraUsage = extraUsageBatch.docs;
+  const teamMemberUsage = teamMemberUsageBatch.docs;
+  const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+
   const feedbackIds = uniqueDocs(messages)
     .map((message) => message.feedback_id)
     .filter((id): id is Id<"feedback"> => !!id);
   const feedback = await Promise.all(feedbackIds.map((id) => ctx.db.get(id)));
-  const chatSummaries = await collectChatSummariesForChats(ctx, chats);
+  const { summaries: chatSummaries, incompleteChatIds } =
+    await collectChatSummariesForChats(ctx, chats, stats);
+  const chatsReadyToDelete = messagesBatch.hasMore
+    ? []
+    : chats.filter((chat) => !incompleteChatIds.has(chat.id));
+  if (chatsReadyToDelete.length < chats.length) {
+    stats.hasMore = true;
+  }
 
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
-  await deleteDocs(ctx, stats, "chats", chats, mode);
+  await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
@@ -342,110 +439,154 @@ async function cleanupUserDataForUser(
   );
 
   const [
-    cancellationReasons,
-    usageLogs,
-    referralCodes,
-    referredAttributions,
-    referrerAttributions,
-    referralRewardsByUser,
-    referralRewardsByReferrer,
-    referralRewardsByReferred,
-    userSuspensions,
-    revenueByUser,
-    revenueByEntity,
-    paidStartsByUser,
-    paidStartsByEntity,
-    unitEconomicsByUser,
-    unitEconomicsByEntity,
+    cancellationReasonsBatch,
+    usageLogsBatch,
+    referralCodesBatch,
+    referredAttributionsBatch,
+    referrerAttributionsBatch,
+    referralRewardsByUserBatch,
+    referralRewardsByReferrerBatch,
+    referralRewardsByReferredBatch,
+    userSuspensionsBatch,
+    revenueByUserBatch,
+    revenueByEntityBatch,
+    extraUsagePurchasesBatch,
+    paidStartsByUserBatch,
+    paidStartsByEntityBatch,
+    unitEconomicsByUserBatch,
+    unitEconomicsByEntityBatch,
   ] = await Promise.all([
-    collectByIndex<Doc<"cancellation_reasons">>(
+    collectByIndexBatch<Doc<"cancellation_reasons">>(
       ctx,
       "cancellation_reasons",
       "by_user_started",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"usage_logs">>(ctx, "usage_logs", "by_user", (q) =>
+    collectByIndexBatch<Doc<"usage_logs">>(ctx, "usage_logs", "by_user", (q) =>
       q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"referral_codes">>(
+    collectByIndexBatch<Doc<"referral_codes">>(
       ctx,
       "referral_codes",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"referral_attributions">>(
+    collectByIndexBatch<Doc<"referral_attributions">>(
       ctx,
       "referral_attributions",
       "by_referred_user_id",
       (q) => q.eq("referred_user_id", userId),
     ),
-    collectByIndex<Doc<"referral_attributions">>(
+    collectByIndexBatch<Doc<"referral_attributions">>(
       ctx,
       "referral_attributions",
       "by_referrer_user_id",
       (q) => q.eq("referrer_user_id", userId),
     ),
-    collectByIndex<Doc<"referral_rewards">>(
+    collectByIndexBatch<Doc<"referral_rewards">>(
       ctx,
       "referral_rewards",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"referral_rewards">>(
+    collectByIndexBatch<Doc<"referral_rewards">>(
       ctx,
       "referral_rewards",
       "by_referrer_user_id",
       (q) => q.eq("referrer_user_id", userId),
     ),
-    collectByIndex<Doc<"referral_rewards">>(
+    collectByIndexBatch<Doc<"referral_rewards">>(
       ctx,
       "referral_rewards",
       "by_referred_user_id",
       (q) => q.eq("referred_user_id", userId),
     ),
-    collectByIndex<Doc<"user_suspensions">>(
+    collectByIndexBatch<Doc<"user_suspensions">>(
       ctx,
       "user_suspensions",
       "by_user_id",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"revenue_events">>(
+    collectByIndexBatch<Doc<"revenue_events">>(
       ctx,
       "revenue_events",
       "by_user_occurred",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"revenue_events">>(
+    collectByIndexBatch<Doc<"revenue_events">>(
       ctx,
       "revenue_events",
       "by_entity_occurred",
       (q) => q.eq("entity_type", "user").eq("entity_id", userId),
     ),
-    collectByIndex<Doc<"paid_start_events">>(
+    collectByIndexBatch<Doc<"extra_usage_purchases">>(
+      ctx,
+      "extra_usage_purchases",
+      "by_user_created_at",
+      (q) => q.eq("user_id", userId),
+    ),
+    collectByIndexBatch<Doc<"paid_start_events">>(
       ctx,
       "paid_start_events",
       "by_user_day",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"paid_start_events">>(
+    collectByIndexBatch<Doc<"paid_start_events">>(
       ctx,
       "paid_start_events",
       "by_entity_day",
       (q) => q.eq("entity_type", "user").eq("entity_id", userId),
     ),
-    collectByIndex<Doc<"unit_economics_daily">>(
+    collectByIndexBatch<Doc<"unit_economics_daily">>(
       ctx,
       "unit_economics_daily",
       "by_user_day",
       (q) => q.eq("user_id", userId),
     ),
-    collectByIndex<Doc<"unit_economics_daily">>(
+    collectByIndexBatch<Doc<"unit_economics_daily">>(
       ctx,
       "unit_economics_daily",
       "by_entity_day",
       (q) => q.eq("entity_type", "user").eq("entity_id", userId),
     ),
   ]);
+
+  const anonymizeBatches = [
+    cancellationReasonsBatch,
+    usageLogsBatch,
+    referralCodesBatch,
+    referredAttributionsBatch,
+    referrerAttributionsBatch,
+    referralRewardsByUserBatch,
+    referralRewardsByReferrerBatch,
+    referralRewardsByReferredBatch,
+    userSuspensionsBatch,
+    revenueByUserBatch,
+    revenueByEntityBatch,
+    extraUsagePurchasesBatch,
+    paidStartsByUserBatch,
+    paidStartsByEntityBatch,
+    unitEconomicsByUserBatch,
+    unitEconomicsByEntityBatch,
+  ];
+  stats.hasMore ||= anonymizeBatches.some((batch) => batch.hasMore);
+
+  const cancellationReasons = cancellationReasonsBatch.docs;
+  const usageLogs = usageLogsBatch.docs;
+  const referralCodes = referralCodesBatch.docs;
+  const referredAttributions = referredAttributionsBatch.docs;
+  const referrerAttributions = referrerAttributionsBatch.docs;
+  const referralRewardsByUser = referralRewardsByUserBatch.docs;
+  const referralRewardsByReferrer = referralRewardsByReferrerBatch.docs;
+  const referralRewardsByReferred = referralRewardsByReferredBatch.docs;
+  const userSuspensions = userSuspensionsBatch.docs;
+  const revenueByUser = revenueByUserBatch.docs;
+  const revenueByEntity = revenueByEntityBatch.docs;
+  const extraUsagePurchases = extraUsagePurchasesBatch.docs;
+  const paidStartsByUser = paidStartsByUserBatch.docs;
+  const paidStartsByEntity = paidStartsByEntityBatch.docs;
+  const unitEconomicsByUser = unitEconomicsByUserBatch.docs;
+  const unitEconomicsByEntity = unitEconomicsByEntityBatch.docs;
 
   await anonymizeDocs(
     ctx,
@@ -545,6 +686,14 @@ async function cleanupUserDataForUser(
   await anonymizeDocs(
     ctx,
     stats,
+    "extra_usage_purchases",
+    extraUsagePurchases,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
     "paid_start_events",
     [...paidStartsByUser, ...paidStartsByEntity],
     anonymizeEntityLedger,
@@ -579,6 +728,7 @@ async function cleanupOrphanChatSummaries(
   stats.orphanChatSummariesScanned = page.page.length;
   stats.orphanChatSummariesIsDone = page.isDone;
   stats.orphanChatSummariesContinueCursor = page.continueCursor ?? undefined;
+  stats.hasMore = !page.isDone;
 
   const orphanSummaries: Doc<"chat_summaries">[] = [];
   for (const summary of page.page as Doc<"chat_summaries">[]) {
@@ -604,15 +754,14 @@ async function cleanupOrphanChatSummaries(
  */
 export const deleteAllUserData = mutation({
   args: {},
-  returns: v.null(),
+  returns: cleanupStatsValidator,
   handler: async (ctx) => {
     const user = await ctx.auth.getUserIdentity();
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    await cleanupUserDataForUser(ctx, user.subject, "execute");
-    return null;
+    return await cleanupUserDataForUser(ctx, user.subject, "execute");
   },
 });
 
@@ -621,11 +770,10 @@ export const deleteAllUserDataByService = mutation({
     serviceKey: v.string(),
     userId: v.string(),
   },
-  returns: v.null(),
+  returns: cleanupStatsValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    await cleanupUserDataForUser(ctx, args.userId, "execute");
-    return null;
+    return await cleanupUserDataForUser(ctx, args.userId, "execute");
   },
 });
 
@@ -638,16 +786,7 @@ export const cleanupDeletedUserResidue = mutation({
     orphanCursor: v.optional(v.union(v.string(), v.null())),
     orphanNumItems: v.optional(v.number()),
   },
-  returns: v.object({
-    deleted: v.any(),
-    anonymized: v.any(),
-    retained: v.any(),
-    orphanChatSummariesDeleted: v.number(),
-    orphanChatSummariesScanned: v.number(),
-    orphanChatSummariesIsDone: v.boolean(),
-    orphanChatSummariesContinueCursor: v.optional(v.string()),
-    s3ObjectsQueued: v.number(),
-  }),
+  returns: cleanupStatsValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 

@@ -1,11 +1,11 @@
 "use client";
 
 import {
-  AlertTriangle,
   Brain,
   Check,
   ChevronDown,
   ChevronRight,
+  Loader2,
   Lock,
 } from "lucide-react";
 import {
@@ -26,22 +26,22 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { useState } from "react";
-import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types/chat";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import {
+  canUseMaxModel,
+  normalizeMaxModelForSubscription,
+  normalizeSelectedModelForSubscription,
+  type ChatMode,
+  type SelectedModel,
+  type SubscriptionTier,
+} from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
@@ -50,10 +50,6 @@ import {
   getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
-import {
-  dismissHighCostModelUsageNotice,
-  isHighCostModelUsageNoticeDismissed,
-} from "@/lib/utils/pro-max-notice-cookie";
 
 // ── Shared sub-components ──────────────────────────────────────────
 
@@ -66,13 +62,59 @@ interface ModelSelectorProps {
 const AUTO_MODEL_DESCRIPTION =
   "Balanced quality and speed, recommended for most tasks";
 
-const shouldWarnForPaidHighCostModel = (
+const isMaxModel = (model: SelectedModel): boolean => model === "hackerai-max";
+
+const canUnlockMaxWithExtraUsage = (subscription: SubscriptionTier): boolean =>
+  subscription !== "free" && subscription !== "ultra";
+
+const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
+  extraUsageAvailable = false,
 ): boolean =>
-  subscription !== "free" &&
-  subscription !== "ultra" &&
-  (model === "hackerai-max" || model === "hackerai-pro");
+  subscription === "free" ||
+  (isMaxModel(model) && !canUseMaxModel(subscription, { extraUsageAvailable }));
+
+const getLockedModelCta = (
+  model: SelectedModel,
+  subscription: SubscriptionTier,
+): string => {
+  if (isMaxModel(model) && canUnlockMaxWithExtraUsage(subscription)) {
+    return "Set up Extra Usage";
+  }
+  return isMaxModel(model) ? "Upgrade to Ultra" : "Upgrade your plan";
+};
+
+const getLockedModelAnnouncement = (
+  model: SelectedModel,
+  subscription: SubscriptionTier,
+): string =>
+  `${getLockedModelCta(model, subscription)}${
+    isMaxModel(model) ? " for Max mode" : " to unlock"
+  }`;
+
+const handleLockedModelCta = ({
+  mobile,
+  option,
+  subscription,
+}: {
+  mobile: boolean;
+  option: ModelOption;
+  subscription: SubscriptionTier;
+}) => {
+  const maxLocked = isMaxModel(option.id);
+  if (maxLocked && canUnlockMaxWithExtraUsage(subscription)) {
+    openSettingsDialog("Extra Usage");
+    return;
+  }
+
+  redirectToPricing({
+    surface: mobile ? "model_selector_mobile" : "model_selector",
+    source: maxLocked ? "max_model_gate" : "locked_model_option",
+    from_tier: subscription,
+    cta_text: getLockedModelCta(option.id, subscription),
+  });
+};
 
 const AutoOptionButton = ({
   isSelected,
@@ -112,26 +154,46 @@ const AutoOptionButton = ({
 const ModelOptionButton = ({
   option,
   isSelected,
-  isFreeUser,
+  isLocked,
+  isPending,
+  subscription,
   onSelect,
-  mode,
   mobile = false,
 }: {
   option: ModelOption;
   isSelected: boolean;
-  isFreeUser: boolean;
+  isLocked: boolean;
+  isPending: boolean;
+  subscription: SubscriptionTier;
   onSelect: (option: ModelOption) => void;
-  mode: ChatMode;
   mobile?: boolean;
 }) => {
   const button = (
     <button
       type="button"
       onClick={() => onSelect(option)}
+      disabled={isPending}
+      aria-busy={isPending || undefined}
       aria-pressed={isSelected}
-      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+      aria-label={
+        isPending
+          ? `${option.label}. Checking Extra Usage for Max mode.`
+          : isLocked
+            ? `${option.label}. ${getLockedModelAnnouncement(
+                option.id,
+                subscription,
+              )}.`
+            : undefined
+      }
+      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
         mobile ? "py-2.5" : "py-1.5"
-      } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+      } ${
+        isPending
+          ? `cursor-wait opacity-80 ${isSelected ? "bg-accent" : ""}`
+          : isSelected
+            ? "cursor-pointer bg-accent"
+            : "cursor-pointer hover:bg-muted/50 active:bg-muted/50"
+      }`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
@@ -150,7 +212,9 @@ const ModelOptionButton = ({
           {option.id !== "auto" && <CostIndicator modelId={option.id} />}
         </div>
       </div>
-      {isFreeUser ? (
+      {isPending ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+      ) : isLocked ? (
         <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
       ) : isSelected ? (
         <Check className="h-3.5 w-3.5 shrink-0" />
@@ -158,9 +222,9 @@ const ModelOptionButton = ({
     </button>
   );
 
-  // Free users get the upgrade tooltip from the parent ModelOptionList; skipping
+  // Locked options get the upgrade tooltip from the parent ModelOptionList; skipping
   // the inner one prevents a flicker where both nested tooltips race to render.
-  if (mobile || !option.description || isFreeUser) return button;
+  if (mobile || !option.description || isLocked) return button;
 
   return (
     <Tooltip delayDuration={150}>
@@ -191,7 +255,9 @@ const ModelOptionList = ({
   value,
   isAuto,
   isFreeUser,
-  mode,
+  subscription,
+  maxModelExtraUsageAvailable,
+  maxModelEntitlementLoading,
   onAutoSelect,
   onSelect,
   onClose,
@@ -201,7 +267,9 @@ const ModelOptionList = ({
   value: SelectedModel;
   isAuto: boolean;
   isFreeUser: boolean;
-  mode: ChatMode;
+  subscription: SubscriptionTier;
+  maxModelExtraUsageAvailable: boolean;
+  maxModelEntitlementLoading: boolean;
   onAutoSelect: () => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -219,13 +287,13 @@ const ModelOptionList = ({
               surface: mobile ? "model_selector_mobile" : "model_selector",
               source: "model_gate",
               from_tier: "free",
-              cta_text: "Get access to the top AI models",
+              cta_text: "Get access to paid models",
             });
           }}
           className="flex items-center justify-between rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-2 transition-colors hover:bg-primary/20 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <span className="text-sm font-semibold text-foreground">
-            Get access to the top AI models
+            Get access to paid models
           </span>
           <ChevronRight className="h-4 w-4 text-primary shrink-0" />
         </a>
@@ -244,7 +312,16 @@ const ModelOptionList = ({
 
     {options.map((option) => {
       const isSelected = value === option.id;
-      const showUpgradeTooltip = isFreeUser && !mobile;
+      const isLocked = isModelLockedForSubscription(
+        subscription,
+        option.id,
+        maxModelExtraUsageAvailable,
+      );
+      const isPending = isMaxModel(option.id) && maxModelEntitlementLoading;
+      const showUpgradeTooltip =
+        isLocked &&
+        !mobile &&
+        !(isMaxModel(option.id) && maxModelEntitlementLoading);
 
       if (!showUpgradeTooltip) {
         return (
@@ -252,9 +329,10 @@ const ModelOptionList = ({
             <ModelOptionButton
               option={option}
               isSelected={isSelected}
-              isFreeUser={isFreeUser}
+              isLocked={isLocked}
+              isPending={isPending}
+              subscription={subscription}
               onSelect={onSelect}
-              mode={mode}
               mobile={mobile}
             />
           </div>
@@ -268,9 +346,10 @@ const ModelOptionList = ({
               <ModelOptionButton
                 option={option}
                 isSelected={isSelected}
-                isFreeUser={isFreeUser}
+                isLocked={isLocked}
+                isPending={false}
+                subscription={subscription}
                 onSelect={onSelect}
-                mode={mode}
                 mobile={mobile}
               />
             </div>
@@ -297,25 +376,27 @@ const ModelOptionList = ({
             )}
             <p className="text-xs text-muted-foreground leading-relaxed pt-1">
               <a
-                href="#pricing"
+                href={
+                  isMaxModel(option.id) &&
+                  canUnlockMaxWithExtraUsage(subscription)
+                    ? "#extra-usage"
+                    : "#pricing"
+                }
                 onClick={(event) => {
                   event.preventDefault();
                   onClose();
-                  redirectToPricing({
-                    surface: mobile
-                      ? "model_selector_mobile"
-                      : "model_selector",
-                    source: "locked_model_tooltip",
-                    from_tier: "free",
-                    cta_text: "Upgrade your plan",
+                  handleLockedModelCta({
+                    mobile,
+                    option,
+                    subscription,
                   });
                 }}
                 className="text-foreground underline underline-offset-2 hover:text-foreground/80"
                 tabIndex={0}
               >
-                Upgrade your plan
-              </a>{" "}
-              to unlock.
+                {getLockedModelCta(option.id, subscription)}
+              </a>
+              {isMaxModel(option.id) ? " for Max mode." : " to unlock."}
             </p>
           </TooltipContent>
         </Tooltip>
@@ -328,13 +409,31 @@ const ModelOptionList = ({
 
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
-  const [pendingHighCostNotice, setPendingHighCostNotice] =
-    useState<ModelOption | null>(null);
   const { subscription } = useGlobalState();
-  const isMobile = useIsMobile();
+  const isMobile = Boolean(useIsMobile());
 
   const isFreeUser = subscription === "free";
-  const displayValue: SelectedModel = isFreeUser ? "auto" : value;
+  const shouldCheckPersonalMaxExtraUsage =
+    (subscription === "pro" || subscription === "pro-plus") &&
+    (open || value === "hackerai-max");
+  const maxModelEntitlement = useQuery(
+    api.extraUsage.getMaxModelExtraUsageEntitlement,
+    shouldCheckPersonalMaxExtraUsage ? {} : "skip",
+  );
+  const maxModelEntitlementLoading =
+    shouldCheckPersonalMaxExtraUsage && maxModelEntitlement === undefined;
+  const maxModelExtraUsageAvailable =
+    maxModelEntitlement?.extraUsageAvailable ?? false;
+  const subscriptionValue = normalizeSelectedModelForSubscription(
+    value,
+    subscription,
+  );
+  const displayValue =
+    value === "hackerai-max" && maxModelEntitlementLoading
+      ? subscriptionValue
+      : (normalizeMaxModelForSubscription(subscriptionValue, subscription, {
+          extraUsageAvailable: maxModelExtraUsageAvailable,
+        }) ?? "auto");
   const isAuto = displayValue === "auto";
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
@@ -363,38 +462,27 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   };
 
   const handleModelSelect = (option: ModelOption) => {
-    if (isFreeUser) {
-      setOpen(false);
-      redirectToPricing({
-        surface: isMobile ? "model_selector_mobile" : "model_selector",
-        source: "locked_model_option",
-        from_tier: "free",
-        cta_text: option.label,
-      });
+    if (isMaxModel(option.id) && maxModelEntitlementLoading) {
       return;
     }
 
     if (
-      shouldWarnForPaidHighCostModel(subscription, option.id) &&
-      !isHighCostModelUsageNoticeDismissed()
+      isModelLockedForSubscription(
+        subscription,
+        option.id,
+        maxModelExtraUsageAvailable,
+      )
     ) {
       setOpen(false);
-      setPendingHighCostNotice(option);
+      handleLockedModelCta({
+        mobile: isMobile,
+        option,
+        subscription,
+      });
       return;
     }
 
     applyModelChoice(option);
-  };
-
-  const handleDismissHighCostNotice = () => {
-    setPendingHighCostNotice(null);
-  };
-
-  const handleConfirmHighCostModel = () => {
-    if (!pendingHighCostNotice) return;
-    dismissHighCostModelUsageNotice();
-    applyModelChoice(pendingHighCostNotice);
-    setPendingHighCostNotice(null);
   };
 
   const trigger = (
@@ -411,50 +499,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     </Button>
   );
 
-  const usageLabel =
-    subscription === "team" ? "your team's usage" : "your usage";
-
-  const highCostUsageNoticeDialog = (
-    <AlertDialog
-      open={pendingHighCostNotice !== null}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) handleDismissHighCostNotice();
-      }}
-    >
-      <AlertDialogContent
-        data-testid="high-cost-model-warning"
-        className="sm:max-w-[460px]"
-      >
-        <AlertDialogHeader className="gap-2">
-          <AlertDialogTitle className="flex items-center gap-2 text-lg">
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-              <AlertTriangle className="h-4 w-4" />
-            </span>
-            <span>High-cost model</span>
-          </AlertDialogTitle>
-          <AlertDialogDescription className="text-left text-sm leading-relaxed text-foreground/80">
-            {pendingHighCostNotice?.label ?? "This model"} is powerful, but it
-            can use a lot more of {usageLabel} than Standard, and long requests
-            can use around $10 of usage.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel onClick={handleDismissHighCostNotice}>
-            Pick another model
-          </AlertDialogCancel>
-          <AlertDialogAction onClick={handleConfirmHighCostModel}>
-            Use {pendingHighCostNotice?.label ?? "model"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-
   if (isMobile) {
     return (
       <>
         {trigger}
-        {highCostUsageNoticeDialog}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
             side="bottom"
@@ -471,7 +519,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               value={displayValue}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
-              mode={mode}
+              subscription={subscription}
+              maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
+              maxModelEntitlementLoading={maxModelEntitlementLoading}
               onAutoSelect={handleAutoSelect}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -485,7 +535,6 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
 
   return (
     <>
-      {highCostUsageNoticeDialog}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
         <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
@@ -494,7 +543,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             value={displayValue}
             isAuto={isAuto}
             isFreeUser={isFreeUser}
-            mode={mode}
+            subscription={subscription}
+            maxModelExtraUsageAvailable={maxModelExtraUsageAvailable}
+            maxModelEntitlementLoading={maxModelEntitlementLoading}
             onAutoSelect={handleAutoSelect}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}

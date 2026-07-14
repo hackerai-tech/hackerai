@@ -6,6 +6,9 @@ import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
+import { logger } from "@/lib/logger";
+import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -16,6 +19,22 @@ type MembershipDeletionPlan = {
   deleteOrganization: boolean;
   blockReason?: string;
 };
+
+const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
+
+function parseConvexCleanupResult(result: unknown): { hasMore: boolean } {
+  if (
+    result &&
+    typeof result === "object" &&
+    typeof (result as { hasMore?: unknown }).hasMore === "boolean"
+  ) {
+    return { hasMore: (result as { hasMore: boolean }).hasMore };
+  }
+
+  throw new Error(
+    "Account cleanup returned an unexpected response. Please contact support so we can finish deleting this account.",
+  );
+}
 
 async function removeMembership(membership: OrganizationMembership) {
   try {
@@ -98,29 +117,51 @@ async function markAccountIdentityDeleted(
 }
 
 async function deleteConvexUserData(userId: string, serviceKey: string) {
-  await getConvexClient().mutation(
-    api.userDeletion.deleteAllUserDataByService,
-    {
-      serviceKey,
-      userId,
-    },
+  const convex = getConvexClient();
+
+  for (let batch = 0; batch < MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES; batch++) {
+    const result = await convex.mutation(
+      api.userDeletion.deleteAllUserDataByService,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+
+    if (!parseConvexCleanupResult(result).hasMore) {
+      return;
+    }
+  }
+
+  throw new Error(
+    "Account cleanup is taking longer than expected. Please contact support so we can finish deleting this account.",
   );
 }
 
 export const POST = async (req: NextRequest) => {
+  let stage = "authenticate";
+  let userIdForLog: string | undefined;
+  let membershipCount: number | undefined;
+  let freeQuotaSubjectPresent: boolean | undefined;
+
   try {
     // Enforce recent login (10-minute window) before any destructive action
     const { userId, freeQuotaSubject } =
       await getUserIDWithFreshLoginContext(req);
+    userIdForLog = userId;
+    freeQuotaSubjectPresent = Boolean(freeQuotaSubject);
 
     // List all org memberships for this user
     // NOTE: Pagination not required - users can only have one organization (max 2 if something goes wrong)
+    stage = "list_memberships";
     const memberships = await workos.userManagement.listOrganizationMemberships(
       {
         userId,
       },
     );
+    membershipCount = memberships.data.length;
 
+    stage = "plan_membership_deletions";
     const membershipDeletionPlans = await Promise.all(
       memberships.data.map(getMembershipDeletionPlan),
     );
@@ -136,14 +177,33 @@ export const POST = async (req: NextRequest) => {
     }
 
     const serviceKey = getConvexServiceKey();
+    stage = "mark_account_identity_deleted";
     await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
+
+    stage = "fence_active_agent_resources";
+    const activeAgentResources = await fenceAndGetActiveAgentResourcesForUser({
+      userId,
+    });
+    if (activeAgentResources.hasMore) {
+      throw new Error(
+        "Too many active agent resources to delete safely. Please stop active Agent runs and retry.",
+      );
+    }
+
+    stage = "close_active_agent_resources";
+    await closeAndCancelAgentResources(
+      activeAgentResources.resources,
+      "account-deleted",
+    );
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
+    stage = "delete_convex_user_data";
     await deleteConvexUserData(userId, serviceKey);
 
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.
+    stage = "delete_memberships_and_organizations";
     await Promise.all(
       membershipDeletionPlans.map(
         async ({ membership, deleteOrganization }) => {
@@ -214,6 +274,7 @@ export const POST = async (req: NextRequest) => {
 
     // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
     // even if this fails so the account is not left in a half-deleted state.
+    stage = "delete_rate_limit_keys";
     await deleteUserRateLimitKeys(userId).catch((err) => {
       console.warn(
         "Failed to clear Redis rate-limit keys during account deletion:",
@@ -222,6 +283,7 @@ export const POST = async (req: NextRequest) => {
     });
 
     // Finally, delete the WorkOS user
+    stage = "delete_workos_user";
     await workos.userManagement.deleteUser(userId);
 
     return NextResponse.json({ ok: true });
@@ -232,8 +294,23 @@ export const POST = async (req: NextRequest) => {
     const message =
       error && typeof error === "object" && "message" in (error as any)
         ? (error as any).message
-        : "Failed to cancel subscriptions and remove organizations";
-    console.error("Failed to cancel subscriptions and remove orgs:", error);
+        : "Failed to delete account";
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    logger.error(
+      "account_deletion_failed",
+      error instanceof Error ? error : undefined,
+      {
+        event: "account_deletion_failed",
+        service: "hackerai-web",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        stage,
+        user_id: userIdForLog,
+        membership_count: membershipCount,
+        free_quota_subject_present: freeQuotaSubjectPresent,
+        error_name: errorName,
+        error_message: message,
+      },
+    );
     return NextResponse.json({ error: message }, { status: 500 });
   }
 };

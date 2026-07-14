@@ -8,7 +8,9 @@
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -51,7 +53,7 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler";
-  endpoint: "/api/chat" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   version: string;
   region?: string;
 
@@ -108,6 +110,7 @@ export interface ChatWideEvent {
     openrouter_region?: string;
     openrouter_attempt?: number;
     openrouter_upstream_id?: string;
+    openrouter_upstream_inference_cost?: number;
     openrouter_selected_model?: string;
     openrouter_attempts?: OpenRouterModelMetadata["openrouter_attempts"];
     fallback_triggered?: boolean;
@@ -119,9 +122,7 @@ export interface ChatWideEvent {
       count: number;
       last_action: "appended_continue" | "trimmed";
       last_reason:
-        | "useful_assistant_tail"
-        | "no_useful_content"
-        | "dangling_tool_call";
+        "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
       last_content_types?: string[];
     };
   };
@@ -166,34 +167,6 @@ export interface ChatWideEvent {
     create_attempts: number;
   };
 
-  // Caido proxy setup timing — captures the first non-locked_wait ensureCaido call
-  // within a request. Subsequent calls in the same request await the same lock and
-  // are not recorded (they measure wait time, not setup cost).
-  caido?: {
-    path:
-      | "fast"
-      | "needs_start"
-      | "external"
-      | "locked_wait"
-      | "locked_wait_error"
-      | "cached_ready"
-      | "windows_unsupported"
-      | "setup_error";
-    duration_ms: number;
-    initial_script_ms?: number;
-    background_start_ms?: number;
-    health_poll_ms?: number;
-    reauth_script_ms?: number;
-    /** Bounded error kind — raw messages stay in debug-only console.warn. */
-    error_kind?:
-      | "install_failed"
-      | "start_timeout"
-      | "auth_failed"
-      | "external_unreachable"
-      | "setup_failed"
-      | "unknown";
-  };
-
   // Tool execution
   tool_call_count?: number;
 
@@ -234,6 +207,7 @@ export interface ChatWideEvent {
     requested_model_slug?: string;
     model_provider_slug?: string;
     openrouter_generation_id?: string;
+    provider_error_fingerprint?: string;
     // Per-attempt breakdown when the SDK retried internally. Each entry is one
     // upstream call. Lets you tell consistent-500 from a mixed cascade and
     // gives you provider request IDs to file support tickets with.
@@ -256,11 +230,7 @@ export class WideEventBuilder {
   private streamStartTime?: number;
   private anthropicPromptRepairCount = 0;
 
-  constructor(
-    requestId: string,
-    chatId: string,
-    endpoint: "/api/chat" | "/api/agent-long",
-  ) {
+  constructor(requestId: string, chatId: string, endpoint: ChatApiEndpoint) {
     this.event = {
       timestamp: new Date().toISOString(),
       request_id: requestId,
@@ -425,9 +395,7 @@ export class WideEventBuilder {
   recordAnthropicPromptRepair(repair: {
     action: "appended_continue" | "trimmed";
     reason:
-      | "useful_assistant_tail"
-      | "no_useful_content"
-      | "dangling_tool_call";
+      "useful_assistant_tail" | "no_useful_content" | "dangling_tool_call";
     trailingAssistantContentTypes?: string[];
   }): this {
     this.anthropicPromptRepairCount += 1;
@@ -466,17 +434,6 @@ export class WideEventBuilder {
   setSandboxBoot(boot: NonNullable<ChatWideEvent["sandbox_boot"]>): this {
     if (!this.event.sandbox_boot) {
       this.event.sandbox_boot = boot;
-    }
-    return this;
-  }
-
-  /**
-   * Record Caido proxy setup timing. First call wins — subsequent `ensureCaido`
-   * calls in the same request hit the lock and measure wait time, not setup cost.
-   */
-  setCaidoReady(caido: NonNullable<ChatWideEvent["caido"]>): this {
-    if (!this.event.caido) {
-      this.event.caido = caido;
     }
     return this;
   }
@@ -530,8 +487,7 @@ export class WideEventBuilder {
    */
   setUsage(usage: Record<string, unknown> | undefined): this {
     if (usage) {
-      // Extract provider cost if available (e.g., from OpenRouter)
-      const rawCost = (usage as { raw?: { cost?: number } }).raw?.cost;
+      const providerCost = getProviderUsageRawModelCost(usage.raw);
 
       this.event.usage = {
         input_tokens: usage.inputTokens as number | undefined,
@@ -542,9 +498,8 @@ export class WideEventBuilder {
         reasoning_tokens: (usage.reasoningTokens as number) || undefined,
         cache_read_tokens: usage.cacheReadInputTokens as number | undefined,
         cache_write_tokens: usage.cacheCreationInputTokens as
-          | number
-          | undefined,
-        total_cost: rawCost,
+          number | undefined,
+        total_cost: providerCost,
       };
     }
     return this;
@@ -631,6 +586,7 @@ export class WideEventBuilder {
     requestedModelSlug?: string;
     modelProviderSlug?: string;
     openrouterGenerationId?: string;
+    providerErrorFingerprint?: string;
     attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
     this.event.had_provider_error = true;
@@ -647,6 +603,7 @@ export class WideEventBuilder {
       requested_model_slug: details.requestedModelSlug,
       model_provider_slug: details.modelProviderSlug,
       openrouter_generation_id: details.openrouterGenerationId,
+      provider_error_fingerprint: details.providerErrorFingerprint,
       attempts: details.attempts,
     };
     return this;
@@ -785,7 +742,7 @@ export const logger = {
  */
 export function createWideEventBuilder(
   chatId: string,
-  endpoint: "/api/chat" | "/api/agent-long",
+  endpoint: ChatApiEndpoint,
 ): WideEventBuilder {
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return new WideEventBuilder(requestId, chatId, endpoint);

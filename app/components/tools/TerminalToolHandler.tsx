@@ -14,6 +14,10 @@ import {
   type ShellToolOutput,
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import {
+  getToolApprovalDisplayState,
+  ToolApprovalControls,
+} from "./ToolApprovalControls";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -32,6 +36,8 @@ function areTerminalPropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
+  if (prev.part.approval?.id !== next.part.approval?.id) return false;
   // Compare message.parts length for streaming output updates
   if (prev.message.parts.length !== next.message.parts.length) return false;
   if (prev.precomputedStreamingOutput !== next.precomputedStreamingOutput)
@@ -57,6 +63,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       }
     : (input as {
         command: string;
+        justification?: string;
+        prefix_rule?: string[];
         is_background: boolean;
         interactive?: boolean;
       });
@@ -153,6 +161,41 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
+      );
+    case "approval-requested":
+      return (
+        <ToolApprovalControls
+          key={toolCallId}
+          approvalId={part.approval?.id}
+          toolCallId={toolCallId}
+          title="Allow HackerAI to run this terminal command?"
+          target={blockTarget}
+          justification={terminalInput?.justification}
+          prefixRule={terminalInput?.prefix_rule}
+          detail="Approve to continue, or deny to stop this command."
+          kind="terminal"
+          operation="terminal_execute"
+        >
+          {(sendState) => {
+            const display = getToolApprovalDisplayState({
+              sendState,
+              approvedAction: blockAction(true),
+              deniedAction: "Command denied",
+            });
+
+            return (
+              <ToolBlock
+                icon={<Terminal />}
+                action={display.action}
+                target={blockTarget}
+                isShimmer={display.isShimmer}
+                isClickable={!!sidebarContent}
+                onClick={handleOpenInSidebar}
+                onKeyDown={handleKeyDown}
+              />
+            );
+          }}
+        </ToolApprovalControls>
       );
     case "output-available":
       return (

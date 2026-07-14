@@ -3,6 +3,7 @@ import { ChatComponent } from "../page-objects";
 import { SidebarComponent } from "../page-objects/SidebarComponent";
 import path from "path";
 import { TEST_DATA, TIMEOUTS } from "../constants";
+import { assertAuthenticatedSession } from "./auth-preflight";
 
 /**
  * Common test helper functions to reduce duplication
@@ -64,9 +65,23 @@ export async function attachTestFile(
 /**
  * Common setup for chat tests
  */
-export async function setupChat(page: Page): Promise<ChatComponent> {
-  await page.goto("/");
-  return new ChatComponent(page);
+export async function setupChat(
+  page: Page,
+  options: { refreshEntitlements?: boolean } = {},
+): Promise<ChatComponent> {
+  await page.goto(options.refreshEntitlements ? "/?refresh=entitlements" : "/");
+  const chat = new ChatComponent(page);
+  await chat.waitForHydrated();
+  await assertAuthenticatedSession(page);
+  if (options.refreshEntitlements) {
+    await page
+      .waitForURL((url) => url.searchParams.get("refresh") !== "entitlements", {
+        timeout: TIMEOUTS.MEDIUM,
+      })
+      .catch(() => {});
+    await chat.waitForHydrated();
+  }
+  return chat;
 }
 
 function chatIdFromUrl(url: string): string {
@@ -106,6 +121,7 @@ export async function createTwoChats(
     .catch(() => {});
 
   const chatB = new ChatComponent(page);
+  await chatB.waitForHydrated();
   await sendAndWaitForResponse(chatB, messageB, timeout);
 
   const urlB = page.url();

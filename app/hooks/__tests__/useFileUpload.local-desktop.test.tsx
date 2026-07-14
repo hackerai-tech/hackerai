@@ -237,6 +237,82 @@ describe("useFileUpload desktop-local agent attachments", () => {
     expect(saveFile).not.toHaveBeenCalled();
   });
 
+  it("finishes a local text edit after an earlier attachment is removed", async () => {
+    const firstUpload = {
+      file: {
+        name: "first.txt",
+        type: "text/plain",
+        size: 5,
+        lastModified: 500,
+      },
+      uploading: false,
+      uploaded: true,
+      storage: "local-desktop" as const,
+      localAttachmentId: "first",
+      localPath: "/Users/alice/first.txt",
+      tokens: 0,
+    };
+    const editedUpload = {
+      file: {
+        name: "pasted_content.txt",
+        type: "text/plain",
+        size: 8,
+        lastModified: 1000,
+      },
+      uploading: false,
+      uploaded: true,
+      storage: "local-desktop" as const,
+      generatedSource: "pasted-text" as const,
+      generatedTextAttachmentId: "paste_1",
+      localAttachmentId: "paste_1",
+      localPath: "/Users/alice/pasted_content.txt",
+      tokens: 0,
+      generatedTextAttachment: {
+        id: "paste_1",
+        content: "original",
+      },
+    };
+    globalState.uploadedFiles = [firstUpload, editedUpload];
+    let resolveWrite: ((value: Record<string, unknown>) => void) | undefined;
+    (writeGeneratedTextAttachment as jest.Mock).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveWrite = resolve;
+      }),
+    );
+    const { result, rerender } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleUpdateGeneratedTextFile(1, "edited");
+    });
+
+    const pendingUpload = updateUploadedFile.mock.calls[0][1];
+    globalState.uploadedFiles = [pendingUpload];
+    rerender();
+
+    await act(async () => {
+      resolveWrite?.({
+        path: "/Users/alice/pasted_content.txt",
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: 6,
+        lastModified: 2000,
+      });
+    });
+
+    expect(updateUploadedFile).toHaveBeenLastCalledWith(
+      0,
+      expect.objectContaining({
+        uploaded: true,
+        uploading: false,
+        localPath: "/Users/alice/pasted_content.txt",
+        generatedTextAttachment: {
+          id: "paste_1",
+          content: "edited",
+        },
+      }),
+    );
+  });
+
   it("keeps large desktop-selected images local for sandbox-only Agent access", async () => {
     (pickLocalFiles as jest.Mock).mockResolvedValue(["/Users/alice/large.png"]);
     (getLocalFileMetadata as jest.Mock).mockResolvedValue({

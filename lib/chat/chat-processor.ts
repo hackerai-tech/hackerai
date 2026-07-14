@@ -1,5 +1,10 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
+import {
+  normalizeMaxModelForSubscription,
+  type ChatMode,
+  type SelectedModel,
+  type SubscriptionTier,
+} from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
@@ -20,6 +25,7 @@ import {
   ABORTED_TOOL_ERROR_TEXT,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
+import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a user based on mode and subscription.
  * Agent mode: 100 steps (all tiers).
@@ -39,9 +45,12 @@ export const getMaxStepsForUser = (
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only, much cheaper than Claude); prompts with images or PDFs promote
- *   to Grok 4.3 for native media support. Free ASK stays on DeepSeek
- *   V4 Flash. Paid ASK Pro always uses Sonnet 4.6.
+ *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
+ *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
+ *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
+ *   provider-visible media is attached. HackerAI Pro uses GLM 5.2 for
+ *   text-only prompts, Grok 4.5 for Agent vision, and Kimi K2.7 Code for Ask
+ *   media prompts.
  * @returns Model name to use
  */
 export function selectModel(
@@ -50,45 +59,68 @@ export function selectModel(
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
   hasPdfAttachment?: boolean,
+  options: { extraUsageAvailable?: boolean } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  // DeepSeek ask routes are text-only, so image/PDF prompts promote to a
+  const allowedSelectedModel = normalizeMaxModelForSubscription(
+    selectedModel,
+    subscription,
+    options,
+  );
+  // DeepSeek routes are text-only, so image/PDF prompts promote to a
   // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Sonnet or Opus.
+  // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
+  // when mixed with images because the MiniMax ask route is image-scoped.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage = !isAgent && !!hasImageAttachment;
   const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const paidAskMediaModel: ModelName =
-    hasAskImage || hasAskPdf ? "ask-model" : "model-deepseek-v4-pro";
+  const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
+  const paidAskMediaModel: ModelName = hasAskPdf
+    ? "model-grok-4.5"
+    : hasAskImage
+      ? "ask-model"
+      : "model-deepseek-v4-pro";
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
-      : "agent-model"
+      : hasProviderMedia
+        ? "agent-model"
+        : "model-deepseek-v4-pro"
     : isFreeAsk
       ? "ask-model-free"
       : paidAskMediaModel;
 
-  // Free users always route through the auto router; paid users may pick a
-  // tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
-  if (!selectedModel || selectedModel === "auto" || subscription === "free") {
+  // Free users always route through the auto router; paid users may pick an
+  // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
+  if (
+    !allowedSelectedModel ||
+    allowedSelectedModel === "auto" ||
+    subscription === "free"
+  ) {
     return autoModel;
   }
 
-  // Paid ASK Standard mirrors the auto-route split, but uses explicit keys so
+  // Paid Standard mirrors each mode's Auto split, but uses explicit keys so
   // any UI that reads `getModelDisplayName` shows the picked model rather than
   // the auto-router label.
-  if (selectedModel === "hackerai-standard" && !isAgent) {
-    return hasAskImage || hasAskPdf
-      ? "model-grok-4.3"
-      : "model-deepseek-v4-pro";
+  if (allowedSelectedModel === "hackerai-standard") {
+    if (isAgent) {
+      return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
+    }
+    return hasAskPdf
+      ? "model-grok-4.5"
+      : hasAskImage
+        ? "model-minimax-m3"
+        : "model-deepseek-v4-pro";
   }
 
-  if (selectedModel === "hackerai-pro" && !isAgent) {
-    return "model-sonnet-4.6";
+  if (allowedSelectedModel === "hackerai-pro") {
+    if (!hasProviderMedia) return "model-glm-5.2";
+    return isAgent ? "model-grok-4.5" : "model-kimi-k2.7-code";
   }
 
-  const providerKey = resolveTierToProviderKey(selectedModel, mode);
+  const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
   return providerKey ?? autoModel;
 }
 
@@ -356,8 +388,8 @@ export function fixIncompleteMessageParts(
   // When a stream is interrupted mid-reasoning (before producing text or tool calls),
   // the message ends with [step-start, reasoning, ...] but no text/tool content for that step.
   // convertToModelMessages() splits by step boundaries, creating an assistant model message
-  // with only reasoning content — which Gemini rejects with
-  // "must include at least one parts field" error.
+  // with only reasoning content, which providers can reject as an empty
+  // assistant message.
   let lastStepStartIdx = -1;
   for (let i = filteredParts.length - 1; i >= 0; i--) {
     if (filteredParts[i].type === "step-start") {
@@ -374,7 +406,7 @@ export function fixIncompleteMessageParts(
         if (part.type?.startsWith("tool-") || part.type === "dynamic-tool")
           return true;
         if (part.type === "file") return true;
-        // reasoning and step-start alone are not content for Gemini
+        // reasoning and step-start alone are not provider-visible content
         return false;
       });
 
@@ -590,8 +622,8 @@ export function limitImageParts(
  * Anthropic models require valid signatures on thinking blocks, and signatures
  * from other models (or different Anthropic models) cause "Invalid signature in
  * thinking block" 400 errors. Stripping providerMetadata removes these signatures.
- * Only applied for Anthropic models — other providers (e.g., Gemini) need
- * providerMetadata/thought_signature for tool calling to work.
+ * Only applied for Anthropic models; other providers may need providerMetadata
+ * for tool calling to work.
  */
 function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => {
@@ -651,6 +683,7 @@ export async function processChatMessages({
   subscription,
   uploadBasePath,
   modelOverride,
+  extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
 }: {
   messages: UIMessage[];
@@ -659,10 +692,15 @@ export async function processChatMessages({
   subscription: SubscriptionTier;
   uploadBasePath?: string;
   modelOverride?: SelectedModel;
+  extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
 }) {
+  const messagesWithoutOpenRouterReasoningMetadata =
+    stripOpenRouterReasoningMetadataFromMessages(messages);
+
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
-  const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
+  const messagesWithoutUIOnlyParts =
+    messagesWithoutOpenRouterReasoningMetadata.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Keep image attachment pruning aligned with the per-message upload cap.
@@ -688,12 +726,11 @@ export async function processChatMessages({
   const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithUrls);
 
   // Filter out messages with empty parts or parts without meaningful content
-  // This prevents "must include at least one parts field" errors from providers like Gemini
+  // This prevents provider errors for assistant messages with no visible content.
   const messagesWithContent = messagesWithFixedTools.filter((msg) => {
     if (!msg.parts || msg.parts.length === 0) return false;
 
-    // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start
-    // Gemini specifically requires text or tool content, reasoning alone causes errors
+    // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start.
     if (msg.role === "assistant") {
       return msg.parts.some((part: any) => {
         // Text parts need actual text content
@@ -733,12 +770,13 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
+    { extraUsageAvailable },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
   // Anthropic requires valid signatures on thinking blocks, and signatures from other
   // models (or different Anthropic models) cause "Invalid signature in thinking block"
-  // 400 errors. Other providers (e.g., Gemini) need providerMetadata for tool calling,
+  // 400 errors. Other providers may need providerMetadata for tool calling,
   // so we only strip it when targeting Anthropic.
   const sanitizedMessages = isAnthropicModel(selectedModel)
     ? stripProviderMetadata(messagesWithoutDuplicates)

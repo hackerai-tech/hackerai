@@ -2,13 +2,17 @@ import type { ReactNode } from "react";
 import { useState, useMemo } from "react";
 import { Download, Copy, Check, WrapText } from "lucide-react";
 import ShikiHighlighter from "react-shiki";
-import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
+import {
+  shouldUseShikiHighlighter,
+  ShikiErrorBoundary,
+} from "@/lib/utils/shiki";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { downloadFile } from "@/lib/utils/file-download";
+import { getCodeDownloadFilename } from "@/lib/utils/code-download-filename";
 
 interface ComputerCodeBlockProps {
   children: ReactNode;
@@ -29,7 +33,7 @@ export const ComputerCodeBlock = ({
 
   // Check if language is supported by Shiki
   const shouldUsePlainText = useMemo(() => {
-    return !isLanguageSupported(language);
+    return !shouldUseShikiHighlighter(language);
   }, [language]);
 
   const handleCopy = async () => {
@@ -44,7 +48,7 @@ export const ComputerCodeBlock = ({
 
   const handleDownload = () => {
     downloadFile({
-      filename: `code.${language || "txt"}`,
+      filename: getCodeDownloadFilename(language),
       content: codeContent,
     });
   };

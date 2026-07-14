@@ -13,12 +13,14 @@ import React, {
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
+  type AgentPermissionMode,
   type SelectedModel,
   type SidebarContent,
   type QueuedMessage,
   type QueueBehavior,
   type SandboxPreference,
   isChatMode,
+  normalizeSelectedModelForSubscription,
 } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
@@ -43,7 +45,9 @@ import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
 import {
   readChatMode,
+  readAgentPermissionMode,
   writeChatMode,
+  writeAgentPermissionMode,
   readSelectedModel,
   writeSelectedModel,
   cleanupExpiredDrafts,
@@ -124,6 +128,10 @@ interface GlobalStateType {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
 
+  // Agent tool approval behavior
+  agentPermissionMode: AgentPermissionMode;
+  setAgentPermissionMode: (mode: AgentPermissionMode) => void;
+
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
 
@@ -192,6 +200,7 @@ interface LocalSandboxConnection {
   capabilities: {
     commands: boolean;
     pty: boolean;
+    files?: boolean;
   };
 }
 
@@ -407,6 +416,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
     useSandboxPreference(!!user);
 
+  const [agentPermissionMode, setAgentPermissionMode] =
+    useState<AgentPermissionMode>(() => readAgentPermissionMode());
+
+  useEffect(() => {
+    writeAgentPermissionMode(agentPermissionMode);
+  }, [agentPermissionMode]);
+
   // Check for available local sandbox connections
   const localConnections = useQuery(
     api.localSandbox.listConnections,
@@ -464,6 +480,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     writeSelectedModel(selectedModel);
   }, [selectedModel]);
 
+  useEffect(() => {
+    if (!subscriptionResolved) return;
+    const normalizedModel = normalizeSelectedModelForSubscription(
+      selectedModel,
+      subscription,
+    );
+    if (normalizedModel !== selectedModel) {
+      setSelectedModelRaw(normalizedModel);
+    }
+  }, [selectedModel, subscription, subscriptionResolved]);
+
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);
   }, []);
@@ -474,6 +501,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("temporary-chat") === "true";
   });
+  const temporaryChatSubscription =
+    subscriptionFromEntitlements !== null &&
+    subscriptionFromEntitlements !== "free"
+      ? subscriptionFromEntitlements
+      : subscription;
+  const temporaryChatAccessResolved =
+    subscriptionResolved || (!authLoading && !user);
+
+  // Remove stale or manually forged temporary-chat state once the user's
+  // subscription has been resolved. The API independently enforces this gate.
+  useEffect(() => {
+    if (
+      !temporaryChatAccessResolved ||
+      temporaryChatSubscription !== "free" ||
+      !temporaryChatsEnabled
+    ) {
+      return;
+    }
+
+    setTemporaryChatsEnabled(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("temporary-chat");
+    window.history.replaceState({}, "", url.toString());
+  }, [
+    temporaryChatAccessResolved,
+    temporaryChatsEnabled,
+    temporaryChatSubscription,
+  ]);
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
@@ -924,43 +979,56 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatResetRef.current = fn;
   }, []);
 
-  const openSidebar = (content: SidebarContent) => {
+  const openSidebar = useCallback((content: SidebarContent) => {
     setSidebarContent(content);
     setSidebarOpen(true);
-  };
+  }, []);
 
-  const updateSidebarContent = (updates: Partial<SidebarContent>) => {
-    setSidebarContent((current) => {
-      if (current) {
-        return { ...current, ...updates } as SidebarContent;
-      }
-      return current;
-    });
-  };
+  const updateSidebarContent = useCallback(
+    (updates: Partial<SidebarContent>) => {
+      setSidebarContent((current) => {
+        if (current) {
+          return { ...current, ...updates } as SidebarContent;
+        }
+        return current;
+      });
+    },
+    [],
+  );
 
-  const closeSidebar = () => {
+  const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
     setSidebarContent(null);
-  };
+  }, []);
 
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
   };
 
   // Custom setter for temporary chats that also updates URL
-  const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
-    setTemporaryChatsEnabled(enabled);
-
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      if (enabled) {
-        url.searchParams.set("temporary-chat", "true");
-      } else {
-        url.searchParams.delete("temporary-chat");
+  const setTemporaryChatsEnabledWithUrl = useCallback(
+    (enabled: boolean) => {
+      if (
+        enabled &&
+        (!subscriptionResolved || temporaryChatSubscription === "free")
+      ) {
+        return;
       }
-      window.history.replaceState({}, "", url.toString());
-    }
-  }, []);
+
+      setTemporaryChatsEnabled(enabled);
+
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (enabled) {
+          url.searchParams.set("temporary-chat", "true");
+        } else {
+          url.searchParams.delete("temporary-chat");
+        }
+        window.history.replaceState({}, "", url.toString());
+      }
+    },
+    [subscriptionResolved, temporaryChatSubscription],
+  );
 
   // Custom setter for team welcome dialog that also updates URL
   const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {
@@ -1062,6 +1130,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    agentPermissionMode,
+    setAgentPermissionMode,
     desktopBridgeActive,
     hasLocalSandbox,
     localConnections,

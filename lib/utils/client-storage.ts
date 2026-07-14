@@ -1,6 +1,8 @@
 import {
+  coerceAgentPermissionMode,
   coerceSelectedModel,
   isChatMode,
+  type AgentPermissionMode,
   type ChatMode,
   type SelectedModel,
 } from "@/types/chat";
@@ -36,6 +38,7 @@ export const CHAT_MODE_STORAGE_KEY = "chat_mode";
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
+const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
@@ -80,6 +83,26 @@ export const writeChatMode = (mode: ChatMode): void => {
   if (!isBrowser()) return;
   try {
     window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // ignore
+  }
+};
+
+export const readAgentPermissionMode = (): AgentPermissionMode => {
+  if (!isBrowser()) return "full_access";
+  try {
+    return coerceAgentPermissionMode(
+      window.localStorage.getItem(AGENT_PERMISSION_MODE_STORAGE_KEY),
+    );
+  } catch {
+    return "full_access";
+  }
+};
+
+export const writeAgentPermissionMode = (mode: AgentPermissionMode): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(AGENT_PERMISSION_MODE_STORAGE_KEY, mode);
   } catch {
     // ignore
   }

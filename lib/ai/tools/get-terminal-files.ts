@@ -1,36 +1,22 @@
 import { tool } from "ai";
-import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import {
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
+import { getTerminalFilesTool } from "./schemas";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
   const { sandboxManager, backgroundProcessTracker } = context;
 
   return tool({
-    description: `Share files from the terminal sandbox with the user as downloadable attachments.
-    
-Usage:
-- Use this tool when the user requests files or needs to download results from the sandbox
-- Provide full file paths (e.g., /home/user/output.txt, /home/user/scan-results.xml)
-- Files are automatically uploaded and made available for download
-- Files larger than 250 MB cannot be shared; reduce, split, or exclude bulky generated/dependency directories before sharing
-- Use this after generating reports, saving scan results, or creating any files the user needs to access
-- Multiple files can be shared in a single call`,
-    inputSchema: z.object({
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
-      files: z
-        .array(z.string())
-        .describe(
-          "Array of file paths to provide as attachments to the user. Use full paths like /home/user/output.txt",
-        ),
-    }),
+    ...getTerminalFilesTool,
     execute: async ({ files }: { files: string[] }) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        const { sandbox } = await getSandboxWithFallbackGuard({
+          sandboxManager,
+        });
 
         const providedFiles: Array<{ path: string }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
@@ -132,27 +118,32 @@ Usage:
         }
 
         let result = "";
-        if (providedFiles.length > 0) {
-          result += `Successfully provided ${providedFiles.length} file(s) to the user`;
-        }
         if (blockedFiles.length > 0) {
           const blockedDetails = blockedFiles
             .map((f) => `${f.path}: ${f.reason}`)
             .join("; ");
-          result +=
-            (result ? ". " : "") +
-            `${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}`;
+          result =
+            providedFiles.length > 0
+              ? `Partially provided ${providedFiles.length} of ${files.length} file(s) to the user. ${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}. Do not tell the user failed files were sent; retry only the failed file paths if the error is transient, otherwise explain the upload problem.`
+              : `Failed to provide ${blockedFiles.length} file(s) to the user: ${blockedDetails}. Do not tell the user these files were sent; verify the paths or explain the upload problem before retrying.`;
+        } else if (providedFiles.length > 0) {
+          result = `Successfully provided ${providedFiles.length} file(s) to the user`;
         }
 
         return {
           result: result || "No files were retrieved",
           files: providedFiles,
+          failedFiles: blockedFiles,
         };
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
+        const errorMsg = resolveToolErrorMessage(error);
         return {
-          result: `Error providing files: ${errorMsg}`,
+          result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],
+          failedFiles: files.map((path) => ({
+            path,
+            reason: errorMsg,
+          })),
         };
       }
     },

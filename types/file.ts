@@ -34,6 +34,7 @@ export interface UploadedFileState {
   storage?: "s3" | "local-desktop";
   generatedSource?: "pasted-text";
   generatedTextAttachmentId?: string;
+  unavailable?: boolean;
   localAttachmentId?: string;
   localPath?: string;
   fileId?: string; // Database file ID for backend operations

@@ -3,8 +3,24 @@ import { MessageItem } from "../MessageItem";
 import type { ChatMessage, ChatMode, ChatStatus } from "@/types";
 
 jest.mock("../MessagePartHandler", () => ({
-  MessagePartHandler: ({ part }: { part: any }) => (
-    <div data-testid={`part-${part.type}`}>
+  MessagePartHandler: ({
+    part,
+    keepLatestReasoningOpenDuringStreaming,
+    deferReasoningCollapseUntilParent,
+  }: {
+    part: any;
+    keepLatestReasoningOpenDuringStreaming?: boolean;
+    deferReasoningCollapseUntilParent?: boolean;
+  }) => (
+    <div
+      data-testid={`part-${part.type}`}
+      data-keep-latest-reasoning-open={String(
+        !!keepLatestReasoningOpenDuringStreaming,
+      )}
+      data-defer-reasoning-collapse={String(
+        !!deferReasoningCollapseUntilParent,
+      )}
+    >
       {part.text ?? part.input ?? part.type}
     </div>
   ),
@@ -129,6 +145,39 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
+  it("defers the latest reasoning collapse to the active Agent work panel", () => {
+    renderMessageItem({
+      mode: "agent",
+      status: "streaming",
+      message: {
+        ...assistantMessage,
+        parts: [
+          { type: "step-start" },
+          { type: "reasoning", state: "done", text: "Planning the tool" },
+          {
+            type: "tool-shell",
+            state: "output-available",
+            input: "ran command",
+          },
+          { type: "text", state: "done", text: "final answer" },
+        ],
+        metadata: {
+          mode: "agent",
+          generationStartedAt: Date.now(),
+        },
+      } as unknown as ChatMessage,
+    });
+
+    expect(screen.getByTestId("part-reasoning")).toHaveAttribute(
+      "data-defer-reasoning-collapse",
+      "true",
+    );
+    expect(screen.getByTestId("part-reasoning")).toHaveAttribute(
+      "data-keep-latest-reasoning-open",
+      "true",
+    );
+  });
+
   it("renders stopped agent work inline when there is no final text", () => {
     renderMessageItem({
       mode: "agent",
@@ -187,6 +236,70 @@ describe("MessageItem WorkedFor rendering", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("ran command")).not.toBeInTheDocument();
     expect(screen.getByText("regenerated final answer")).toBeInTheDocument();
+  });
+
+  it("does not show an expand icon when there are no expandable work parts", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "step-start",
+          },
+          {
+            type: "text",
+            text: "final answer",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+    });
+
+    const trigger = screen.getByRole("button", { name: /worked for 3s/i });
+
+    expect(trigger).toBeDisabled();
+    expect(trigger.querySelector("svg")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(screen.queryByTestId("part-step-start")).not.toBeInTheDocument();
+  });
+
+  it("does not show an expand icon for reasoning-only work", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          {
+            type: "step-start",
+          },
+          {
+            type: "reasoning",
+            text: "thinking",
+          },
+          {
+            type: "text",
+            text: "final answer",
+          },
+        ],
+        metadata: {
+          mode: "agent",
+          generationTimeMs: 2_500,
+        },
+      } as unknown as ChatMessage,
+    });
+
+    const trigger = screen.getByRole("button", { name: /worked for 3s/i });
+
+    expect(trigger).toBeDisabled();
+    expect(trigger.querySelector("svg")).not.toBeInTheDocument();
+    expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
   it("keeps saved message mode stable when the current picker mode changes", () => {

@@ -1,5 +1,6 @@
 import {
   assertFreeAgentGates,
+  assertTemporaryChatAccess,
   countFileAttachments,
   stripImageAttachments,
 } from "@/lib/api/chat-stream-helpers";
@@ -33,6 +34,38 @@ describe("assertFreeAgentGates", () => {
       }),
     ).toThrow(ChatSDKError);
   });
+});
+
+describe("assertTemporaryChatAccess", () => {
+  it("rejects temporary chats for free users", () => {
+    expect(() =>
+      assertTemporaryChatAccess({
+        isTemporary: true,
+        subscription: "free",
+      }),
+    ).toThrow(ChatSDKError);
+  });
+
+  it("allows regular chats for free users", () => {
+    expect(() =>
+      assertTemporaryChatAccess({
+        isTemporary: false,
+        subscription: "free",
+      }),
+    ).not.toThrow();
+  });
+
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "allows temporary chats for %s users",
+    (subscription) => {
+      expect(() =>
+        assertTemporaryChatAccess({
+          isTemporary: true,
+          subscription,
+        }),
+      ).not.toThrow();
+    },
+  );
 });
 
 describe("free-tier image attachment helpers", () => {

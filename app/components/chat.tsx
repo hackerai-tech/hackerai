@@ -9,9 +9,15 @@ import {
   useState,
   useReducer,
   useCallback,
+  useMemo,
   type RefObject,
 } from "react";
-import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
+import {
+  useQuery,
+  usePaginatedQuery,
+  useMutation,
+  useConvexAuth,
+} from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
@@ -22,12 +28,20 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import {
+  type ActiveAgentToolApprovalRequest,
+  useAgentApproval,
+} from "../contexts/AgentApprovalContext";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
-import { ChatSDKError } from "@/lib/errors";
-import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import { ChatSDKError, deserializeChatSDKErrorFromStream } from "@/lib/errors";
+import {
+  fetchWithErrorHandlers,
+  convertToUIMessages,
+  type MessageRecord,
+} from "@/lib/utils";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -38,15 +52,31 @@ import {
   isLegacyDesktopAgentClient,
   shouldUseAgentLongForAgent,
 } from "@/lib/chat/agent-routing";
+import {
+  AGENT_PARTIAL_SAVE_ENDPOINT,
+  AGENT_RESUME_ENDPOINT,
+  LEGACY_AGENT_RESUME_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
+import {
+  stripAgentLongHeartbeatParts,
+  stripAgentLongHeartbeatPartsFromMessages,
+} from "@/lib/chat/agent-long-heartbeat";
+import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
+import { addAuthenticatedExceptionStep } from "@/lib/analytics/client";
 import {
   normalizeSelectedModelForSubscription,
   type Todo,
   type ChatMessage,
   type ChatMode,
 } from "@/types";
+import {
+  getAgentToolApprovalPromptDetail,
+  getAgentToolApprovalPromptKind,
+  getAgentToolApprovalPromptTitle,
+  isAgentToolApprovalOperation,
+} from "@/types/agent";
 import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -66,6 +96,165 @@ const AGENT_LONG_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_COMPLETION_POLL_INTERVAL_MS = 2_000;
 const AGENT_LONG_COMPLETION_QUIET_MS = 3_000;
 const AGENT_LONG_COMPLETION_STOP_GRACE_MS = 6_000;
+type MessagePaginationStatus =
+  "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
+
+export const getStoredAgentApprovalRequest = (
+  chatData: unknown,
+): ActiveAgentToolApprovalRequest | null => {
+  if (!chatData || typeof chatData !== "object") return null;
+  const record = chatData as Record<string, unknown>;
+  if (record.active_agent_approval_pending !== true) return null;
+  const request = record.active_agent_approval_request;
+  if (!request || typeof request !== "object") return null;
+  const approvalRequest = request as Record<string, unknown>;
+  const approvalId = approvalRequest.approvalId;
+  const toolCallId = approvalRequest.toolCallId;
+  if (typeof approvalId !== "string" || typeof toolCallId !== "string") {
+    return null;
+  }
+  const operation = isAgentToolApprovalOperation(approvalRequest.operation)
+    ? approvalRequest.operation
+    : undefined;
+  const fallbackTitle =
+    typeof approvalRequest.title === "string"
+      ? approvalRequest.title
+      : undefined;
+  const title = getAgentToolApprovalPromptTitle({
+    operation,
+    fallback: fallbackTitle,
+  });
+  if (!title) return null;
+  const fallbackDetail =
+    typeof approvalRequest.detail === "string"
+      ? approvalRequest.detail
+      : undefined;
+  const fallbackKind =
+    approvalRequest.kind === "terminal" || approvalRequest.kind === "file"
+      ? approvalRequest.kind
+      : undefined;
+  const kind = getAgentToolApprovalPromptKind(operation) ?? fallbackKind;
+  const detail = getAgentToolApprovalPromptDetail({
+    operation,
+    fallback: fallbackDetail,
+  });
+
+  return {
+    approvalId,
+    toolCallId,
+    title,
+    ...(operation ? { operation } : {}),
+    ...(typeof approvalRequest.target === "string"
+      ? { target: approvalRequest.target }
+      : {}),
+    ...(typeof approvalRequest.justification === "string"
+      ? { justification: approvalRequest.justification }
+      : {}),
+    ...(Array.isArray(approvalRequest.prefixRule) &&
+    approvalRequest.prefixRule.every((part) => typeof part === "string")
+      ? { prefixRule: approvalRequest.prefixRule as string[] }
+      : {}),
+    ...(detail ? { detail } : {}),
+    ...(kind ? { kind } : {}),
+    ...(typeof approvalRequest.createdAt === "number"
+      ? { createdAt: approvalRequest.createdAt }
+      : {}),
+  };
+};
+
+export function getExistingChatLoadState({
+  isExistingChat,
+  hasMessages,
+  isConvexAuthLoading,
+  isConvexAuthenticated,
+  shouldFetchMessages,
+  chatData,
+  paginationStatus,
+  hasPaginatedMessageResults,
+  awaitingServerChat,
+}: {
+  isExistingChat: boolean;
+  hasMessages: boolean;
+  isConvexAuthLoading: boolean;
+  isConvexAuthenticated: boolean;
+  shouldFetchMessages: boolean;
+  chatData: unknown;
+  paginationStatus?: MessagePaginationStatus;
+  hasPaginatedMessageResults: boolean;
+  awaitingServerChat: boolean;
+}) {
+  const isInitialExistingChatLoad =
+    isExistingChat &&
+    !hasMessages &&
+    (isConvexAuthLoading ||
+      !isConvexAuthenticated ||
+      (shouldFetchMessages &&
+        (chatData === undefined || paginationStatus === "LoadingFirstPage")));
+
+  const isChatNotFound =
+    isExistingChat &&
+    chatData === null &&
+    shouldFetchMessages &&
+    !awaitingServerChat &&
+    paginationStatus !== "LoadingFirstPage" &&
+    !hasPaginatedMessageResults;
+
+  return { isInitialExistingChatLoad, isChatNotFound };
+}
+
+export function useServerMessages(
+  paginatedMessageResults: MessageRecord[] | undefined,
+): ChatMessage[] {
+  return useMemo(
+    () =>
+      paginatedMessageResults && paginatedMessageResults.length > 0
+        ? convertToUIMessages([...paginatedMessageResults].reverse())
+        : [],
+    [paginatedMessageResults],
+  );
+}
+
+type AgentLongPartialSaveMessage = {
+  id: string;
+  role: "assistant";
+  parts: ChatMessage["parts"];
+  generationStartedAt?: number;
+  generationTimeMs?: number;
+};
+
+const getLatestAgentLongAssistantMessageForPartialSave = (
+  messages: ChatMessage[],
+): AgentLongPartialSaveMessage | undefined => {
+  const message = messages.at(-1);
+  if (message?.role !== "assistant") return undefined;
+
+  const stripped = stripAgentLongHeartbeatParts(message);
+  if (!stripped.parts || stripped.parts.length === 0) return undefined;
+  if (!hasVisibleAssistantContent([stripped])) return undefined;
+
+  const metadata = (
+    stripped as ChatMessage & {
+      metadata?: {
+        generationStartedAt?: unknown;
+        generationTimeMs?: unknown;
+      };
+    }
+  ).metadata;
+
+  return {
+    id: stripped.id,
+    role: "assistant",
+    parts: stripped.parts,
+    generationStartedAt:
+      typeof metadata?.generationStartedAt === "number"
+        ? metadata.generationStartedAt
+        : undefined,
+    generationTimeMs:
+      typeof metadata?.generationTimeMs === "number"
+        ? metadata.generationTimeMs
+        : undefined,
+  };
+};
 
 const getAgentLongPartFingerprint = (part: unknown): string => {
   if (typeof part !== "object" || part === null) return String(part);
@@ -223,6 +412,7 @@ function StreamEffects({
   todos,
   temporaryChatsEnabled,
   sandboxPreference,
+  agentPermissionMode,
   selectedModel,
   resetRef,
   hasActiveStream,
@@ -242,6 +432,7 @@ function StreamEffects({
   todos: Todo[];
   temporaryChatsEnabled: boolean;
   sandboxPreference: string;
+  agentPermissionMode: string;
   selectedModel: string;
   resetRef: RefObject<(() => void) | null>;
   hasActiveStream: boolean | undefined;
@@ -264,6 +455,7 @@ function StreamEffects({
     todos,
     temporaryChatsEnabled,
     sandboxPreference,
+    agentPermissionMode,
     selectedModel,
   });
 
@@ -281,6 +473,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const router = useRouter();
   const isMobile = useIsMobile();
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
+  const {
+    isLoading: isConvexAuthLoading,
+    isAuthenticated: isConvexAuthenticated,
+  } = useConvexAuth();
   const [streamingState, dispatchStreaming] = useReducer(
     streamingReducer,
     initialStreamingState,
@@ -308,21 +504,29 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    agentPermissionMode,
     selectedModel,
     setSelectedModel,
     subscription,
     localConnections,
   } = useGlobalState();
+  const { setAgentApprovalSession, clearAgentApprovalSession } =
+    useAgentApproval();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
 
+  useEffect(() => {
+    clearAgentApprovalSession();
+  }, [chatId, clearAgentApprovalSession]);
+
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
   const wasNewChatRef = useRef(!routeChatId);
-  const shouldFetchMessages = isExistingChat;
+  const shouldFetchMessages =
+    isExistingChat && !isConvexAuthLoading && isConvexAuthenticated;
 
   // Refs to avoid stale closures in callbacks
   const isExistingChatRef = useLatestRef(isExistingChat);
@@ -349,6 +553,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
     subscription,
@@ -415,25 +620,30 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Use the shared local sandbox connection subscription when validating a saved non-E2B sandbox.
   const storedSandboxType = (chatDataForCurrentChat as any)?.sandbox_type as
-    | string
-    | undefined;
+    string | undefined;
 
   // Prefer the mid-stream title — the server seeds chatData.title with the
   // user's first message before generation completes, which would otherwise
   // flicker into the header on abort.
   const chatTitle = streamedTitle ?? chatDataForCurrentChat?.title ?? null;
-  const activeTriggerRunRef = useLatestRef(
-    (chatDataForCurrentChat as any)?.active_trigger_run_id as
-      | string
-      | undefined,
-  );
+  const activeTriggerRunId = (chatDataForCurrentChat as any)
+    ?.active_trigger_run_id as string | undefined;
+  const storedAgentApprovalRequest = activeTriggerRunId
+    ? getStoredAgentApprovalRequest(chatDataForCurrentChat)
+    : null;
+  const activeTriggerRunRef = useLatestRef(activeTriggerRunId);
+  const hasLoadedCurrentChat = chatDataForCurrentChat !== undefined;
+
+  useEffect(() => {
+    if (!hasLoadedCurrentChat || activeTriggerRunId) {
+      return;
+    }
+    clearAgentApprovalSession();
+  }, [activeTriggerRunId, clearAgentApprovalSession, hasLoadedCurrentChat]);
 
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
-  const serverMessages: ChatMessage[] =
-    paginatedMessageResults && paginatedMessageResults.length > 0
-      ? convertToUIMessages([...paginatedMessageResults].reverse())
-      : [];
+  const serverMessages = useServerMessages(paginatedMessageResults);
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
@@ -445,6 +655,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
+  const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
   activeChatIdRef.current = chatId;
 
   useEffect(() => {
@@ -486,14 +697,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
           return fetchAgentLongStream(init);
         }
-        // Reconnect for legacy "agent-long" chats normalised to "agent" mode on
-        // load — prepareReconnectToStreamRequest already pointed at the resume
-        // URL, so route based on the URL (not on ref state) to be resilient to
-        // stale refs.
+        // Reconnect for legacy "agent-long" chats normalised to "agent" mode
+        // on load — route based on the URL (not on ref state) to be resilient
+        // to stale refs.
         if (
           init?.method === "GET" &&
-          (typeof input === "string" ? input : input.toString()).includes(
-            "/api/agent-long/resume",
+          [AGENT_RESUME_ENDPOINT, LEGACY_AGENT_RESUME_ENDPOINT].some(
+            (resumeEndpoint) =>
+              (typeof input === "string" ? input : input.toString()).includes(
+                resumeEndpoint,
+              ),
           )
         ) {
           return resumeAgentLongStream(
@@ -504,9 +717,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return fetchWithErrorHandlers(input, init);
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
-        // Use the agent-long resume endpoint when there is a stored trigger run
-        // (covers legacy "agent-long" chats normalised to "agent" on load) OR
-        // when the current run is using Trigger.dev for agent mode.
+        // Use the Trigger-backed Agent resume endpoint when there is a stored
+        // trigger run (covers legacy "agent-long" chats normalised to "agent")
+        // or when the current run is using Trigger.dev for agent mode.
         const useTriggerAgent = shouldUseAgentLongForAgent({
           mode: chatModeRef.current,
           subscription: subscriptionRef.current,
@@ -514,7 +727,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         });
         if (useTriggerAgent || !!activeTriggerRunRef.current) {
           return {
-            api: `/api/agent-long/resume?chatId=${encodeURIComponent(id)}`,
+            api: `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(id)}`,
           };
         }
         return { api: `${api}/${id}/stream` };
@@ -590,6 +803,26 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
       setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
       switch (dataPart.type) {
+        case "data-agent-approval-session": {
+          const approvalData = dataPart.data as {
+            chatId?: unknown;
+            sessionId?: unknown;
+            publicAccessToken?: unknown;
+          };
+          if (
+            typeof approvalData.sessionId === "string" &&
+            typeof approvalData.publicAccessToken === "string" &&
+            (approvalData.chatId === undefined ||
+              approvalData.chatId === chatId)
+          ) {
+            setAgentApprovalSession({
+              chatId,
+              sessionId: approvalData.sessionId,
+              publicAccessToken: approvalData.publicAccessToken,
+            });
+          }
+          break;
+        }
         case "data-upload-status": {
           const uploadData = dataPart.data as {
             message: string;
@@ -704,17 +937,49 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-      if (error instanceof ChatSDKError) {
+      const structuredStreamError = deserializeChatSDKErrorFromStream(error);
+      const displayError = structuredStreamError ?? error;
+      if (displayError instanceof ChatSDKError) {
         const errorMessage =
-          typeof error.cause === "string" ? error.cause : error.message;
-        if (error.type !== "rate_limit") {
+          typeof displayError.cause === "string"
+            ? displayError.cause
+            : displayError.message;
+        if (displayError.type !== "rate_limit") {
           toast.error(errorMessage);
         }
-      } else if (isMobile && error.name !== "AbortError") {
-        toast.error(error.message || "An error occurred.");
+      } else if (isMobile && displayError.name !== "AbortError") {
+        toast.error(displayError.message || "An error occurred.");
       }
     },
   });
+
+  const previousChatStatusRef = useRef<typeof status | null>(null);
+  useEffect(() => {
+    previousChatStatusRef.current = null;
+  }, [chatId]);
+  useEffect(() => {
+    const previousStatus = previousChatStatusRef.current;
+    if (previousStatus === status) return;
+
+    addAuthenticatedExceptionStep("chat_status_changed", {
+      previous_status: previousStatus ?? "initial",
+      status,
+      mode: chatModeRef.current,
+      subscription: subscriptionRef.current,
+      transport: shouldUseAgentLong ? "trigger" : "browser",
+      existing_chat: isExistingChatRef.current,
+      temporary_chat: temporaryChatsEnabledRef.current,
+      message_count: messagesRef.current.length,
+    });
+    previousChatStatusRef.current = status;
+  }, [
+    chatModeRef,
+    isExistingChatRef,
+    shouldUseAgentLong,
+    status,
+    subscriptionRef,
+    temporaryChatsEnabledRef,
+  ]);
 
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;
@@ -769,6 +1034,40 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setIsAutoResuming(false);
   }, [setDataStream, setIsAutoResuming]);
 
+  const saveAgentLongPartialSnapshot = useCallback(
+    (clientReason: string) => {
+      const partialMessage = getLatestAgentLongAssistantMessageForPartialSave(
+        messagesRef.current,
+      );
+      if (!partialMessage) return;
+
+      const saveKey = `${chatId}:${partialMessage.id}`;
+      if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
+      agentLongPartialSaveKeysRef.current.add(saveKey);
+
+      void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId,
+          message: partialMessage,
+          generationStartedAt: partialMessage.generationStartedAt,
+          generationTimeMs: partialMessage.generationTimeMs,
+          clientReason,
+        }),
+      })
+        .then((response) => {
+          if (!response.ok) {
+            agentLongPartialSaveKeysRef.current.delete(saveKey);
+          }
+        })
+        .catch(() => {
+          agentLongPartialSaveKeysRef.current.delete(saveKey);
+        });
+    },
+    [chatId],
+  );
+
   useEffect(() => {
     if (
       shouldUseAgentLongForCurrentChat &&
@@ -782,7 +1081,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
       shouldUseAgentLongForCurrentChatRef.current &&
       typeof message === "string" &&
-      message.includes("Cannot close an errored readable stream");
+      (message.includes("Cannot close an errored readable stream") ||
+        message.includes(
+          "ReadableStreamDefaultController is not in a state where it can be closed",
+        ) ||
+        message.includes("Cannot close a stream that is already closed"));
 
     const suppressAgentLongDoubleCloseNoise = (event: ErrorEvent) => {
       if (isAgentLongDoubleCloseNoise(event.message)) {
@@ -801,7 +1104,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) => {
       if (isAgentLongDoubleCloseNoise(message)) return true;
       if (typeof previousOnError === "function") {
-        return previousOnError(message, source, lineno, colno, error);
+        try {
+          return previousOnError(message, source, lineno, colno, error);
+        } catch {
+          return false;
+        }
       }
       return false;
     };
@@ -881,6 +1188,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
+      saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the resume endpoint and can deliver a
       // synthetic finish after a terminal 204. Give it a brief chance to close
@@ -906,7 +1214,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
       try {
         const response = await fetch(
-          `/api/agent-long/resume?chatId=${encodeURIComponent(chatId)}`,
+          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
           { method: "GET", signal: abortController.signal },
         );
         if (response.status === 204) {
@@ -942,6 +1250,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     isExistingChatRef,
     setIsAutoResuming,
+    saveAgentLongPartialSnapshot,
     shouldUseAgentLongForCurrentChat,
     status,
     stop,
@@ -1129,8 +1438,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (persistedPrefsRef.current === null) {
       const savedModel = (chatData as any).selected_model as string | undefined;
       const savedMode = (chatData as any).default_model_slug as
-        | string
-        | undefined;
+        string | undefined;
       persistedPrefsRef.current = {
         model: savedModel ?? selectedModel,
         mode: savedMode ?? chatMode,
@@ -1345,6 +1653,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 todos: todosRef.current,
                 temporary: temporaryChatsEnabledRef.current,
                 sandboxPreference: sandboxPreferenceRef.current,
+                agentPermissionMode: agentPermissionModeRef.current,
                 selectedModel: requestSelectedModelRef.current,
               },
             },
@@ -1371,6 +1680,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todosRef,
     temporaryChatsEnabledRef,
     sandboxPreferenceRef,
+    agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
 
@@ -1394,6 +1704,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
+    activeTriggerRunRef,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -1454,6 +1765,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
+  const { isInitialExistingChatLoad, isChatNotFound } =
+    getExistingChatLoadState({
+      isExistingChat,
+      hasMessages,
+      isConvexAuthLoading,
+      isConvexAuthenticated,
+      shouldFetchMessages,
+      chatData,
+      paginationStatus: paginatedMessages.status,
+      hasPaginatedMessageResults: !!paginatedMessageResults,
+      awaitingServerChat,
+    });
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -1466,13 +1789,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-
-  // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
-  const isChatNotFound =
-    isExistingChat &&
-    chatData === null &&
-    shouldFetchMessages &&
-    !awaitingServerChat;
 
   return (
     <ConvexErrorBoundary>
@@ -1490,6 +1806,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         todos={todos}
         temporaryChatsEnabled={temporaryChatsEnabled}
         sandboxPreference={sandboxPreference}
+        agentPermissionMode={agentPermissionMode}
         selectedModel={requestSelectedModel}
         resetRef={resetAutoContinueRef}
         hasActiveStream={
@@ -1519,7 +1836,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             {/* Chat interface */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0">
               {/* Messages area */}
-              {isChatNotFound ? (
+              {isInitialExistingChatLoad ? (
+                <div className="flex-1 flex items-center justify-center min-h-0">
+                  <Loading />
+                </div>
+              ) : isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
                   <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                     <div className="text-center">
@@ -1592,6 +1913,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                           <ChatInput
                             onSubmit={handleSubmit}
                             onStop={handleStop}
+                            onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
                             isCentered={true}
@@ -1606,6 +1928,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
+                            storedApprovalRequest={storedAgentApprovalRequest}
                           />
                         </div>
                       )}
@@ -1621,10 +1944,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
               {/* Chat Input - Bottom placement (also for mobile new chats) */}
               {(hasMessages || isExistingChat || isMobile) &&
+                !isInitialExistingChatLoad &&
                 !isChatNotFound && (
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
+                    onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
                     hasMessages={hasMessages}
@@ -1636,6 +1961,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
+                    storedApprovalRequest={storedAgentApprovalRequest}
                   />
                 )}
             </div>

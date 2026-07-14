@@ -5,9 +5,6 @@ export interface UserCustomization {
   readonly traits?: string;
   readonly additional_info?: string;
   readonly include_notes?: boolean;
-  readonly caido_enabled?: boolean;
-  /** Custom Caido port for local sandbox users with an existing Caido instance (default: 48080). */
-  readonly caido_port?: number;
   readonly updated_at: number;
   readonly extra_usage_enabled?: boolean;
 }

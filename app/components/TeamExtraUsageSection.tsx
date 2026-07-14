@@ -206,9 +206,9 @@ export const TeamExtraUsageSection = () => {
     if (!ok) return;
     setShowSpendingLimitDialog(false);
     toast.success(
-      limitDollars
-        ? "Team spending limit updated"
-        : "Team spending limit removed",
+      limitDollars === null
+        ? "Team spending limit removed"
+        : "Team spending limit updated",
     );
   };
 

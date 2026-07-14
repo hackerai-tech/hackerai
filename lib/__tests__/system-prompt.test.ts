@@ -82,6 +82,74 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
+  it("treats user-provided targets as active authorized scope", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "provided by the user in the current conversation are the active user-declared scope",
+    );
+    expect(prompt).toContain(
+      "Treat those targets as authorized for the task without asking the user to restate permission",
+    );
+    expect(prompt).toContain(
+      "authorized security validation, reproduction, confirmation, assessment, and remediation",
+    );
+    expect(prompt).toContain(
+      "Do NOT ask for proof of authorization for a user-declared target",
+    );
+    expect(prompt).toContain(
+      "before expanding materially to unrelated third-party assets",
+    );
+  });
+
+  it("adds a compact finding quality contract for agent security work", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<finding_quality>");
+    expect(prompt).toContain(
+      "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
+    );
+    expect(prompt).toContain(
+      "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+    );
+    expect(prompt).toContain(
+      "Deduplicate equivalent findings and consolidate repeated evidence",
+    );
+    expect(prompt).toContain(
+      "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
+    );
+  });
+
+  it("does not add agent finding quality guidance to ask mode", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).not.toContain("<finding_quality>");
+  });
+
   it("keeps cloud sandbox isolation scoped to the default cloud sandbox", async () => {
     const prompt = await systemPrompt(
       "user_123",
@@ -188,6 +256,106 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(prompt).not.toContain("<sandbox_tool_recipes>");
     expect(prompt).not.toContain("interactsh-client: use for blind callback");
+  });
+
+  it("adds paid ask-mode current-mode guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in ASK MODE with limited tools.");
+    expect(prompt).toContain(
+      "inform them to switch to AGENT MODE for full access including file operations, terminal commands, and code execution.",
+    );
+  });
+
+  it("adds free ask-mode local sandbox guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "free",
+      "ask-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in ASK MODE with limited tools.");
+    expect(prompt).toContain(
+      "AGENT MODE requires a connected local sandbox on the free plan, or Pro for cloud Agent access.",
+    );
+    expect(prompt).not.toContain(
+      "inform them to switch to AGENT MODE for full access",
+    );
+  });
+
+  it("adds agent-mode current-mode guidance", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+    );
+
+    expect(prompt).toContain("<current_mode>");
+    expect(prompt).toContain("You are in AGENT MODE.");
+    expect(prompt).toContain(
+      "Use the available tools to read files, edit code, run terminal commands, and execute code when useful.",
+    );
+    expect(prompt).toContain("Do not tell the user to switch to Agent mode.");
+    expect(prompt).not.toContain("You are in ASK MODE");
+  });
+
+  it("explains ask-approval mode without asking in chat first", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+      "ask_approval",
+    );
+
+    expect(prompt).toContain("Agent tool approval mode: Ask for approval.");
+    expect(prompt).toContain(
+      "call the appropriate tool with a clear brief; the platform will pause that tool call and ask the user to approve or deny it.",
+    );
+    expect(prompt).toContain(
+      "A text-only response without the needed tool call can end the Agent run before the approval prompt appears.",
+    );
+    expect(prompt).toContain(
+      "If the user denies, cancels, or approval times out, treat that result as the user's decision",
+    );
+  });
+
+  it("keeps full-access mode explicit in agent prompts", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      false,
+      null,
+      "full_access",
+    );
+
+    expect(prompt).toContain("Agent tool approval mode: Full access.");
+    expect(prompt).toContain("Tool calls can run without per-action approval.");
+    expect(prompt).not.toContain("Agent tool approval mode: Ask for approval.");
   });
 
   it("does not claim cloud-only recipes or browser tools are installed on local hosts", async () => {

@@ -1,9 +1,13 @@
 "use client";
 
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import type { PostHogConfig } from "posthog-js";
 import { useEffect } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
-import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
+import {
+  enrichFrontendExceptionEvent,
+  shouldDropExpectedFrontendException,
+} from "@/lib/posthog/expected-frontend-exceptions";
 import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
 
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
@@ -32,23 +36,33 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
       .then((posthog) => {
         if (cancelled) return;
 
-        // Initialize PostHog if not already initialized
-        if (!posthog.__loaded) {
-          posthog.init(posthogKey, {
-            api_host:
-              process.env.NEXT_PUBLIC_POSTHOG_HOST ??
-              "https://us.i.posthog.com",
-            capture_pageview: false, // Disable automatic pageview capture, as we capture manually
-            autocapture: false, // Disable automatic event capture, as we capture manually
-            disable_session_recording: true,
-            before_send: (event) => {
-              if (!event || shouldDropExpectedConvexException(event)) {
-                return null;
-              }
+        const config = {
+          api_host:
+            process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
+          capture_pageview: false, // Disable automatic pageview capture, as we capture manually
+          autocapture: false, // Disable automatic event capture, as we capture manually
+          capture_exceptions: {
+            capture_unhandled_errors: true,
+            capture_unhandled_rejections: true,
+            capture_console_errors: false,
+          },
+          disable_session_recording: true,
+          before_send: (event) => {
+            if (!event || shouldDropExpectedFrontendException(event)) {
+              return null;
+            }
 
-              return event;
-            },
-          });
+            return enrichFrontendExceptionEvent(event);
+          },
+        } satisfies Partial<PostHogConfig>;
+
+        // The singleton can be initialized before this provider mounts. Apply
+        // our exception hooks in both cases so noisy browser errors are still
+        // suppressed and retained errors receive diagnostic fields.
+        if (!posthog.__loaded) {
+          posthog.init(posthogKey, config);
+        } else {
+          posthog.set_config(config);
         }
 
         posthog.opt_in_capturing();

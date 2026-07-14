@@ -2,6 +2,53 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { retainedTailValidator } from "./lib/retainedTail";
 
+const usageDeductionFailureReasonValidator = v.union(
+  v.literal("extra_usage_unavailable"),
+  v.literal("insufficient_funds"),
+  v.literal("monthly_cap_exceeded"),
+  v.literal("member_cap_exceeded"),
+  v.literal("member_disabled"),
+  v.literal("pool_disabled"),
+  v.literal("auto_reload_failed"),
+  v.literal("deduction_failed"),
+);
+
+const activeAgentApprovalRequestValidator = v.object({
+  approvalId: v.string(),
+  toolCallId: v.string(),
+  operation: v.optional(
+    v.union(
+      v.literal("terminal_execute"),
+      v.literal("terminal_interact"),
+      v.literal("file_write"),
+      v.literal("file_append"),
+      v.literal("file_edit"),
+    ),
+  ),
+  target: v.optional(v.string()),
+  justification: v.optional(v.string()),
+  prefixRule: v.optional(v.array(v.string())),
+  title: v.optional(v.string()),
+  detail: v.optional(v.string()),
+  kind: v.optional(v.union(v.literal("terminal"), v.literal("file"))),
+  createdAt: v.optional(v.number()),
+});
+
+const agentApprovalTargetGrantValidator = v.union(
+  v.object({
+    kind: v.literal("terminal_command"),
+    targetPrefix: v.string(),
+    executable: v.string(),
+    argv: v.array(v.string()),
+  }),
+  v.object({
+    kind: v.literal("file_change"),
+    targetPrefix: v.string(),
+    path: v.string(),
+    pathFlavor: v.union(v.literal("posix"), v.literal("windows")),
+  }),
+);
+
 export default defineSchema({
   chats: defineTable({
     id: v.string(),
@@ -10,7 +57,16 @@ export default defineSchema({
     finish_reason: v.optional(v.string()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    active_agent_approval_session_id: v.optional(v.string()),
+    active_agent_approval_pending: v.optional(v.boolean()),
+    active_agent_approval_request: v.optional(
+      activeAgentApprovalRequestValidator,
+    ),
+    agent_approval_grants: v.optional(
+      v.array(agentApprovalTargetGrantValidator),
+    ),
     canceled_at: v.optional(v.number()),
+    deletion_started_at: v.optional(v.number()),
     default_model_slug: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
@@ -222,7 +278,8 @@ export default defineSchema({
     // pass validation. New code writes include_notes and uses this only as a
     // fallback when returning older customization rows.
     include_memory_entries: v.optional(v.boolean()),
-    guardrails_config: v.optional(v.string()),
+    // Legacy HTTP interception preference fields retained on historical rows
+    // so old documents still pass validation.
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
@@ -254,8 +311,63 @@ export default defineSchema({
     // broken saved card does not keep retrying.
     auto_reload_consecutive_failures: v.optional(v.number()),
     auto_reload_disabled_reason: v.optional(v.string()),
+    // One durable, entity-scoped auto-reload operation. Parallel billing
+    // actions reuse this operation (and its Stripe idempotency keys) instead
+    // of creating separate invoices from the same low-balance snapshot.
+    auto_reload_operation_id: v.optional(v.string()),
+    auto_reload_operation_executor_id: v.optional(v.string()),
+    auto_reload_operation_started_at: v.optional(v.number()),
+    auto_reload_operation_lease_expires_at: v.optional(v.number()),
+    auto_reload_operation_amount_dollars: v.optional(v.number()),
+    auto_reload_operation_stripe_invoice_id: v.optional(v.string()),
+    // Briefly suppress duplicate card attempts after a definitive decline so
+    // parallel Agent steps all observe the same failure.
+    auto_reload_retry_after: v.optional(v.number()),
+    auto_reload_last_failure_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
+
+  // Durable support ledger for personal extra-usage Checkout purchases. This
+  // complements processed_checkout_sessions: the processed table is only a
+  // dedupe guard, while this row explains the observed purchase lifecycle.
+  extra_usage_purchases: defineTable({
+    user_id: v.string(),
+    amount_dollars: v.number(),
+    stripe_checkout_session_id: v.string(),
+    stripe_payment_intent_id: v.optional(v.string()),
+    stripe_invoice_id: v.optional(v.string()),
+    status: v.union(
+      v.literal("created"),
+      v.literal("paid_seen"),
+      v.literal("credited"),
+      v.literal("failed"),
+    ),
+    last_route: v.optional(
+      v.union(
+        v.literal("checkout_action"),
+        v.literal("confirm"),
+        v.literal("webhook"),
+        v.literal("repair"),
+      ),
+    ),
+    last_result: v.optional(
+      v.union(
+        v.literal("created"),
+        v.literal("paid_seen"),
+        v.literal("credited"),
+        v.literal("already_processed"),
+        v.literal("failed"),
+      ),
+    ),
+    last_error: v.optional(v.string()),
+    credited_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_created_at", ["user_id", "created_at"])
+    .index("by_stripe_checkout_session_id", ["stripe_checkout_session_id"])
+    .index("by_stripe_payment_intent_id", ["stripe_payment_intent_id"])
+    .index("by_stripe_invoice_id", ["stripe_invoice_id"]),
 
   // Team-shared extra usage pool. Admin funds it; any member of the org draws
   // from it for overflow once the team subscription bucket is exhausted.
@@ -277,6 +389,14 @@ export default defineSchema({
     override_monthly_cap_dollars: v.optional(v.number()),
     auto_reload_consecutive_failures: v.optional(v.number()),
     auto_reload_disabled_reason: v.optional(v.string()),
+    auto_reload_operation_id: v.optional(v.string()),
+    auto_reload_operation_executor_id: v.optional(v.string()),
+    auto_reload_operation_started_at: v.optional(v.number()),
+    auto_reload_operation_lease_expires_at: v.optional(v.number()),
+    auto_reload_operation_amount_dollars: v.optional(v.number()),
+    auto_reload_operation_stripe_invoice_id: v.optional(v.string()),
+    auto_reload_retry_after: v.optional(v.number()),
+    auto_reload_last_failure_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_org", ["organization_id"]),
 
@@ -511,6 +631,7 @@ export default defineSchema({
       v.object({
         commands: v.boolean(),
         pty: v.boolean(),
+        files: v.optional(v.boolean()),
       }),
     ),
     last_heartbeat: v.number(),
@@ -537,11 +658,16 @@ export default defineSchema({
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
     endpoint: v.optional(
-      v.union(v.literal("/api/chat"), v.literal("/api/agent-long")),
+      v.union(
+        v.literal("/api/chat"),
+        v.literal("/api/agent"),
+        v.literal("/api/agent-long"),
+      ),
     ),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     subscription: v.optional(v.string()),
@@ -559,8 +685,14 @@ export default defineSchema({
     cost_dollars: v.number(),
     included_cost_dollars: v.optional(v.number()),
     extra_usage_cost_dollars: v.optional(v.number()),
+    uncovered_cost_dollars: v.optional(v.number()),
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
+    uncovered_points: v.optional(v.number()),
+    usage_deduction_failed: v.optional(v.boolean()),
+    usage_deduction_failure_reason: v.optional(
+      usageDeductionFailureReasonValidator,
+    ),
     model_cost_dollars: v.optional(v.number()),
     non_model_cost_dollars: v.optional(v.number()),
     cost_source: v.optional(
@@ -579,6 +711,7 @@ export default defineSchema({
     // rows still pass validation.
     byok: v.optional(v.boolean()),
   })
+    .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"])
     .index("by_org", ["organization_id"]),

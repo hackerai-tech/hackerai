@@ -25,6 +25,21 @@ const invalidMessagesError = (
     },
   );
 
+export const requireBooleanFlag = (field: string, value: unknown): boolean => {
+  if (value === undefined) return false;
+  if (typeof value === "boolean") return value;
+
+  throw new ChatSDKError(
+    "bad_request:api",
+    `Invalid chat request: ${field} must be a boolean.`,
+    {
+      invalid_request_field: field,
+      invalid_request_field_type: getValueKind(value),
+      invalid_request_field_reason: "not_boolean",
+    },
+  );
+};
+
 export const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
   if (!Array.isArray(messages)) {
     throw invalidMessagesError("messages", messages, "not_array");
@@ -62,6 +77,17 @@ export const requireChatMessagesArray = (messages: unknown): UIMessage[] => {
           `${partField}.type`,
           part.type,
           "invalid_type",
+        );
+      }
+
+      if (
+        (part.type === "text" || part.type === "reasoning") &&
+        typeof part.text !== "string"
+      ) {
+        throw invalidMessagesError(
+          `${partField}.text`,
+          part.text,
+          "invalid_text",
         );
       }
     }

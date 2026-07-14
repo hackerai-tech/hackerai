@@ -16,6 +16,7 @@ import {
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
   draftId: string;
@@ -105,7 +106,7 @@ export function ChatInputTextarea({
       });
       if (tokenCount > maxTokens) {
         e.preventDefault();
-        if (subscription !== "free") {
+        if (isAgentMode(chatMode) && subscription !== "free") {
           await handlePastedTextAttachment(pastedText);
           return;
         }

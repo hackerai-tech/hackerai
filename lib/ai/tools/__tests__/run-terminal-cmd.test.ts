@@ -27,16 +27,6 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class {},
 }));
 
-// Same for the caido-proxy and proxy-manager imports that would drag in
-// Convex/network deps during this unit test.
-jest.mock("../utils/caido-proxy", () => ({
-  getCaidoConfig: () => ({}),
-  buildCaidoProxyEnvVars: () => undefined,
-}));
-jest.mock("../utils/proxy-manager", () => ({
-  ensureCaido: async () => undefined,
-}));
-
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     event: jest.fn(),
@@ -139,6 +129,7 @@ function makeContext(opts: {
   sandbox: unknown | null;
   ptySessionManager?: PtySessionManager;
   chatId?: string;
+  requestToolApproval?: import("@/types").AgentToolApprovalRequester;
 }) {
   const writerWrites: unknown[] = [];
   const writer = {
@@ -173,12 +164,15 @@ function makeContext(opts: {
     userID: "u1",
     chatId: opts.chatId ?? "chat-1",
     fileAccumulator: {} as never,
-    backgroundProcessTracker: {} as never,
+    backgroundProcessTracker: {
+      addProcess: jest.fn(),
+    } as never,
     ptySessionManager,
     mode: "agent",
     modelName: "configured-model",
     getCurrentModelName: () => "active-model",
     subscription: "pro",
+    requestToolApproval: opts.requestToolApproval,
     isE2BSandbox: (s: unknown) => {
       if (!s || typeof s !== "object") return false;
       if ((s as { sandboxKind?: unknown }).sandboxKind === "centrifugo")
@@ -186,8 +180,6 @@ function makeContext(opts: {
       const sb = s as { jupyterUrl?: unknown; pty?: unknown };
       return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
     },
-    guardrailsConfig: undefined,
-    caidoEnabled: false,
   } as unknown as import("@/types").ToolContext;
 
   return { context, writerWrites, sandboxManager, ptySessionManager };
@@ -219,6 +211,49 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
     mockPhEvent.mockClear();
+  });
+
+  test("forwards the user-facing justification and reusable argv prefix", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+            opts?.onStdout?.("ok\n");
+            return { stdout: "ok\n", stderr: "", exitCode: 0 };
+          },
+        ),
+      },
+    };
+    const requestToolApproval = jest.fn(async () => ({
+      approved: true as const,
+      approvalId: "approval-1",
+    }));
+    const { context } = makeContext({
+      sandbox: nonE2B,
+      requestToolApproval,
+    });
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "ping -c 4 hackerone.com",
+      brief: "check reachability",
+      justification: "Check whether the target host is reachable.",
+      prefix_rule: ["ping", "-c", "4"],
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith({
+      toolCallId: "call-1",
+      toolName: "run_terminal_cmd",
+      operation: "terminal_execute",
+      target: "ping -c 4 hackerone.com",
+      brief: "check reachability",
+      justification: "Check whether the target host is reachable.",
+      prefixRule: ["ping", "-c", "4"],
+    });
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {
@@ -303,6 +338,325 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(
       (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
     ).toContain("echo hi");
+  });
+
+  test("returns a real opaque session when a foreground command outlives its wait window", async () => {
+    let finishCommand!: (result: {
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }) => void;
+    let streamStdout: ((data: string) => void) | undefined;
+    const pendingCommand = new Promise<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    }>((resolve) => {
+      finishCommand = resolve;
+    });
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (
+            _command: string,
+            opts?: { onStdout?: (data: string) => void },
+          ) => {
+            streamStdout = opts?.onStdout;
+            return pendingCommand;
+          },
+        ),
+      },
+    };
+
+    const { context, ptySessionManager } = makeContext({ sandbox: nonE2B });
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "whois hackerai.co",
+      brief: "query WHOIS",
+      is_background: false,
+      timeout: 0.01,
+      interactive: false,
+    })) as {
+      result: {
+        output: string;
+        session?: string;
+        timedOut?: boolean;
+        exitCode: number | null;
+      };
+    };
+
+    expect(result.result.timedOut).toBe(true);
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
+    expect(result.result.session).not.toBe("cmd-1689");
+    expect(result.result.output).toContain(
+      `terminal session ${result.result.session}`,
+    );
+    expect(result.result.output).toContain(
+      "Use interact_terminal_session with this exact session ID",
+    );
+
+    const session = ptySessionManager.get("chat-1", result.result.session!);
+    expect(session?.kind).toBe("command");
+
+    streamStdout?.("WHOIS complete\n");
+    finishCommand({ stdout: "WHOIS complete\n", stderr: "", exitCode: 0 });
+    await expect(session?.handle.exited).resolves.toEqual({ exitCode: 0 });
+    expect(
+      new TextDecoder().decode(ptySessionManager.snapshot(session!)),
+    ).toContain("WHOIS complete");
+
+    ptySessionManager.forget("chat-1", result.result.session!);
+  });
+
+  test("uses the exact E2B command handle to terminate noisy foreground work", async () => {
+    const noisyOutput = "line with repeated output\n".repeat(20_000);
+    let rejectWait!: (error: Error) => void;
+    const wait = new Promise<never>((_resolve, reject) => {
+      rejectWait = reject;
+    });
+    const started = {
+      pid: 4321,
+      stdout: "",
+      stderr: "",
+      wait: jest.fn(() => wait),
+      kill: jest.fn(async () => {
+        rejectWait(new Error("signal: killed"));
+        return true;
+      }),
+    };
+    const run = jest.fn(
+      async (
+        calledCommand: string,
+        opts?: {
+          background?: boolean;
+          onStdout?: (data: string) => void;
+        },
+      ) => {
+        if (calledCommand === "echo ready") {
+          return { stdout: "ready\n", stderr: "", exitCode: 0 };
+        }
+        if (calledCommand === "ps -p 4321") {
+          return { stdout: "", stderr: "", exitCode: 1 };
+        }
+        expect(opts?.background).toBe(true);
+        opts?.onStdout?.(noisyOutput);
+        return started;
+      },
+    );
+    const e2b = {
+      jupyterUrl: "http://fake",
+      commands: { run },
+      isRunning: jest.fn(async () => true),
+      getMetrics: jest.fn(async () => []),
+    };
+
+    const { context } = makeContext({ sandbox: e2b });
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "yes",
+      brief: "run noisy command",
+      is_background: false,
+      timeout: 0.01,
+      interactive: false,
+    })) as {
+      result: {
+        output: string;
+        exitCode: number | null;
+        terminatedOnTimeout?: boolean;
+      };
+    };
+
+    expect(started.kill).toHaveBeenCalledTimes(1);
+    expect(result.result.exitCode).toBe(124);
+    expect(result.result.terminatedOnTimeout).toBe(true);
+    expect(result.result.output).toContain("PID: 4321");
+    expect(
+      run.mock.calls.some(([calledCommand]) =>
+        String(calledCommand).includes("pgrep"),
+      ),
+    ).toBe(false);
+  });
+
+  test("marks detached background PIDs as non-resumable", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn().mockResolvedValue({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          pid: 1689,
+        }),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "sleep 30",
+      is_background: true,
+      timeout: 5,
+      interactive: false,
+    })) as {
+      result: {
+        output: string;
+        pid?: number;
+        session?: string;
+        resumable?: boolean;
+      };
+    };
+
+    expect(result.result.pid).toBe(1689);
+    expect(result.result.session).toBeUndefined();
+    expect(result.result.resumable).toBe(false);
+    expect(result.result.output).toContain(
+      "do not pass this PID to interact_terminal_session",
+    );
+  });
+
+  test("does not block destructive-looking commands", async () => {
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest
+          .fn()
+          .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 }),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const tool = createRunTerminalCmd(context);
+
+    const result = (await runTool(tool, {
+      command: "rm -rf /",
+      brief: "run command",
+      is_background: false,
+      timeout: 5,
+    })) as { result: { error?: string; exitCode: number | null } };
+
+    expect(result.result.error).toBeUndefined();
+    expect(result.result.exitCode).toBe(0);
+    expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
+    expect(
+      (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
+    ).toContain("rm -rf /");
+  });
+
+  test("cancels noisy foreground commands through their execution-specific token", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const noisyOutput = "line with repeated output\n".repeat(20_000);
+    const cancellationObserved = jest.fn();
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(
+          async (
+            _command: string,
+            opts?: {
+              onStdout?: (s: string) => void;
+              signal?: AbortSignal;
+            },
+          ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+            opts?.onStdout?.(noisyOutput);
+            return new Promise((resolve) => {
+              opts?.signal?.addEventListener(
+                "abort",
+                () => {
+                  cancellationObserved();
+                  resolve({ stdout: "", stderr: "", exitCode: 130 });
+                },
+                { once: true },
+              );
+            });
+          },
+        ),
+      },
+    };
+
+    try {
+      const { context } = makeContext({ sandbox: nonE2B });
+      const tool = createRunTerminalCmd(context);
+
+      const result = (await runTool(tool, {
+        command: "yes",
+        brief: "run noisy command",
+        is_background: false,
+        timeout: 0.01,
+      })) as {
+        result: {
+          output: string;
+          exitCode: number | null;
+          terminatedOnTimeout?: boolean;
+        };
+      };
+
+      expect(result.result.exitCode).toBe(124);
+      expect(result.result.terminatedOnTimeout).toBe(true);
+      expect(result.result.output).toContain(
+        "noisy foreground process was terminated",
+      );
+      expect(cancellationObserved).toHaveBeenCalledTimes(1);
+      expect(
+        nonE2B.commands.run.mock.calls.some(([calledCommand]) =>
+          String(calledCommand).includes("pgrep"),
+        ),
+      ).toBe(false);
+
+      const noisyTimeoutLog = warnSpy.mock.calls
+        .map(([line]) => {
+          try {
+            return JSON.parse(String(line));
+          } catch {
+            return null;
+          }
+        })
+        .find((line) => line?.event === "agent_terminal_noisy_timeout");
+
+      expect(noisyTimeoutLog).toMatchObject({
+        event: "agent_terminal_noisy_timeout",
+        chat_id: "chat-1",
+        user_id: "u1",
+        tool_call_id: "call-1",
+        output_truncated: true,
+        termination_attempted: true,
+        termination_succeeded: true,
+      });
+      expect(noisyTimeoutLog?.pid).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not retry a foreground command after its tool timeout resolves", async () => {
+    let rejectFirstAttempt!: (error: Error) => void;
+    const firstAttempt = new Promise<never>((_resolve, reject) => {
+      rejectFirstAttempt = reject;
+    });
+    const nonE2B = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(() => firstAttempt),
+      },
+    };
+
+    const { context } = makeContext({ sandbox: nonE2B });
+    const tool = createRunTerminalCmd(context);
+    const result = (await runTool(tool, {
+      command: "whois hackerai.co",
+      brief: "look up domain registration",
+      is_background: false,
+      timeout: 0.01,
+    })) as { result: { timedOut?: boolean; session?: string } };
+
+    expect(result.result.timedOut).toBe(true);
+    expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
+    rejectFirstAttempt(new Error("transient relay failure"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
   });
 
   test("logs sanitized agent-browser terminal usage to PostHog", async () => {
@@ -402,14 +756,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(e2b.commands.run).not.toHaveBeenCalled();
     expect(result.result.exitCode).toBe(1);
-    expect(result.result.error).toContain("request couldn't be processed");
-    expect(writerWrites).toContainEqual(
+    expect(result.result.error).toContain(
+      "HackerAI did not switch this run to Cloud",
+    );
+    expect(writerWrites).not.toContainEqual(
       expect.objectContaining({
         type: "data-sandbox-fallback",
-        data: expect.objectContaining({
-          actualSandbox: "e2b",
-          requestedPreference: "desktop",
-        }),
       }),
     );
   });
@@ -439,14 +791,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(mockCreateE2BPtyHandle).not.toHaveBeenCalled();
     expect(result.result.exitCode).toBe(1);
-    expect(result.result.error).toContain("request couldn't be processed");
-    expect(writerWrites).toContainEqual(
+    expect(result.result.error).toContain(
+      "commands would run on the wrong host",
+    );
+    expect(writerWrites).not.toContainEqual(
       expect.objectContaining({
         type: "data-sandbox-fallback",
-        data: expect.objectContaining({
-          actualSandbox: "other-local",
-          requestedPreference: "desktop",
-        }),
       }),
     );
   });

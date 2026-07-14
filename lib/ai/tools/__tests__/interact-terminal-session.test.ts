@@ -25,18 +25,9 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class {},
 }));
 
-// Same for the caido-proxy and proxy-manager imports that would drag in
-// Convex/network deps during this unit test.
-jest.mock("../utils/caido-proxy", () => ({
-  getCaidoConfig: () => ({}),
-  buildCaidoProxyEnvVars: () => undefined,
-}));
-jest.mock("../utils/proxy-manager", () => ({
-  ensureCaido: async () => undefined,
-}));
-
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createCommandSessionHandle } from "../utils/command-session-handle";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
   PtySessionManager,
@@ -61,6 +52,33 @@ const mockCreateE2BPtyHandle = createE2BPtyHandle as jest.MockedFunction<
 jest.mock("../utils/centrifugo-pty-adapter", () => ({
   createCentrifugoPtyHandle: jest.fn(),
 }));
+
+jest.mock("../utils/pty-wait-utils", () => {
+  const actual = jest.requireActual("../utils/pty-wait-utils");
+  return {
+    ...actual,
+    waitForOutput: jest.fn(),
+  };
+});
+
+import { waitForOutput } from "../utils/pty-wait-utils";
+
+const realWaitForOutput = jest.requireActual("../utils/pty-wait-utils")
+  .waitForOutput as typeof waitForOutput;
+const mockWaitForOutput = waitForOutput as jest.MockedFunction<
+  typeof waitForOutput
+>;
+const immediateWaitForOutput: typeof waitForOutput = async (
+  session,
+  _timeoutMs,
+  _signal,
+  onChunk,
+  consume,
+) => {
+  const delta = consume(session);
+  if (delta.byteLength > 0) onChunk(delta);
+  return delta;
+};
 
 // ── Fake PTY handle factory ──────────────────────────────────────────
 
@@ -160,8 +178,6 @@ function makeContext(opts: {
       const sb = s as { jupyterUrl?: unknown; pty?: unknown };
       return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
     },
-    guardrailsConfig: undefined,
-    caidoEnabled: false,
   } as unknown as import("@/types").ToolContext;
 
   return { context, writerWrites, sandboxManager, ptySessionManager };
@@ -224,6 +240,7 @@ async function createSession(
 describe("interact_terminal_session — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
+    mockWaitForOutput.mockImplementation(immediateWaitForOutput);
   });
 
   test("send on unknown session returns structured error", async () => {
@@ -235,6 +252,119 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       input: "hi\n",
     })) as { result: { error?: string } };
     expect(result.result.error).toMatch(/Session nope not found/);
+    expect(result.result.error).toContain("a PID is not a session ID");
+  });
+
+  test("non-interactive command sessions support wait but reject send", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const handle = createCommandSessionHandle({
+      kill: async () => true,
+    });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    const send = (await runTool(tool, {
+      action: "send",
+      session: session.sessionId,
+      input: "hello\n",
+    })) as { result: { error?: string } };
+    expect(send.result.error).toContain(
+      "non-interactive command and does not accept input",
+    );
+
+    mockWaitForOutput.mockImplementationOnce(realWaitForOutput);
+    const waitPromise = runTool(tool, {
+      action: "wait",
+      session: session.sessionId,
+      timeout: 1,
+    }) as Promise<{
+      result: {
+        output: string;
+        exited?: { exitCode: number | null };
+      };
+    }>;
+    setTimeout(() => {
+      handle.emitText("WHOIS complete\n");
+      handle.resolveExit(0);
+    }, 10);
+
+    const waited = await waitPromise;
+    expect(waited.result.output).toContain("WHOIS complete");
+    expect(waited.result.exited).toEqual({ exitCode: 0 });
+
+    ptySessionManager.forget("chat-1", session.sessionId);
+  });
+
+  test("non-interactive command sessions support view and confirmed kill", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const terminate = jest.fn(async () => true);
+    const handle = createCommandSessionHandle({ kill: terminate });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    handle.emitText("partial WHOIS output\n");
+    const viewed = (await runTool(tool, {
+      action: "view",
+      session: session.sessionId,
+    })) as {
+      result: { output: string };
+    };
+    expect(viewed.result.output).toContain("partial WHOIS output");
+
+    const killed = (await runTool(tool, {
+      action: "kill",
+      session: session.sessionId,
+    })) as {
+      result: { output: string; exitCode: number | null };
+    };
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(killed.result).toEqual({
+      output: "Successfully killed non-interactive command session.",
+      exitCode: null,
+    });
+    expect(ptySessionManager.get("chat-1", session.sessionId)).toBeUndefined();
+  });
+
+  test("failed command-session kill is reported and retained for retry", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const terminate = jest.fn(async () => false);
+    const handle = createCommandSessionHandle({ kill: terminate });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+
+    const killed = (await runTool(tool, {
+      action: "kill",
+      session: session.sessionId,
+    })) as {
+      result: { error?: string };
+    };
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(killed.result.error).toContain("Failed to kill session");
+    expect(killed.result.error).toContain("retained");
+    expect(ptySessionManager.get("chat-1", session.sessionId)).toBe(session);
+
+    ptySessionManager.forget("chat-1", session.sessionId);
   });
 
   test("send with oversized input errors without calling sendInput", async () => {
@@ -259,7 +389,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls.length).toBe(before);
   });
 
-  test("send blocks guardrail-matched destructive input", async () => {
+  test("send forwards destructive-looking input", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
 
@@ -274,34 +404,10 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       input: "rm -rf /\n",
     })) as { result: { error?: string } };
 
-    expect(result.result.error).toMatch(/Input blocked by security guardrail/);
-    expect(handle.sendInputCalls.length).toBe(before);
-  });
-
-  test("send blocks destructive input assembled across split sends", async () => {
-    const e2b = makeFakeE2BSandbox();
-    const handle = makeFakeHandle();
-
-    const { context } = makeContext({ sandbox: e2b });
-    const sessionId = await createSession(context, handle);
-
-    const tool = createInteractTerminalSession(context);
-    const first = (await runTool(tool, {
-      action: "send",
-      session: sessionId,
-      input: "rm -",
-    })) as { result: { error?: string } };
-    expect(first.result.error).toBeUndefined();
-
-    const beforeBlockedChunk = handle.sendInputCalls.length;
-    const result = (await runTool(tool, {
-      action: "send",
-      session: sessionId,
-      input: "rf /\n",
-    })) as { result: { error?: string } };
-
-    expect(result.result.error).toMatch(/Input blocked by security guardrail/);
-    expect(handle.sendInputCalls.length).toBe(beforeBlockedChunk);
+    expect(result.result.error).toBeUndefined();
+    expect(new TextDecoder().decode(handle.sendInputCalls[before])).toBe(
+      "rm -rf /\r",
+    );
   });
 
   test("send translates tmux key names and passes raw text verbatim", async () => {
@@ -315,16 +421,11 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     const sendAndGet = async (input: string) => {
       const beforeLen = handle.sendInputCalls.length;
-      // send awaits a short capture window before resolving; we don't need
-      // its return value here, only that handle.sendInput was called.
-      void runTool(tool, {
+      await runTool(tool, {
         action: "send",
         session: sessionId,
         input,
       });
-      // Yield so the tool's awaited sendInput runs before we read the bytes.
-      await new Promise((r) => setTimeout(r, 0));
-      await new Promise((r) => setTimeout(r, 0));
       return handle.sendInputCalls[beforeLen];
     };
 
@@ -362,6 +463,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const { context } = makeContext({ sandbox: e2b });
     const sessionId = await createSession(context, handle);
 
+    mockWaitForOutput.mockImplementationOnce(realWaitForOutput);
     const tool = createInteractTerminalSession(context);
     const started = Date.now();
     const waitP = runTool(tool, {

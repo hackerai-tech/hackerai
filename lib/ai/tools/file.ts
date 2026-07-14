@@ -1,5 +1,4 @@
 import { tool } from "ai";
-import { z } from "zod";
 import { createHash } from "crypto";
 import type { AnySandbox, ToolContext } from "@/types";
 import { truncateOutput } from "@/lib/token-utils";
@@ -11,19 +10,16 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
+import {
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
+import { createFileToolSchema, type FileToolAction } from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
-const FILE_ACTIONS_WITH_VIEW = [
-  "view",
-  "read",
-  "write",
-  "append",
-  "edit",
-] as const;
-const FILE_ACTIONS_TEXT_ONLY = ["read", "write", "append", "edit"] as const;
-type FileAction = (typeof FILE_ACTIONS_WITH_VIEW)[number];
+type FileAction = FileToolAction;
 
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
@@ -59,18 +55,27 @@ type SandboxViewPayload = {
 };
 
 type FileViewImageUsageOutcome =
-  | "success"
-  | "unsupported_model"
-  | "inspection_failed";
+  "success" | "unsupported_model" | "inspection_failed";
 
 type FileViewStage = "initial_inspection" | "model_output";
 
 type FileViewErrorClassification = {
   failureReason: string;
   failureDetail: string;
+  failureCategory: FileViewFailureCategory;
+  expectedFailure: boolean;
+  imageValidationReason?: string;
   errorName?: string;
   errorMessageHash: string;
 };
+
+type FileViewFailureCategory =
+  | "image_validation"
+  | "inspection_protocol"
+  | "missing_file"
+  | "sandbox_lifecycle"
+  | "unsupported_capability"
+  | "unsupported_input";
 
 const VIEW_FILE_SCRIPT = String.raw`
 import base64
@@ -337,82 +342,156 @@ function getPathTelemetry(path: string, userId: string) {
   };
 }
 
+function getFailureCategory(
+  failureReason?: string,
+  failureDetail?: string,
+): FileViewFailureCategory | undefined {
+  if (!failureReason && !failureDetail) return undefined;
+
+  if (
+    failureReason === "unsupported_model" ||
+    failureReason === "unsupported_sandbox"
+  ) {
+    return "unsupported_capability";
+  }
+  if (
+    failureReason === "unsupported_media_type" ||
+    failureReason === "unsupported_svg" ||
+    failureReason === "file_too_large"
+  ) {
+    return "unsupported_input";
+  }
+  if (failureReason === "file_not_found") return "missing_file";
+  if (
+    failureReason === "sandbox_unavailable" ||
+    failureReason === "sandbox_timeout"
+  ) {
+    return "sandbox_lifecycle";
+  }
+  if (
+    failureReason === "image_validation_failed" ||
+    failureDetail === "invalid_image_data"
+  ) {
+    return "image_validation";
+  }
+  if (failureReason === "inspection_error") return "inspection_protocol";
+
+  return undefined;
+}
+
+function isExpectedFileViewFailure(
+  failureCategory?: FileViewFailureCategory,
+): boolean | undefined {
+  if (!failureCategory) return undefined;
+  return (
+    failureCategory === "unsupported_capability" ||
+    failureCategory === "unsupported_input"
+  );
+}
+
+function extractImageValidationReason(message: string): string | undefined {
+  const match = message.match(
+    /^View inspection found invalid image data \(([a-zA-Z0-9_]+)\)\.$/,
+  );
+  return match?.[1];
+}
+
 function classifyFileViewError(error: unknown): FileViewErrorClassification {
   const message = error instanceof Error ? error.message : String(error);
   const base = {
     errorName: error instanceof Error ? error.name : undefined,
     errorMessageHash: hashTelemetryValue(message),
   };
+  const build = (classification: {
+    failureReason: string;
+    failureDetail: string;
+    imageValidationReason?: string;
+  }): FileViewErrorClassification => {
+    const failureCategory = getFailureCategory(
+      classification.failureReason,
+      classification.failureDetail,
+    );
+    return {
+      ...base,
+      ...classification,
+      failureCategory: failureCategory ?? "inspection_protocol",
+      expectedFailure: isExpectedFileViewFailure(failureCategory) ?? false,
+    };
+  };
+
+  if (base.errorName === "SandboxNotFoundError") {
+    return build({
+      failureReason: "sandbox_unavailable",
+      failureDetail: "sandbox_not_found",
+    });
+  }
+  if (base.errorName === "TimeoutError") {
+    return build({
+      failureReason: "sandbox_timeout",
+      failureDetail: "sandbox_command_timeout",
+    });
+  }
 
   if (message.includes("Unsupported media type")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_media_type",
       failureDetail: "unsupported_media_type",
-    };
+    });
   }
   if (message.includes("too large")) {
-    return {
-      ...base,
+    return build({
       failureReason: "file_too_large",
       failureDetail: "file_too_large",
-    };
+    });
   }
   if (message.includes("File not found")) {
-    return {
-      ...base,
+    return build({
       failureReason: "file_not_found",
       failureDetail: "file_not_found",
-    };
+    });
   }
   if (message.includes("Windows local sandboxes")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_sandbox",
       failureDetail: "windows_local_sandbox",
-    };
+    });
   }
   if (message.includes("SVG files")) {
-    return {
-      ...base,
+    return build({
       failureReason: "unsupported_svg",
       failureDetail: "unsupported_svg",
-    };
+    });
   }
   if (message.includes("Failed to inspect file for view")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "invalid_inspection_output",
-    };
+    });
   }
   if (message.includes("View inspection returned an invalid payload")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "invalid_payload",
-    };
+    });
   }
   if (message.includes("View inspection did not return image data")) {
-    return {
-      ...base,
+    return build({
       failureReason: "inspection_error",
       failureDetail: "missing_image_data",
-    };
+    });
   }
   if (message.includes("View inspection found invalid image data")) {
-    return {
-      ...base,
-      failureReason: "inspection_error",
+    return build({
+      failureReason: "image_validation_failed",
       failureDetail: "invalid_image_data",
-    };
+      imageValidationReason: extractImageValidationReason(message),
+    });
   }
 
-  return {
-    ...base,
+  return build({
     failureReason: "inspection_error",
     failureDetail: "inspection_error",
-  };
+  });
 }
 
 function captureFileViewImageUsage(args: {
@@ -427,6 +506,9 @@ function captureFileViewImageUsage(args: {
   previewUploadSucceeded?: boolean;
   failureReason?: string;
   failureDetail?: string;
+  failureCategory?: FileViewFailureCategory;
+  expectedFailure?: boolean;
+  imageValidationReason?: string;
   errorName?: string;
   errorMessageHash?: string;
 }) {
@@ -442,9 +524,16 @@ function captureFileViewImageUsage(args: {
     previewUploadSucceeded,
     failureReason,
     failureDetail,
+    failureCategory,
+    expectedFailure,
+    imageValidationReason,
     errorName,
     errorMessageHash,
   } = args;
+  const derivedFailureCategory =
+    failureCategory ?? getFailureCategory(failureReason, failureDetail);
+  const derivedExpectedFailure =
+    expectedFailure ?? isExpectedFileViewFailure(derivedFailureCategory);
 
   phLogger.event("file_view_image_used", {
     userId: context.userID,
@@ -469,6 +558,13 @@ function captureFileViewImageUsage(args: {
     }),
     ...(failureReason && { failure_reason: failureReason }),
     ...(failureDetail && { failure_detail: failureDetail }),
+    ...(derivedFailureCategory && { failure_category: derivedFailureCategory }),
+    ...(typeof derivedExpectedFailure === "boolean" && {
+      expected_failure: derivedExpectedFailure,
+    }),
+    ...(imageValidationReason && {
+      image_validation_reason: imageValidationReason,
+    }),
     ...(errorName && { error_name: errorName }),
     ...(errorMessageHash && { error_message_hash: errorMessageHash }),
   });
@@ -565,6 +661,19 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function convertToLineEnding(text: string, lineEnding: "\n" | "\r\n"): string {
+  const normalized = normalizeLineEndings(text);
+  return lineEnding === "\r\n" ? normalized.replace(/\n/g, "\r\n") : normalized;
+}
+
 async function runSandboxCommand(
   sandbox: AnySandbox,
   command: string,
@@ -605,6 +714,32 @@ function getWindowsNativePath(path: string): string {
 
 function getPythonPathForSandbox(sandbox: AnySandbox, path: string): string {
   return isWindowsSandbox(sandbox) ? getWindowsNativePath(path) : path;
+}
+
+type NativeDesktopFiles = {
+  stat?: (path: string) => Promise<SandboxFileState>;
+  readText?: (
+    path: string,
+    options?: {
+      range?: [number, number];
+      maxFullBytes?: number;
+      maxResultBytes?: number;
+    },
+  ) => Promise<SandboxTextReadPayload>;
+  append?: (path: string, content: string) => Promise<void>;
+};
+
+function getNativeDesktopFiles(sandbox: AnySandbox): NativeDesktopFiles | null {
+  if (!isCentrifugoSandbox(sandbox)) return null;
+
+  const maybeSandbox = sandbox as unknown as {
+    supportsNativeFileRelay?: () => boolean;
+    files?: NativeDesktopFiles;
+  };
+  if (maybeSandbox.supportsNativeFileRelay?.() !== true) {
+    return null;
+  }
+  return maybeSandbox.files ?? null;
 }
 
 function toWindowsBashPath(path: string): string {
@@ -673,6 +808,11 @@ async function getSandboxFileState(
   sandbox: AnySandbox,
   path: string,
 ): Promise<SandboxFileState> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.stat) {
+    return nativeFiles.stat(path);
+  }
+
   const pythonPath = getPythonPathForSandbox(sandbox, path);
   const result = await runPythonScript(
     sandbox,
@@ -758,6 +898,15 @@ async function readSandboxTextFile(
   path: string,
   range?: number[],
 ): Promise<SandboxTextReadPayload> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.readText) {
+    return nativeFiles.readText(path, {
+      ...(range ? { range: [range[0], range[1]] } : {}),
+      maxFullBytes: MAX_TEXT_FILE_READ_BYTES,
+      maxResultBytes: MAX_TEXT_READ_RESULT_BYTES,
+    });
+  }
+
   const pythonPath = getPythonPathForSandbox(sandbox, path);
   const envVars = {
     HACKERAI_FILE_READ_PATH: pythonPath,
@@ -888,6 +1037,12 @@ async function appendSandboxTextFile(
   path: string,
   text: string,
 ): Promise<void> {
+  const nativeFiles = getNativeDesktopFiles(sandbox);
+  if (nativeFiles?.append) {
+    await nativeFiles.append(path, text);
+    return;
+  }
+
   const tempPath = `/tmp/hackerai_append_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`;
   await sandbox.files.write(tempPath, text, {
     user: "user" as const,
@@ -1053,112 +1208,49 @@ async function uploadViewPreviewFiles(args: {
   ];
 }
 
-const editSchema = z.object({
-  find: z.string().describe("The exact text string to find in the file"),
-  replace: z
-    .string()
-    .describe("The replacement text that will substitute the found text"),
-  all: z
-    .boolean()
-    .optional()
-    .describe(
-      "Whether to replace all occurrences instead of just the first one. Defaults to false.",
-    ),
-});
-
 export const createFile = (context: ToolContext) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
+  const getSandboxForFileTool = () =>
+    getSandboxWithFallbackGuard({
+      sandboxManager,
+    });
   const canViewMultimodalFiles = () =>
     supportsMultimodalToolResults(getCurrentModelName?.() ?? modelName);
   const supportsViewInSchema = canViewMultimodalFiles();
-  const actionSchema = (
-    supportsViewInSchema
-      ? z.enum(FILE_ACTIONS_WITH_VIEW)
-      : z.enum(FILE_ACTIONS_TEXT_ONLY)
-  ) as z.ZodType<FileAction>;
-  const supportedActionsDescription = [
-    supportsViewInSchema
-      ? "- view: View raster image files through multimodal understanding."
-      : null,
-    "- read: Read file content as text (Markdown, code, logs).",
-    "- write: Overwrite the full content of a text file.",
-    "- append: Append content to a text file.",
-    "- edit: Make targeted edits to a text file.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const instructions = [
-    "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
-    "For file copying, moving, and deletion, use the shell tool.",
-    ...(supportsViewInSchema
-      ? [
-          "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
-          "Do not use 'view' for PDFs. Use 'read' for extractable text, or use the shell tool to convert PDF pages to images first if visual inspection is required.",
-          "Use 'read' for text-based or line-oriented formats.",
-        ]
-      : [
-          "Use 'read' for text-based or line-oriented formats.",
-          "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
-        ]),
-    "Code MUST be saved to a file using this tool before execution via the shell tool.",
-    "DO NOT write partial or truncated content; always output the full content.",
-    "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
-    "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
-    "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
-    "If the range parameter is not specified, the entire file will be read by default.",
-    "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
-    "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
-    "write and append actions will automatically create files if they do not exist.",
-    "When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.",
-    "DO NOT read files that were just written, as their content remains in context.",
-    "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
-  ];
-  const instructionsDescription = instructions
-    .map((instruction, index) => `${index + 1}. ${instruction}`)
-    .join("\n");
+  const fileToolSchema = createFileToolSchema({
+    supportsView: supportsViewInSchema,
+    approvalGated: !!context.requestToolApproval,
+  });
 
   return tool({
-    description: `Perform operations on files in the sandbox file system.
-This tool is the primary way to manage file content, allowing for reading, writing, appending, editing text-based files, and viewing raster image files.
-
-### Supported Actions
-
-${supportedActionsDescription}
-
-### Instructions
-
-${instructionsDescription}`,
-    inputSchema: z.object({
-      action: actionSchema.describe("The action to perform"),
-      path: z.string().describe("The absolute path to the target file"),
-      brief: z
-        .string()
-        .describe(
-          "A one-sentence preamble describing the purpose of this operation",
-        ),
-      text: z
-        .string()
-        .optional()
-        .describe(
-          "The content to be written or appended. Required for `write` and `append` actions.",
-        ),
-      range: z
-        .array(z.number().int())
-        .length(2)
-        .optional()
-        .describe(
-          "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
-        ),
-      edits: z
-        .array(editSchema)
-        .optional()
-        .describe(
-          "A list of edits to be sequentially applied to the file. Required for `edit` action.",
-        ),
-    }),
-    execute: async ({ action, path, text, range, edits }) => {
+    ...fileToolSchema,
+    execute: async (
+      { action, path, brief, text, range, edits },
+      { toolCallId },
+    ) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        if (action === "write" || action === "append" || action === "edit") {
+          const approval = await context.requestToolApproval?.({
+            toolCallId,
+            toolName: "file",
+            operation:
+              action === "write"
+                ? "file_write"
+                : action === "append"
+                  ? "file_append"
+                  : "file_edit",
+            target: path,
+            brief,
+          });
+          if (approval && !approval.approved) {
+            return {
+              error: approval.reason,
+              approvalDenied: true,
+            };
+          }
+        }
+
+        const { sandbox } = await getSandboxForFileTool();
 
         switch (action) {
           case "view": {
@@ -1192,6 +1284,9 @@ ${instructionsDescription}`,
                 durationMs: Date.now() - viewStartedAt,
                 failureReason: classification.failureReason,
                 failureDetail: classification.failureDetail,
+                failureCategory: classification.failureCategory,
+                expectedFailure: classification.expectedFailure,
+                imageValidationReason: classification.imageValidationReason,
                 errorName: classification.errorName,
                 errorMessageHash: classification.errorMessageHash,
               });
@@ -1326,7 +1421,10 @@ ${instructionsDescription}`,
             }
 
             // Append directly without adding extra newline - agent controls exact content
-            const newContent = existingContent + text;
+            const appendText = existingContent
+              ? convertToLineEnding(text, detectLineEnding(existingContent))
+              : text;
+            const newContent = existingContent + appendText;
 
             await sandbox.files.write(path, newContent, {
               user: "user" as const,
@@ -1384,9 +1482,15 @@ ${instructionsDescription}`,
             }
 
             // Validate all find strings exist before applying any edits (atomic behavior)
+            const lineEnding = detectLineEnding(originalContent);
+            const normalizedEdits = edits.map((edit) => ({
+              ...edit,
+              find: convertToLineEnding(edit.find, lineEnding),
+              replace: convertToLineEnding(edit.replace, lineEnding),
+            }));
             const missingFinds: { index: number; find: string }[] = [];
-            for (let i = 0; i < edits.length; i++) {
-              if (!originalContent.includes(edits[i].find)) {
+            for (let i = 0; i < normalizedEdits.length; i++) {
+              if (!originalContent.includes(normalizedEdits[i].find)) {
                 missingFinds.push({ index: i + 1, find: edits[i].find });
               }
             }
@@ -1407,7 +1511,7 @@ ${instructionsDescription}`,
             let content = originalContent;
             let totalReplacements = 0;
 
-            for (const edit of edits) {
+            for (const edit of normalizedEdits) {
               const { find, replace, all = false } = edit;
 
               if (all) {
@@ -1426,7 +1530,7 @@ ${instructionsDescription}`,
             });
 
             // Format content with line numbers for model output (padded format with pipe separator)
-            const lines = content.split("\n");
+            const lines = normalizeLineEndings(content).split("\n");
             const numberedLines = lines
               .map(
                 (line, index) =>
@@ -1457,7 +1561,7 @@ ${instructionsDescription}`,
         }
       } catch (error) {
         return {
-          error: error instanceof Error ? error.message : String(error),
+          error: resolveToolErrorMessage(error),
         };
       }
     },
@@ -1493,7 +1597,7 @@ ${instructionsDescription}`,
           const viewStartedAt = Date.now();
           let outputSandbox: any | undefined;
           try {
-            const { sandbox } = await sandboxManager.getSandbox();
+            const { sandbox } = await getSandboxForFileTool();
             outputSandbox = sandbox;
             const viewPayload = await readSandboxFileForView(
               sandbox,
@@ -1531,7 +1635,7 @@ ${instructionsDescription}`,
           } catch (error) {
             try {
               const sandbox =
-                outputSandbox ?? (await sandboxManager.getSandbox()).sandbox;
+                outputSandbox ?? (await getSandboxForFileTool()).sandbox;
               const classification = classifyFileViewError(error);
               captureFileViewImageUsage({
                 context,
@@ -1545,6 +1649,9 @@ ${instructionsDescription}`,
                 previewUploadSucceeded: viewOutput.previewUploadSucceeded,
                 failureReason: classification.failureReason,
                 failureDetail: classification.failureDetail,
+                failureCategory: classification.failureCategory,
+                expectedFailure: classification.expectedFailure,
+                imageValidationReason: classification.imageValidationReason,
                 errorName: classification.errorName,
                 errorMessageHash: classification.errorMessageHash,
               });
@@ -1553,9 +1660,7 @@ ${instructionsDescription}`,
             }
             return {
               type: "text" as const,
-              value: `Error: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+              value: `Error: ${resolveToolErrorMessage(error)}`,
             };
           }
         }

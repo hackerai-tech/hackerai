@@ -12,12 +12,26 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
+import { logExtraUsagePurchase } from "@/lib/billing/extra-usage-purchase-logging";
 
 const WEBHOOK_LOG_PREFIX = "[Extra Usage Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
   webhook: "extra_usage",
   route: "/api/extra-usage/webhook",
-};
+} as const;
+
+function stripeObjectId(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "id" in value) {
+    const id = (value as { id?: unknown }).id;
+    return typeof id === "string" ? id : undefined;
+  }
+  return undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * POST /api/extra-usage/webhook
@@ -25,7 +39,9 @@ const WEBHOOK_LOG_CONTEXT = {
  *
  * Configure this webhook in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/extra-usage/webhook
- * - Events to listen: checkout.session.completed
+ * - Events to listen: checkout.session.completed,
+ *   checkout.session.async_payment_succeeded,
+ *   checkout.session.async_payment_failed
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -77,7 +93,9 @@ export async function POST(req: NextRequest) {
 
   // Handle the event
   switch (event.type) {
-    case "checkout.session.completed": {
+    case "checkout.session.completed":
+    case "checkout.session.async_payment_succeeded":
+    case "checkout.session.async_payment_failed": {
       const session = event.data.object as Stripe.Checkout.Session;
       // Only process extra usage purchases
       if (session.metadata?.type !== "extra_usage_purchase") {
@@ -89,71 +107,224 @@ export async function POST(req: NextRequest) {
       const amountDollars = session.metadata.amountDollars
         ? parseFloat(session.metadata.amountDollars)
         : parseInt(session.metadata.amountCents, 10) / 100;
+      const stripeCustomerId = stripeObjectId(session.customer);
+      const stripePaymentIntentId = stripeObjectId(session.payment_intent);
+      const stripeInvoiceId = stripeObjectId(session.invoice);
 
-      if (!userId || isNaN(amountDollars)) {
-        console.error(
-          "[Extra Usage Webhook] Invalid metadata in checkout session:",
-          session.id,
-        );
-        return NextResponse.json(
-          { error: "Invalid session metadata" },
-          { status: 400 },
-        );
+      if (!userId || isNaN(amountDollars) || amountDollars <= 0) {
+        logExtraUsagePurchase("warn", "extra_usage_purchase_invalid_metadata", {
+          route: WEBHOOK_LOG_CONTEXT.route,
+          requestHeaders: req.headers,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          paymentStatus: session.payment_status,
+          reason: "invalid_session_metadata",
+        });
+        return NextResponse.json({ received: true });
+      }
+
+      logExtraUsagePurchase("info", "extra_usage_purchase_session_seen", {
+        route: WEBHOOK_LOG_CONTEXT.route,
+        requestHeaders: req.headers,
+        userId,
+        amountDollars,
+        stripeCheckoutSessionId: session.id,
+        stripePaymentIntentId,
+        stripeInvoiceId,
+        paymentStatus: session.payment_status,
+        result: "session_seen",
+      });
+
+      const convex = getConvexClient();
+      if (event.type === "checkout.session.async_payment_failed") {
+        try {
+          await convex.mutation(api.extraUsage.recordPurchaseFailed, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            userId,
+            amountDollars,
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId,
+            stripeInvoiceId,
+            route: "webhook",
+            lastError: "stripe_async_payment_failed",
+          });
+        } catch (recordError) {
+          logExtraUsagePurchase(
+            "error",
+            "extra_usage_purchase_failure_record_failed",
+            {
+              route: WEBHOOK_LOG_CONTEXT.route,
+              requestHeaders: req.headers,
+              userId,
+              amountDollars,
+              stripeCheckoutSessionId: session.id,
+              stripePaymentIntentId,
+              stripeInvoiceId,
+              paymentStatus: session.payment_status,
+              result: "failure_record_failed",
+              error: recordError,
+            },
+          );
+          return NextResponse.json(
+            { error: "Failed to record payment failure" },
+            { status: 500 },
+          );
+        }
+
+        logExtraUsagePurchase("warn", "extra_usage_purchase_payment_failed", {
+          route: WEBHOOK_LOG_CONTEXT.route,
+          requestHeaders: req.headers,
+          userId,
+          amountDollars,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          paymentStatus: session.payment_status,
+          result: "failed",
+          reason: "stripe_async_payment_failed",
+        });
+        return NextResponse.json({ received: true });
+      }
+
+      if (session.payment_status !== "paid") {
+        logExtraUsagePurchase("info", "extra_usage_purchase_payment_pending", {
+          route: WEBHOOK_LOG_CONTEXT.route,
+          requestHeaders: req.headers,
+          userId,
+          amountDollars,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          paymentStatus: session.payment_status,
+          result: "payment_pending",
+        });
+        return NextResponse.json({ received: true });
       }
 
       // Add credits to user's balance. Idempotency key is scoped to the Checkout
       // Session so this path and the post-checkout confirm redirect (which uses
       // the same key) can race without double-crediting.
       try {
-        const result = await getConvexClient().mutation(
-          api.extraUsage.addCredits,
+        await convex.mutation(api.extraUsage.recordPurchasePaidSeen, {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          userId,
+          amountDollars,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          route: "webhook",
+        });
+
+        const result = await convex.mutation(api.extraUsage.addCredits, {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          userId,
+          amountDollars,
+          idempotencyKey: `cs_${session.id}`,
+          revenueSource: "extra_usage_purchase",
+          stripeCustomerId,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          purchaseRoute: "webhook",
+        });
+
+        logExtraUsagePurchase(
+          "info",
+          result.alreadyProcessed
+            ? "extra_usage_purchase_credit_skipped"
+            : "extra_usage_purchase_credit_succeeded",
           {
+            route: WEBHOOK_LOG_CONTEXT.route,
+            requestHeaders: req.headers,
+            userId,
+            amountDollars,
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId,
+            stripeInvoiceId,
+            paymentStatus: session.payment_status,
+            result: result.alreadyProcessed ? "already_processed" : "credited",
+          },
+        );
+        try {
+          phLogger.event(
+            PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+            paidFunnelProperties({
+              userId,
+              checkout_attempt_id: session.metadata.checkoutAttemptId,
+              checkout_type: "extra_usage_purchase",
+              amount_dollars: amountDollars,
+              stripe_customer_id: stripeCustomerId,
+              stripe_checkout_session_id: session.id,
+              stripe_payment_intent_id: stripePaymentIntentId,
+              payment_status: session.payment_status,
+              $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+            }),
+          );
+          after(() => phLogger.flush());
+        } catch (analyticsError) {
+          logExtraUsagePurchase(
+            "warn",
+            "extra_usage_purchase_analytics_failed",
+            {
+              route: WEBHOOK_LOG_CONTEXT.route,
+              requestHeaders: req.headers,
+              userId,
+              amountDollars,
+              stripeCheckoutSessionId: session.id,
+              stripePaymentIntentId,
+              stripeInvoiceId,
+              paymentStatus: session.payment_status,
+              result: result.alreadyProcessed
+                ? "already_processed"
+                : "credited",
+              error: analyticsError,
+            },
+          );
+        }
+      } catch (error) {
+        try {
+          await convex.mutation(api.extraUsage.recordPurchaseFailed, {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             userId,
             amountDollars,
-            idempotencyKey: `cs_${session.id}`,
-            legacyIdempotencyKey: event.id, // Guards retries of pre-deploy webhooks that stored `evt_<id>`
-            revenueSource: "extra_usage_purchase",
-            stripeCustomerId:
-              typeof session.customer === "string"
-                ? session.customer
-                : session.customer?.id,
             stripeCheckoutSessionId: session.id,
-            stripePaymentIntentId:
-              typeof session.payment_intent === "string"
-                ? session.payment_intent
-                : session.payment_intent?.id,
-          },
-        );
-
-        if (result.alreadyProcessed) {
-          console.log(
-            `[Extra Usage Webhook] Checkout session ${session.id} already processed, skipping`,
+            stripePaymentIntentId,
+            stripeInvoiceId,
+            route: "webhook",
+            lastError: errorMessage(error),
+          });
+        } catch (recordError) {
+          logExtraUsagePurchase(
+            "error",
+            "extra_usage_purchase_failure_record_failed",
+            {
+              route: WEBHOOK_LOG_CONTEXT.route,
+              requestHeaders: req.headers,
+              userId,
+              amountDollars,
+              stripeCheckoutSessionId: session.id,
+              stripePaymentIntentId,
+              stripeInvoiceId,
+              paymentStatus: session.payment_status,
+              result: "failure_record_failed",
+              error: recordError,
+            },
           );
         }
-        phLogger.event(
-          PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
-          paidFunnelProperties({
-            userId,
-            checkout_attempt_id: session.metadata.checkoutAttemptId,
-            checkout_type: "extra_usage_purchase",
-            amount_dollars: amountDollars,
-            stripe_customer_id:
-              typeof session.customer === "string"
-                ? session.customer
-                : session.customer?.id,
-            stripe_checkout_session_id: session.id,
-            stripe_payment_intent_id:
-              typeof session.payment_intent === "string"
-                ? session.payment_intent
-                : session.payment_intent?.id,
-            payment_status: session.payment_status,
-            $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
-          }),
-        );
-        after(() => phLogger.flush());
-      } catch (error) {
-        console.error("[Extra Usage Webhook] FAILED to add credits:", error);
+
+        logExtraUsagePurchase("error", "extra_usage_purchase_credit_failed", {
+          route: WEBHOOK_LOG_CONTEXT.route,
+          requestHeaders: req.headers,
+          userId,
+          amountDollars,
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId,
+          stripeInvoiceId,
+          paymentStatus: session.payment_status,
+          result: "failed",
+          error,
+        });
         // Return 500 so Stripe retries
         return NextResponse.json(
           { error: "Failed to add credits" },

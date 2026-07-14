@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SubscriptionTier } from "@/types";
 import {
+  addAuthenticatedExceptionStep,
   captureAuthenticatedEvent,
   captureUpgradeCtaClick,
 } from "@/lib/analytics/client";
@@ -56,17 +57,32 @@ const clearPricingContextParams = (url: URL) => {
   }
 };
 
+const safeDiagnosticLabel = (value: string | undefined): string =>
+  value && /^[a-z0-9_-]{1,64}$/i.test(value) ? value : "unknown";
+
 export const usePricingDialog = (subscription?: SubscriptionTier) => {
   const [showPricing, setShowPricing] = useState(false);
   const [pricingContext, setPricingContext] = useState<PricingDialogContext>(
     {},
   );
   const capturedPricingViewRef = useRef(false);
+  const previousPricingOpenRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     // Check if URL hash is #pricing
     const checkHash = () => {
       const shouldShow = window.location.hash === "#pricing";
+      if (previousPricingOpenRef.current !== shouldShow) {
+        const context = shouldShow ? readPricingContext() : {};
+        addAuthenticatedExceptionStep("pricing_dialog_state_changed", {
+          open: shouldShow,
+          surface: safeDiagnosticLabel(context.surface),
+          source: safeDiagnosticLabel(context.source),
+          reason: safeDiagnosticLabel(context.reason),
+          limit_type: safeDiagnosticLabel(context.limitType),
+        });
+        previousPricingOpenRef.current = shouldShow;
+      }
 
       // Don't show pricing dialog for ultra/team users
       if (shouldShow && (subscription === "ultra" || subscription === "team")) {

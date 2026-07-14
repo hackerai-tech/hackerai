@@ -2,9 +2,9 @@ import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { ChatSDKError } from "@/lib/errors";
 
 const mockGetUserID = jest.fn();
-const mockGetActiveTriggerRunsForUser = jest.fn();
+const mockFenceAndGetActiveAgentResourcesForUser = jest.fn();
 const mockDeleteAllChatsForBackend = jest.fn();
-const mockRunsCancel = jest.fn();
+const mockCloseAndCancelAgentResources = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
 
 jest.mock("next/server", () => ({
@@ -33,10 +33,8 @@ jest.mock("next/server", () => ({
   },
 }));
 
-jest.mock("@trigger.dev/sdk", () => ({
-  runs: {
-    cancel: mockRunsCancel,
-  },
+jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
+  closeAndCancelAgentResources: mockCloseAndCancelAgentResources,
 }));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
@@ -44,7 +42,8 @@ jest.mock("@/lib/auth/get-user-id", () => ({
 }));
 
 jest.mock("@/lib/db/actions", () => ({
-  getActiveTriggerRunsForUser: mockGetActiveTriggerRunsForUser,
+  fenceAndGetActiveAgentResourcesForUser:
+    mockFenceAndGetActiveAgentResourcesForUser,
   deleteAllChatsForBackend: mockDeleteAllChatsForBackend,
 }));
 
@@ -65,10 +64,11 @@ function installResponseShim() {
   };
 }
 
-const activeRuns = (...triggerRunIds: string[]) => ({
-  runs: triggerRunIds.map((triggerRunId, index) => ({
+const activeResources = (...triggerRunIds: string[]) => ({
+  resources: triggerRunIds.map((triggerRunId, index) => ({
     chatId: `chat-${index + 1}`,
     triggerRunId,
+    approvalSessionId: `approval-session-${index + 1}`,
   })),
   hasMore: false,
 });
@@ -82,10 +82,13 @@ describe("DELETE /api/chats", () => {
     errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
     mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
-    mockGetActiveTriggerRunsForUser.mockResolvedValue(
-      activeRuns("run-1", "run-2") as never,
+    mockFenceAndGetActiveAgentResourcesForUser.mockResolvedValue(
+      activeResources("run-1", "run-2") as never,
     );
-    mockRunsCancel.mockResolvedValue(undefined as never);
+    mockCloseAndCancelAgentResources.mockResolvedValue({
+      canceledTriggerRuns: 2,
+      closedApprovalSessions: 2,
+    } as never);
     mockDeleteAllChatsForBackend.mockResolvedValue(undefined as never);
   });
 
@@ -96,8 +99,9 @@ describe("DELETE /api/chats", () => {
   it("cancels active Trigger runs before deleting chats", async () => {
     const { DELETE } = await import("../route");
     const calls: string[] = [];
-    mockRunsCancel.mockImplementation(async (triggerRunId) => {
-      calls.push(`cancel:${triggerRunId}`);
+    mockCloseAndCancelAgentResources.mockImplementation(async () => {
+      calls.push("cleanup");
+      return { canceledTriggerRuns: 2, closedApprovalSessions: 2 };
     });
     mockDeleteAllChatsForBackend.mockImplementation(async () => {
       calls.push("delete");
@@ -107,31 +111,51 @@ describe("DELETE /api/chats", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ deleted: true, canceledTriggerRuns: 2 });
-    expect(mockGetActiveTriggerRunsForUser).toHaveBeenCalledWith({
+    expect(body).toEqual({
+      deleted: true,
+      canceledTriggerRuns: 2,
+      closedApprovalSessions: 2,
+    });
+    expect(mockFenceAndGetActiveAgentResourcesForUser).toHaveBeenCalledWith({
       userId: "user-1",
     });
-    expect(mockRunsCancel).toHaveBeenNthCalledWith(1, "run-1");
-    expect(mockRunsCancel).toHaveBeenNthCalledWith(2, "run-2");
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      activeResources("run-1", "run-2").resources,
+      "chat-deleted",
+    );
     expect(mockDeleteAllChatsForBackend).toHaveBeenCalledWith({
       userId: "user-1",
     });
-    expect(calls).toEqual(["cancel:run-1", "cancel:run-2", "delete"]);
+    expect(calls).toEqual(["cleanup", "delete"]);
   });
 
-  it("deduplicates stored Trigger run ids before cancellation", async () => {
+  it("passes session-only resources to cleanup before deletion", async () => {
     const { DELETE } = await import("../route");
-    mockGetActiveTriggerRunsForUser.mockResolvedValue(
-      activeRuns("run-1", "run-1") as never,
-    );
+    const resources = [
+      { chatId: "chat-1", approvalSessionId: "approval-session-1" },
+    ];
+    mockFenceAndGetActiveAgentResourcesForUser.mockResolvedValue({
+      resources,
+      hasMore: false,
+    } as never);
+    mockCloseAndCancelAgentResources.mockResolvedValue({
+      canceledTriggerRuns: 0,
+      closedApprovalSessions: 1,
+    } as never);
 
     const response = await DELETE(request);
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ deleted: true, canceledTriggerRuns: 1 });
-    expect(mockRunsCancel).toHaveBeenCalledTimes(1);
-    expect(mockRunsCancel).toHaveBeenCalledWith("run-1");
+    expect(body).toEqual({
+      deleted: true,
+      canceledTriggerRuns: 0,
+      closedApprovalSessions: 1,
+    });
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      resources,
+      "chat-deleted",
+    );
     expect(mockDeleteAllChatsForBackend).toHaveBeenCalledWith({
       userId: "user-1",
     });
@@ -139,7 +163,7 @@ describe("DELETE /api/chats", () => {
 
   it("does not delete chats when Trigger cancellation fails", async () => {
     const { DELETE } = await import("../route");
-    mockRunsCancel.mockRejectedValue(
+    mockCloseAndCancelAgentResources.mockRejectedValue(
       new Error("Trigger API unavailable") as never,
     );
 
@@ -151,8 +175,8 @@ describe("DELETE /api/chats", () => {
 
   it("does not delete chats when active runs exceed the safe lookup cap", async () => {
     const { DELETE } = await import("../route");
-    mockGetActiveTriggerRunsForUser.mockResolvedValue({
-      ...activeRuns("run-1"),
+    mockFenceAndGetActiveAgentResourcesForUser.mockResolvedValue({
+      ...activeResources("run-1"),
       hasMore: true,
     } as never);
 
@@ -160,8 +184,8 @@ describe("DELETE /api/chats", () => {
     const text = await response.text();
 
     expect(response.status).toBe(409);
-    expect(text).toBe("Too many active chat runs to delete safely");
-    expect(mockRunsCancel).not.toHaveBeenCalled();
+    expect(text).toBe("Too many active agent resources to delete safely");
+    expect(mockCloseAndCancelAgentResources).not.toHaveBeenCalled();
     expect(mockDeleteAllChatsForBackend).not.toHaveBeenCalled();
   });
 
@@ -179,21 +203,34 @@ describe("DELETE /api/chats", () => {
       code: "forbidden:chat",
       cause: "Fraud dispute hold",
     });
-    expect(mockGetActiveTriggerRunsForUser).not.toHaveBeenCalled();
-    expect(mockRunsCancel).not.toHaveBeenCalled();
+    expect(mockFenceAndGetActiveAgentResourcesForUser).not.toHaveBeenCalled();
+    expect(mockCloseAndCancelAgentResources).not.toHaveBeenCalled();
     expect(mockDeleteAllChatsForBackend).not.toHaveBeenCalled();
   });
 
   it("deletes without calling Trigger when there are no active runs", async () => {
     const { DELETE } = await import("../route");
-    mockGetActiveTriggerRunsForUser.mockResolvedValue(activeRuns() as never);
+    mockFenceAndGetActiveAgentResourcesForUser.mockResolvedValue(
+      activeResources() as never,
+    );
+    mockCloseAndCancelAgentResources.mockResolvedValue({
+      canceledTriggerRuns: 0,
+      closedApprovalSessions: 0,
+    } as never);
 
     const response = await DELETE(request);
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({ deleted: true, canceledTriggerRuns: 0 });
-    expect(mockRunsCancel).not.toHaveBeenCalled();
+    expect(body).toEqual({
+      deleted: true,
+      canceledTriggerRuns: 0,
+      closedApprovalSessions: 0,
+    });
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      [],
+      "chat-deleted",
+    );
     expect(mockDeleteAllChatsForBackend).toHaveBeenCalledWith({
       userId: "user-1",
     });

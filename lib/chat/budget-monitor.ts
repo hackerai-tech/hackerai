@@ -3,7 +3,6 @@ import "server-only";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ExtraUsageConfig,
-  ChatMode,
   RateLimitInfo,
   SubscriptionTier,
 } from "@/types";
@@ -16,7 +15,6 @@ import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
   canContinueProAgentRunWithPremium,
-  PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
   type AgentRunSpendCap,
   type AgentRunSpendCapHit,
 } from "@/lib/chat/agent-run-spend-cap";
@@ -100,24 +98,6 @@ export function captureBudgetSnapshot(args: {
     extraUsageAutoReload: extraUsageConfig?.autoReloadEnabled ?? false,
     extraUsageMonthlyRemainingAtStart:
       extraUsageConfig?.monthlyRemainingDollars,
-  };
-}
-
-export function getProAgentRunSpendCap(args: {
-  snapshot: BudgetSnapshot | null;
-  subscription: SubscriptionTier;
-  mode: ChatMode;
-}): AgentRunSpendCap | null {
-  const { snapshot, subscription, mode } = args;
-  if (!snapshot || subscription !== "pro" || mode !== "agent") return null;
-
-  const monthlyRemainingDollars =
-    snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
-  if (monthlyRemainingDollars < PRO_AGENT_RUN_SPEND_CAP_DOLLARS) return null;
-
-  return {
-    capDollars: PRO_AGENT_RUN_SPEND_CAP_DOLLARS,
-    basis: "fixed_5_dollars",
   };
 }
 

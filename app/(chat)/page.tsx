@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Authenticated, Unauthenticated } from "convex/react";
+import { useConvexAuth } from "convex/react";
 import { ChatInput } from "../components/ChatInput";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
@@ -17,6 +17,8 @@ import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
 import { useTypingAnimation } from "../hooks/useTypingAnimation";
 import { upsertDraft } from "@/lib/utils/client-storage";
+import Loading from "@/components/ui/loading";
+import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
 
 const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
 const LOGIN_TYPING_TAILS = [
@@ -129,6 +131,8 @@ export default function Page() {
   } = useGlobalState();
   const { showPricing, handleClosePricing, pricingContext } =
     usePricingDialog(subscription);
+  const { isLoading, isAuthenticated } = useConvexAuth();
+  const hasAuthHint = useHasAuthenticatedBefore();
 
   const { isMigrating, migrate } = usePentestgptMigration();
   const searchParams =
@@ -156,9 +160,9 @@ export default function Page() {
     return { initialSeats: seats, initialPlan: plan };
   }, [searchParams]);
 
-  return (
-    <>
-      <Authenticated>
+  if (isAuthenticated || (isLoading && hasAuthHint)) {
+    return (
+      <>
         <AuthenticatedContent />
         <ExtraUsagePurchaseToast />
         <PricingDialog
@@ -182,10 +186,19 @@ export default function Page() {
           isMigrating={isMigrating}
           onConfirm={migrate}
         />
-      </Authenticated>
-      <Unauthenticated>
-        <UnauthenticatedContent />
-      </Unauthenticated>
-    </>
-  );
+      </>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="h-full bg-background flex flex-col overflow-hidden">
+        <div className="flex-1 flex items-center justify-center">
+          <Loading />
+        </div>
+      </div>
+    );
+  }
+
+  return <UnauthenticatedContent />;
 }

@@ -36,10 +36,13 @@ export const writeUploadCompleteStatus = (
 // Summarization notifications
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,
+  compactionIndex?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
     data: {
       status: "started",
       message: "Automatically compacting context",
@@ -50,14 +53,32 @@ export const writeSummarizationStarted = (
 
 export const writeSummarizationCompleted = (
   writer: UIMessageStreamWriter,
+  compactionIndex?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
     data: {
       status: "completed",
       message: "Context automatically compacted",
     },
+  });
+};
+
+/** Clear the transient compacting indicator without persisting a success. */
+export const writeSummarizationCleared = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
+    data: { status: "completed", message: "" },
+    transient: true,
   });
 };
 
@@ -131,7 +152,15 @@ export type RateLimitWarningData =
       midStream?: boolean;
     }
   | {
-      // Pro Agent users: per-run spend cap paused the current run.
+      // Paid users continuing on the daily free fallback allowance.
+      warningType: "paid-daily-free-allowance";
+      resetTime: string;
+      subscription: SubscriptionTier;
+      mode: ChatMode;
+      costLimitDollars: number;
+    }
+  | {
+      // Legacy Pro Agent per-run spend-cap warning.
       warningType: "agent-run-spend-cap";
       resetTime: string;
       subscription: "pro";

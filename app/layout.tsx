@@ -7,8 +7,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
+import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
+import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -96,12 +98,15 @@ export default function RootLayout({
   const content = (
     <GlobalStateProvider>
       <PostHogProvider>
+        <ChunkLoadRecovery />
         <DataStreamProvider>
           <TodoBlockProvider>
-            <TooltipProvider>
-              {children}
-              <Toaster />
-            </TooltipProvider>
+            <AgentApprovalProvider>
+              <TooltipProvider>
+                {children}
+                <Toaster />
+              </TooltipProvider>
+            </AgentApprovalProvider>
           </TodoBlockProvider>
         </DataStreamProvider>
       </PostHogProvider>

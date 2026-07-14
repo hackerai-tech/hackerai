@@ -34,12 +34,16 @@ async function writeJpegFixture(
   return outputPath;
 }
 
+async function setupFileChat(page: Page): Promise<ChatComponent> {
+  return setupChat(page, { refreshEntitlements: true });
+}
+
 test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
   test.describe("Pro Tier", () => {
     test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
     test("should attach text file and AI reads content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -51,7 +55,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach image and AI recognizes content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -63,7 +67,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach PDF and AI reads content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -77,7 +81,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     test("should attach markdown and CSV files and AI reads content", async ({
       page,
     }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       const markdownFile = path.join(
         process.cwd(),
@@ -102,7 +106,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach jpg and jpeg images", async ({ page }, testInfo) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       const jpgFile = await writeJpegFixture(
         page,
@@ -127,7 +131,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach multiple files at once", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       const textFile = path.join(process.cwd(), TEST_DATA.RESOURCES.TEXT_FILE);
       const imageFile = path.join(process.cwd(), TEST_DATA.RESOURCES.IMAGE);
@@ -140,7 +144,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should remove attached file", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await attachTestFile(chat, "text");
       await chat.removeAttachedFile(0);
@@ -149,7 +153,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should send message with file attachment", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await attachTestFile(chat, "text");
       await chat.expectSendButtonEnabled();
@@ -169,7 +173,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     test.use({ storageState: AUTH_STORAGE_PATHS.ultra });
 
     test("should attach text file and AI reads content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -181,7 +185,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach image and AI recognizes content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -193,7 +197,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach PDF and AI reads content", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       await sendMessageWithFileAndVerifyContent(
         chat,
@@ -205,7 +209,7 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should attach multiple files at once", async ({ page }) => {
-      const chat = await setupChat(page);
+      const chat = await setupFileChat(page);
 
       const textFile = path.join(process.cwd(), TEST_DATA.RESOURCES.TEXT_FILE);
       const imageFile = path.join(process.cwd(), TEST_DATA.RESOURCES.IMAGE);

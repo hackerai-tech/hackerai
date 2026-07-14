@@ -102,64 +102,6 @@ const estimatePartsTokens = (
 ): number =>
   parts.reduce((sum, part) => sum + estimatePartTokens(part, fileTokens), 0);
 
-const textPart = (text: string): UIMessage["parts"][number] =>
-  ({ type: "text", text }) as UIMessage["parts"][number];
-
-const compactFilePart = (
-  part: UIMessage["parts"][number],
-): UIMessage["parts"][number] => {
-  const record = part as Record<string, unknown>;
-  const mediaType =
-    typeof record.mediaType === "string"
-      ? record.mediaType
-      : typeof record.mimeType === "string"
-        ? record.mimeType
-        : "file";
-  const name =
-    typeof record.filename === "string"
-      ? record.filename
-      : typeof record.name === "string"
-        ? record.name
-        : "file";
-  return textPart(
-    `[Attached ${mediaType}: ${name} omitted from retained tail]`,
-  );
-};
-
-const compactToolPart = (
-  part: UIMessage["parts"][number],
-  maxTokens: number,
-): UIMessage["parts"][number] => {
-  const record = part as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type : "tool";
-  const toolName = type.startsWith("tool-") ? type.slice("tool-".length) : type;
-  const output = record.output;
-  const outputText =
-    output == null
-      ? ""
-      : truncateContent(
-          stringifyForTokens(output),
-          "\n[Tool output shortened for retained tail]\n",
-          Math.max(1, maxTokens - 64),
-        );
-
-  const compacted = {
-    ...record,
-    output:
-      outputText.length > 0
-        ? `[${toolName} output preview for retained tail]\n${outputText}`
-        : `[${toolName} output omitted for retained tail]`,
-  } as UIMessage["parts"][number];
-
-  if (safeCountTokens(stringifyForTokens(compacted)) <= maxTokens) {
-    return compacted;
-  }
-
-  return textPart(
-    `[Tool: ${toolName} completed; details omitted from retained tail]`,
-  );
-};
-
 const projectPartToBudget = (
   part: UIMessage["parts"][number],
   maxTokens: number,
@@ -178,31 +120,21 @@ const projectPartToBudget = (
       ...part,
       text: truncateContent(
         (part as { text?: string }).text ?? "",
-        "\n[Retained tail text shortened]\n",
+        "\n[Earlier text shortened]\n",
         maxTokens,
       ),
     } as UIMessage["parts"][number];
-  } else if (part.type === "file") {
-    projected = compactFilePart(part);
-  } else if (typeof part.type === "string" && part.type.startsWith("tool-")) {
-    projected = compactToolPart(part, maxTokens);
   } else {
-    projected = textPart(
-      `[${part.type || "message part"} omitted from retained tail: ${currentTokens} tokens]`,
-    );
+    return null;
   }
 
   let projectedTokens = estimatePartTokens(projected, fileTokens);
-  if (
-    projectedTokens > maxTokens &&
-    projected.type === "text" &&
-    "text" in projected
-  ) {
+  if (projectedTokens > maxTokens) {
     projected = {
       ...projected,
       text: truncateContent(
         (projected as { text?: string }).text ?? "",
-        "\n[Retained tail placeholder shortened]\n",
+        "\n[Earlier text shortened]\n",
         maxTokens,
       ),
     } as UIMessage["parts"][number];

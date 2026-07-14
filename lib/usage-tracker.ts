@@ -1,6 +1,13 @@
 import { logUsageRecord } from "@/lib/db/actions";
+import {
+  getProviderUsageRawModelCost,
+  isPositiveFiniteNumber,
+} from "@/lib/provider-usage-cost";
 import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
+import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
+import { v4 as uuidv4 } from "uuid";
 
 interface StepUsage {
   inputTokens?: number;
@@ -10,14 +17,40 @@ interface StepUsage {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
-  raw?: { cost?: number };
+  raw?: {
+    cost?: number;
+    cost_details?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+    costDetails?: {
+      upstream_inference_cost?: number;
+      upstreamInferenceCost?: number;
+    };
+  };
 }
+
+type ModelStepCost = {
+  rawCost: number;
+  authoritativeCost?: number;
+};
 
 export type UsageBillingType = "included" | "extra" | "mixed";
 
 export interface UsageBillingBreakdown {
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
+  uncoveredPoints?: number;
+  usageDeductionFailed?: boolean;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
+}
+
+interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
+  includedPointsDeducted: number;
+  extraUsagePointsDeducted: number;
+  uncoveredPoints: number;
+  usageDeductionFailed: boolean;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
 }
 
 export interface UsageCostRecord {
@@ -25,8 +58,12 @@ export interface UsageCostRecord {
   type: UsageBillingType;
   includedCostDollars: number;
   extraUsageCostDollars: number;
+  uncoveredCostDollars: number;
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
+  uncoveredPoints: number;
+  usageDeductionFailed: boolean;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -43,53 +80,90 @@ export interface UsageCostRecord {
  * Shared between chat-handler.ts and agent-task.ts to avoid duplication.
  */
 export class UsageTracker {
+  /** Correlates this run's usage record with downstream settlement logs. */
+  readonly usageSettlementId = uuidv4();
   inputTokens = 0;
   outputTokens = 0;
   totalTokens = 0;
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
-  /** Model-only cost from per-step usage.raw.cost (excludes tool/sandbox spend). Used to
-   * decide whether the provider reported an authoritative model cost; if zero, fall back
-   * to token-based model cost calculation. */
+  /** Model-only cost from usage.raw.cost, OpenRouter upstream cost details, or
+   * authoritative provider metadata (excludes tool/sandbox spend). Used to
+   * decide whether the provider reported an authoritative model cost; if zero,
+   * fall back to token-based model cost calculation. */
   modelProviderCost = 0;
+  private modelStepCosts: ModelStepCost[] = [];
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
+  /** Input tokens from summarization requests, preserved across model fallback. */
+  summarizationInputTokens = 0;
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
+  /** Cache tokens from summarization requests, preserved across model fallback. */
+  summarizationCacheReadTokens = 0;
+  summarizationCacheWriteTokens = 0;
 
   /**
    * Discard the model leg's accumulated usage before a fallback retry runs.
-   * Keeps nonModelCost (sandbox/tool spend already incurred) and summarization
-   * output tokens, so the final deduction only bills the fallback model.
+   * Keeps nonModelCost (sandbox/tool spend already incurred) and all
+   * summarization usage, so the final deduction only replaces the streamed
+   * model leg with the fallback model.
    */
   resetModelLeg() {
     this.providerCost -= this.modelProviderCost;
     this.modelProviderCost = 0;
-    this.inputTokens = 0;
-    // Preserve summarization's contribution to outputTokens so the
-    // streamOutputTokens getter (outputTokens - summarizationOutputTokens)
-    // never goes negative.
+    this.inputTokens = this.summarizationInputTokens;
     this.outputTokens = this.summarizationOutputTokens;
-    this.totalTokens = this.outputTokens;
+    this.totalTokens = this.inputTokens + this.outputTokens;
     this.lastStepInputTokens = 0;
-    this.cacheReadTokens = 0;
-    this.cacheWriteTokens = 0;
+    this.cacheReadTokens = this.summarizationCacheReadTokens;
+    this.cacheWriteTokens = this.summarizationCacheWriteTokens;
+    this.modelStepCosts = [];
   }
 
-  accumulateStep(usage: StepUsage) {
+  accumulateStep(usage: StepUsage): number {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
     this.totalTokens += usage.totalTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
-    const stepCost = usage.raw?.cost;
-    if (stepCost) {
+    const stepCost = getProviderUsageRawModelCost(usage.raw);
+    const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
+    const stepCostIndex = this.modelStepCosts.push({ rawCost }) - 1;
+    if (isPositiveFiniteNumber(stepCost)) {
       this.providerCost += stepCost;
       this.modelProviderCost += stepCost;
     }
+    return stepCostIndex;
+  }
+
+  setAuthoritativeModelCostForStep(
+    stepCostIndex: number | undefined,
+    costDollars: number | undefined,
+  ) {
+    if (!isPositiveFiniteNumber(costDollars) || stepCostIndex === undefined) {
+      return;
+    }
+
+    const stepCost = this.modelStepCosts[stepCostIndex];
+    if (!stepCost) return;
+
+    const previousCost = stepCost.authoritativeCost ?? stepCost.rawCost;
+    stepCost.authoritativeCost = costDollars;
+    this.providerCost += costDollars - previousCost;
+    this.modelProviderCost += costDollars - previousCost;
+  }
+
+  get hasAuthoritativeModelCost(): boolean {
+    return (
+      this.modelStepCosts.length > 0 &&
+      this.modelStepCosts.every((stepCost) =>
+        isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
+      )
+    );
   }
 
   /** Output tokens from the streamed response only (excludes summarization) */
@@ -115,34 +189,43 @@ export class UsageTracker {
     );
   }
 
-  computeModelCostDollars(selectedModel: string): number {
-    // Use authoritative per-step provider cost only when the model itself
-    // reported one via raw.cost (tracked in modelProviderCost). providerCost
-    // also includes sandbox/tool spend and summarization cost, so subtract
-    // nonModelCost to isolate the model portion.
-    if (this.modelProviderCost > 0) {
+  computeModelCostDollars(
+    selectedModel: string,
+    accountingModel?: string,
+  ): number {
+    // Use authoritative provider cost only when the model itself reported one
+    // via raw.cost, OpenRouter upstream cost details, or OpenRouter metadata
+    // (tracked in modelProviderCost).
+    // providerCost also includes sandbox/tool spend and summarization cost, so
+    // subtract nonModelCost to isolate the model portion.
+    if (this.hasAuthoritativeModelCost) {
       return this.providerCost - this.nonModelCost;
     }
+    const modelForEstimate = accountingModel ?? selectedModel;
     return (
-      (calculateRawTokenCost(this.inputTokens, "input", selectedModel) +
-        calculateRawTokenCost(this.outputTokens, "output", selectedModel)) /
+      (calculateRawTokenCost(this.inputTokens, "input", modelForEstimate) +
+        calculateRawTokenCost(this.outputTokens, "output", modelForEstimate)) /
       POINTS_PER_DOLLAR
     );
   }
 
-  computeCostDollars(selectedModel: string): number {
+  computeCostDollars(selectedModel: string, accountingModel?: string): number {
     // Mirror deductUsage's gate: providerCost is only authoritative for the
-    // total when modelProviderCost > 0. After resetModelLeg() (fallback retry)
-    // providerCost can be positive from nonModelCost alone, which would
-    // underreport the fallback's model tokens if we used it directly.
-    if (this.modelProviderCost > 0) return this.providerCost;
-    return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
+    // total when every model step has authoritative cost. After resetModelLeg()
+    // (fallback retry), providerCost can be positive from nonModelCost alone,
+    // which would underreport the fallback's model tokens if we used it
+    // directly.
+    if (this.hasAuthoritativeModelCost) return this.providerCost;
+    return (
+      this.computeModelCostDollars(selectedModel, accountingModel) +
+      this.nonModelCost
+    );
   }
 
   getBillingBreakdown(
     rateLimitInfo: RateLimitInfo,
     billingBreakdown?: UsageBillingBreakdown,
-  ): UsageBillingBreakdown {
+  ): ResolvedUsageBillingBreakdown {
     return {
       includedPointsDeducted: Math.max(
         0,
@@ -156,6 +239,12 @@ export class UsageTracker {
           rateLimitInfo.extraUsagePointsDeducted ??
           0,
       ),
+      uncoveredPoints: Math.max(0, billingBreakdown?.uncoveredPoints ?? 0),
+      usageDeductionFailed:
+        billingBreakdown?.usageDeductionFailed === true ||
+        (billingBreakdown?.uncoveredPoints ?? 0) > 0,
+      usageDeductionFailureReason:
+        billingBreakdown?.usageDeductionFailureReason,
     };
   }
 
@@ -163,12 +252,20 @@ export class UsageTracker {
     rateLimitInfo: RateLimitInfo,
     billingBreakdown?: UsageBillingBreakdown,
   ): UsageBillingType {
-    const { includedPointsDeducted, extraUsagePointsDeducted } =
-      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    const {
+      includedPointsDeducted,
+      extraUsagePointsDeducted,
+      uncoveredPoints,
+    } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
     if (includedPointsDeducted > 0 && extraUsagePointsDeducted > 0) {
       return "mixed";
     }
-    return extraUsagePointsDeducted > 0 ? "extra" : "included";
+    if (includedPointsDeducted > 0 && uncoveredPoints > 0) {
+      return "mixed";
+    }
+    return extraUsagePointsDeducted > 0 || uncoveredPoints > 0
+      ? "extra"
+      : "included";
   }
 
   resolveCostBreakdown(
@@ -179,38 +276,51 @@ export class UsageTracker {
     UsageCostRecord,
     | "includedCostDollars"
     | "extraUsageCostDollars"
+    | "uncoveredCostDollars"
     | "includedPointsDeducted"
     | "extraUsagePointsDeducted"
+    | "uncoveredPoints"
+    | "usageDeductionFailed"
+    | "usageDeductionFailureReason"
   > {
-    const { includedPointsDeducted, extraUsagePointsDeducted } =
-      this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
-    const totalPoints = includedPointsDeducted + extraUsagePointsDeducted;
+    const {
+      includedPointsDeducted,
+      extraUsagePointsDeducted,
+      uncoveredPoints,
+      usageDeductionFailed,
+      usageDeductionFailureReason,
+    } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
+    const totalPoints =
+      includedPointsDeducted + extraUsagePointsDeducted + uncoveredPoints;
 
-    if (extraUsagePointsDeducted <= 0 || totalPoints <= 0) {
+    if (totalPoints <= 0) {
       return {
         includedCostDollars: costDollars,
         extraUsageCostDollars: 0,
+        uncoveredCostDollars: 0,
         includedPointsDeducted,
         extraUsagePointsDeducted,
+        uncoveredPoints,
+        usageDeductionFailed,
+        usageDeductionFailureReason,
       };
     }
 
-    if (includedPointsDeducted <= 0) {
-      return {
-        includedCostDollars: 0,
-        extraUsageCostDollars: costDollars,
-        includedPointsDeducted,
-        extraUsagePointsDeducted,
-      };
-    }
-
+    const includedCostDollars =
+      costDollars * (includedPointsDeducted / totalPoints);
     const extraUsageCostDollars =
       costDollars * (extraUsagePointsDeducted / totalPoints);
+    const uncoveredCostDollars =
+      costDollars - includedCostDollars - extraUsageCostDollars;
     return {
-      includedCostDollars: costDollars - extraUsageCostDollars,
+      includedCostDollars,
       extraUsageCostDollars,
+      uncoveredCostDollars,
       includedPointsDeducted,
       extraUsagePointsDeducted,
+      uncoveredPoints,
+      usageDeductionFailed,
+      usageDeductionFailureReason,
     };
   }
 
@@ -236,6 +346,7 @@ export class UsageTracker {
     selectedModelOverride,
     responseModel,
     configuredModelId,
+    accountingModel,
     rateLimitInfo,
     billingBreakdown,
   }: {
@@ -243,6 +354,7 @@ export class UsageTracker {
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
+    accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
   }): UsageCostRecord {
@@ -252,7 +364,10 @@ export class UsageTracker {
       configuredModelId,
       selectedModel,
     });
-    const modelCostDollars = this.computeModelCostDollars(selectedModel);
+    const modelCostDollars = this.computeModelCostDollars(
+      selectedModel,
+      accountingModel,
+    );
     const costDollars = modelCostDollars + this.nonModelCost;
     const costBreakdown = this.resolveCostBreakdown(
       costDollars,
@@ -271,8 +386,9 @@ export class UsageTracker {
       costDollars,
       modelCostDollars,
       nonModelCostDollars: this.nonModelCost,
-      costSource:
-        this.modelProviderCost > 0 ? "provider" : "raw_token_estimate",
+      costSource: this.hasAuthoritativeModelCost
+        ? "provider"
+        : "raw_token_estimate",
     };
   }
 
@@ -280,18 +396,20 @@ export class UsageTracker {
     userId: string;
     organizationId?: string;
     chatId?: string;
-    endpoint?: "/api/chat" | "/api/agent-long";
+    endpoint?: ChatApiEndpoint;
     mode?: ChatMode;
     subscription?: SubscriptionTier;
     selectedModel: string;
     selectedModelOverride?: string | null;
     responseModel?: string;
     configuredModelId: string;
+    accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
   }) {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
+      usageSettlementId: this.usageSettlementId,
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,
@@ -304,6 +422,10 @@ export class UsageTracker {
       extraUsageCostDollars: usage.extraUsageCostDollars,
       includedPointsDeducted: usage.includedPointsDeducted,
       extraUsagePointsDeducted: usage.extraUsagePointsDeducted,
+      uncoveredCostDollars: usage.uncoveredCostDollars,
+      uncoveredPoints: usage.uncoveredPoints,
+      usageDeductionFailed: usage.usageDeductionFailed,
+      usageDeductionFailureReason: usage.usageDeductionFailureReason,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,

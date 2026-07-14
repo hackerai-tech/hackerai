@@ -8,6 +8,7 @@ import {
   computeReplaceAssistantTodos,
   getBaseTodosForRequest,
   areTodosEqual,
+  getTodoDisplayData,
   getTodoStats,
   getVisibleTodoBlockItems,
   getTodoPanelViewState,
@@ -329,6 +330,29 @@ describe("todo-utils", () => {
   });
 
   describe("todo view helpers", () => {
+    it("ignores malformed todo display payloads", () => {
+      const displayData = getTodoDisplayData({
+        id: "not-an-array",
+        content: "Invalid payload",
+        status: "pending",
+      });
+
+      expect(displayData.todos).toEqual([]);
+      expect(displayData.stats.total).toBe(0);
+    });
+
+    it("filters invalid todo display items", () => {
+      const displayData = getTodoDisplayData([
+        { id: "1", content: "Valid", status: "pending" },
+        { id: "2", status: "pending" },
+        { id: "3", content: "Invalid status", status: "unknown" },
+      ]);
+
+      expect(displayData.todos).toEqual([
+        { id: "1", content: "Valid", status: "pending" },
+      ]);
+    });
+
     it("treats cancelled as done for block visibility", () => {
       const todos: Todo[] = [
         { id: "1", content: "Completed", status: "completed" },

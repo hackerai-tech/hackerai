@@ -254,7 +254,9 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           {!isMobile && !authLoading && user && (
             <div
               className={`transition-all duration-300 ${
-                chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
+                chatSidebarOpen
+                  ? "w-[300px] flex-shrink-0"
+                  : "w-12 flex-shrink-0"
               }`}
             >
               <SidebarProvider

@@ -15,16 +15,16 @@ describe("extra-usage", () => {
     const { pointsToDollars, EXTRA_USAGE_MULTIPLIER } =
       require("../extra-usage") as typeof import("../extra-usage");
 
-    it("should convert points to dollars with 1.05x multiplier", () => {
-      // 10000 points = $1.00 base, * 1.05 = $1.05
-      expect(pointsToDollars(10000)).toBe(1.05);
+    it("should convert points to dollars with 1.15x multiplier", () => {
+      // 10000 points = $1.00 base, * 1.15 = $1.15
+      expect(pointsToDollars(10000)).toBe(1.15);
     });
 
-    it("should round up to nearest cent", () => {
-      // 1 point = $0.0001 base, * 1.05 = $0.000105 → rounds up to $0.01
-      expect(pointsToDollars(1)).toBe(0.01);
-      // 100 points = $0.01 base, * 1.05 = $0.0105 → rounds up to $0.02
-      expect(pointsToDollars(100)).toBe(0.02);
+    it("should preserve sub-cent precision", () => {
+      // 1 point = $0.0001 base, * 1.15 = $0.000115
+      expect(pointsToDollars(1)).toBeCloseTo(0.000115, 6);
+      // 100 points = $0.01 base, * 1.15 = $0.0115
+      expect(pointsToDollars(100)).toBe(0.0115);
     });
 
     it("should return 0 for 0 points", () => {
@@ -32,14 +32,14 @@ describe("extra-usage", () => {
     });
 
     it("should handle large point values", () => {
-      // 1M points = $100 base, * 1.05 = $105
-      expect(pointsToDollars(1_000_000)).toBe(105);
+      // 1M points = $100 base, * 1.15 = $115
+      expect(pointsToDollars(1_000_000)).toBeCloseTo(115);
     });
 
     it("should apply EXTRA_USAGE_MULTIPLIER correctly", () => {
-      expect(EXTRA_USAGE_MULTIPLIER).toBe(1.05);
-      // 50000 points = $5.00 base, * 1.05 = $5.25
-      expect(pointsToDollars(50000)).toBe(5.25);
+      expect(EXTRA_USAGE_MULTIPLIER).toBe(1.15);
+      // 50000 points = $5.00 base, * 1.15 = $5.75
+      expect(pointsToDollars(50000)).toBe(5.75);
     });
   });
 
@@ -213,7 +213,11 @@ describe("extra-usage", () => {
           autoReloadTriggered: false,
         });
 
-        const result = await deductFromBalance("user-123", 2000);
+        const result = await deductFromBalance(
+          "user-123",
+          2000,
+          "settlement-123",
+        );
 
         expect(result).toEqual({
           success: true,
@@ -223,7 +227,14 @@ describe("extra-usage", () => {
           autoReloadTriggered: false,
           autoReloadResult: undefined,
         });
-        expect(mockAction).toHaveBeenCalled();
+        expect(mockAction).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            userId: "user-123",
+            amountPoints: 2000,
+            usageSettlementId: "settlement-123",
+          }),
+        );
       });
 
       it("should return auto-reload info when triggered", async () => {

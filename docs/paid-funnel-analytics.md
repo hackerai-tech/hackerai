@@ -16,15 +16,19 @@ Paid funnel events use stable snake_case event names. Most events include
 - `subscription_started`: Stripe confirmed a new paid subscription invoice.
 - `subscription_changed`: Stripe confirmed a tier change on an existing
   subscription.
+- `billing_payment_failed`: Stripe confirmed a subscription invoice payment
+  failure or a payment-failed subscription deletion. Use this to separate
+  renewal quality, bank declines, Radar blocks, subscription updates, and
+  other involuntary churn causes.
 - `limit_hit`: a chat or agent request was blocked by a free or paid limit.
 - `monthly_cap_hit`: legacy paid-only monthly cap event kept for existing
   dashboards.
-- `agent_run_spend_cap_hit`: a Pro Agent run was paused by the per-run spend
-  cap.
-- `agent_run_spend_cap_impressed`: the client showed the per-run spend-cap
-  pause message.
-- `agent_run_spend_cap_continue_clicked`: the user explicitly continued after
-  a per-run spend-cap pause.
+- `agent_run_spend_cap_hit`: legacy event for a retired Pro Agent per-run
+  spend cap.
+- `agent_run_spend_cap_impressed`: legacy event for the retired per-run
+  spend-cap pause message.
+- `agent_run_spend_cap_continue_clicked`: legacy event for continuing after a
+  retired per-run spend-cap pause.
 - `add_credit_cta_impressed`: an add-credit prompt became visible.
 - `add_credit_cta_clicked`: a user clicked an add-credit prompt.
 - `add_credit_checkout_started`: an extra-usage credit checkout was created.
@@ -60,8 +64,8 @@ Paid funnel events use stable snake_case event names. Most events include
   in USD unless `currency` says otherwise.
 - `cap_reason`, `limit_type`, `reset_timestamp`: limit-pressure context.
 - `run_cost_dollars`, `run_cap_dollars`, `monthly_remaining_dollars`,
-  `cap_basis`: Pro Agent per-run spend-cap context.
-  `cap_basis` is currently `fixed_5_dollars`.
+  `cap_basis`: legacy Pro Agent per-run spend-cap context. Historical
+  `cap_basis` values used `fixed_5_dollars`.
 - `primary_cta`, `eligible_ctas`, `upgrade_available`,
   `add_credit_available`: monetization paths shown or available for that
   limit pressure moment.
@@ -69,6 +73,15 @@ Paid funnel events use stable snake_case event names. Most events include
   or payment guardrail rather than the included monthly bucket alone.
 - `paid_monthly_exhaustion`: true for paid users whose included monthly bucket
   is exhausted and can be resolved through add-credit/upgrade flow.
+- Billing-failure events include `billing_failure_lifecycle`
+  (`invoice_payment_failed` or `subscription_deleted`),
+  `billing_failure_stage` (`first_payment`, `renewal`,
+  `subscription_update`, etc.), `billing_failure_group`
+  (`insufficient_funds`, `transaction_not_allowed`, `stripe_risk_block`,
+  `authentication_failed`, etc.), Stripe invoice/payment ids, attempt count,
+  amount fields, decline/outcome codes, and coarse payment method metadata
+  such as card country/funding. Do not log last4, emails, names, or billing
+  addresses.
 - Agent-first onboarding events include `first_experience_event_version`,
   `eligible_subscription_tier`, `selected_subscription_tier`,
   `selection_reason`, `default_applied`, `saved_mode_present`,
@@ -101,9 +114,14 @@ Paid funnel events use stable snake_case event names. Most events include
 - Limit pressure to paid/add-credit: `limit_hit -> upgrade_cta_clicked` and
   `limit_hit -> add_credit_checkout_succeeded`, grouped by `primary_cta`,
   `eligible_ctas`, and `cap_reason`.
-- Pro Agent cap to churn: `agent_run_spend_cap_hit -> subscription_cancelled`,
-  grouped by `agent_run_spend_cap_continue_clicked`, `cap_basis`, and
+- Legacy Pro Agent cap to churn:
+  `agent_run_spend_cap_hit -> subscription_cancelled`, grouped by
+  `agent_run_spend_cap_continue_clicked`, `cap_basis`, and
   `cancellation_reason`.
+- Involuntary churn:
+  `billing_payment_failed -> subscription_cancelled`, grouped by
+  `billing_failure_stage`, `billing_failure_group`, `billing_reason`,
+  `card_country`, `subscription_tier`, and `attempt_count`.
 - Referral revenue:
   `referred_signup_attributed -> referred_user_paid_conversion`, grouped by
   `referral_code`.

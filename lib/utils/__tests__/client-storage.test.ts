@@ -66,6 +66,9 @@ describe("client-storage selected model", () => {
 
       window.localStorage.setItem(STORAGE_KEY, "grok-4.3");
       expect(readSelectedModel()).toBe("hackerai-standard");
+
+      window.localStorage.setItem(STORAGE_KEY, "grok-4.5");
+      expect(readSelectedModel()).toBe("hackerai-standard");
     });
 
     it("does not match inherited Object.prototype keys via the legacy map", () => {

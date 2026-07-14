@@ -1,9 +1,5 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
-import { ConvexError } from "convex/values";
-import { api } from "@/convex/_generated/api";
 import {
   Select,
   SelectContent,
@@ -11,28 +7,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
-import { Save, ShieldAlert, ChevronDown, ChevronUp } from "lucide-react";
-import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
-import {
-  type GuardrailConfigUI,
-  getDefaultGuardrailsUI,
-  parseAndMergeGuardrailsConfig,
-  formatGuardrailsConfigForSave,
-  hasGuardrailChanges,
-} from "@/lib/ai/tools/utils/guardrails";
-
-const severityColors: Record<GuardrailConfigUI["severity"], string> = {
-  critical: "text-red-500",
-  high: "text-orange-500",
-  medium: "text-yellow-500",
-  low: "text-blue-500",
-};
+import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
 
 const AgentsTab = () => {
   const {
@@ -42,46 +20,6 @@ const AgentsTab = () => {
     sandboxPreference,
     setSandboxPreference,
   } = useGlobalState();
-
-  const [guardrails, setGuardrails] = useState<GuardrailConfigUI[]>(
-    getDefaultGuardrailsUI(),
-  );
-  const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
-  const [isSavingGuardrails, setIsSavingGuardrails] = useState(false);
-  const [guardrailChanges, setGuardrailChanges] = useState(false);
-
-  const userCustomization = useQuery(
-    api.userCustomization.getUserCustomization,
-    {},
-  );
-  const saveCustomization = useMutation(
-    api.userCustomization.saveUserCustomization,
-  );
-
-  // Load guardrails config
-  useEffect(() => {
-    if (userCustomization?.guardrails_config !== undefined) {
-      const mergedGuardrails = parseAndMergeGuardrailsConfig(
-        userCustomization.guardrails_config,
-      );
-      setGuardrails(mergedGuardrails);
-    }
-  }, [userCustomization?.guardrails_config]);
-
-  // Track changes for guardrails
-  useEffect(() => {
-    const hasChanges = hasGuardrailChanges(
-      guardrails,
-      userCustomization?.guardrails_config,
-    );
-    setGuardrailChanges(hasChanges);
-  }, [guardrails, userCustomization?.guardrails_config]);
-
-  const handleToggleGuardrail = (id: string) => {
-    setGuardrails((prev) =>
-      prev.map((g) => (g.id === id ? { ...g, enabled: !g.enabled } : g)),
-    );
-  };
 
   const queueBehaviorOptions: Array<{
     value: QueueBehavior;
@@ -96,35 +34,6 @@ const AgentsTab = () => {
       label: "Stop & send right away",
     },
   ];
-
-  const handleSaveGuardrails = async () => {
-    setIsSavingGuardrails(true);
-    try {
-      const guardrailsConfig = formatGuardrailsConfigForSave(guardrails);
-      await saveCustomization({
-        guardrails_config: guardrailsConfig || undefined,
-      });
-      toast.success("Guardrails saved successfully");
-      setGuardrailChanges(false);
-    } catch (error) {
-      console.error("Failed to save guardrails:", error);
-      const errorMessage =
-        error instanceof ConvexError
-          ? (error.data as { message?: string })?.message ||
-            error.message ||
-            "Failed to save guardrails"
-          : error instanceof Error
-            ? error.message
-            : "Failed to save guardrails";
-      toast.error(errorMessage);
-    } finally {
-      setIsSavingGuardrails(false);
-    }
-  };
-
-  const handleResetGuardrails = () => {
-    setGuardrails(getDefaultGuardrailsUI());
-  };
 
   return (
     <div className="space-y-6">
@@ -148,95 +57,19 @@ const AgentsTab = () => {
         </div>
       </div>
 
-      {/* Caido proxy temporarily disabled for all users.
-          Kill switch lives in lib/api/chat-handler.ts (caidoEnabled forced false).
-      {subscription !== "free" && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between py-3 border-b">
-            <div className="flex-1 pr-4">
-              <Label
-                htmlFor="caido-proxy"
-                className="font-medium cursor-pointer"
-              >
-                Caido Proxy
-              </Label>
-              <p className="text-sm text-muted-foreground">
-                Intercept and inspect all HTTP/HTTPS traffic through Caido
-              </p>
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
+          <div className="flex-1">
+            <div className="font-medium">Default agent permissions</div>
+            <div className="text-sm text-muted-foreground">
+              Commands and file edits
             </div>
-            <Switch
-              id="caido-proxy"
-              checked={userCustomization?.caido_enabled ?? false}
-              onCheckedChange={async (checked) => {
-                try {
-                  await saveCustomization({ caido_enabled: checked });
-                  toast.success(
-                    checked ? "Caido proxy enabled" : "Caido proxy disabled",
-                  );
-                } catch {
-                  toast.error("Failed to update Caido setting");
-                }
-              }}
-              aria-label="Toggle Caido proxy"
-            />
           </div>
-          {(userCustomization?.caido_enabled ?? false) && (
-            <div className="flex items-center justify-between py-3 border-b pl-4">
-              <div className="flex-1 pr-4">
-                <Label
-                  htmlFor="caido-port"
-                  className="font-medium cursor-pointer"
-                >
-                  Custom Port
-                </Label>
-                <p className="text-sm text-muted-foreground">
-                  Connect to your own Caido instance (local sandbox only). Leave
-                  empty for default (48080).
-                </p>
-              </div>
-              <input
-                id="caido-port"
-                type="number"
-                min={1}
-                max={65535}
-                placeholder="48080"
-                className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-                defaultValue={userCustomization?.caido_port ?? ""}
-                onBlur={async (e) => {
-                  const raw = e.target.value.trim();
-                  const port = raw ? Number(raw) : 0;
-                  if (
-                    raw &&
-                    (isNaN(port) ||
-                      !Number.isInteger(port) ||
-                      port < 1 ||
-                      port > 65535)
-                  ) {
-                    toast.error("Port must be an integer between 1 and 65535");
-                    return;
-                  }
-                  try {
-                    await saveCustomization({ caido_port: port || undefined });
-                    toast.success(
-                      port
-                        ? `Caido port set to ${port}`
-                        : "Caido port reset to default",
-                    );
-                  } catch {
-                    toast.error("Failed to update Caido port");
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-              />
-            </div>
-          )}
+          <div className="w-full sm:w-auto">
+            <AgentPermissionSelector size="md" analyticsSurface="agents_tab" />
+          </div>
         </div>
-      )}
-      */}
+      </div>
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (
@@ -269,99 +102,6 @@ const AgentsTab = () => {
           </div>
         </div>
       )}
-
-      {/* Security Guardrails Section - Available to all users */}
-      <div className="space-y-4 pt-2">
-        <button
-          onClick={() => setGuardrailsExpanded(!guardrailsExpanded)}
-          className="flex items-center justify-between w-full border-b pb-3 hover:opacity-80 transition-opacity"
-          type="button"
-          aria-expanded={guardrailsExpanded}
-          aria-label="Toggle security guardrails section"
-        >
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Security Guardrails</h3>
-          </div>
-          {guardrailsExpanded ? (
-            <ChevronUp className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          )}
-        </button>
-
-        {guardrailsExpanded && (
-          <div className="space-y-4">
-            <div className="flex items-start gap-2 p-3 bg-amber-500/10 rounded-lg text-xs">
-              <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-              <div className="text-amber-800 dark:text-amber-200">
-                <span className="font-medium">
-                  Security guardrails protect against dangerous commands.
-                </span>{" "}
-                <span className="text-amber-700 dark:text-amber-300">
-                  These safeguards block destructive system commands, reverse
-                  shells, and other malicious patterns. Disable at your own
-                  risk.
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              {guardrails.map((guardrail) => (
-                <div
-                  key={guardrail.id}
-                  className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors"
-                >
-                  <div className="flex-1 pr-4">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        htmlFor={guardrail.id}
-                        className="text-sm font-medium cursor-pointer"
-                      >
-                        {guardrail.name}
-                      </Label>
-                      <span
-                        className={`text-[10px] font-medium uppercase ${severityColors[guardrail.severity]}`}
-                      >
-                        {guardrail.severity}
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {guardrail.description}
-                    </p>
-                  </div>
-                  <Switch
-                    id={guardrail.id}
-                    checked={guardrail.enabled}
-                    onCheckedChange={() => handleToggleGuardrail(guardrail.id)}
-                    aria-label={`Toggle ${guardrail.name}`}
-                  />
-                </div>
-              ))}
-            </div>
-
-            <div className="flex justify-between pt-2">
-              <Button
-                variant="outline"
-                onClick={handleResetGuardrails}
-                size="sm"
-                type="button"
-              >
-                Reset to Defaults
-              </Button>
-              <Button
-                onClick={handleSaveGuardrails}
-                disabled={isSavingGuardrails || !guardrailChanges}
-                size="sm"
-                type="button"
-              >
-                <Save className="h-4 w-4 mr-2" />
-                {isSavingGuardrails ? "Saving..." : "Save Guardrails"}
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 };

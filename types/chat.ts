@@ -11,11 +11,30 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
+export type AgentPermissionMode = "full_access" | "ask_approval";
+
+export const AGENT_PERMISSION_MODES: readonly AgentPermissionMode[] = [
+  "full_access",
+  "ask_approval",
+];
+
+export const DEFAULT_AGENT_PERMISSION_MODE: AgentPermissionMode = "full_access";
+
+export function isAgentPermissionMode(
+  value: unknown,
+): value is AgentPermissionMode {
+  return (
+    typeof value === "string" &&
+    (AGENT_PERMISSION_MODES as readonly string[]).includes(value)
+  );
+}
+
+export function coerceAgentPermissionMode(value: unknown): AgentPermissionMode {
+  return isAgentPermissionMode(value) ? value : DEFAULT_AGENT_PERMISSION_MODE;
+}
+
 export type SelectedModel =
-  | "auto"
-  | "hackerai-standard"
-  | "hackerai-pro"
-  | "hackerai-max";
+  "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
@@ -37,11 +56,12 @@ export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
   "opus-4.6": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",
   "kimi-k2.6": "hackerai-standard",
-  // Grok was removed from the picker before the tier rebrand. Both variants
-  // were entry-level alternatives to the auto router (Gemini/Kimi territory),
+  // Grok was removed from the picker before the tier rebrand. These variants
+  // were entry-level alternatives to the auto router,
   // so map them to Standard rather than dropping the user's preference.
   "grok-4.1": "hackerai-standard",
   "grok-4.3": "hackerai-standard",
+  "grok-4.5": "hackerai-standard",
   "hackerai-lite": "hackerai-standard",
 };
 
@@ -96,12 +116,80 @@ export const SUBSCRIPTION_TIERS: readonly SubscriptionTier[] = [
   "team",
 ];
 
+export const PAID_INDIVIDUAL_SUBSCRIPTION_TIERS = [
+  "pro",
+  "pro-plus",
+  "ultra",
+] as const satisfies readonly SubscriptionTier[];
+
 export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
   return (
     typeof value === "string" &&
     (SUBSCRIPTION_TIERS as readonly string[]).includes(value)
   );
 }
+
+export function isPaidIndividualSubscription(
+  value: unknown,
+): value is (typeof PAID_INDIVIDUAL_SUBSCRIPTION_TIERS)[number] {
+  return (
+    typeof value === "string" &&
+    (PAID_INDIVIDUAL_SUBSCRIPTION_TIERS as readonly string[]).includes(value)
+  );
+}
+
+export type ExtraUsageAvailability = Pick<
+  ExtraUsageConfig,
+  | "enabled"
+  | "hasBalance"
+  | "balanceDollars"
+  | "monthlyRemainingDollars"
+  | "autoReloadEnabled"
+>;
+
+export function canUseExtraUsage(
+  extraUsageConfig: ExtraUsageAvailability | null | undefined,
+): boolean {
+  if (!extraUsageConfig?.enabled) return false;
+  if (
+    extraUsageConfig.monthlyRemainingDollars !== undefined &&
+    extraUsageConfig.monthlyRemainingDollars <= 0
+  ) {
+    return false;
+  }
+
+  const hasBalance =
+    extraUsageConfig.hasBalance ?? (extraUsageConfig.balanceDollars ?? 0) > 0;
+
+  return Boolean(hasBalance || extraUsageConfig.autoReloadEnabled);
+}
+
+type MaxModelEntitlementOptions = {
+  extraUsageAvailable?: boolean;
+  extraUsageConfig?: ExtraUsageAvailability | null;
+};
+
+export function canUseMaxModel(
+  subscription: SubscriptionTier,
+  options: MaxModelEntitlementOptions = {},
+): boolean {
+  if (subscription === "ultra") return true;
+  if (subscription === "free") return false;
+  return (
+    options.extraUsageAvailable ?? canUseExtraUsage(options.extraUsageConfig)
+  );
+}
+
+export const normalizeMaxModelForSubscription = (
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+  options: MaxModelEntitlementOptions = {},
+): SelectedModel | null | undefined => {
+  if (model === "hackerai-max" && !canUseMaxModel(subscription, options)) {
+    return "hackerai-pro";
+  }
+  return model;
+};
 
 export function normalizeSelectedModelForSubscription(
   model: SelectedModel | null | undefined,
@@ -311,10 +399,19 @@ export const isSidebarSharedFiles = (
   return "requestedPaths" in content;
 };
 
+export const TODO_STATUS_VALUES = [
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+] as const;
+
+export type TodoStatus = (typeof TODO_STATUS_VALUES)[number];
+
 export interface Todo {
   id: string;
   content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
+  status: TodoStatus;
   sourceMessageId?: string;
 }
 

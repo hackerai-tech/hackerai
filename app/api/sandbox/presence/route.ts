@@ -48,6 +48,7 @@ export async function GET(request: NextRequest) {
 
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
+  const probeStart = Date.now();
   try {
     const token = await generateCentrifugoToken(userId, 30);
     client = new Centrifuge(wsUrl, { token });
@@ -103,7 +104,14 @@ export async function GET(request: NextRequest) {
     await Promise.all(probes);
     presenceReliable = true;
   } catch (err) {
-    console.error("Centrifugo presence request failed:", err);
+    phLogger.warn("sandbox_presence_probe_unavailable", {
+      event: "sandbox.presence_probe_unavailable",
+      userId,
+      connection_count: connections.length,
+      online_connection_count: onlineConnectionIds.size,
+      duration_ms: Date.now() - probeStart,
+      error: err,
+    });
   } finally {
     for (const sub of subscriptions) {
       sub.removeAllListeners();

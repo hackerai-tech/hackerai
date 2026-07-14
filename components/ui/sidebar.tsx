@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/tooltip";
 
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = "16rem";
+const SIDEBAR_WIDTH = "300px";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "s";
@@ -106,8 +106,10 @@ function SidebarProvider({
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
+
       if (
-        event.key.toLowerCase() === SIDEBAR_KEYBOARD_SHORTCUT &&
+        key === SIDEBAR_KEYBOARD_SHORTCUT &&
         event.shiftKey &&
         (event.metaKey || event.ctrlKey) &&
         !event.altKey

@@ -1,3 +1,9 @@
+import {
+  collectAuthErrorText,
+  isInvalidCodeVerifierError,
+  isUnverifiedSignInSessionError,
+} from "./expected-auth-errors";
+
 const AUTHKIT_CALLBACK_ERROR_PREFIX = "[AuthKit callback error]";
 const AUTH_COOKIE_MISSING_MESSAGE = "Auth cookie missing";
 const MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE =
@@ -6,6 +12,15 @@ const OAUTH_STATE_MISMATCH_MESSAGE = "OAuth state mismatch";
 const INVALID_GRANT_ERROR = "invalid_grant";
 const CODE_ALREADY_EXCHANGED_MESSAGE = "already been exchanged";
 const VERIFIER_SCHEMA_KEYS = ['"nonce"', '"codeVerifier"'];
+
+export type RecoverableAuthkitCallbackErrorBucket =
+  | "missing_auth_parameter"
+  | "state_mismatch"
+  | "verifier_missing"
+  | "cookie_missing"
+  | "code_already_exchanged"
+  | "invalid_code_verifier"
+  | "session_unverified";
 
 let activeSuppressions = 0;
 let originalConsoleError: typeof console.error | null = null;
@@ -26,42 +41,8 @@ export const isAuthCookieMissingError = (value: unknown): boolean => {
   return false;
 };
 
-const getStringValue = (
-  value: Record<string, unknown>,
-  key: string,
-): string | null => {
-  const fieldValue = value[key];
-  return typeof fieldValue === "string" ? fieldValue : null;
-};
-
-const collectErrorText = (value: unknown): string => {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (!value || typeof value !== "object") {
-    return "";
-  }
-
-  const record = value as Record<string, unknown>;
-  const rawData =
-    record.rawData && typeof record.rawData === "object"
-      ? (record.rawData as Record<string, unknown>)
-      : {};
-
-  return [
-    getStringValue(record, "message"),
-    getStringValue(record, "error"),
-    getStringValue(record, "errorDescription"),
-    getStringValue(rawData, "error"),
-    getStringValue(rawData, "error_description"),
-  ]
-    .filter((text): text is string => Boolean(text))
-    .join("\n");
-};
-
 export const isOauthCodeAlreadyExchangedError = (value: unknown): boolean => {
-  const errorText = collectErrorText(value).toLowerCase();
+  const errorText = collectAuthErrorText(value).toLowerCase();
   return (
     errorText.includes(INVALID_GRANT_ERROR) &&
     errorText.includes(CODE_ALREADY_EXCHANGED_MESSAGE)
@@ -71,13 +52,13 @@ export const isOauthCodeAlreadyExchangedError = (value: unknown): boolean => {
 export const isMissingRequiredAuthParameterError = (
   value: unknown,
 ): boolean => {
-  return collectErrorText(value)
+  return collectAuthErrorText(value)
     .toLowerCase()
     .includes(MISSING_REQUIRED_AUTH_PARAMETER_MESSAGE.toLowerCase());
 };
 
 export const isOAuthStateMismatchError = (value: unknown): boolean => {
-  return collectErrorText(value)
+  return collectAuthErrorText(value)
     .toLowerCase()
     .includes(OAUTH_STATE_MISMATCH_MESSAGE.toLowerCase());
 };
@@ -98,7 +79,7 @@ export const isAuthVerifierMissingError = (value: unknown): boolean => {
     }
   }
 
-  const errorText = collectErrorText(value);
+  const errorText = collectAuthErrorText(value);
   return VERIFIER_SCHEMA_KEYS.some(
     (key) =>
       errorText.includes(`Expected ${key}`) &&
@@ -106,14 +87,52 @@ export const isAuthVerifierMissingError = (value: unknown): boolean => {
   );
 };
 
-export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
+const RECOVERABLE_AUTHKIT_CALLBACK_ERROR_BUCKETS: Array<{
+  bucket: RecoverableAuthkitCallbackErrorBucket;
+  isMatch: (value: unknown) => boolean;
+}> = [
+  {
+    bucket: "code_already_exchanged",
+    isMatch: isOauthCodeAlreadyExchangedError,
+  },
+  {
+    bucket: "invalid_code_verifier",
+    isMatch: isInvalidCodeVerifierError,
+  },
+  {
+    bucket: "session_unverified",
+    isMatch: isUnverifiedSignInSessionError,
+  },
+  {
+    bucket: "missing_auth_parameter",
+    isMatch: isMissingRequiredAuthParameterError,
+  },
+  {
+    bucket: "cookie_missing",
+    isMatch: isAuthCookieMissingError,
+  },
+  {
+    bucket: "verifier_missing",
+    isMatch: isAuthVerifierMissingError,
+  },
+  {
+    bucket: "state_mismatch",
+    isMatch: isOAuthStateMismatchError,
+  },
+];
+
+export const getRecoverableAuthkitCallbackErrorBucket = (
+  value: unknown,
+): RecoverableAuthkitCallbackErrorBucket | null => {
   return (
-    isAuthCookieMissingError(value) ||
-    isOauthCodeAlreadyExchangedError(value) ||
-    isMissingRequiredAuthParameterError(value) ||
-    isOAuthStateMismatchError(value) ||
-    isAuthVerifierMissingError(value)
+    RECOVERABLE_AUTHKIT_CALLBACK_ERROR_BUCKETS.find(({ isMatch }) =>
+      isMatch(value),
+    )?.bucket ?? null
   );
+};
+
+export const isRecoverableAuthkitCallbackError = (value: unknown): boolean => {
+  return getRecoverableAuthkitCallbackErrorBucket(value) !== null;
 };
 
 export const isRecoverableAuthkitCallbackErrorLog = (

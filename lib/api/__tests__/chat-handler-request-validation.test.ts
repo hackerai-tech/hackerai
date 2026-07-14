@@ -1,6 +1,29 @@
-import { requireChatMessagesArray } from "@/lib/api/chat-request-validation";
+import {
+  requireBooleanFlag,
+  requireChatMessagesArray,
+} from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
+  it("accepts only boolean request flags", () => {
+    expect(requireBooleanFlag("temporary", undefined)).toBe(false);
+    expect(requireBooleanFlag("temporary", false)).toBe(false);
+    expect(requireBooleanFlag("temporary", true)).toBe(true);
+
+    expect(() => requireBooleanFlag("temporary", "false")).toThrow(
+      expect.objectContaining({
+        type: "bad_request",
+        surface: "api",
+        statusCode: 400,
+        cause: "Invalid chat request: temporary must be a boolean.",
+        metadata: expect.objectContaining({
+          invalid_request_field: "temporary",
+          invalid_request_field_type: "string",
+          invalid_request_field_reason: "not_boolean",
+        }),
+      }),
+    );
+  });
+
   it("rejects non-array messages as a bad request", () => {
     expect(() => requireChatMessagesArray({ id: "not-array" })).toThrow(
       expect.objectContaining({
@@ -47,6 +70,32 @@ describe("chat-handler request validation", () => {
       }),
     );
   });
+
+  it.each(["text", "reasoning"] as const)(
+    "rejects non-string %s before token counting",
+    (partType) => {
+      expect(() =>
+        requireChatMessagesArray([
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: partType, text: ["not", "text"] }],
+          },
+        ]),
+      ).toThrow(
+        expect.objectContaining({
+          type: "bad_request",
+          surface: "api",
+          statusCode: 400,
+          metadata: expect.objectContaining({
+            invalid_request_field: "messages[0].parts[0].text",
+            invalid_request_field_type: "array",
+            invalid_request_field_reason: "invalid_text",
+          }),
+        }),
+      );
+    },
+  );
 
   it("returns valid UI messages unchanged", () => {
     const messages = [

@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import cancelSubscriptionAction from "@/lib/actions/cancel-subscription";
+import { cancelSubscription } from "@/lib/billing/client";
 import { toast } from "sonner";
 import {
   CheckCircle2,
@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 type CancelSubscriptionDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCancellationScheduled?: (result: CancellationResult) => void;
 };
 
 type CancellationResult = {
@@ -99,6 +100,7 @@ function getPlanDisplayName(tier: SubscriptionTier) {
 export const CancelSubscriptionDialog = ({
   open,
   onOpenChange,
+  onCancellationScheduled,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
@@ -178,7 +180,7 @@ export const CancelSubscriptionDialog = ({
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     try {
-      const result = await cancelSubscriptionAction({
+      const result = await cancelSubscription({
         cancellationReason: {
           reasonCategory,
           reasonDetails: trimmedReasonDetails,
@@ -188,6 +190,10 @@ export const CancelSubscriptionDialog = ({
         return;
       }
       setCancellationResult({
+        currentPeriodEnd: result.currentPeriodEnd,
+        alreadyScheduled: result.alreadyScheduled,
+      });
+      onCancellationScheduled?.({
         currentPeriodEnd: result.currentPeriodEnd,
         alreadyScheduled: result.alreadyScheduled,
       });
@@ -210,7 +216,7 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [reasonCategory, reasonDetails]);
+  }, [onCancellationScheduled, reasonCategory, reasonDetails]);
 
   const handleReasonCategoryChange = useCallback(
     (value: string) => {

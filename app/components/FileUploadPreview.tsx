@@ -17,6 +17,7 @@ import {
   isImageFile,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
+import { FileContentViewer } from "./FileContentViewer";
 import {
   UploadedFileState,
   FileUploadPreviewProps,
@@ -48,6 +49,11 @@ export const FileUploadPreview = ({
   const editingTextFileIndexRef = useRef<number | null>(null);
   const hasPendingTextSaveRef = useRef(false);
   const onUpdateGeneratedTextFileRef = useRef(onUpdateGeneratedTextFile);
+  const [selectedFile, setSelectedFile] = useState<{
+    file: File | LocalDesktopFile;
+    name: string;
+    fileId?: string;
+  } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
   const previewCache = useRef<Map<string, string>>(new Map());
@@ -135,6 +141,12 @@ export const FileUploadPreview = ({
 
   const handleRemoveUploadedFile = useCallback(
     (index: number) => {
+      const removedFile = uploadedFiles[index]?.file;
+      if (removedFile) {
+        setSelectedFile((current) =>
+          current?.file === removedFile ? null : current,
+        );
+      }
       if (index === editingTextFileIndex) {
         clearTextSaveTimeout();
         setEditingTextFileIndex(null);
@@ -144,7 +156,7 @@ export const FileUploadPreview = ({
       }
       onRemoveFile(index);
     },
-    [clearTextSaveTimeout, editingTextFileIndex, onRemoveFile],
+    [clearTextSaveTimeout, editingTextFileIndex, onRemoveFile, uploadedFiles],
   );
 
   useEffect(() => {
@@ -230,6 +242,14 @@ export const FileUploadPreview = ({
     setSelectedImage({ src: preview, alt: fileName });
   };
 
+  const handleFileClick = (
+    file: File | LocalDesktopFile,
+    fileName: string,
+    fileId?: string,
+  ) => {
+    setSelectedFile({ file, name: fileName, fileId });
+  };
+
   return (
     <>
       <div className="flex flex-col gap-3 rounded-t-[22px] transition-all relative bg-input-chat py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0">
@@ -241,6 +261,9 @@ export const FileUploadPreview = ({
               const isGeneratedPastedText = Boolean(
                 generatedText ||
                 uploadedFile?.generatedSource === "pasted-text",
+              );
+              const isUnavailableGeneratedText = Boolean(
+                isGeneratedPastedText && uploadedFile?.unavailable,
               );
               const canEditGeneratedText = Boolean(
                 generatedText && onUpdateGeneratedTextFile,
@@ -309,7 +332,9 @@ export const FileUploadPreview = ({
                                     : "text-muted-foreground"
                                 }`}
                               >
-                                {filePreview.error ? (
+                                {isUnavailableGeneratedText ? (
+                                  "Unavailable on this device"
+                                ) : filePreview.error ? (
                                   "Upload failed"
                                 ) : !canEditGeneratedText ? (
                                   <>
@@ -385,7 +410,18 @@ export const FileUploadPreview = ({
                           )}
                         </button>
                       ) : (
-                        <div className="p-2 w-80">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleFileClick(
+                              filePreview.file,
+                              filePreview.file.name,
+                              uploadedFile?.fileId,
+                            )
+                          }
+                          className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                          aria-label={`View ${filePreview.file.name}`}
+                        >
                           <div className="flex flex-row items-center gap-2">
                             <div
                               className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center ${
@@ -419,7 +455,7 @@ export const FileUploadPreview = ({
                               </div>
                             </div>
                           </div>
-                        </div>
+                        </button>
                       )}
                     </div>
                   </div>
@@ -505,6 +541,17 @@ export const FileUploadPreview = ({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* File Content Viewer Modal */}
+      {selectedFile && (
+        <FileContentViewer
+          isOpen={!!selectedFile}
+          onClose={() => setSelectedFile(null)}
+          file={selectedFile.file}
+          fileName={selectedFile.name}
+          fileId={selectedFile.fileId}
+        />
+      )}
     </>
   );
 };

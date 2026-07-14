@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { CONVERSATION_DRAFTS_STORAGE_KEY } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 
@@ -41,6 +41,7 @@ jest.mock("@/app/hooks/useFileUpload", () => ({
 }));
 
 jest.mock("@/app/hooks/useTauri", () => ({
+  useTauri: () => ({ isTauri: false }),
   isTauriEnvironment: jest.fn(() => false),
   readGeneratedTextAttachment: (...args: unknown[]) =>
     mockReadGeneratedTextAttachment(...args),
@@ -51,12 +52,17 @@ const { ChatInput } =
 const { GlobalStateProvider, useGlobalState } = jest.requireActual<
   typeof import("../../contexts/GlobalState")
 >("../../contexts/GlobalState");
+const { AgentApprovalProvider, useAgentApproval } = jest.requireActual<
+  typeof import("../../contexts/AgentApprovalContext")
+>("../../contexts/AgentApprovalContext");
 
 // Wrapper with real providers
 const TestWrapper = ({ children }: { children: ReactNode }) => {
   return (
     <GlobalStateProvider>
-      <TooltipProvider>{children}</TooltipProvider>
+      <AgentApprovalProvider>
+        <TooltipProvider>{children}</TooltipProvider>
+      </AgentApprovalProvider>
     </GlobalStateProvider>
   );
 };
@@ -77,9 +83,48 @@ const UploadedFilesSetter = ({
   );
 };
 
+const AgentApprovalSetter = () => {
+  const { setChatMode } = useGlobalState();
+  const { setAgentApprovalSession, setActiveToolApprovalRequest } =
+    useAgentApproval();
+
+  useEffect(() => {
+    setChatMode("agent");
+    setAgentApprovalSession({
+      chatId: "approval-chat",
+      sessionId: "agent-approval-session",
+      publicAccessToken: "public-token",
+    });
+    setActiveToolApprovalRequest({
+      approvalId: "approval-1",
+      toolCallId: "tool-1",
+      title: "Allow HackerAI to run this terminal command?",
+      target: "ping -c 4 hackerone.com",
+      justification: "Check whether the target host is reachable.",
+      prefixRule: ["ping", "-c", "4"],
+      detail: "Approve to continue, or deny to stop this command.",
+      kind: "terminal",
+      operation: "terminal_execute",
+    });
+  }, [setActiveToolApprovalRequest, setAgentApprovalSession, setChatMode]);
+
+  return null;
+};
+
+const AgentModeSetter = () => {
+  const { setChatMode } = useGlobalState();
+
+  useEffect(() => {
+    setChatMode("agent");
+  }, [setChatMode]);
+
+  return null;
+};
+
 describe("ChatInput - Integration Tests", () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
+  const mockOnReconnect = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -173,64 +218,199 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
-    it("should allow switching to agent mode via global state", async () => {
-      // Note: Mode switching UI test removed due to flakiness with dropdown interactions
-      // Mode switching is tested at the GlobalState level in GlobalState.messageQueue.test.tsx
-      // This is primarily an integration test of rendering in both modes
+    it("does not show a late approval after the composer stop button is clicked", async () => {
+      let resolveStop: ((stopped: boolean) => void) | undefined;
+      const pendingStop = new Promise<boolean>((resolve) => {
+        resolveStop = resolve;
+      });
+      const stop = jest.fn(() => pendingStop);
+      const approvalRequest = {
+        approvalId: "late-approval-1",
+        toolCallId: "tool-1",
+        title: "Allow HackerAI to run this terminal command?",
+        target: "curl https://hackerai.co",
+        detail: "Approve to continue, or deny to stop this command.",
+        kind: "terminal" as const,
+        operation: "terminal_execute",
+      };
+      const renderChatInput = (
+        status: "ready" | "streaming",
+        storedApprovalRequest: typeof approvalRequest | null,
+      ) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={stop}
+            status={status}
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={storedApprovalRequest}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(renderChatInput("streaming", null));
 
+      fireEvent.click(screen.getByLabelText("Stop generation"));
+      rerender(renderChatInput("streaming", approvalRequest));
+
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+
+      await act(async () => resolveStop?.(true));
+      rerender(renderChatInput("ready", null));
+      rerender(renderChatInput("ready", approvalRequest));
+
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+    });
+
+    it("replaces the composer with an approval selector while awaiting approval", async () => {
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="approval-chat"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("agent-approval-prompt"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Allow once" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "More approval options" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+      expect(
+        screen.getByText("Check whether the target host is reachable."),
+      ).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+    });
+
+    it("renders recovery controls while a stored approval reconnects", () => {
       render(
         <TestWrapper>
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
             status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
           />
         </TestWrapper>,
       );
 
-      // Component should render in default ask mode
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
       expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
+        screen.getByText("Reconnecting to the Agent approval session..."),
       ).toBeInTheDocument();
+      expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Allow once" }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+
+      expect(mockOnStop).toHaveBeenCalledTimes(1);
+      expect(
+        screen.queryByText("Reconnecting to the Agent approval session..."),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
-  });
 
-  describe("Mode Switching Integration", () => {
-    it("should handle mode state via GlobalState provider", async () => {
-      // Note: UI-based mode switching tests removed due to dropdown interaction complexity
-      // Mode switching logic is thoroughly tested in GlobalState.messageQueue.test.tsx
-      // Integration tests focus on rendering correctly based on mode state
+    it("restores the approval prompt when stopping the Agent fails", async () => {
+      const failedStop = jest.fn(async () => false);
 
-      const { rerender } = render(
+      render(
         <TestWrapper>
           <ChatInput
             onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
+            onStop={failedStop}
             status="ready"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
           />
         </TestWrapper>,
       );
 
-      // Should render in ask mode by default
-      expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
-      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
 
-      // Re-render with different status
-      rerender(
+      await waitFor(() =>
+        expect(
+          screen.getByText("Reconnecting to the Agent approval session..."),
+        ).toBeInTheDocument(),
+      );
+      expect(failedStop).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders retry and stop controls when stored approval reconnection fails", () => {
+      render(
         <TestWrapper>
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            status="streaming"
+            onReconnect={mockOnReconnect}
+            status="error"
+            chatId="approval-chat"
+            hasMessages
+            storedApprovalRequest={{
+              approvalId: "stored-approval-1",
+              toolCallId: "tool-1",
+              title: "Allow HackerAI to run this terminal command?",
+              target: "ping -c 4 hackerone.com",
+              detail: "Approve to continue, or deny to stop this command.",
+              kind: "terminal",
+              operation: "terminal_execute",
+            }}
           />
         </TestWrapper>,
       );
 
-      // Should still show ask mode placeholder
       expect(
-        screen.getByPlaceholderText("Ask, learn, brainstorm"),
+        screen.getByText("Could not reconnect to the Agent approval session."),
       ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Retry connection" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Stop agent" }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+      expect(mockOnReconnect).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -498,6 +678,55 @@ describe("ChatInput - Integration Tests", () => {
       expect(storedDraft).not.toContain(localPath);
     });
 
+    it("keeps an unavailable local pasted-text draft without exposing content", async () => {
+      const draftAttachment = {
+        kind: "pasted-text" as const,
+        storage: "local-desktop" as const,
+        name: "pasted_content.txt",
+        mediaType: "text/plain",
+        size: 512,
+        generatedSource: "pasted-text" as const,
+        generatedTextAttachmentId: "generated_local_missing",
+        timestamp: Date.now(),
+      };
+      mockReadGeneratedTextAttachment.mockResolvedValue(null);
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "chat-1",
+              content: "",
+              timestamp: Date.now(),
+              attachments: [draftAttachment],
+            },
+          ],
+        }),
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Unavailable on this device"),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("Open pasted_content.txt")).toBeDisabled();
+      await waitFor(() =>
+        expect(
+          window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
+        ).toContain("generated_local_missing"),
+      );
+    });
+
     it("restores regular S3 draft attachments", async () => {
       const draftAttachment = {
         kind: "file" as const,
@@ -708,6 +937,51 @@ describe("ChatInput - Integration Tests", () => {
           }),
         ]);
         expect(JSON.stringify(store)).not.toContain(pastedContent);
+      });
+    });
+
+    it("keeps the committed pasted-text draft while an edit is uploading", async () => {
+      const previousContent = "Previously saved source material";
+      const editedContent = "Edited source material";
+      const uploadedFile: UploadedFileState = {
+        file: new File([editedContent], "pasted_content.txt", {
+          type: "text/plain",
+          lastModified: 234567,
+        }),
+        uploading: true,
+        uploaded: false,
+        storage: "s3",
+        fileId: "file_pasted_previous",
+        tokens: 84,
+        generatedSource: "pasted-text",
+        generatedTextAttachment: {
+          id: "generated_123",
+          content: editedContent,
+        },
+      };
+
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[uploadedFile]} label="Start edit" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat={false}
+            chatId="chat-1"
+          />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByText("Start edit"));
+
+      await waitFor(() => {
+        const storedDraft =
+          window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY) ?? "";
+        expect(storedDraft).toContain("file_pasted_previous");
+        expect(storedDraft).toContain("generated_123");
+        expect(storedDraft).not.toContain(previousContent);
+        expect(storedDraft).not.toContain(editedContent);
       });
     });
 

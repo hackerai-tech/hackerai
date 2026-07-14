@@ -634,7 +634,7 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Proxy tools (Caido)
+    // Proxy tools
     const proxyToolTypes = [
       "tool-list_requests",
       "tool-view_request",
@@ -690,10 +690,7 @@ export function extractSidebarContentFromMessage(
 
     if (notesToolTypes.includes(part.type)) {
       const toolName = part.type.replace("tool-", "") as
-        | "create_note"
-        | "list_notes"
-        | "update_note"
-        | "delete_note";
+        "create_note" | "list_notes" | "update_note" | "delete_note";
 
       const actionMap: Record<string, SidebarNotes["action"]> = {
         create_note: "create",
@@ -762,4 +759,46 @@ export function extractAllSidebarContent(
   messages: Message[],
 ): SidebarContent[] {
   return messages.flatMap(extractSidebarContentFromMessage);
+}
+
+const getToolCallId = (content: SidebarContent): string | undefined =>
+  "toolCallId" in content && content.toolCallId
+    ? content.toolCallId
+    : undefined;
+
+const isSameSidebarContent = (
+  left: SidebarContent,
+  right: SidebarContent,
+): boolean => {
+  const leftToolCallId = getToolCallId(left);
+  const rightToolCallId = getToolCallId(right);
+
+  if (leftToolCallId || rightToolCallId) {
+    return leftToolCallId === rightToolCallId;
+  }
+
+  return (
+    "path" in left &&
+    "path" in right &&
+    left.path === right.path &&
+    left.action === right.action
+  );
+};
+
+/**
+ * Keeps an open tool sidebar aligned with the messages left after regeneration.
+ * If the selected tool was removed, the latest surviving tool is the closest
+ * previous execution in the transcript.
+ */
+export function reconcileSidebarContentAfterRegeneration(
+  messages: Message[],
+  sidebarContent: SidebarContent,
+): SidebarContent | null {
+  const remainingContent = extractAllSidebarContent(messages);
+  const selectionStillExists = remainingContent.some((content) =>
+    isSameSidebarContent(content, sidebarContent),
+  );
+
+  if (selectionStillExists) return sidebarContent;
+  return remainingContent[remainingContent.length - 1] ?? null;
 }

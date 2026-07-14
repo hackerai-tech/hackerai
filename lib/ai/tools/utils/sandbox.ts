@@ -32,9 +32,9 @@ const logSandboxKillFailure = (
  * and recreated on next connection attempt.
  */
 // v8: upgraded sandbox CPU (4 cores) and memory (2GB)
-// v9: added Caido proxy (caido-cli install, lazy start via ensureCaido, HTTP_PROXY env vars)
+// v9: added temporary HTTP interception support
 // v10: added whois, Chromium, and agent-browser browser automation
-// v11: removed preinstalled caido-cli from the sandbox image
+// v11: removed preinstalled interception CLI from the sandbox image
 const SANDBOX_VERSION = "v11";
 
 /**

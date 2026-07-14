@@ -7,6 +7,7 @@ import {
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
 
 type PollOptions = {
   chatId: string;
@@ -22,6 +23,8 @@ type PreemptiveTimeoutOptions = {
   chatId: string;
   endpoint: ApiEndpoint;
   abortController: AbortController;
+  requestId?: string;
+  userId?: string;
   safetyBuffer?: number;
 };
 
@@ -119,6 +122,7 @@ export const createCancellationSubscriber = async ({
   pollIntervalMs = 1000,
 }: PollOptions): Promise<CancellationSubscriberResult> => {
   let subscriber: Awaited<ReturnType<typeof createRedisSubscriber>> = null;
+  let fallbackPoller: CancellationSubscriberResult | null = null;
   let stopped = false;
   let onStopCalled = false;
   const channel = getCancelChannel(chatId);
@@ -141,8 +145,31 @@ export const createCancellationSubscriber = async ({
     }
   };
 
+  const startPollingFallback = (error: unknown) => {
+    if (stopped || fallbackPoller || abortController.signal.aborted) {
+      return;
+    }
+
+    phLogger.warn("redis_pubsub_unavailable", {
+      event: "redis.pubsub_unavailable",
+      chatId,
+      isTemporary,
+      error,
+    });
+    cleanupSubscriber();
+    fallbackPoller = createCancellationPoller({
+      chatId,
+      isTemporary,
+      abortController,
+      onStop: callOnStopOnce,
+      pollIntervalMs,
+    });
+  };
+
   try {
-    subscriber = await createRedisSubscriber();
+    subscriber = await createRedisSubscriber({
+      onError: startPollingFallback,
+    });
 
     if (subscriber) {
       // Track skipSave flag from cancellation message
@@ -173,6 +200,17 @@ export const createCancellationSubscriber = async ({
         }
       });
 
+      if (fallbackPoller) {
+        return {
+          stop: async () => {
+            stopped = true;
+            await fallbackPoller?.stop();
+          },
+          isUsingPubSub: false,
+          shouldSkipSave: () => fallbackPoller?.shouldSkipSave() ?? false,
+        };
+      }
+
       abortController.signal.addEventListener("abort", handleAbort, {
         once: true,
       });
@@ -182,14 +220,27 @@ export const createCancellationSubscriber = async ({
           stopped = true;
           abortController.signal.removeEventListener("abort", handleAbort);
           cleanupSubscriber();
+          await fallbackPoller?.stop();
         },
         isUsingPubSub: true,
-        shouldSkipSave: () => skipSave,
+        shouldSkipSave: () =>
+          skipSave || (fallbackPoller?.shouldSkipSave() ?? false),
       };
     }
   } catch (error) {
-    console.error("[Redis Pub/Sub] Subscription failed:", error);
+    startPollingFallback(error);
     cleanupSubscriber();
+  }
+
+  if (fallbackPoller) {
+    return {
+      stop: async () => {
+        stopped = true;
+        await fallbackPoller?.stop();
+      },
+      isUsingPubSub: false,
+      shouldSkipSave: () => fallbackPoller?.shouldSkipSave() ?? false,
+    };
   }
 
   // Fallback to polling when Redis is unavailable
@@ -210,7 +261,9 @@ export const createPreemptiveTimeout = ({
   chatId,
   endpoint,
   abortController,
-  safetyBuffer = 30,
+  requestId,
+  userId,
+  safetyBuffer = 60,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
   const maxDuration = endpoint === "/api/chat" ? 420 : 800;
@@ -224,14 +277,24 @@ export const createPreemptiveTimeout = ({
     triggerTime = Date.now();
     isPreemptive = true;
 
-    phLogger.info("Preemptive timeout triggered", {
-      chatId,
+    const fields = {
+      event: "chat.preemptive_timeout_triggered",
+      request_id: requestId ?? "unknown",
+      service: "hackerai-web",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+      user_id: userId,
+      chat_id: chatId,
       endpoint,
-      maxDuration,
-      safetyBuffer,
-      maxStreamTimeMs: maxStreamTime,
-      elapsedMs: triggerTime - startTime,
-      triggerTime: new Date(triggerTime).toISOString(),
+      max_duration_seconds: maxDuration,
+      safety_buffer_seconds: safetyBuffer,
+      max_stream_time_ms: maxStreamTime,
+      elapsed_ms: triggerTime - startTime,
+    };
+    logger.warn("Preemptive timeout triggered", fields);
+    phLogger.info("Preemptive timeout triggered", {
+      ...fields,
+      userId,
+      trigger_time: new Date(triggerTime).toISOString(),
     });
 
     abortController.abort();

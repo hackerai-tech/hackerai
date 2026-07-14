@@ -6,27 +6,34 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
+import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 
 function DataStreamSetter({
   isAutoResuming,
+  isAutoContinuing,
   autoContinueCount,
   children,
 }: {
   isAutoResuming?: boolean;
+  isAutoContinuing?: boolean;
   autoContinueCount?: number;
   children: React.ReactNode;
 }) {
-  const { setIsAutoResuming, setAutoContinueCount } = useDataStream();
+  const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
+    useDataStream();
 
   React.useEffect(() => {
     if (isAutoResuming !== undefined) setIsAutoResuming(isAutoResuming);
+    if (isAutoContinuing !== undefined) setIsAutoContinuing(isAutoContinuing);
     if (autoContinueCount !== undefined)
       setAutoContinueCount(autoContinueCount);
   }, [
     isAutoResuming,
+    isAutoContinuing,
     autoContinueCount,
     setIsAutoResuming,
+    setIsAutoContinuing,
     setAutoContinueCount,
   ]);
 
@@ -42,7 +49,11 @@ interface RenderNoticeProps {
 
 function renderNotice(
   props: RenderNoticeProps,
-  contextOverrides?: { isAutoResuming?: boolean; autoContinueCount?: number },
+  contextOverrides?: {
+    isAutoResuming?: boolean;
+    isAutoContinuing?: boolean;
+    autoContinueCount?: number;
+  },
 ) {
   return render(
     <DataStreamProvider>
@@ -54,6 +65,21 @@ function renderNotice(
 }
 
 describe("FinishReasonNotice", () => {
+  it("shows automatic continuation status without a manual Continue button", () => {
+    const onContinue = jest.fn();
+    renderNotice(
+      { finishReason: "length", mode: "agent", onContinue },
+      { isAutoResuming: false, isAutoContinuing: true },
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Continuing automatically…",
+    );
+    expect(
+      screen.queryByRole("button", { name: /continue/i }),
+    ).not.toBeInTheDocument();
+  });
+
   describe("suppression cases (should render nothing)", () => {
     it.each([
       { finishReason: "length", mode: "agent" as ChatMode },
@@ -66,28 +92,6 @@ describe("FinishReasonNotice", () => {
         const { container } = renderNotice(
           { finishReason, mode },
           { isAutoResuming: true, autoContinueCount: 0 },
-        );
-        expect(container.innerHTML).toBe("");
-      },
-    );
-
-    it.each([
-      { finishReason: "context-limit" as const, autoContinueCount: 0 },
-      { finishReason: "context-limit" as const, autoContinueCount: 2 },
-      { finishReason: "context-limit" as const, autoContinueCount: 4 },
-      { finishReason: "length" as const, autoContinueCount: 0 },
-      { finishReason: "length" as const, autoContinueCount: 3 },
-      { finishReason: "length" as const, autoContinueCount: 4 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 0 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 2 },
-      { finishReason: "tool-calls" as const, autoContinueCount: 4 },
-      { finishReason: "preemptive-timeout" as const, autoContinueCount: 0 },
-    ])(
-      "returns null in agent mode when autoContinueCount=$autoContinueCount < MAX for finishReason=$finishReason",
-      ({ finishReason, autoContinueCount }) => {
-        const { container } = renderNotice(
-          { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount },
         );
         expect(container.innerHTML).toBe("");
       },
@@ -122,7 +126,7 @@ describe("FinishReasonNotice", () => {
       },
       {
         finishReason: "length",
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
       {
         finishReason: "context-limit",
@@ -132,16 +136,33 @@ describe("FinishReasonNotice", () => {
         finishReason: "budget-exhausted",
         expectedText: "Stopped at a usage guardrail for this run",
       },
+      {
+        finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+        expectedText: "Paused after compacting the conversation",
+      },
     ])(
-      "renders notice for finishReason=$finishReason when autoContinueCount has reached MAX_AUTO_CONTINUES",
+      "renders notice for finishReason=$finishReason when no auto-continuation is pending",
       ({ finishReason, expectedText }) => {
         renderNotice(
           { finishReason, mode: "agent" },
-          { isAutoResuming: false, autoContinueCount: MAX_AUTO_CONTINUES },
+          { isAutoResuming: false, autoContinueCount: 0 },
         );
         expect(screen.getByText(new RegExp(expectedText))).toBeInTheDocument();
       },
     );
+
+    it("renders an output-limit fallback in agent mode when the auto-continue signal is absent", () => {
+      renderNotice(
+        { finishReason: "length", mode: "agent" },
+        { isAutoResuming: false },
+      );
+
+      expect(
+        screen.getByText(
+          /The response reached its output limit before finishing.*Continue to resume where it stopped/i,
+        ),
+      ).toBeInTheDocument();
+    });
 
     it.each([
       {
@@ -152,7 +173,7 @@ describe("FinishReasonNotice", () => {
       {
         finishReason: "length",
         mode: "ask" as ChatMode,
-        expectedText: "Reached the output limit for this turn",
+        expectedText: "The response reached its output limit before finishing",
       },
     ])(
       "renders notice for finishReason=$finishReason in $mode mode with autoContinueCount=0 (auto-continue only applies to agent mode)",
@@ -216,6 +237,7 @@ describe("FinishReasonNotice", () => {
       "context-limit",
       "preemptive-timeout",
       "agent-run-spend-cap",
+      POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
     ])("renders the Continue button for finishReason=%s", (finishReason) => {
       const onContinue = jest.fn();
       renderNotice(
@@ -227,7 +249,7 @@ describe("FinishReasonNotice", () => {
       ).toBeInTheDocument();
     });
 
-    it("renders the Pro Agent run cap notice and continues with Standard when premium continuation is unavailable", () => {
+    it("renders the legacy Pro Agent run cap notice and keeps the current model when premium continuation is unavailable", () => {
       const onContinue = jest.fn();
       renderNotice(
         {
@@ -240,13 +262,11 @@ describe("FinishReasonNotice", () => {
       );
 
       expect(
-        screen.getByText(/Paused at the Pro Agent per-run safety cap/i),
+        screen.getByText(/Paused at a legacy Pro Agent per-run safety cap/i),
       ).toBeInTheDocument();
-      fireEvent.click(
-        screen.getByRole("button", { name: /continue with standard/i }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
-      expect(onContinue).toHaveBeenCalledWith("hackerai-standard");
+      expect(onContinue).toHaveBeenCalledWith(undefined);
     });
 
     it("keeps the current selected model when spend-cap continuation eligibility is unknown", () => {
@@ -310,7 +330,7 @@ describe("FinishReasonNotice", () => {
       );
 
       const innerDiv = screen
-        .getByText(/Reached the output limit for this turn/)
+        .getByText(/The response reached its output limit before finishing/)
         .closest("div.bg-muted");
       expect(innerDiv).toBeInTheDocument();
       expect(innerDiv).toHaveClass(

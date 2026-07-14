@@ -1,7 +1,11 @@
 import "server-only";
 
 import { isFeatureEnabled } from "@/lib/auth/feature-flags";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import {
+  isPaidIndividualSubscription,
+  type ChatMode,
+  type SubscriptionTier,
+} from "@/types";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
 import type { LimitCapReason } from "@/lib/limit-pressure";
@@ -11,12 +15,6 @@ export const PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY =
 export const PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT = 1;
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
 export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
-
-const PAID_INDIVIDUAL_TIERS = new Set<SubscriptionTier>([
-  "pro",
-  "pro-plus",
-  "ultra",
-]);
 
 const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
@@ -268,12 +266,16 @@ function baseStatus(
 function getStaticUnavailableReason(
   ctx: PaidDailyFreeAllowanceContext,
 ): PaidDailyFreeAllowanceUnavailableReason | null {
-  if (ctx.mode !== "ask") return "unsupported_mode";
-  if (!PAID_INDIVIDUAL_TIERS.has(ctx.subscription)) {
+  if (!isPaidIndividualSubscription(ctx.subscription)) {
     return "unsupported_subscription";
   }
   if (ctx.capReason !== "monthly_exhausted") return "not_monthly_exhausted";
-  if (ctx.hasAttachments) return "attachments_not_supported";
+  // Ask attachments may require a more expensive multimodal route. Agent
+  // attachments stay eligible because the allowance uses the cheap Agent
+  // model and records the run's model, tool, and sandbox costs together.
+  if (ctx.mode === "ask" && ctx.hasAttachments) {
+    return "attachments_not_supported";
+  }
   return null;
 }
 

@@ -10,8 +10,11 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import type { PaidDailyFreeAllowanceReservation } from "@/lib/rate-limit";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 
-export const PAID_DAILY_FREE_ALLOWANCE_MODEL = "ask-model-free";
+export function getPaidDailyFreeAllowanceModel(mode: ChatMode) {
+  return mode === "agent" ? "agent-model-free" : "ask-model-free";
+}
 
 type PaidDailyFreeAllowanceEvent =
   | typeof PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceStarted
@@ -71,7 +74,7 @@ export function capturePaidDailyFreeAllowanceServerEvent({
   subscription: SubscriptionTier;
   mode: ChatMode;
   chatId: string;
-  endpoint: "/api/chat";
+  endpoint: ChatApiEndpoint;
   reservation?: PaidDailyFreeAllowanceReservation;
   extra?: Record<string, unknown>;
 }) {

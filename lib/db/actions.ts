@@ -17,7 +17,11 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
-import type { SubscriptionTier, NoteCategory } from "@/types";
+import type {
+  AgentToolApprovalPendingRequest,
+  SubscriptionTier,
+  NoteCategory,
+} from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -32,6 +36,11 @@ import type { ChatMode } from "@/types/chat";
 import { getMessagePersistenceDiagnostics } from "./message-persistence-diagnostics";
 import { sanitizeForConvexValue } from "./convex-value-sanitizer";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { phLogger } from "@/lib/posthog/server";
+import { stripOpenRouterReasoningMetadataFromParts } from "@/lib/chat/provider-metadata-sanitizer";
+import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
+import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 const MAX_DATABASE_ERROR_MESSAGE_LENGTH = 500;
@@ -42,11 +51,30 @@ const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
 const SAVE_MESSAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const SAVE_CHAT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_CHAT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const CHAT_DELETION_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
+const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
+type ActiveAgentResource = {
+  chatId: string;
+  triggerRunId?: string;
+  approvalSessionId?: string;
+};
+type ChatDeletionFencePage = {
+  fencedChats: number;
+  isDone: boolean;
+  continueCursor: string;
+  resources: ActiveAgentResource[];
+};
 type SummaryReason =
-  | "token_threshold"
-  | "provider_input_threshold"
-  | "provider_pressure";
+  "token_threshold" | "provider_input_threshold" | "provider_pressure";
 
 const sensitiveErrorDataKeys = new Set([
   "authorization",
@@ -188,6 +216,53 @@ const truncateDiagnosticString = (value: string): string =>
     ? `${value.slice(0, MAX_DATABASE_ERROR_MESSAGE_LENGTH)}...`
     : value;
 
+type UpstreamHttpError = {
+  statusCode: number;
+  rayId?: string;
+};
+
+const getUpstreamHttpError = (
+  message: string,
+): UpstreamHttpError | undefined => {
+  if (!/<(?:!DOCTYPE|html)\b/i.test(message)) return undefined;
+  if (!/cloudflare|cf-error-details|haiusercontent\.com/i.test(message)) {
+    return undefined;
+  }
+
+  const statusMatch =
+    message.match(/<title>[^<|]+\|\s*(5\d{2}):/i) ??
+    message.match(/Error code\s+(5\d{2})/i);
+  if (!statusMatch) return undefined;
+
+  return {
+    statusCode: Number(statusMatch[1]),
+    rayId: message.match(
+      /Cloudflare Ray ID:\s*(?:<[^>]+>)*\s*([a-z0-9]+)/i,
+    )?.[1],
+  };
+};
+
+const getDatabaseErrorDiagnostic = (error: unknown) => {
+  const rawMessage = stringifyError(error);
+  const upstreamHttpError = getUpstreamHttpError(rawMessage);
+  if (!upstreamHttpError) {
+    return {
+      message: truncateDiagnosticString(rawMessage),
+      upstreamHttpError: undefined,
+    };
+  }
+
+  return {
+    message: `Convex upstream returned HTTP ${upstreamHttpError.statusCode}`,
+    upstreamHttpError,
+  };
+};
+
+const getConvexRequestIdFromMessage = (message: string): string | undefined => {
+  const match = message.match(/\[Request ID:\s*([^\]\s]+)\]/i);
+  return match?.[1];
+};
+
 const getObjectString = (value: unknown, key: string): string | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -225,15 +300,22 @@ const hasDatabaseErrorCode = (data: unknown, code: string): boolean =>
 const getDatabaseFailureStage = (data: unknown): string | undefined =>
   getObjectString(data, "failureStage");
 
-const getRetryableSaveMessageErrorReason = (
+const getRetryableDatabaseErrorReason = (
   error: unknown,
 ): string | undefined => {
+  const rawErrorMessage = stringifyError(error);
+  if (getUpstreamHttpError(rawErrorMessage)) {
+    return "convex_upstream_http_5xx";
+  }
+
   const dbErrorData = getErrorData(error);
+  const dbErrorCode = getDatabaseErrorCode(dbErrorData);
+  const dbCauseErrorCode = getDatabaseCauseErrorCode(dbErrorData);
   const errorText = [
     error instanceof Error ? error.name : undefined,
-    stringifyError(error),
-    getDatabaseErrorCode(dbErrorData),
-    getDatabaseCauseErrorCode(dbErrorData),
+    rawErrorMessage,
+    dbErrorCode,
+    dbCauseErrorCode,
     getObjectString(dbErrorData, "causeName"),
     getObjectString(dbErrorData, "causeMessage"),
     getObjectString(dbErrorData, "message"),
@@ -242,6 +324,20 @@ const getRetryableSaveMessageErrorReason = (
     .join(" ");
 
   if (/WorkerOverloaded/i.test(errorText)) return "worker_overloaded";
+  if (/ExpiredInQueue|Too many concurrent requests/i.test(errorText)) {
+    return "convex_queue_saturated";
+  }
+  if (
+    /InternalServerError|Your request couldn't be completed\.? Try again later|Try again later/i.test(
+      errorText,
+    ) ||
+    (!dbErrorCode && /\[Request ID:\s*[^\]]+\]\s+Server Error/i.test(errorText))
+  ) {
+    return "convex_server_error";
+  }
+  if (/failed to fetch|fetch failed/i.test(errorText)) {
+    return "network_fetch_failed";
+  }
   if (
     /ServiceUnavailable|temporarily unavailable|ECONNRESET|ETIMEDOUT/i.test(
       errorText,
@@ -255,8 +351,93 @@ const getRetryableSaveMessageErrorReason = (
   return undefined;
 };
 
+const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
+const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
+
+const getRetryableChatDeletionErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  if (/OptimisticConcurrencyControlFailure/i.test(stringifyError(error))) {
+    return "optimistic_concurrency_conflict";
+  }
+
+  return undefined;
+};
+
+const getRetryableSaveChatErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  // Older deployed Convex functions can flatten transient failures to this
+  // generic shape before richer error data reaches the Next.js worker.
+  if (/\[Request ID:\s*[^\]]+\]\s+Server Error/i.test(stringifyError(error))) {
+    return "convex_server_error";
+  }
+
+  return undefined;
+};
+
+const getRetryableReasonForDatabaseOperation = (
+  operation: string,
+  error: unknown,
+): string | undefined => {
+  if (operation === "chats.saveChat") {
+    return getRetryableSaveChatErrorReason(error);
+  }
+  if (
+    operation === "chats.deleteChatForBackend" ||
+    operation === "chats.deleteAllChatsForBackend"
+  ) {
+    return getRetryableChatDeletionErrorReason(error);
+  }
+  return getRetryableDatabaseErrorReason(error);
+};
+
 const waitForRetryDelay = (delayMs: number) =>
   new Promise((resolve) => setTimeout(resolve, delayMs));
+
+const runRetryableChatDeletion = async <T>({
+  operation,
+  metadata,
+  mutation,
+}: {
+  operation: "chats.deleteChatForBackend" | "chats.deleteAllChatsForBackend";
+  metadata: Record<string, unknown>;
+  mutation: () => Promise<T>;
+}): Promise<T> => {
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await mutation();
+    } catch (error) {
+      const retryReason = getRetryableChatDeletionErrorReason(error);
+      const retryDelayMs = CHAT_DELETION_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw error;
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_deletion_retry_scheduled",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: operation,
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          ...metadata,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+};
 
 const ACCESS_DENIED_ERROR_CODE = "ACCESS_DENIED";
 const CHAT_CANCELED_ERROR_CODE = "CHAT_CANCELED";
@@ -306,7 +487,7 @@ const logChatMessagePreparationFailure = (
   if (level === "warn") {
     console.warn(line);
   } else {
-    console.error(line);
+    console.error(event, line);
   }
 };
 
@@ -316,12 +497,14 @@ const databaseError = (
   metadata: Record<string, unknown> = {},
 ) => {
   const dbErrorName = error instanceof Error ? error.name : typeof error;
-  const dbErrorMessage = truncateDiagnosticString(stringifyError(error));
+  const { message: dbErrorMessage, upstreamHttpError } =
+    getDatabaseErrorDiagnostic(error);
   const dbErrorData = getErrorData(error);
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
   const isMessageTooLarge = isMessageTooLargeError(operation, dbErrorData);
+  const retryReason = getRetryableReasonForDatabaseOperation(operation, error);
   const logLevel =
     isChatNotFound || isChatCanceled || isChatUnauthorized || isMessageTooLarge
       ? "warn"
@@ -343,7 +526,9 @@ const databaseError = (
         ? "forbidden:chat"
         : isMessageTooLarge
           ? "bad_request:api"
-          : "bad_request:database";
+          : retryReason
+            ? "offline:database"
+            : "bad_request:database";
   const errorMessage = isChatNotFound
     ? `Chat no longer exists while saving message: ${operation}: ${dbErrorMessage}`
     : isChatCanceled
@@ -352,14 +537,21 @@ const databaseError = (
         ? `Chat access denied while executing database operation: ${operation}: ${dbErrorMessage}`
         : isMessageTooLarge
           ? "Your message is too large to save. Please shorten it or attach the content as a file instead."
-          : `Database operation failed: ${operation}: ${dbErrorMessage}`;
-  const diagnosticMetadata = {
+          : retryReason
+            ? `Database temporarily unavailable: ${operation}: ${dbErrorMessage}`
+            : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+  const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
     db_error_message: dbErrorMessage,
+    db_request_id: getConvexRequestIdFromMessage(dbErrorMessage),
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    db_retry_reason: retryReason,
+    db_error_kind: upstreamHttpError ? "convex_upstream_http_error" : undefined,
+    db_upstream_status_code: upstreamHttpError?.statusCode,
+    db_upstream_ray_id: upstreamHttpError?.rayId,
     ...metadata,
   };
 
@@ -375,19 +567,124 @@ const databaseError = (
   if (logLevel === "warn") {
     console.warn(logLine);
   } else {
-    console.error(logLine);
+    console.error(event, logLine);
+    phLogger.event(event, {
+      ...diagnosticMetadata,
+      service: "chat-handler",
+      level: logLevel,
+      userId:
+        typeof diagnosticMetadata.user_id === "string"
+          ? diagnosticMetadata.user_id
+          : undefined,
+    });
   }
 
   return new ChatSDKError(errorCode, errorMessage, diagnosticMetadata);
 };
 
+type MessagesPageForBackendResult = {
+  page: UIMessage[];
+  isDone: boolean;
+  continueCursor: string | null;
+};
+
+const getMessagesPageForBackendWithRetry = async ({
+  chatId,
+  userId,
+  paginationOpts,
+  mode,
+  isTemporary,
+  regenerate,
+  newMessagesCount,
+}: {
+  chatId: string;
+  userId: string;
+  paginationOpts: { numItems: number; cursor: string | null };
+  mode?: ChatMode;
+  isTemporary: boolean;
+  regenerate: boolean;
+  newMessagesCount: number;
+}): Promise<MessagesPageForBackendResult> => {
+  const queryArgs = {
+    serviceKey,
+    chatId,
+    userId,
+    paginationOpts,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().query(
+        api.messages.getMessagesPageForBackend,
+        queryArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw error;
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_history_fetch_retry_scheduled",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: "messages.getMessagesPageForBackend",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+          user_id: userId,
+          mode,
+          is_temporary: isTemporary,
+          regenerate,
+          new_messages_count: newMessagesCount,
+          page_size: paginationOpts.numItems,
+          cursor_present: paginationOpts.cursor !== null,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+};
+
 export async function getChatById({ id }: { id: string }) {
   try {
-    const selectedChat = await getConvexClient().query(api.chats.getChatById, {
+    const queryArgs = {
       serviceKey,
       id,
-    });
-    return selectedChat;
+    };
+
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().query(api.chats.getChatById, queryArgs);
+      } catch (error) {
+        const retryReason = getRetryableGetChatErrorReason(error);
+        const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
+        if (!retryReason || retryDelayMs === undefined) {
+          throw error;
+        }
+
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "chat_fetch_retry_scheduled",
+            service: "chat-handler",
+            timestamp: new Date().toISOString(),
+            db_operation: "chats.getChatById",
+            retry_reason: retryReason,
+            attempt: attemptIndex + 1,
+            next_attempt: attemptIndex + 2,
+            retry_delay_ms: retryDelayMs,
+            chat_id: id,
+          }),
+        );
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("chats.getChatById", error, { chat_id: id });
   }
@@ -396,15 +693,31 @@ export async function getChatById({ id }: { id: string }) {
 export async function deleteChatForBackend({
   chatId,
   userId,
+  expectedTriggerRunId,
+  expectedApprovalSessionId,
 }: {
   chatId: string;
   userId: string;
+  expectedTriggerRunId: string | null;
+  expectedApprovalSessionId: string | null;
 }) {
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    userId,
+    expectedTriggerRunId,
+    expectedApprovalSessionId,
+  };
+
   try {
-    await getConvexClient().mutation(api.chats.deleteChatForBackend, {
-      serviceKey,
-      chatId,
-      userId,
+    return await runRetryableChatDeletion({
+      operation: "chats.deleteChatForBackend",
+      metadata: { chat_id: chatId, user_id: userId },
+      mutation: () =>
+        getConvexClient().mutation(
+          api.chats.deleteChatForBackend,
+          mutationArgs,
+        ),
     });
   } catch (error) {
     throw databaseError("chats.deleteChatForBackend", error, {
@@ -434,11 +747,60 @@ export async function getActiveTriggerRunsForUser({
   }
 }
 
+export async function fenceAndGetActiveAgentResourcesForUser({
+  userId,
+}: {
+  userId: string;
+}) {
+  try {
+    const resourcesByChatId = new Map<string, ActiveAgentResource>();
+    let cursor: string | null = null;
+
+    for (let batch = 0; batch < MAX_CHAT_DELETION_FENCE_BATCHES; batch++) {
+      const result: ChatDeletionFencePage = await getConvexClient().mutation(
+        api.chats.fenceChatsForDeletion,
+        {
+          serviceKey,
+          userId,
+          cursor,
+        },
+      );
+
+      for (const resource of result.resources) {
+        resourcesByChatId.set(resource.chatId, resource);
+      }
+
+      if (result.isDone) {
+        const resources = [...resourcesByChatId.values()];
+        return {
+          resources: resources.slice(0, MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN),
+          hasMore: resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+        };
+      }
+
+      cursor = result.continueCursor;
+    }
+
+    throw new Error(
+      "Chat deletion fencing is taking longer than expected. Please retry deletion.",
+    );
+  } catch (error) {
+    throw databaseError("chats.fenceAndGetActiveAgentResourcesForUser", error, {
+      user_id: userId,
+    });
+  }
+}
+
 export async function deleteAllChatsForBackend({ userId }: { userId: string }) {
   try {
-    await getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
-      serviceKey,
-      userId,
+    await runRetryableChatDeletion({
+      operation: "chats.deleteAllChatsForBackend",
+      metadata: { user_id: userId },
+      mutation: () =>
+        getConvexClient().mutation(api.chats.deleteAllChatsForBackend, {
+          serviceKey,
+          userId,
+        }),
     });
   } catch (error) {
     throw databaseError("chats.deleteAllChatsForBackend", error, {
@@ -456,13 +818,46 @@ export async function saveChat({
   userId: string;
   title: string;
 }) {
+  const mutationArgs = {
+    serviceKey,
+    id,
+    userId,
+    title,
+  };
+
   try {
-    return await getConvexClient().mutation(api.chats.saveChat, {
-      serviceKey,
-      id,
-      userId,
-      title,
-    });
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().mutation(
+          api.chats.saveChat,
+          mutationArgs,
+        );
+      } catch (error) {
+        const retryReason = getRetryableSaveChatErrorReason(error);
+        const retryDelayMs = SAVE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+        if (!retryReason || retryDelayMs === undefined) {
+          throw error;
+        }
+
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "chat_save_retry_scheduled",
+            service: "chat-handler",
+            timestamp: new Date().toISOString(),
+            db_operation: "chats.saveChat",
+            retry_reason: retryReason,
+            attempt: attemptIndex + 1,
+            next_attempt: attemptIndex + 2,
+            retry_delay_ms: retryDelayMs,
+            chat_id: id,
+            user_id: userId,
+            title_length: title.length,
+          }),
+        );
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("chats.saveChat", error, {
       chat_id: id,
@@ -527,6 +922,10 @@ export async function saveMessage({
             },
           })
         : message.parts;
+    fixedParts =
+      message.role === "assistant"
+        ? stripOpenRouterReasoningMetadataFromParts(fixedParts)
+        : fixedParts;
     const convexSafeParts = sanitizeForConvexValue(fixedParts) as UIMessagePart<
       any,
       any
@@ -581,8 +980,7 @@ export async function saveMessage({
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
     const usageForSave = sanitizeForConvexValue(usage) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -836,15 +1234,15 @@ export async function getMessagesByChatId({
             page: UIMessage[];
             isDone: boolean;
             continueCursor: string | null;
-          } = await getConvexClient().query(
-            api.messages.getMessagesPageForBackend,
-            {
-              serviceKey,
-              chatId,
-              userId,
-              paginationOpts: { numItems: PAGE_SIZE, cursor },
-            },
-          );
+          } = await getMessagesPageForBackendWithRetry({
+            chatId,
+            userId,
+            paginationOpts: { numItems: PAGE_SIZE, cursor },
+            mode,
+            isTemporary: !!isTemporary,
+            regenerate: !!regenerate,
+            newMessagesCount: newMessages.length,
+          });
           const { page, isDone, continueCursor: nextCursor } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
@@ -946,8 +1344,7 @@ export async function getMessagesByChatId({
             );
             const budgetForMessages = maxTokens - summaryTokens;
             const retainedTail = latestSummary.retained_tail as
-              | RetainedTailMetadata
-              | undefined;
+              RetainedTailMetadata | undefined;
             let truncatedAfterCutoff: UIMessage[] = [];
 
             if (budgetForMessages > 0 && retainedTail) {
@@ -1023,6 +1420,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
+          db_retry_reason: getRetryableDatabaseErrorReason(error),
           db_error_data: getErrorData(error),
         });
 
@@ -1153,25 +1551,86 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
+  approvalSessionId,
   expectedRunId,
+  expectedApprovalSessionId,
+  clearApprovalPending,
 }: {
   chatId: string;
   triggerRunId: string | null;
+  approvalSessionId?: string | null;
   expectedRunId?: string;
+  expectedApprovalSessionId?: string;
+  clearApprovalPending?: boolean;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
+    return await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
       serviceKey,
       chatId,
       triggerRunId,
+      ...(approvalSessionId !== undefined ? { approvalSessionId } : {}),
       ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
+      ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
+    });
+  } catch (error) {
+    throw databaseError("chats.setActiveTriggerRun", error, {
+      chat_id: chatId,
+      trigger_run_id: triggerRunId,
+      expected_run_id: expectedRunId,
+    });
+  }
+}
+
+export async function setActiveAgentApprovalPending({
+  chatId,
+  pending,
+  request,
+  expectedRunId,
+  expectedApprovalSessionId,
+}: {
+  chatId: string;
+  pending: boolean;
+  request?: AgentToolApprovalPendingRequest;
+  expectedRunId?: string;
+  expectedApprovalSessionId?: string;
+}) {
+  try {
+    await getConvexClient().mutation(api.chats.setActiveAgentApprovalPending, {
+      serviceKey,
+      chatId,
+      pending,
+      ...(request !== undefined ? { request } : {}),
+      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+      ...(expectedApprovalSessionId !== undefined
+        ? { expectedApprovalSessionId }
+        : {}),
     });
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to set active trigger run",
+      "Failed to set active agent approval state",
     );
   }
+}
+
+export async function persistAgentApprovalGrant({
+  chatId,
+  userId,
+  grant,
+}: {
+  chatId: string;
+  userId: string;
+  grant: PersistedAgentApprovalTargetGrant;
+}) {
+  await getConvexClient().mutation(api.chats.persistAgentApprovalGrant, {
+    serviceKey,
+    chatId,
+    userId,
+    grant,
+  });
 }
 
 export async function getActiveTriggerRun({ chatId }: { chatId: string }) {
@@ -1509,6 +1968,7 @@ export async function getNotes({
 }
 
 export async function logUsageRecord({
+  usageSettlementId,
   userId,
   organizationId,
   chatId,
@@ -1519,8 +1979,12 @@ export async function logUsageRecord({
   type,
   includedCostDollars,
   extraUsageCostDollars,
+  uncoveredCostDollars,
   includedPointsDeducted,
   extraUsagePointsDeducted,
+  uncoveredPoints,
+  usageDeductionFailed,
+  usageDeductionFailureReason,
   inputTokens,
   outputTokens,
   totalTokens,
@@ -1531,18 +1995,23 @@ export async function logUsageRecord({
   nonModelCostDollars,
   costSource,
 }: {
+  usageSettlementId?: string;
   userId: string;
   organizationId?: string;
   chatId?: string;
-  endpoint?: "/api/chat" | "/api/agent-long";
+  endpoint?: ChatApiEndpoint;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
   model: string;
   type: "included" | "extra" | "mixed";
   includedCostDollars?: number;
   extraUsageCostDollars?: number;
+  uncoveredCostDollars?: number;
   includedPointsDeducted?: number;
   extraUsagePointsDeducted?: number;
+  uncoveredPoints?: number;
+  usageDeductionFailed?: boolean;
+  usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -1556,6 +2025,7 @@ export async function logUsageRecord({
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
+      usage_settlement_id: usageSettlementId,
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
@@ -1566,8 +2036,12 @@ export async function logUsageRecord({
       type,
       included_cost_dollars: includedCostDollars,
       extra_usage_cost_dollars: extraUsageCostDollars,
+      uncovered_cost_dollars: uncoveredCostDollars,
       included_points_deducted: includedPointsDeducted,
       extra_usage_points_deducted: extraUsagePointsDeducted,
+      uncovered_points: uncoveredPoints,
+      usage_deduction_failed: usageDeductionFailed,
+      usage_deduction_failure_reason: usageDeductionFailureReason,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,
@@ -1581,6 +2055,7 @@ export async function logUsageRecord({
   } catch (error) {
     console.error("Failed to log usage record:", {
       error,
+      usage_settlement_id: usageSettlementId,
       userId,
       organizationId,
       chatId,

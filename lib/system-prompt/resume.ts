@@ -1,3 +1,8 @@
+import {
+  OUTPUT_LIMIT_FINISH_REASON,
+  POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
+} from "@/lib/chat/stop-conditions";
+
 export const getResumeSection = (finishReason?: string): string => {
   if (finishReason === "tool-calls") {
     return `<resume_context>
@@ -6,9 +11,9 @@ The last user message in the conversation history contains the original task you
 If the user says "continue" or similar, resume executing that original task exactly where you left off. \
 Follow through on the last user command autonomously without restarting or asking for direction.
 </resume_context>`;
-  } else if (finishReason === "length") {
+  } else if (finishReason === OUTPUT_LIMIT_FINISH_REASON) {
     return `<resume_context>
-Your previous response was interrupted because the output tokens exceeded the model's context limit. \
+Your previous response was interrupted because it reached this turn's output token limit. \
 The conversation was cut off mid-generation. If the user says "continue" or similar, seamlessly continue \
 from where you left off. Pick up the thought, explanation, or task execution exactly where it stopped \
 without repeating what was already said or restarting from the beginning. IMPORTANT: Divide your response \
@@ -33,7 +38,7 @@ Resume the task exactly where you left off without repeating what was already do
 </resume_context>`;
   } else if (finishReason === "agent-run-spend-cap") {
     return `<resume_context>
-Your previous response was paused by the Pro Agent per-run spend cap. \
+Your previous response was paused by a legacy Pro Agent per-run spend cap. \
 This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
 resume the task exactly where you left off without repeating what was already done.
 </resume_context>`;
@@ -42,6 +47,13 @@ resume the task exactly where you left off without repeating what was already do
 Your previous response was paused because the monthly usage budget or extra usage spending limit was reached. \
 This was a user cost-control pause, not a task failure. If the user says "continue" or similar, \
 resume the task exactly where you left off without repeating completed work or starting the task over.
+</resume_context>`;
+  } else if (finishReason === POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON) {
+    return `<resume_context>
+Your previous response stopped immediately after conversation compaction before completing the user's original request. \
+The context has been condensed. If the user says "continue" or similar, resume from the latest saved progress \
+without acknowledging the compaction, restarting completed work, or saying that you will continue. \
+Use tools when action is still needed; otherwise provide the final result or deliverable.
 </resume_context>`;
   }
 

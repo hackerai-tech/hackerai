@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
 import {
-  AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL,
   canContinueProAgentRunWithPremium,
   resolveAgentRunSpendCapContinuationModel,
 } from "../agent-run-spend-cap";
@@ -55,7 +54,7 @@ describe("canContinueProAgentRunWithPremium", () => {
 });
 
 describe("resolveAgentRunSpendCapContinuationModel", () => {
-  it("forces Pro Agent spend-cap continuations to Standard without extra usage", () => {
+  it("preserves non-Max Pro Agent spend-cap continuations", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
@@ -65,7 +64,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-pro",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-pro");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -76,7 +75,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "auto",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("auto");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -87,7 +86,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: undefined,
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBeUndefined();
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -98,7 +97,7 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-pro",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-pro");
 
     expect(
       resolveAgentRunSpendCapContinuationModel({
@@ -109,16 +108,16 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         selectedModelOverride: "hackerai-max",
         extraUsageConfig: undefined,
       }),
-    ).toBe(AGENT_RUN_SPEND_CAP_STANDARD_CONTINUATION_MODEL);
+    ).toBe("hackerai-pro");
   });
 
-  it("keeps the premium model when extra usage or auto-reload can cover continuation", () => {
+  it("keeps Max for Ultra continuations", () => {
     expect(
       resolveAgentRunSpendCapContinuationModel({
         finishReason: "agent-run-spend-cap",
         isAutoContinue: true,
         mode: "agent",
-        subscription: "pro",
+        subscription: "ultra",
         selectedModelOverride: "hackerai-max",
         extraUsageConfig: {
           enabled: true,
@@ -128,6 +127,43 @@ describe("resolveAgentRunSpendCapContinuationModel", () => {
         },
       }),
     ).toBe("hackerai-max");
+  });
+
+  it("keeps Max outside Ultra when extra usage is available", () => {
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-max",
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: true,
+          balanceDollars: 10,
+          autoReloadEnabled: false,
+        },
+      }),
+    ).toBe("hackerai-max");
+  });
+
+  it("downgrades Max outside Ultra when extra usage is unavailable", () => {
+    expect(
+      resolveAgentRunSpendCapContinuationModel({
+        finishReason: "agent-run-spend-cap",
+        isAutoContinue: true,
+        mode: "agent",
+        subscription: "pro",
+        selectedModelOverride: "hackerai-max",
+        extraUsageConfig: {
+          enabled: true,
+          hasBalance: true,
+          balanceDollars: 10,
+          autoReloadEnabled: false,
+          monthlyRemainingDollars: 0,
+        },
+      }),
+    ).toBe("hackerai-pro");
   });
 
   it("leaves Standard and non-spend-cap requests unchanged", () => {
