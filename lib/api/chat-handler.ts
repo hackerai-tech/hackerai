@@ -1076,6 +1076,12 @@ export const createChatHandler = () => {
                   mode,
                   usage: usageCostRecord,
                   responseModel: state.responseModel,
+                  ...(usageSettlementState && {
+                    usageSettlement: {
+                      id: usageTracker.usageSettlementId,
+                      midRunCount: usageSettlementSequence,
+                    },
+                  }),
                   ...(paidDailyFreeAllowanceReservation && {
                     paidDailyFreeAllowance:
                       createPaidDailyFreeAllowanceUsageLogContext(

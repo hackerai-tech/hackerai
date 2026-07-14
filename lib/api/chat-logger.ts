@@ -47,6 +47,23 @@ import {
   type LimitCapReason,
 } from "@/lib/limit-pressure";
 
+export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.05;
+
+const usageSettlementSampleBucket = (usageSettlementId: string): number => {
+  let hash = 2166136261;
+  for (let index = 0; index < usageSettlementId.length; index += 1) {
+    hash ^= usageSettlementId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 10_000;
+};
+
+export const isUsageSettlementSuccessSampled = (
+  usageSettlementId: string,
+): boolean =>
+  usageSettlementSampleBucket(usageSettlementId) <
+  USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE * 10_000;
+
 export interface ChatLoggerConfig {
   chatId: string;
   endpoint: ChatApiEndpoint;
@@ -1339,6 +1356,7 @@ export function captureUsageCost({
   usage,
   responseModel,
   paidDailyFreeAllowance,
+  usageSettlement,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1356,6 +1374,10 @@ export function captureUsageCost({
     requestLimit?: number;
     costLimitDollars?: number;
     resetTimestamp?: number;
+  };
+  usageSettlement?: {
+    id: string;
+    midRunCount: number;
   };
 }) {
   if (!posthog) return;
@@ -1393,6 +1415,16 @@ export function captureUsageCost({
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(usageSettlement && {
+        usage_settlement_id: usageSettlement.id,
+        mid_run_usage_settlement_count: usageSettlement.midRunCount,
+        usage_settlement_step_events_sampled: isUsageSettlementSuccessSampled(
+          usageSettlement.id,
+        ),
+        usage_settlement_success_sample_rate:
+          USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
+        usage_settlement_summary_version: 1,
+      }),
       ...(paidDailyFreeAllowance?.active && {
         limit_rescue_type: "paid_daily_free_allowance",
         paid_daily_free_allowance_active: true,
@@ -1414,9 +1446,9 @@ export function captureUsageCost({
 }
 
 /**
- * Capture one event for each positive provider-step settlement attempt. This
- * complements the request-level hackerai-usage_cost aggregate with the exact
- * wallet outcome that determined whether the next provider step could start.
+ * Capture every anomalous provider-step settlement and a deterministic sample
+ * of routine successful runs. Sampling by settlement ID keeps complete step
+ * sequences for sampled runs instead of producing random gaps within a run.
  */
 export function captureUsageSettlement({
   posthog,
@@ -1452,6 +1484,14 @@ export function captureUsageSettlement({
   forced: boolean;
 }) {
   if (!posthog) return;
+  const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
+  const anomalous =
+    forced ||
+    deduction.uncoveredPoints > 0 ||
+    deduction.usageDeductionFailed ||
+    deduction.usageDeductionFailureReason !== undefined;
+  if (!anomalous && !runSampled) return;
+
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_settlement",
@@ -1475,7 +1515,10 @@ export function captureUsageSettlement({
       usage_deduction_failed: deduction.usageDeductionFailed,
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
-      settlement_event_version: 1,
+      settlement_capture_reason: anomalous ? "anomaly" : "sampled_success",
+      settlement_run_sampled: runSampled,
+      settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
+      settlement_event_version: 2,
     },
   });
 }
