@@ -7,6 +7,7 @@ const mockGetTemporaryRefreshHandle = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockClearTemporaryRefreshCookie = jest.fn();
+const mockLoggerWarn = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -51,8 +52,19 @@ jest.mock("@/lib/api/agent-route-errors", () => ({
   }),
 }));
 
+jest.mock("@/lib/logger", () => ({
+  logger: { warn: mockLoggerWarn },
+}));
+
 const request = () =>
-  ({ json: jest.fn(async () => ({ chatId: "temporary-chat-1" })) }) as any;
+  ({
+    json: jest.fn(async () => ({ chatId: "temporary-chat-1" })),
+    headers: {
+      get: jest.fn((name: string) =>
+        name === "x-vercel-id" ? "req_agent_cancel" : null,
+      ),
+    },
+  }) as any;
 
 describe("agent cancel route", () => {
   beforeEach(() => {
@@ -103,5 +115,41 @@ describe("agent cancel route", () => {
     expect(response.status).toBe(403);
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockClearTemporaryRefreshCookie).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Rejected Agent cancellation request",
+      expect.objectContaining({
+        event: "agent_cancel_rejected",
+        request_id: "req_agent_cancel",
+        endpoint: "/api/agent",
+        route: "/api/agent/cancel",
+        reason: "temporary_refresh_missing",
+        status_code: 403,
+        user_id: "user-1",
+        chat_id: "temporary-chat-1",
+      }),
+    );
+  });
+
+  it("logs a distinct reason when a persisted chat belongs to another user", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({ user_id: "user-2" } as never);
+
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request(),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockGetTemporaryRefreshHandle).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Rejected Agent cancellation request",
+      expect.objectContaining({
+        event: "agent_cancel_rejected",
+        reason: "chat_owner_mismatch",
+        status_code: 403,
+        user_id: "user-1",
+        chat_id: "temporary-chat-1",
+      }),
+    );
   });
 });

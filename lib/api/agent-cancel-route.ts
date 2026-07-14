@@ -10,6 +10,38 @@ import {
   closeAgentApprovalSession,
   getTemporaryAgentApprovalRefreshHandle,
 } from "@/lib/api/agent-approval-session";
+import { logger } from "@/lib/logger";
+
+type AgentCancelRejectionReason =
+  "chat_owner_mismatch" | "temporary_refresh_missing";
+
+function logAgentCancelRejection({
+  req,
+  endpoint,
+  userId,
+  chatId,
+  reason,
+}: {
+  req: NextRequest;
+  endpoint: AgentApiEndpoint;
+  userId: string;
+  chatId: string;
+  reason: AgentCancelRejectionReason;
+}) {
+  logger.warn("Rejected Agent cancellation request", {
+    event: "agent_cancel_rejected",
+    request_id: req.headers.get("x-vercel-id") ?? "unknown",
+    service: "hackerai-web",
+    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    route: `${endpoint}/cancel`,
+    endpoint,
+    action: "cancel",
+    reason,
+    status_code: 403,
+    user_id: userId,
+    chat_id: chatId,
+  });
+}
 
 export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
@@ -30,6 +62,13 @@ export const createAgentCancelPost =
 
       const chat = await getChatById({ id: chatId });
       if (chat && chat.user_id !== userId) {
+        logAgentCancelRejection({
+          req,
+          endpoint,
+          userId,
+          chatId,
+          reason: "chat_owner_mismatch",
+        });
         return new NextResponse("Forbidden", { status: 403 });
       }
 
@@ -37,6 +76,13 @@ export const createAgentCancelPost =
         ? null
         : getTemporaryAgentApprovalRefreshHandle({ req, userId, chatId });
       if (!chat && !temporaryRefresh) {
+        logAgentCancelRejection({
+          req,
+          endpoint,
+          userId,
+          chatId,
+          reason: "temporary_refresh_missing",
+        });
         return new NextResponse("Forbidden", { status: 403 });
       }
 

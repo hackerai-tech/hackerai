@@ -22,6 +22,14 @@ type MembershipDeletionPlan = {
 
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
 
+function isMissingWorkosUserError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "NotFoundException" &&
+    error.message.startsWith("User not found:")
+  );
+}
+
 function parseConvexCleanupResult(result: unknown): { hasMore: boolean } {
   if (
     result &&
@@ -284,7 +292,14 @@ export const POST = async (req: NextRequest) => {
 
     // Finally, delete the WorkOS user
     stage = "delete_workos_user";
-    await workos.userManagement.deleteUser(userId);
+    try {
+      await workos.userManagement.deleteUser(userId);
+    } catch (error) {
+      // Account deletion is idempotent once all owned app data is gone.
+      // WorkOS can report this exact state when a previous attempt already
+      // removed the external identity but the client retried the request.
+      if (!isMissingWorkosUserError(error)) throw error;
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

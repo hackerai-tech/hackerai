@@ -299,6 +299,53 @@ describe("POST /api/delete-account", () => {
     );
   });
 
+  it("treats an already-missing WorkOS user as a completed deletion", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    const missingUserError = new Error("User not found: 'user_123'.");
+    missingUserError.name = "NotFoundException";
+    mockDeleteUser.mockRejectedValueOnce(missingUserError as never);
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+  });
+
+  it("keeps unexpected WorkOS user deletion failures visible", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockDeleteUser.mockRejectedValueOnce(
+      new Error("WorkOS temporarily unavailable") as never,
+    );
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("WorkOS temporarily unavailable");
+  });
+
+  it("keeps other WorkOS NotFoundExceptions visible", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    const unrelatedNotFoundError = new Error(
+      "Organization not found: 'org_123'.",
+    );
+    unrelatedNotFoundError.name = "NotFoundException";
+    mockDeleteUser.mockRejectedValueOnce(unrelatedNotFoundError as never);
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("Organization not found: 'org_123'.");
+  });
+
   it("does not delete WorkOS or billing resources if Convex cleanup fails", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
