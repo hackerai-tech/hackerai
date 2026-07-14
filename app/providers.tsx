@@ -10,17 +10,24 @@ import {
 } from "@/lib/posthog/expected-frontend-exceptions";
 import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
 
+let lastIdentifiedSignature: string | null = null;
+
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
   const { subscription } = useGlobalState();
   const { user } = useAuth();
+  const userId = user?.id;
+  const userEmail = user?.email;
+  const userFirstName = user?.firstName;
+  const userLastName = user?.lastName;
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
 
-    const shouldTrack = Boolean(user);
+    const shouldTrack = Boolean(userId);
 
     if (!shouldTrack) {
+      lastIdentifiedSignature = null;
       const posthog = getPostHogClient();
       if (posthog?.__loaded) {
         posthog.stopSessionRecording();
@@ -39,8 +46,8 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
         const config = {
           api_host:
             process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
-          capture_pageview: false, // Disable automatic pageview capture, as we capture manually
-          autocapture: false, // Disable automatic event capture, as we capture manually
+          capture_pageview: false,
+          autocapture: false,
           capture_exceptions: {
             capture_unhandled_errors: true,
             capture_unhandled_rejections: true,
@@ -65,14 +72,26 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           posthog.set_config(config);
         }
 
-        posthog.opt_in_capturing();
-        posthog.identify(user!.id, {
-          email: user!.email,
-          name:
-            [user!.firstName, user!.lastName].filter(Boolean).join(" ") ||
-            user!.email,
+        if (posthog.has_opted_out_capturing()) {
+          posthog.opt_in_capturing({ captureEventName: false });
+        }
+
+        const name =
+          [userFirstName, userLastName].filter(Boolean).join(" ") || userEmail;
+        const identitySignature = JSON.stringify([
+          userId,
+          userEmail,
+          name,
           subscription,
-        });
+        ]);
+        if (lastIdentifiedSignature !== identitySignature) {
+          posthog.identify(userId!, {
+            email: userEmail,
+            name,
+            subscription,
+          });
+          lastIdentifiedSignature = identitySignature;
+        }
 
         if (subscription !== "free") {
           if (!posthog.sessionRecordingStarted()) {
@@ -88,7 +107,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [subscription, user]);
+  }, [subscription, userEmail, userFirstName, userId, userLastName]);
 
   return <>{children}</>;
 }

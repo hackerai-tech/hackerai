@@ -53,6 +53,7 @@ describe("PostHogProvider", () => {
       init: jest.fn(),
       set_config: jest.fn(),
       opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => true),
       identify: jest.fn(),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),
@@ -83,6 +84,9 @@ describe("PostHogProvider", () => {
       }),
     );
     expect(posthog.set_config).not.toHaveBeenCalled();
+    expect(posthog.opt_in_capturing).toHaveBeenCalledWith({
+      captureEventName: false,
+    });
   });
 
   it("applies exception hooks when the shared client is already initialized", async () => {
@@ -91,6 +95,7 @@ describe("PostHogProvider", () => {
       init: jest.fn(),
       set_config: jest.fn(),
       opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
       identify: jest.fn(),
       sessionRecordingStarted: jest.fn(() => false),
       startSessionRecording: jest.fn(),

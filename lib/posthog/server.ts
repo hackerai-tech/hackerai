@@ -163,56 +163,12 @@ export const phLogger = {
 
   warn(message: string, fields: LogFields = {}) {
     const wroteLog = emitStructuredLog("warn", message, fields);
-    const client = getClient();
-    if (!client) {
-      if (!wroteLog) console.warn(message, fields);
-      return;
-    }
-    try {
-      const { userId, error, ...rest } = fields;
-      const event =
-        typeof fields.event === "string" && fields.event.length > 0
-          ? fields.event
-          : eventNameFor(message);
-      client.capture({
-        distinctId: distinctIdFor(userId),
-        event: "log_warn",
-        properties: {
-          ...commonLogFields({ level: "warn", event, message, userId }),
-          ...rest,
-          ...serializeError(error),
-        },
-      });
-    } catch (telemetryError) {
-      console.warn(message, { ...fields, telemetryError });
-    }
+    if (!wroteLog) console.warn(message, fields);
   },
 
   info(message: string, fields: LogFields = {}) {
     const wroteLog = emitStructuredLog("info", message, fields);
-    const client = getClient();
-    if (!client) {
-      if (!wroteLog) console.log(message, fields);
-      return;
-    }
-    try {
-      const { userId, error, ...rest } = fields;
-      const event =
-        typeof fields.event === "string" && fields.event.length > 0
-          ? fields.event
-          : eventNameFor(message);
-      client.capture({
-        distinctId: distinctIdFor(userId),
-        event: "log_info",
-        properties: {
-          ...commonLogFields({ level: "info", event, message, userId }),
-          ...rest,
-          ...serializeError(error),
-        },
-      });
-    } catch (telemetryError) {
-      console.log(message, { ...fields, telemetryError });
-    }
+    if (!wroteLog) console.log(message, fields);
   },
 
   event(name: string, fields: EventFields = {}) {
