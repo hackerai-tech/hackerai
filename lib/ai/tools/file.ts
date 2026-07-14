@@ -14,13 +14,11 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import { createFileToolSchema, type FileToolAction } from "./schemas";
+import { createFileToolSchema } from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_TEXT_READ_RESULT_BYTES = 1024 * 1024;
-type FileAction = FileToolAction;
-
 const MULTIMODAL_UPGRADE_MESSAGE =
   "The current model does not support multimodal tool results for sandbox images. Please select a model with image viewing support and retry the view action.";
 

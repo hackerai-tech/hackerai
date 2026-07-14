@@ -101,7 +101,6 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           isBranched={!!chat.branched_from_chat_id}
           branchedFromTitle={chat.branched_from_title}
           shareId={chat.share_id}
-          shareDate={chat.share_date}
           isPinned={chat.pinned_at != null}
           isStreaming={
             !!chat.active_stream_id ||

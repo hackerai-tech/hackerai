@@ -62,7 +62,6 @@ interface ChatItemProps {
   isBranched?: boolean;
   branchedFromTitle?: string;
   shareId?: string;
-  shareDate?: number;
   isPinned?: boolean;
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
@@ -85,7 +84,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isBranched = false,
   branchedFromTitle,
   shareId,
-  shareDate,
   isPinned = false,
   isStreaming = false,
   isAwaitingApproval = false,
@@ -505,7 +503,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
         chatId={id}
         chatTitle={title}
         existingShareId={shareId}
-        existingShareDate={shareDate}
       />
 
       {/* Delete Confirmation Dialog */}

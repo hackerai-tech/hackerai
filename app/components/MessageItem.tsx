@@ -22,7 +22,6 @@ import {
   hasTextContent,
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { ChatStatus, ChatMessage, ChatMode, SelectedModel } from "@/types";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { FileDetails } from "@/types/file";
@@ -664,7 +663,6 @@ export const MessageItem = memo(function MessageItem({
           onFeedback={handleFeedbackClick}
           existingFeedback={message.metadata?.feedbackType || null}
           isAwaitingFeedbackDetails={feedbackInputMessageId === message.id}
-          hasFileContent={hasFileContent}
           isTemporaryChat={Boolean(isTemporaryChat)}
           sources={webSources}
         />

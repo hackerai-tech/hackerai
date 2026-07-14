@@ -1,9 +1,7 @@
 import {
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  UIMessage,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -137,7 +135,6 @@ import {
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
-import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { phLogger } from "@/lib/posthog/server";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import {
@@ -608,7 +605,6 @@ export const createChatHandler = () => {
 
             const {
               tools,
-              getSandbox,
               ensureSandbox,
               getTodoManager,
               getFileAccumulator,

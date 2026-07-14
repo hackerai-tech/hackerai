@@ -22,7 +22,6 @@ import {
   isChatMode,
   normalizeSelectedModelForSubscription,
 } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -37,7 +36,6 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Id } from "@/convex/_generated/dataModel";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SubscriptionTier } from "@/types";

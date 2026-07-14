@@ -89,20 +89,6 @@ function getTrailingEmptySingleToolCount(
   return count;
 }
 
-function getRecentEmptySingleToolCount(
-  steps: MinimalStep[],
-  toolName: string,
-  windowSize: number,
-): number {
-  let count = 0;
-
-  for (const step of steps.slice(-windowSize)) {
-    if (isEmptySingleToolStep(step, toolName)) count++;
-  }
-
-  return count;
-}
-
 function getRecentEmptyToolCallCount(
   steps: MinimalStep[],
   toolName: string,

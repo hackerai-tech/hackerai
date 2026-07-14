@@ -184,7 +184,6 @@ export const POST = async (req: NextRequest) => {
     let additionalCredit = 0; // credit left over to be added to customer balance
     let paymentMethodInfo = "";
     let planType: SubscriptionTier = "free";
-    let interval: "monthly" | "yearly" = "monthly";
     let currentPeriodStart: number | null = null; // unix seconds
     let currentPeriodEnd: number | null = null; // unix seconds
     let nextInvoiceAmountEstimate = targetAmount * quantity; // will be adjusted below
@@ -228,10 +227,6 @@ export const POST = async (req: NextRequest) => {
             planType = "pro";
         } catch {}
       }
-
-      if (currentPrice?.recurring?.interval === "year") interval = "yearly";
-      else if (currentPrice?.recurring?.interval === "month")
-        interval = "monthly";
 
       // Load payment method like in GET
       const defaultPaymentMethod = subscription.default_payment_method as any;

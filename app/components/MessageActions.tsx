@@ -32,7 +32,6 @@ interface MessageActionsProps {
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
   isAwaitingFeedbackDetails?: boolean;
-  hasFileContent?: boolean;
   isTemporaryChat?: boolean;
   sources?: Array<{
     title?: string;
@@ -139,7 +138,6 @@ export const MessageActions = ({
   onFeedback,
   existingFeedback,
   isAwaitingFeedbackDetails = false,
-  hasFileContent = false,
   isTemporaryChat = false,
   sources = [],
 }: MessageActionsProps) => {
@@ -214,8 +212,6 @@ export const MessageActions = ({
     isLastAssistantLoading,
     hasTimestamp: formattedCreatedAt !== null && timestampDateTime !== null,
   });
-
-  const isLoading = status === "submitted" || status === "streaming";
 
   return (
     <div
