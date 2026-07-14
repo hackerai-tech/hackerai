@@ -69,6 +69,86 @@ describe("MoveChatToProjectDialog", () => {
     expect(mockToast.success).toHaveBeenCalledWith("Moved to Acme target");
   });
 
+  it("shows an info toast when the chat is already in the project", async () => {
+    moveChatToProject.mockResolvedValueOnce(false);
+    const onOpenChange = jest.fn();
+
+    render(
+      <MoveChatToProjectDialog
+        chatId="chat-1"
+        open
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+
+    await waitFor(() => {
+      expect(mockToast.info).toHaveBeenCalledWith("Already in Acme target");
+    });
+    expect(mockToast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast and keeps the dialog open when moving fails", async () => {
+    moveChatToProject.mockRejectedValueOnce(new Error("Move failed"));
+    const onOpenChange = jest.fn();
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      render(
+        <MoveChatToProjectDialog
+          chatId="chat-1"
+          open
+          onOpenChange={onOpenChange}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith("Failed to move chat", {
+          description: "Move failed",
+        });
+      });
+      expect(onOpenChange).not.toHaveBeenCalled();
+      expect(mockToast.success).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("ignores dismissal attempts while a move is in progress", async () => {
+    let finishMove: ((moved: boolean) => void) | undefined;
+    moveChatToProject.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    const onOpenChange = jest.fn();
+
+    render(
+      <MoveChatToProjectDialog
+        chatId="chat-1"
+        open
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Acme target" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    finishMove?.(true);
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+  });
+
   it("explains how to add a destination when there are no projects", () => {
     mockUseProjects.mockReturnValue([]);
 

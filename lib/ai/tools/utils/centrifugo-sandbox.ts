@@ -67,11 +67,8 @@ const isTransientCommandTimeoutError = (error: unknown): boolean =>
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-export const escapePromptText = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+export const serializePromptText = (value: string): string =>
+  JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
 
 export function parseSandboxMessage(
   data: unknown,
@@ -281,7 +278,7 @@ export class CentrifugoSandbox extends EventEmitter {
           ? "where agent-browser && agent-browser --version"
           : "command -v agent-browser && agent-browser --version";
       const projectContext = this.workingDirectory
-        ? `\nActive project folder: ${escapePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
+        ? `\nActive project folder: ${serializePromptText(this.workingDirectory)}\nRun commands from this folder by default and resolve relative file paths from it.`
         : "";
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 ${shellInfo}
@@ -883,7 +880,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     if (!this.workingDirectory) return path;
     const isAbsolute =
       path.startsWith("/") ||
-      path.startsWith("\\\\") ||
+      (this.isWindows() && path.startsWith("\\")) ||
       /^[A-Za-z]:[\\/]/.test(path);
     if (isAbsolute) return path;
 

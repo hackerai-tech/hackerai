@@ -8,7 +8,7 @@ import type {
 } from "@/types";
 import {
   CentrifugoSandbox,
-  escapePromptText,
+  serializePromptText,
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
@@ -738,7 +738,7 @@ System Environment:
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
 - Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
-${this.workingDirectory ? `- Active project folder: ${escapePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
+${this.workingDirectory ? `- Active project folder: ${serializePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:
 - File system operations affect the host directly
