@@ -17,6 +17,8 @@ import {
 import SidebarUserNav from "./SidebarUserNav";
 import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
+import { SidebarProjects } from "./SidebarProjects";
+import { useProjects } from "../hooks/useProjects";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
 export type ChatListData = ReturnType<typeof useChats>;
@@ -26,6 +28,7 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
   chatListData,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const projects = useProjects();
 
   return (
     <div
@@ -33,11 +36,13 @@ const ChatListContent: FC<{ chatListData: ChatListData }> = ({
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
+      <SidebarProjects projects={projects} />
       <SidebarHistory
         chats={chatListData.results || []}
         paginationStatus={chatListData.status}
         loadMore={chatListData.loadMore}
         containerRef={scrollContainerRef}
+        showEmptyState={projects !== undefined && projects.length === 0}
       />
     </div>
   );

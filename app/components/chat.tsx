@@ -508,6 +508,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     localConnections,
+    activeProjectId,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
@@ -552,6 +553,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const activeProjectIdRef = useLatestRef(activeProjectId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
@@ -773,6 +775,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             chatId: id,
             messages: messagesWithoutUrls,
             ...body,
+            ...(activeProjectIdRef.current
+              ? { projectId: activeProjectIdRef.current }
+              : {}),
           },
         };
       },

@@ -93,6 +93,8 @@ interface GlobalStateType {
   setChatSidebarOpen: (open: boolean) => void;
   optimisticChatId: string | null;
   setOptimisticChatId: (chatId: string | null) => void;
+  activeProjectId: string | null;
+  setActiveProjectId: (projectId: string | null) => void;
 
   // Todos state
   todos: Todo[];
@@ -375,6 +377,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatSidebarStorage.get(isMobile ?? false),
   );
   const [optimisticChatId, setOptimisticChatId] = useState<string | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("project");
+  });
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
   const mergeTodos = useCallback((newTodos: TodoLike[]) => {
@@ -961,6 +967,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded(false);
     // Navigating to an existing chat means we're no longer in temporary chat mode
     setTemporaryChatsEnabled(false);
+    setActiveProjectId(null);
   }, []);
 
   const initializeNewChat = useCallback(() => {
@@ -970,6 +977,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setActiveProjectId(null);
   }, []);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
@@ -1079,6 +1087,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatSidebarOpen,
     optimisticChatId,
     setOptimisticChatId,
+    activeProjectId,
+    setActiveProjectId,
     todos,
     setTodos,
     mergeTodos,

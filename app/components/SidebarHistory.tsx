@@ -11,12 +11,14 @@ interface SidebarHistoryProps {
     "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
   loadMore?: (numItems: number) => void;
   containerRef?: React.RefObject<HTMLDivElement | null>;
+  showEmptyState?: boolean;
 }
 
 const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
   paginationStatus,
   loadMore,
+  showEmptyState = true,
 }) => {
   const loaderRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -73,6 +75,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   }
 
   if (!chats || chats.length === 0) {
+    if (!showEmptyState) return null;
     // Empty state
     return (
       <div

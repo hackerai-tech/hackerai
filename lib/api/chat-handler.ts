@@ -154,7 +154,9 @@ import {
 import {
   requireBooleanFlag,
   requireChatMessagesArray,
+  requireOptionalIdentifier,
 } from "@/lib/api/chat-request-validation";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -224,6 +226,7 @@ export const createChatHandler = () => {
         isAutoContinue,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
+        projectId: rawProjectId,
       }: {
         messages: unknown;
         mode: ChatMode;
@@ -236,8 +239,13 @@ export const createChatHandler = () => {
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
+        projectId?: unknown;
       } = await req.json();
       const temporary = requireBooleanFlag("temporary", rawTemporary);
+      const requestedProjectId = requireOptionalIdentifier(
+        "projectId",
+        rawProjectId,
+      );
       outerChatId = chatId;
 
       const limitRescue: LimitRescueRequest | undefined = isLimitRescueRequest(
@@ -316,6 +324,15 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
       });
       const { chat, isNewChat, fileTokens } = fetched;
+      const projectContext = temporary
+        ? {}
+        : await resolveProjectExecutionContext({
+            chat,
+            requestedProjectId,
+            userId,
+            mode,
+            sandboxPreference,
+          });
       const truncatedMessages =
         subscription === "free"
           ? stripImageAttachments(fetched.truncatedMessages)
@@ -347,6 +364,7 @@ export const createChatHandler = () => {
           regenerate,
           chat,
           isHidden: isAutoContinue ? true : undefined,
+          projectId: projectContext.projectId,
         });
       }
 
@@ -635,6 +653,9 @@ export const createChatHandler = () => {
                 chatLogger?.setSandboxBoot(info);
               },
               selectedModel,
+              undefined,
+              undefined,
+              projectContext.workingDirectory,
             );
 
             // Helper to send file metadata via stream for resumable stream clients

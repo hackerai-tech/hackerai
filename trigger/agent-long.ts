@@ -81,6 +81,7 @@ import {
   prepareForNewStream,
   setConvexUrl,
 } from "@/lib/db/actions";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import {
   getMaxTokensForSubscription,
   safeCountTokens,
@@ -1755,6 +1756,14 @@ export const agentLongTask = task({
         }),
       ]);
       const { chat, fileTokens } = fetched;
+      const projectContext = temporary
+        ? {}
+        : await resolveProjectExecutionContext({
+            chat,
+            userId,
+            mode,
+            sandboxPreference,
+          });
       const truncatedMessages = fetched.truncatedMessages;
       const extraUsageConfig = await buildExtraUsageConfig({
         userId,
@@ -2212,6 +2221,7 @@ export const agentLongTask = task({
               onToolFailure,
               requestToolApproval,
               runTimingTracker.measureActiveTime,
+              projectContext.workingDirectory,
             );
             approvalSandboxManager = sandboxManager;
 

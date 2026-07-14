@@ -1,0 +1,123 @@
+import "@testing-library/jest-dom";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { Doc } from "@/convex/_generated/dataModel";
+
+jest.mock("sonner", () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
+}));
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ desktopBridgeActive: true }),
+}));
+jest.mock("@/app/hooks/useStartNewChat", () => ({
+  useStartNewChat: () => jest.fn(),
+}));
+jest.mock("@/app/hooks/useProjects", () => ({
+  useMoveChatToProject: jest.fn(),
+}));
+jest.mock("../ProjectCreateDialog", () => ({
+  ProjectCreateDialog: () => null,
+}));
+jest.mock("../SidebarProjectItem", () => ({
+  SidebarProjectItem: ({
+    project,
+    open,
+    onDropChat,
+  }: {
+    project: Doc<"projects">;
+    open: boolean;
+    onDropChat: (chatId: string) => Promise<void>;
+  }) => (
+    <div data-testid={`project-${project._id}`} data-open={String(open)}>
+      {project.name}
+      <button
+        type="button"
+        onClick={() => void onDropChat("chat-1")}
+        aria-label={`Drop chat in ${project.name}`}
+      />
+    </div>
+  ),
+}));
+
+const { useMoveChatToProject: mockUseMoveChatToProject } = jest.requireMock<{
+  useMoveChatToProject: jest.Mock;
+}>("@/app/hooks/useProjects");
+
+const { SidebarProjects } =
+  require("../SidebarProjects") as typeof import("../SidebarProjects");
+
+const projects = ["Acme", "Example"].map(
+  (name, index) =>
+    ({
+      _id: `project-${index + 1}`,
+      _creationTime: index + 1,
+      user_id: "user-1",
+      name,
+      created_at: index + 1,
+      updated_at: index + 1,
+    }) as unknown as Doc<"projects">,
+);
+
+describe("SidebarProjects", () => {
+  const moveChatToProject = jest.fn<any>().mockResolvedValue(true);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseMoveChatToProject.mockReturnValue(moveChatToProject);
+  });
+
+  it("expands and collapses every project from the compact header control", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand all projects" }),
+    );
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+    expect(screen.getByTestId("project-project-2")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse all projects" }),
+    );
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "false",
+    );
+  });
+
+  it("collapses the entire projects section from its heading", () => {
+    render(<SidebarProjects projects={projects} />);
+
+    expect(screen.getByTestId("projects-section-chevron")).toHaveClass(
+      "rotate-90",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+
+    expect(screen.getByTestId("projects-section-chevron")).not.toHaveClass(
+      "rotate-90",
+    );
+    expect(screen.queryByTestId("project-project-1")).not.toBeInTheDocument();
+  });
+
+  it("moves a dropped chat and opens the target project", async () => {
+    render(<SidebarProjects projects={projects} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Drop chat in Acme" }));
+
+    await waitFor(() => {
+      expect(moveChatToProject).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        projectId: "project-1",
+      });
+    });
+    expect(screen.getByTestId("project-project-1")).toHaveAttribute(
+      "data-open",
+      "true",
+    );
+  });
+});

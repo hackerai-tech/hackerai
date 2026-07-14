@@ -59,6 +59,12 @@ interface PresenceFilterResult {
   staleConnections: ConnectionInfo[];
 }
 
+const escapePromptText = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
 const logStructured = (
   level: "warn" | "error",
   event: string,
@@ -228,6 +234,7 @@ export class HybridSandboxManager implements SandboxManager {
     initialSandbox?: Sandbox | null,
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
+    private workingDirectory?: string,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -576,6 +583,7 @@ export class HybridSandboxManager implements SandboxManager {
       this.userID,
       connection,
       centrifugoConfig,
+      this.workingDirectory,
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -732,6 +740,7 @@ System Environment:
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
 - Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
+${this.workingDirectory ? `- Active project folder: ${escapePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:
 - File system operations affect the host directly

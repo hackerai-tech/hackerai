@@ -946,6 +946,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getUserId: () => "user-1",
       getConnectionId: () => "conn-1",
       getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      getWorkingDirectory: () => "/tmp/project",
       isWindows: () => false,
     };
     const { context } = makeContext({ sandbox: centrifugoSandbox });
@@ -967,6 +968,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     })) as { result: { output?: string; session?: string; pid?: number } };
 
     expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+      centrifugoSandbox,
+      expect.objectContaining({ cwd: "/tmp/project" }),
+    );
     expect(result.result.session).toBeDefined();
     expect(result.result.pid).toBe(fakeHandle.pid);
   });
@@ -981,6 +986,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getUserId: () => "user-1",
       getConnectionId: () => "conn-1",
       getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      getWorkingDirectory: () => "/tmp/project",
       isWindows: () => false,
     };
     const { context } = makeContext({ sandbox: centrifugoSandbox });

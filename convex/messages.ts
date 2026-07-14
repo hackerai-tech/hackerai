@@ -1801,6 +1801,7 @@ export const branchChat = mutation({
         title: originalChat.title,
         user_id: user.subject,
         branched_from_chat_id: message.chat_id,
+        project_id: originalChat.project_id,
         update_time: Date.now(),
       });
 

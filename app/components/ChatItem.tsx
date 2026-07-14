@@ -55,10 +55,12 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { cancelAgentLongRealtimeStreams } from "@/lib/chat/agent-long-transport";
 import { ShareDialog } from "./ShareDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
+import { setSidebarChatDragData } from "./sidebar-chat-drag";
 
 interface ChatItemProps {
   id: string;
   title: string;
+  indentContent?: boolean;
   isBranched?: boolean;
   branchedFromTitle?: string;
   shareId?: string;
@@ -81,6 +83,7 @@ const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
 const ChatItem: React.FC<ChatItemProps> = ({
   id,
   title,
+  indentContent = false,
   isBranched = false,
   branchedFromTitle,
   shareId,
@@ -97,7 +100,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [editTitle, setEditTitle] = useState(title);
   const [isRenaming, setIsRenaming] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const suppressClickAfterDragRef = useRef(false);
 
   const {
     closeSidebar,
@@ -135,7 +140,22 @@ const ChatItem: React.FC<ChatItemProps> = ({
     }
   }, [optimisticChatId, routeChatId, setOptimisticChatId]);
 
+  const handleDragStart = (event: React.DragEvent<HTMLDivElement>) => {
+    suppressClickAfterDragRef.current = true;
+    setIsDragging(true);
+    setSidebarChatDragData(event.dataTransfer, id);
+  };
+
+  const handleDragEnd = () => {
+    setIsDragging(false);
+    window.setTimeout(() => {
+      suppressClickAfterDragRef.current = false;
+    }, 0);
+  };
+
   const handleClick = () => {
+    if (suppressClickAfterDragRef.current) return;
+
     // Don't navigate if dialog is open or dropdown is open
     if (showRenameDialog || isDropdownOpen) {
       return;
@@ -330,11 +350,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   return (
     <div
-      className={`group relative flex w-full cursor-pointer items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+      className={`group relative flex w-full cursor-grab select-none items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 active:cursor-grabbing ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : ""
-      }`}
+      } ${isDragging ? "opacity-50" : ""}`}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleClick}
@@ -342,15 +365,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
       title={title}
       role="button"
       tabIndex={0}
+      aria-grabbed={isDragging}
       aria-label={`Open chat: ${title}${
         isAwaitingApproval ? " awaiting approval" : ""
       }`}
       data-testid={`chat-item-${id}`}
     >
       <div
-        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${
-          rightPaddingClass
-        }`}
+        className={`mr-2 min-w-0 flex-1 overflow-hidden text-sm font-medium ${rightPaddingClass} ${indentContent ? "ps-5" : ""}`}
         dir="auto"
       >
         <span className="flex min-w-0 items-center gap-1.5">

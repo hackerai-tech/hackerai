@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError, type Value } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
@@ -407,6 +407,7 @@ export const getChatByIdFromClient = query({
       ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      project_id: v.optional(v.id("projects")),
     }),
     v.null(),
   ),
@@ -515,6 +516,7 @@ export const getChatById = query({
       ),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      project_id: v.optional(v.id("projects")),
     }),
     v.null(),
   ),
@@ -550,6 +552,7 @@ export const saveChat = mutation({
     id: v.string(),
     userId: v.string(),
     title: v.string(),
+    projectId: v.optional(v.string()),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -578,17 +581,51 @@ export const saveChat = mutation({
       }
 
       failureStage = "insert_chat";
+      let projectId: Id<"projects"> | undefined;
+      if (args.projectId) {
+        failureStage = "validate_project";
+        const normalizedProjectId = ctx.db.normalizeId(
+          "projects",
+          args.projectId,
+        );
+        if (!normalizedProjectId) {
+          throw new ConvexError({
+            code: "PROJECT_NOT_FOUND",
+            message: "Project not found",
+            operation: "chats.saveChat",
+          });
+        }
+        projectId = normalizedProjectId;
+        const project = await ctx.db.get(projectId);
+        if (!project || project.user_id !== args.userId) {
+          throw new ConvexError({
+            code: "PROJECT_ACCESS_DENIED",
+            message: "Project does not belong to user",
+            operation: "chats.saveChat",
+          });
+        }
+      }
+
       const chatId = await ctx.db.insert("chats", {
         id: args.id,
         title: args.title,
         user_id: args.userId,
+        project_id: projectId,
         update_time: Date.now(),
       });
+
+      if (projectId) {
+        await ctx.db.patch(projectId, { updated_at: Date.now() });
+      }
 
       return chatId;
     } catch (error) {
       const causeData = getConvexErrorData(error);
-      if (getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED") {
+      if (
+        getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED" ||
+        getConvexErrorCode(causeData) === "PROJECT_NOT_FOUND" ||
+        getConvexErrorCode(causeData) === "PROJECT_ACCESS_DENIED"
+      ) {
         throw error;
       }
 
@@ -849,6 +886,7 @@ export const getUserChats = query({
             .withIndex("by_user_and_pinned", (q) =>
               q.eq("user_id", identity.subject).gt("pinned_at", 0),
             )
+            .filter((q) => q.eq(q.field("project_id"), undefined))
             .order("asc")
             .take(MAX_PINNED_CHATS)
         : [];
@@ -866,8 +904,8 @@ export const getUserChats = query({
       // because the cursor advances past all fetched items)
       const result = await ctx.db
         .query("chats")
-        .withIndex("by_user_and_updated", (q) =>
-          q.eq("user_id", identity.subject),
+        .withIndex("by_user_project_and_updated", (q) =>
+          q.eq("user_id", identity.subject).eq("project_id", undefined),
         )
         .order("desc")
         .paginate(args.paginationOpts);
@@ -1153,6 +1191,65 @@ export const deleteChatForBackendBatch = internalMutation({
 
     await deleteChatDocument(ctx, chat);
     return null;
+  },
+});
+
+/**
+ * Move a chat into a project.
+ */
+export const moveChatToProject = mutation({
+  args: {
+    chatId: v.string(),
+    projectId: v.id("projects"),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, user.subject);
+
+    const [chat, project] = await Promise.all([
+      ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first(),
+      ctx.db.get(args.projectId),
+    ]);
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+    if (chat.user_id !== user.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+    if (!project || project.user_id !== user.subject) {
+      throw new ConvexError({
+        code: "PROJECT_ACCESS_DENIED",
+        message: "Project does not belong to user",
+      });
+    }
+    if (chat.project_id === args.projectId) return false;
+
+    const now = Date.now();
+    await Promise.all([
+      ctx.db.patch(chat._id, {
+        project_id: args.projectId,
+        update_time: now,
+      }),
+      ctx.db.patch(args.projectId, { updated_at: now }),
+    ]);
+    return true;
   },
 });
 

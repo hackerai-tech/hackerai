@@ -55,10 +55,7 @@ async function promptDesktopUpdate(): Promise<void> {
 }
 
 type AuthFallbackPath =
-  | "/login"
-  | "/signup"
-  | `/login?${string}`
-  | `/signup?${string}`;
+  "/login" | "/signup" | `/login?${string}` | `/signup?${string}`;
 
 type NavigateToAuthOptions = {
   preferSignInForReturningUser?: boolean;
@@ -199,6 +196,23 @@ export async function pickLocalFiles(): Promise<string[]> {
     console.error("[Tauri] Failed to pick local files:", err);
     toast.error("Failed to open file picker");
     return [];
+  }
+}
+
+export async function pickLocalFolder(): Promise<string | null> {
+  if (!detectTauri()) return null;
+
+  try {
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    const selected = await dialog.open({
+      multiple: false,
+      directory: true,
+    });
+    return typeof selected === "string" ? selected : null;
+  } catch (err) {
+    console.error("[Tauri] Failed to pick local folder:", err);
+    toast.error("Failed to open folder picker");
+    return null;
   }
 }
 
