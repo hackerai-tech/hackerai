@@ -7,11 +7,11 @@ import {
   Dispatch,
   SetStateAction,
 } from "react";
+import dynamic from "next/dynamic";
 import { MessageItem } from "./MessageItem";
 import { MessageErrorState } from "./MessageErrorState";
 import { SummarizationStatusDivider } from "./SummarizationStatusDivider";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { AllFilesDialog } from "./AllFilesDialog";
 import Loading from "@/components/ui/loading";
 import { useFeedback } from "../hooks/useFeedback";
 import { useFileUrlCache } from "../hooks/useFileUrlCache";
@@ -26,6 +26,11 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+
+const AllFilesDialog = dynamic(
+  () => import("./AllFilesDialog").then((module) => module.AllFilesDialog),
+  { ssr: false },
+);
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -166,6 +171,7 @@ export const Messages = ({
 
   // Track all files dialog state
   const [showAllFilesDialog, setShowAllFilesDialog] = useState(false);
+  const [hasOpenedAllFilesDialog, setHasOpenedAllFilesDialog] = useState(false);
   const [dialogFiles, setDialogFiles] = useState<
     Array<{
       part: any;
@@ -232,6 +238,7 @@ export const Messages = ({
         }));
 
       setDialogFiles(files);
+      setHasOpenedAllFilesDialog(true);
       setShowAllFilesDialog(true);
     },
     [],
@@ -369,12 +376,14 @@ export const Messages = ({
         </div>
 
         {/* All Files Dialog */}
-        <AllFilesDialog
-          open={showAllFilesDialog}
-          onOpenChange={setShowAllFilesDialog}
-          files={dialogFiles}
-          chatTitle={chatTitle}
-        />
+        {hasOpenedAllFilesDialog && (
+          <AllFilesDialog
+            open={showAllFilesDialog}
+            onOpenChange={setShowAllFilesDialog}
+            files={dialogFiles}
+            chatTitle={chatTitle}
+          />
+        )}
       </div>
     </FileUrlCacheProvider>
   );

@@ -1,13 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
-import { SettingsDialog } from "./SettingsDialog";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
+
+const SettingsDialog = dynamic(
+  () => import("./SettingsDialog").then((module) => module.SettingsDialog),
+  { ssr: false },
+);
 
 /**
  * Shared layout for chat routes: Chat Sidebar (left) + main content slot.
@@ -24,11 +29,13 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
   // Settings dialog — local state, opened via custom event from anywhere
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [hasOpenedSettingsDialog, setHasOpenedSettingsDialog] = useState(false);
   const [settingsDialogTab, setSettingsDialogTab] = useState<string | null>(
     null,
   );
 
   const handleOpenSettings = useCallback((tab?: string) => {
+    setHasOpenedSettingsDialog(true);
     setSettingsDialogTab(null);
     // Force a fresh state change even if the same tab is requested again
     queueMicrotask(() => {
@@ -162,12 +169,14 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       )}
-      {/* Settings Dialog - rendered here so it's always mounted (including mobile) */}
-      <SettingsDialog
-        open={settingsDialogOpen}
-        onOpenChange={setSettingsDialogOpen}
-        initialTab={settingsDialogTab}
-      />
+      {/* Load settings on first use, then keep it mounted for close animations. */}
+      {hasOpenedSettingsDialog && (
+        <SettingsDialog
+          open={settingsDialogOpen}
+          onOpenChange={setSettingsDialogOpen}
+          initialTab={settingsDialogTab}
+        />
+      )}
     </div>
   );
 }
