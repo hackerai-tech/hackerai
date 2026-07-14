@@ -6,12 +6,26 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
 import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
 
 const SettingsDialog = dynamic(
   () => import("./SettingsDialog").then((module) => module.SettingsDialog),
-  { ssr: false },
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        role="status"
+        aria-label="Loading settings"
+      >
+        <div className="rounded-xl border bg-background p-6 shadow-lg">
+          <Loading size={6} />
+        </div>
+      </div>
+    ),
+  },
 );
 
 /**

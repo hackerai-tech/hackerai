@@ -29,7 +29,20 @@ import type { SelectedModel } from "@/types";
 
 const AllFilesDialog = dynamic(
   () => import("./AllFilesDialog").then((module) => module.AllFilesDialog),
-  { ssr: false },
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        role="status"
+        aria-label="Loading files"
+      >
+        <div className="rounded-xl border bg-background p-6 shadow-lg">
+          <Loading size={6} />
+        </div>
+      </div>
+    ),
+  },
 );
 
 interface MessagesProps {

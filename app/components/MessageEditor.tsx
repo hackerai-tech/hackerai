@@ -47,7 +47,7 @@ export const MessageEditor = ({
     setFiles((prev) => prev.filter((f) => f.fileId !== fileId));
   }, []);
 
-  const handleSave = async () => {
+  const saveMessage = async () => {
     const trimmedContent = content.trim();
 
     // Must have either content or files
@@ -73,12 +73,21 @@ export const MessageEditor = ({
     onSave(trimmedContent, remainingFileIds);
   };
 
+  const handleSave = () => {
+    void saveMessage().catch((error) => {
+      console.error("Failed to validate edited message:", error);
+      toast.error("Could not validate message", {
+        description: "Please try again.",
+      });
+    });
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       onCancel();
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      void handleSave();
+      handleSave();
     }
   };
 
