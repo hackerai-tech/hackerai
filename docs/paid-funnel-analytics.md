@@ -21,22 +21,19 @@ Paid funnel events use stable snake_case event names. Most events include
   renewal quality, bank declines, Radar blocks, subscription updates, and
   other involuntary churn causes.
 - `limit_hit`: a chat or agent request was blocked by a free or paid limit.
-- `monthly_cap_hit`: legacy paid-only monthly cap event kept for existing
-  dashboards.
-- `agent_run_spend_cap_hit`: legacy event for a retired Pro Agent per-run
-  spend cap.
-- `agent_run_spend_cap_impressed`: legacy event for the retired per-run
-  spend-cap pause message.
-- `agent_run_spend_cap_continue_clicked`: legacy event for continuing after a
-  retired per-run spend-cap pause.
 - `add_credit_cta_impressed`: an add-credit prompt became visible.
 - `add_credit_cta_clicked`: a user clicked an add-credit prompt.
 - `add_credit_checkout_started`: an extra-usage credit checkout was created.
 - `add_credit_checkout_succeeded`: an extra-usage credit checkout was paid.
-- `first_experience_exposed`: Agent-first onboarding selected and exposed a
-  user to the default-Agent first experience.
 - `agent_first_default_applied`: the client actually changed the user's
   current chat mode/sandbox/model defaults for Agent-first onboarding.
+
+Retired events remain queryable historically but are no longer emitted:
+`monthly_cap_hit`, `agent_run_spend_cap_hit`,
+`agent_run_spend_cap_impressed`, `agent_run_spend_cap_continue_clicked`,
+`first_experience_exposed`, and `hackerai-free_agent_value_reached`. Use
+`limit_hit` for current cap analysis and a successful free `hackerai-agent_run`
+for free Agent activation.
 
 ## Join Keys
 
@@ -63,9 +60,6 @@ Paid funnel events use stable snake_case event names. Most events include
 - `amount_dollars`, `checkout_amount_dollars`, `revenue_dollars`: money fields
   in USD unless `currency` says otherwise.
 - `cap_reason`, `limit_type`, `reset_timestamp`: limit-pressure context.
-- `run_cost_dollars`, `run_cap_dollars`, `monthly_remaining_dollars`,
-  `cap_basis`: legacy Pro Agent per-run spend-cap context. Historical
-  `cap_basis` values used `fixed_5_dollars`.
 - `primary_cta`, `eligible_ctas`, `upgrade_available`,
   `add_credit_available`: monetization paths shown or available for that
   limit pressure moment.
@@ -103,10 +97,11 @@ Paid funnel events use stable snake_case event names. Most events include
 
 - Signup to first usage: `user_signed_up -> hackerai-usage_cost`.
 - Free agent activation to paid:
-  `user_signed_up -> hackerai-free_agent_value_reached -> subscription_started`.
+  `user_signed_up -> hackerai-agent_run -> subscription_started`, filtering
+  the Agent run to `subscription_tier = free` and `outcome = success`.
 - Agent-first onboarding:
-  `first_experience_exposed -> agent_first_default_applied -> hackerai-agent_run`,
-  grouped by `selected_subscription_tier`, `sandbox_type`, and `outcome`.
+  `agent_first_default_applied -> hackerai-agent_run`, grouped by
+  `selected_subscription_tier`, `sandbox_type`, and `outcome`.
 - Upgrade click to success: `upgrade_cta_clicked -> checkout_succeeded`,
   grouped by `surface`.
 - Checkout start to subscription: `checkout_started -> subscription_started`,
@@ -114,10 +109,6 @@ Paid funnel events use stable snake_case event names. Most events include
 - Limit pressure to paid/add-credit: `limit_hit -> upgrade_cta_clicked` and
   `limit_hit -> add_credit_checkout_succeeded`, grouped by `primary_cta`,
   `eligible_ctas`, and `cap_reason`.
-- Legacy Pro Agent cap to churn:
-  `agent_run_spend_cap_hit -> subscription_cancelled`, grouped by
-  `agent_run_spend_cap_continue_clicked`, `cap_basis`, and
-  `cancellation_reason`.
 - Involuntary churn:
   `billing_payment_failed -> subscription_cancelled`, grouped by
   `billing_failure_stage`, `billing_failure_group`, `billing_reason`,

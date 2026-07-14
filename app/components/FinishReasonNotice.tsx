@@ -2,11 +2,7 @@ import { useState } from "react";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { Button } from "@/components/ui/button";
-import { captureAgentRunSpendCapContinueClick } from "@/lib/analytics/client";
-import {
-  AGENT_RUN_SPEND_CAP_FINISH_REASON,
-  AGENT_RUN_SPEND_CAP_REASON,
-} from "@/lib/chat/agent-run-spend-cap";
+import { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
   OUTPUT_LIMIT_FINISH_REASON,
@@ -23,8 +19,6 @@ interface FinishReasonNoticeProps {
 
 export const FinishReasonNotice = ({
   finishReason,
-  mode,
-  agentRunSpendCapPremiumContinuationAllowed,
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
@@ -104,19 +98,6 @@ export const FinishReasonNotice = ({
             variant="outline"
             onClick={() => {
               setHasContinued(true);
-              if (finishReason === AGENT_RUN_SPEND_CAP_FINISH_REASON) {
-                captureAgentRunSpendCapContinueClick({
-                  surface: "finish_reason_notice",
-                  source: AGENT_RUN_SPEND_CAP_REASON,
-                  finish_reason: finishReason,
-                  mode: mode ?? "agent",
-                  cap_reason: AGENT_RUN_SPEND_CAP_REASON,
-                  premium_continuation_allowed:
-                    agentRunSpendCapPremiumContinuationAllowed,
-                  continuation_model:
-                    continuationModel ?? "current_selected_model",
-                });
-              }
               onContinue(continuationModel);
             }}
           >

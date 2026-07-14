@@ -15,6 +15,13 @@ type PostHogClient = typeof posthogJs & {
 
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
+const UPGRADE_IMPRESSION_STORAGE_KEY =
+  "hackerai:analytics:upgrade-impressions:v1";
+
+type UpgradeImpressionState = {
+  day: string;
+  keys: string[];
+};
 
 export function loadPostHogClient(): Promise<PostHogClient> {
   if (posthogClient) return Promise.resolve(posthogClient);
@@ -88,10 +95,53 @@ type CtaAnalyticsProperties = ClientAnalyticsProperties & {
 export function captureUpgradeCtaImpression(
   properties: CtaAnalyticsProperties,
 ) {
-  return captureAuthenticatedEvent(
+  const posthog = getReadyPostHogClient();
+  if (!posthog) {
+    void loadPostHogClient().catch(() => {});
+    return false;
+  }
+
+  const day = new Date().toISOString().slice(0, 10);
+  const dedupeKey = [
+    posthog.get_distinct_id(),
+    properties.surface,
+    properties.source ?? "",
+  ].join(":");
+
+  let state: UpgradeImpressionState = { day, keys: [] };
+  try {
+    const stored = window.localStorage.getItem(UPGRADE_IMPRESSION_STORAGE_KEY);
+    const parsed = stored
+      ? (JSON.parse(stored) as UpgradeImpressionState)
+      : null;
+    if (
+      parsed?.day === day &&
+      Array.isArray(parsed.keys) &&
+      parsed.keys.every((key) => typeof key === "string")
+    ) {
+      state = parsed;
+    }
+    if (state.keys.includes(dedupeKey)) return false;
+  } catch {
+    // Storage can be unavailable in privacy-restricted browsers. Capture the
+    // event normally rather than dropping a legitimate impression.
+  }
+
+  const captured = captureAuthenticatedEvent(
     PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
     paidFunnelProperties(properties),
   );
+  if (!captured) return false;
+
+  try {
+    window.localStorage.setItem(
+      UPGRADE_IMPRESSION_STORAGE_KEY,
+      JSON.stringify({ day, keys: [...state.keys, dedupeKey].slice(-100) }),
+    );
+  } catch {
+    // Best-effort dedupe only.
+  }
+  return true;
 }
 
 export function captureUpgradeCtaClick(properties: CtaAnalyticsProperties) {
@@ -131,24 +181,6 @@ export function capturePaidDailyFreeAllowanceClick(
 ) {
   return captureAuthenticatedEvent(
     PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceClicked,
-    paidFunnelProperties(properties),
-  );
-}
-
-export function captureAgentRunSpendCapImpression(
-  properties: CtaAnalyticsProperties,
-) {
-  return captureAuthenticatedEvent(
-    PAID_FUNNEL_EVENTS.agentRunSpendCapImpressed,
-    paidFunnelProperties(properties),
-  );
-}
-
-export function captureAgentRunSpendCapContinueClick(
-  properties: CtaAnalyticsProperties,
-) {
-  return captureAuthenticatedEvent(
-    PAID_FUNNEL_EVENTS.agentRunSpendCapContinueClicked,
     paidFunnelProperties(properties),
   );
 }

@@ -43,11 +43,10 @@ import {
 import {
   getLimitPressureContext,
   getLimitTypeForCapReason,
-  isPaidMonthlyCapHitReason,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
 
-export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.05;
+export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
 
 const usageSettlementSampleBucket = (usageSettlementId: string): number => {
   let hash = 2166136261;
@@ -510,8 +509,8 @@ export function createChatLogger(config: ChatLoggerConfig) {
   const builder = createWideEventBuilder(config.chatId, config.endpoint);
 
   // Cache identity/context fields so emitChatError can fire discrete PostHog
-  // events (e.g. monthly_cap_hit) without forcing the call site to thread
-  // them through. Populated by the corresponding setX methods below.
+  // events without forcing the call site to thread them through. Populated by
+  // the corresponding setX methods below.
   let userId: string | undefined;
   let subscription: string | undefined;
   let mode: ChatMode | undefined;
@@ -961,41 +960,6 @@ export function createChatLogger(config: ChatLoggerConfig) {
           });
         }
       }
-
-      // Fire a discrete PostHog event when a paid user is blocked at the
-      // monthly cap. Used to size the cap-hit cohort and correlate against
-      // subscription_changed / subscription_cancelled events.
-      if (
-        error.type === "rate_limit" &&
-        subscription &&
-        isSubscriptionTier(subscription) &&
-        subscription !== "free"
-      ) {
-        const capReason =
-          (error.metadata?.capReason as LimitCapReason | undefined) ??
-          "unknown";
-        if (!isPaidMonthlyCapHitReason(capReason)) return;
-        const pressure = getLimitPressureContext({
-          subscription,
-          capReason,
-        });
-        phLogger.event("monthly_cap_hit", {
-          userId,
-          subscription,
-          mode,
-          cap_reason: capReason,
-          monthly_remaining_percent: monthlyRemainingPercent,
-          cost_guardrail: pressure.costGuardrail,
-          primary_cta: pressure.primaryCta,
-          eligible_ctas: pressure.eligibleCtas,
-          chat_id: config.chatId,
-          endpoint: config.endpoint,
-          $set: {
-            subscription_tier: subscription,
-            last_cap_hit_at: new Date().toISOString(),
-          },
-        });
-      }
     },
 
     /**
@@ -1178,7 +1142,6 @@ export function captureToolCalls({
         mode,
         toolName: tool.name,
         count: tool.count,
-        toolCallCount: tool.count,
       },
     });
   }
@@ -1252,7 +1215,6 @@ export function captureAgentRun({
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
       ...(sandboxInfo?.type && {
-        sandboxType: sandboxInfo.type,
         sandbox_type: sandboxInfo.type,
       }),
       ...(finishReason && { finish_reason: finishReason }),
@@ -1261,58 +1223,6 @@ export function captureAgentRun({
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
-    },
-  });
-}
-
-export function captureFreeAgentValueReached({
-  posthog,
-  userId,
-  chatId,
-  endpoint,
-  mode,
-  subscription,
-  sandboxInfo,
-  outcome,
-  chatLogger,
-}: {
-  posthog: PostHog | null;
-  userId: string;
-  chatId: string;
-  endpoint: ChatApiEndpoint;
-  mode: ChatMode;
-  subscription: string;
-  sandboxInfo: SandboxInfo | null;
-  outcome: AgentRunOutcome;
-  chatLogger: ChatLogger | undefined;
-}) {
-  if (!posthog || mode !== "agent" || subscription !== "free") return;
-  if (outcome !== "success") return;
-
-  const now = new Date().toISOString();
-  const toolCallCount = chatLogger?.getToolCalls().length ?? 0;
-
-  posthog.capture({
-    distinctId: userId,
-    event: "hackerai-free_agent_value_reached",
-    properties: {
-      user_id: userId,
-      chat_id: chatId,
-      endpoint,
-      mode,
-      subscription,
-      subscription_tier: subscription,
-      outcome,
-      tool_call_count: toolCallCount,
-      agent_value_event_version: 1,
-      ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
-      $set_once: {
-        first_free_agent_value_reached_at: now,
-      },
-      $set: {
-        subscription_tier: subscription,
-        last_free_agent_value_reached_at: now,
-      },
     },
   });
 }
@@ -1336,7 +1246,6 @@ export function captureAgentCompletionAnalytics(
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
   });
-  captureFreeAgentValueReached(args);
 }
 
 /**
@@ -1437,10 +1346,6 @@ export function captureUsageCost({
         paid_daily_free_allowance_reset_timestamp:
           paidDailyFreeAllowance.resetTimestamp,
       }),
-      $set: {
-        subscription_tier: subscription,
-        last_usage_cost_at: new Date().toISOString(),
-      },
     },
   });
 }

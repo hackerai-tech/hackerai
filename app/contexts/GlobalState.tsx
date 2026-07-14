@@ -604,10 +604,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       current_mode_before: chatMode,
       $set_once: {
         first_experience_variant: "agent_first",
-        first_experience_exposed_at: now,
+        first_experience_applied_at: now,
       },
     };
-    captureAuthenticatedEvent("first_experience_exposed", agentFirstProperties);
     captureAuthenticatedEvent(
       "agent_first_default_applied",
       agentFirstProperties,
