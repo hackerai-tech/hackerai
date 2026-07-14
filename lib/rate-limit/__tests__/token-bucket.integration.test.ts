@@ -22,6 +22,7 @@ describe("token-bucket async functions", () => {
   const mockHgetFn = jest.fn();
   const mockHsetFn = jest.fn();
   const mockExistsFn = jest.fn();
+  const mockEvalFn = jest.fn();
   const mockDelFn = jest.fn();
   const mockExpireFn = jest.fn();
   const mockScanFn = jest.fn();
@@ -46,6 +47,7 @@ describe("token-bucket async functions", () => {
     mockHgetFn.mockResolvedValue(null);
     mockHsetFn.mockResolvedValue(1);
     mockExistsFn.mockResolvedValue(1);
+    mockEvalFn.mockResolvedValue([-1, -1, 0]);
     mockDelFn.mockResolvedValue(1);
     mockExpireFn.mockResolvedValue(1);
     mockScanFn.mockResolvedValue(["0", []]);
@@ -74,6 +76,7 @@ describe("token-bucket async functions", () => {
       hget: mockHgetFn,
       hset: mockHsetFn,
       exists: mockExistsFn,
+      eval: mockEvalFn,
       del: mockDelFn,
       expire: mockExpireFn,
       scan: mockScanFn,
@@ -109,6 +112,7 @@ describe("token-bucket async functions", () => {
           hget: mockHgetFn,
           hset: mockHsetFn,
           exists: mockExistsFn,
+          eval: mockEvalFn,
           del: mockDelFn,
           expire: mockExpireFn,
           scan: mockScanFn,
@@ -263,17 +267,11 @@ describe("token-bucket async functions", () => {
 
     it("enforces a stored price-specific cycle allocation", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
-      mockHgetFn.mockResolvedValue(200_000);
+      mockEvalFn.mockResolvedValue([200_000, 200_000, 50_000]);
       mockLimitFn
         .mockResolvedValueOnce({
           success: true,
           remaining: 250_000,
-          reset: Date.now() + 3600000,
-          limit: 250_000,
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          remaining: 200_000,
           reset: Date.now() + 3600000,
           limit: 250_000,
         })
@@ -286,9 +284,12 @@ describe("token-bucket async functions", () => {
 
       const result = await checkTokenBucketLimit("user-123", "pro", 1000);
 
-      expect(mockLimitFn).toHaveBeenNthCalledWith(2, expect.any(String), {
-        rate: 50_000,
-      });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        [],
+      );
+      expect(mockLimitFn).toHaveBeenCalledTimes(2);
       expect(result.limit).toBe(200_000);
       expect(result.monthly?.limit).toBe(200_000);
     });
@@ -991,20 +992,9 @@ describe("token-bucket async functions", () => {
 
     it("lowers the current cycle without restoring consumed usage", async () => {
       const { capCurrentCycleAllocation } = getIsolatedModule();
-      mockHgetFn.mockResolvedValue(250_000);
-      mockLimitFn
-        .mockResolvedValueOnce({
-          success: true,
-          remaining: 150_000,
-          reset: Date.now() + 3600000,
-          limit: 250_000,
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          remaining: 100_000,
-          reset: Date.now() + 3600000,
-          limit: 250_000,
-        });
+      mockEvalFn.mockResolvedValue([
+        250_000, 150_000, 200_000, 100_000, 50_000,
+      ]);
 
       const result = await capCurrentCycleAllocation(
         "user-123",
@@ -1012,9 +1002,7 @@ describe("token-bucket async functions", () => {
         200_000,
       );
 
-      expect(mockLimitFn).toHaveBeenNthCalledWith(2, expect.any(String), {
-        rate: 50_000,
-      });
+      expect(mockLimitFn).toHaveBeenCalledTimes(1);
       expect(result).toEqual({
         created: false,
         previousAllocation: 250_000,
@@ -1023,24 +1011,16 @@ describe("token-bucket async functions", () => {
         targetRemaining: 100_000,
         pointsRemoved: 50_000,
       });
-      expect(mockHsetFn).toHaveBeenCalledWith(
-        "usage:monthly:user-123:pro",
-        expect.objectContaining({
-          cycleAllocation: 200_000,
-          cycleTierMax: 250_000,
-        }),
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        [200_000, 250_000, -1],
       );
     });
 
     it("does not increase an already-lower prorated allocation", async () => {
       const { capCurrentCycleAllocation } = getIsolatedModule();
-      mockHgetFn.mockResolvedValue(150_000);
-      mockLimitFn.mockResolvedValueOnce({
-        success: true,
-        remaining: 100_000,
-        reset: Date.now() + 3600000,
-        limit: 250_000,
-      });
+      mockEvalFn.mockResolvedValue([150_000, 100_000, 150_000, 100_000, 0]);
 
       const result = await capCurrentCycleAllocation(
         "user-123",

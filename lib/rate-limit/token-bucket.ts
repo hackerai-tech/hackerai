@@ -376,6 +376,85 @@ const getStoredCycleAllocation = async (
   return stored === null ? null : Math.min(tierMax, stored);
 };
 
+const ENFORCE_CYCLE_ALLOCATION_SCRIPT = `
+local key = KEYS[1]
+local tokens = tonumber(redis.call("HGET", key, "tokens"))
+local allocation = tonumber(redis.call("HGET", key, "cycleAllocation"))
+
+if not tokens or not allocation then
+  return {-1, -1, 0}
+end
+
+local remaining = math.max(0, math.min(tokens, allocation))
+if remaining < tokens then
+  redis.call("HSET", key, "tokens", remaining)
+end
+
+return {remaining, allocation, tokens - remaining}
+`;
+
+const CAP_CYCLE_ALLOCATION_SCRIPT = `
+local key = KEYS[1]
+local requestedAllocation = tonumber(ARGV[1])
+local tierMax = tonumber(ARGV[2])
+local targetRefilledAt = tonumber(ARGV[3])
+
+local currentTokens = tonumber(redis.call("HGET", key, "tokens")) or tierMax
+local previousAllocation = tonumber(redis.call("HGET", key, "cycleAllocation")) or tierMax
+local targetAllocation = math.min(previousAllocation, requestedAllocation)
+local previousRemaining = math.max(0, math.min(previousAllocation, currentTokens))
+local consumed = math.max(0, previousAllocation - previousRemaining)
+local targetRemaining = math.max(0, targetAllocation - consumed)
+local pointsRemoved = math.max(0, currentTokens - targetRemaining)
+
+if targetRefilledAt >= 0 then
+  redis.call(
+    "HSET",
+    key,
+    "tokens", targetRemaining,
+    "cycleAllocation", targetAllocation,
+    "cycleTierMax", tierMax,
+    "refilledAt", targetRefilledAt
+  )
+else
+  redis.call(
+    "HSET",
+    key,
+    "tokens", targetRemaining,
+    "cycleAllocation", targetAllocation,
+    "cycleTierMax", tierMax
+  )
+end
+
+return {
+  previousAllocation,
+  math.max(0, currentTokens),
+  targetAllocation,
+  targetRemaining,
+  pointsRemoved
+}
+`;
+
+const enforceStoredCycleAllocation = async (
+  redis: RedisClient,
+  monthlyKey: string,
+  tierMax: number,
+): Promise<{ allocation: number; remaining: number } | null> => {
+  const [remaining, allocation] = await redis.eval<
+    [],
+    [number, number, number]
+  >(ENFORCE_CYCLE_ALLOCATION_SCRIPT, [monthlyKey], []);
+  const normalizedAllocation = finiteNonNegativePoints(allocation);
+  const normalizedRemaining = finiteNonNegativePoints(remaining);
+  if (normalizedAllocation === null || normalizedRemaining === null)
+    return null;
+  const cappedAllocation = Math.min(tierMax, normalizedAllocation);
+  return {
+    allocation: cappedAllocation,
+    remaining: Math.min(cappedAllocation, normalizedRemaining),
+  };
+};
+
 export const getCycleExpireSeconds = (
   periodEndSeconds?: number,
   nowSeconds: number = Math.floor(Date.now() / 1000),
@@ -568,19 +647,17 @@ export const checkTokenBucketLimit = async (
     // in the bucket. Re-apply the cap if Upstash's 30-day refill races ahead
     // of the Stripe renewal webhook.
     const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
-    const storedCycleAllocation = await getStoredCycleAllocation(
+    const enforcedCycleAllocation = await enforceStoredCycleAllocation(
       redis,
       monthlyStorageKey,
       monthlyLimit,
     );
-    effectiveMonthlyLimit = storedCycleAllocation ?? monthlyLimit;
-    if (monthlyCheck.remaining > effectiveMonthlyLimit) {
-      monthlyCheck = await monthly.limiter.limit(monthly.key, {
-        rate: monthlyCheck.remaining - effectiveMonthlyLimit,
-      });
-      if (monthlyCheck.success === false) {
-        throw monthlyLimitError(monthlyCheck.reset);
-      }
+    if (enforcedCycleAllocation) {
+      effectiveMonthlyLimit = enforcedCycleAllocation.allocation;
+      monthlyCheck = {
+        ...monthlyCheck,
+        remaining: enforcedCycleAllocation.remaining,
+      };
     }
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
@@ -1124,46 +1201,28 @@ export const capCurrentCycleAllocation = async (
   }
 
   const { monthly } = createRateLimiter(redis, userId, subscription);
-  const current = await monthly.limiter.limit(monthly.key, { rate: 0 });
-  const previousAllocation =
-    (await getStoredCycleAllocation(redis, monthlyKey, tierMax)) ?? tierMax;
-  const targetAllocation = Math.min(
-    previousAllocation,
-    requestedTargetAllocation,
-  );
-  const previousRemainingForUsage = Math.min(
-    previousAllocation,
-    Math.max(0, current.remaining),
-  );
-  const consumed = Math.max(0, previousAllocation - previousRemainingForUsage);
-  const targetRemaining = Math.max(0, targetAllocation - consumed);
-  const pointsRemoved = Math.max(
-    0,
-    Math.max(0, current.remaining) - targetRemaining,
-  );
-
-  if (pointsRemoved > 0) {
-    const capped = await monthly.limiter.limit(monthly.key, {
-      rate: pointsRemoved,
-    });
-    if (capped.success === false) {
-      throw new Error(`Failed to cap the current cycle for user ${userId}`);
-    }
-  }
-
-  const metadata: Record<string, number> = {
-    cycleAllocation: targetAllocation,
-    cycleTierMax: tierMax,
-  };
+  await monthly.limiter.limit(monthly.key, { rate: 0 });
   const nowSeconds = Math.floor(Date.now() / 1000);
-  if (
+  const targetRefilledAt =
     periodEndSeconds &&
     Number.isFinite(periodEndSeconds) &&
     periodEndSeconds > nowSeconds
-  ) {
-    metadata.refilledAt = (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
-  }
-  await redis.hset(monthlyKey, metadata);
+      ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
+      : -1;
+  const [
+    previousAllocation,
+    previousRemaining,
+    targetAllocation,
+    targetRemaining,
+    pointsRemoved,
+  ] = await redis.eval<
+    [number, number, number],
+    [number, number, number, number, number]
+  >(
+    CAP_CYCLE_ALLOCATION_SCRIPT,
+    [monthlyKey],
+    [requestedTargetAllocation, tierMax, targetRefilledAt],
+  );
   await redis.expire(
     monthlyKey,
     getCycleExpireSeconds(periodEndSeconds, nowSeconds),
@@ -1172,7 +1231,7 @@ export const capCurrentCycleAllocation = async (
   return {
     created: false,
     previousAllocation,
-    previousRemaining: Math.max(0, current.remaining),
+    previousRemaining,
     targetAllocation,
     targetRemaining,
     pointsRemoved,

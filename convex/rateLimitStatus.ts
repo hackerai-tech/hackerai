@@ -124,7 +124,7 @@ export const getAgentRateLimitStatus = action({
       });
 
       const monthlyKey = `${userId}:${subscription}`;
-      let monthlyResult = await monthlyRatelimit.limit(monthlyKey, {
+      const monthlyResult = await monthlyRatelimit.limit(monthlyKey, {
         rate: 0,
       });
       const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
@@ -136,15 +136,6 @@ export const getAgentRateLimitStatus = action({
         storedCycleAllocation === null
           ? monthlyLimit
           : Math.min(storedCycleAllocation, monthlyLimit);
-      if (monthlyResult.remaining > cycleAllocation) {
-        monthlyResult = await monthlyRatelimit.limit(monthlyKey, {
-          rate: monthlyResult.remaining - cycleAllocation,
-        });
-        if (monthlyResult.success === false) {
-          throw new Error("Failed to enforce the current cycle allocation");
-        }
-      }
-
       const monthlyRemaining = Math.min(
         Math.max(0, monthlyResult.remaining),
         cycleAllocation,
