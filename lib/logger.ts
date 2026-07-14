@@ -3,8 +3,6 @@
  *
  * Implements the wide event logging pattern for comprehensive request observability.
  * One event per request with all context, emitted at the end of the request lifecycle.
- *
- * @see docs/logging-best-practices.md
  */
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
